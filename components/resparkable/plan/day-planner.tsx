@@ -5,13 +5,10 @@
  *
  * ## Why this screen exists at all
  *
- * Two of the scorer's six factors are inert without it. `areaBalance` — 15% of every
- * task's score, and the term that stops the ranking becoming a pure work queue — is
- * computed from **minutes actually blocked against an area this week**. `effortFit`
- * compares a task's estimate to the largest free gap in your day. With no time blocks,
- * the first is always "this area is neglected" and the second is always the neutral
- * 0.5. The ranking still works; it is just quieter than it should be, in a way nothing
- * on screen explains. So this page says so.
+ * One of the scorer's five factors is inert without it. `effortFit` compares a
+ * task's estimate to the largest free gap in your day. With no time blocks, it is
+ * always the neutral 0.5. The ranking still works; it is just quieter than it
+ * should be, in a way nothing on screen explains. So this page says so.
  *
  * ## Times are local, and that is the one subtlety
  *
@@ -139,12 +136,12 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
           Block out some time
           <FieldHelp title="Why block time">
             <p>
-              Blocked time is what makes two parts of the ranking work: how balanced your week is
-              across the parts of your life, and whether a task fits the gap you actually have.
+              Blocked time is what makes the ranking know whether a task fits the gap you actually
+              have.
             </p>
             <p>
-              Without any blocks, every area reads as neglected and every task looks like an average
-              fit — the ranking still works, it is just much less opinionated.
+              Without any blocks, every task looks like an average fit. The ranking still works, it
+              is just less opinionated.
             </p>
           </FieldHelp>
         </h2>
@@ -188,10 +185,10 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
 
           <div className="space-y-1.5">
             <Label htmlFor="block-area" className="flex items-center gap-1.5">
-              Counts toward
-              <FieldHelp title="Area">
-                This is how the time reaches that area&rsquo;s weekly target. A block with no area
-                still shows on your day, but it does not count toward anything.
+              Part of your life
+              <FieldHelp title="Part of your life">
+                Optional. Tag a block with what it was for, so your day makes sense when you look
+                back at it. A block with no area still shows on your day.
               </FieldHelp>
             </Label>
             <Select value={areaId} onValueChange={setAreaId}>
@@ -239,7 +236,7 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
         <EmptyState
           icon={CalendarRange}
           title="Nothing blocked out"
-          description="Block out the time you actually have and two things sharpen up: how balanced your week looks across the parts of your life, and whether a task fits the gap in front of you."
+          description="Block out the time you actually have and the ranking sharpens up: whether a task fits the gap in front of you."
         />
       ) : (
         <ul className="space-y-2">
@@ -257,7 +254,7 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
 
               {block.areaId && (
                 <span className="text-muted-foreground text-xs">
-                  counts toward {areaNames.get(block.areaId) ?? 'an area'}
+                  {areaNames.get(block.areaId) ?? 'an area'}
                 </span>
               )}
 

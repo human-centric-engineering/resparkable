@@ -14,16 +14,12 @@
  *      data, so an unbounded block is a bill that rises with use. The cap is
  *      asserted against a deliberately oversized brain.
  *
- * The rest is about not lying: an area with no weekly target does not
- * participate in balancing at all, so reporting it as attended would be a lie
- * the agent repeats back (ui.md §7).
- *
  * Test Coverage:
  * - The scope is minted from `request.userId`, never from the `id` argument
  * - An absent `userId` yields '' rather than anyone's context
  * - A throwing snapshot degrades to '' rather than failing the chat turn
  * - Goals are ordered longest-horizon first, whatever order they arrive in
- * - Targetless areas are omitted; areas with targets are rendered
+ * - Life areas render as a single comma-joined line, capped
  * - Truncation is by whole lines and says so, so no id is ever cut in half
  * - The block stays under its character budget on an oversized brain
  *
@@ -50,12 +46,10 @@ function snapshot(overrides: Partial<SnapshotPayload> = {}): SnapshotPayload {
     workStyle: 'balanced',
     today: { date: '2026-08-04', weekday: 'Tuesday', isoWeek: 32 },
     counts: { inbox: 3, connections: 1, openTasks: 12 },
-    capacity: { weeklyCapacityMinutes: 1800, plannedMinutesThisWeek: 600, remainingMinutes: 1200 },
     goals: { items: [], truncated: false },
     projects: { items: [], truncated: false },
     topTasks: { items: [], truncated: false },
     areas: { items: [], truncated: false },
-    mostNeglectedArea: null,
     latestReview: null,
     ...overrides,
   };
@@ -179,63 +173,40 @@ describe('renderResparkableContext', () => {
   });
 
   /**
-   * An area with no weekly target does not participate in `areaBalance` at all.
-   * Rendering it would invite the agent to report it as attended — a lie it then
-   * repeats back with confidence (ui.md §7).
+   * The standing parts of someone's life, rendered as an orientation rather
+   * than a scorecard: a single comma-joined line, not one line per area.
    */
-  it('omits an area with no weekly target rather than calling it attended', () => {
+  it('renders life areas as a single comma-joined line', () => {
     const block = renderResparkableContext(
       snapshot({
         areas: {
           items: [
-            {
-              id: 'a1',
-              name: 'Health',
-              targetWeeklyMinutes: 180,
-              minutesThisWeek: 60,
-              neglect: 0.66,
-            },
-            {
-              id: 'a2',
-              name: 'Admin',
-              targetWeeklyMinutes: null,
-              minutesThisWeek: 0,
-              neglect: null,
-            },
+            { id: 'a1', name: 'Health' },
+            { id: 'a2', name: 'Family' },
+            { id: 'a3', name: 'Work' },
           ],
           truncated: false,
         },
       })
     );
 
-    expect(block).toContain('Health: 1h of 3h');
-    expect(block).not.toContain('Admin');
+    expect(block).toContain('LIFE');
+    expect(block).toContain('- Health, Family, Work');
   });
 
-  /**
-   * Minutes as something a person would say. An agent that reports "your health
-   * area got 90 minutes of 180 minutes" reads like a machine; "1h 30m of 3h"
-   * reads like a colleague, and it is the same number.
-   */
-  it('renders durations the way a person would say them', () => {
-    const block = renderResparkableContext(
-      snapshot({
-        capacity: {
-          weeklyCapacityMinutes: 90,
-          plannedMinutesThisWeek: 90,
-          remainingMinutes: 0,
-        },
-        areas: {
-          items: [
-            { id: 'a1', name: 'Health', targetWeeklyMinutes: 45, minutesThisWeek: 120, neglect: 0 },
-          ],
-          truncated: false,
-        },
-      })
-    );
+  it('omits the LIFE section entirely when there are no areas', () => {
+    const block = renderResparkableContext(snapshot({ areas: { items: [], truncated: false } }));
 
-    expect(block).toContain('0m left of 1h 30m');
-    expect(block).toContain('Health: 2h of 45m');
+    expect(block).not.toContain('LIFE');
+  });
+
+  it('caps the LIFE line to the first six areas', () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({ id: `a${i}`, name: `Area${i}` }));
+    const block = renderResparkableContext(snapshot({ areas: { items: many, truncated: false } }));
+
+    const lifeLine = block.split('\n').find((l) => l.startsWith('- Area0'));
+    expect(lifeLine).toBeDefined();
+    expect(lifeLine).not.toContain('Area6');
   });
 
   it('says "today" rather than "in 0d" for something due now', () => {
@@ -341,10 +312,9 @@ describe('renderResparkableContext', () => {
     expect(block).not.toContain('due null');
   });
 
-  it('names the most neglected area and the last review, when there are any', () => {
+  it('names the last review, when there is one', () => {
     const block = renderResparkableContext(
       snapshot({
-        mostNeglectedArea: { id: 'a1', name: 'Health', neglect: 0.8 },
         latestReview: {
           id: 'rev_1',
           horizon: 'weekly',
@@ -354,7 +324,6 @@ describe('renderResparkableContext', () => {
       })
     );
 
-    expect(block).toContain('Most neglected: Health');
     // The id leads the line so the agent can fetch the review rather than
     // paraphrasing a title back at the person — and so a cut tail cannot take
     // the id with it.
@@ -440,8 +409,8 @@ describe('renderResparkableContext', () => {
    * The failure the per-line cap exists to prevent. Titles are bounded at 500
    * chars by `titleSchema`, so eight long goals plus eight long projects clears
    * the whole budget on their own — and without the line cap the loop would stop
-   * before `LOAD`, dropping the inbox count and remaining capacity, which are
-   * the cheapest and most useful lines in the block.
+   * before `LOAD`, dropping the inbox count, which is the cheapest and most
+   * useful line in the block.
    */
   it('keeps the cheap high-value sections when the titles are long', () => {
     const long = (prefix: string) => `${prefix} ${'x'.repeat(480)}`;
@@ -473,7 +442,7 @@ describe('renderResparkableContext', () => {
 
     expect(block.length).toBeLessThanOrEqual(4800);
     expect(block).toContain('LOAD');
-    expect(block).toContain('Capacity this week');
+    expect(block).toContain('Inbox:');
     // Every id still survives, because ids lead their line and only the tail
     // is cut.
     for (let i = 0; i < 8; i += 1) expect(block).toContain(`- p${i} · `);
@@ -534,9 +503,6 @@ describe('renderResparkableContext', () => {
           items: Array.from({ length: 6 }, (_, i) => ({
             id: `a${i}`,
             name: 'w'.repeat(150),
-            targetWeeklyMinutes: 60,
-            minutesThisWeek: 30,
-            neglect: 0.5,
           })),
           truncated: false,
         },

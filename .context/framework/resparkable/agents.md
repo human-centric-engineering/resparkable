@@ -250,8 +250,8 @@ row for it — which the dispatcher then refuses at `capability_inactive`.
 An agent with tools but no orientation is a search box with a personality. The
 `resparkable` context contributor injects one `LOCKED CONTEXT` block per turn:
 today's date and timezone, goals longest-horizon-first, active projects with days
-since activity, the top five tasks with the scorer's own word for why, inbox and
-capacity, and area balance.
+since activity, the top five tasks with the scorer's own word for why, inbox
+load, and the standing parts of the person's life.
 
 Three rules, each because breaking it is invisible:
 

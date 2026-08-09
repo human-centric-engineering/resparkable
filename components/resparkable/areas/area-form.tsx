@@ -1,27 +1,19 @@
 'use client';
 
 /**
- * AreaForm — a domain of your life, and how much of your week it deserves.
+ * AreaForm: a standing part of someone's life, and why it matters right now.
  *
- * ## `targetWeeklyMinutes` is the field that makes this a life organiser
- *
- * `areaBalance` is 15% of every task's score, computed as
- * `1 - minutesThisWeekInArea / targetWeeklyMinutes` — so an area you have not
- * touched this week floats its tasks *above* a hot work project. That is the term
- * that stops the ranking becoming a pure work queue, and it only functions if the
- * target is set. An area with no target contributes nothing.
- *
- * The field is therefore expressed in **hours per week**, because nobody thinks in
- * minutes, and the help text says outright what setting it does. It is also the one
- * number in the product where a wrong value is invisible: too high and that area's
- * tasks sit at the top permanently; too low and the area silently stops mattering.
+ * Resparkable is a reflection and understanding tool, not an optimisation one
+ * (`.context/framework/resparkable/design-principles.md`): there is no weekly
+ * hour target here, and nothing about an Area feeds the priority scorer. The
+ * only job of this form is to capture what the person named and why it's on
+ * their mind. The `description` field is where that "why" goes.
  *
  * ## What an area is not
  *
  * Not a client, not a company, not a project. `ResparkableEntity` covers those and is
- * deliberately absent from the scorer (§1) — balancing attention across customers
- * the way you balance Health against Career is wrong, and using areas for clients
- * would corrupt the term above.
+ * deliberately absent from the scorer (§1). An Area is a domain of someone's
+ * life (Health, Career, Family), and using Areas for clients would blur that.
  */
 
 import * as React from 'react';
@@ -37,17 +29,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire } from '@/lib/framework/resparkable/ui/payloads';
 
-const MINUTES_PER_HOUR = 60;
-
 const formSchema = z.object({
   name: z.string().trim().min(1, 'Give it a name').max(200),
   description: z.string().max(10_000),
-  /** Hours, as typed. Empty means "no target". */
-  targetWeeklyHours: z
-    .string()
-    .refine((value) => value === '' || Number.isFinite(Number(value)), 'Use a number')
-    .refine((value) => value === '' || Number(value) >= 0, 'Can’t be negative')
-    .refine((value) => value === '' || Number(value) <= 168, 'There are only 168 hours in a week'),
   colour: z.string().max(16),
 });
 
@@ -64,10 +48,6 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
     () => ({
       name: area?.name ?? '',
       description: area?.description ?? '',
-      targetWeeklyHours:
-        area?.targetWeeklyMinutes != null
-          ? String(area.targetWeeklyMinutes / MINUTES_PER_HOUR)
-          : '',
       colour: area?.colour ?? '',
     }),
     [area]
@@ -89,16 +69,12 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
       onOpenChange={onOpenChange}
       collection={RESPARKABLE_API.AREAS}
       {...(area ? { id: area.id } : {})}
-      title={area ? 'Edit area' : 'New area'}
+      title={area ? 'Edit this part of your life' : 'What matters right now?'}
       description="A standing part of your life — Career, Health, Family. Not a project and not a client."
       form={form}
       toBody={(values) => ({
         name: values.name,
         description: values.description.trim() ? values.description.trim() : null,
-        targetWeeklyMinutes:
-          values.targetWeeklyHours === ''
-            ? null
-            : Math.round(Number(values.targetWeeklyHours) * MINUTES_PER_HOUR),
         colour: values.colour.trim() ? values.colour.trim() : null,
       })}
     >
@@ -111,48 +87,27 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="area-hours" className="flex items-center gap-1.5">
-          Hours a week this deserves
-          <FieldHelp title="Weekly target">
-            <p>
-              How much of your week this part of your life should get. Time you block against its
-              projects counts toward it.
-            </p>
-            <p>
-              This is the setting that stops your list becoming a pure work queue: an area you
-              haven&rsquo;t touched this week has its tasks floated <em>above</em> a busy work
-              project. It is 15% of every task&rsquo;s score.
-            </p>
-            <p>Leave it empty and this area simply doesn&rsquo;t participate in that balancing.</p>
+        <Label htmlFor="area-description" className="flex items-center gap-1.5">
+          Why this matters right now
+          <FieldHelp title="Why this matters">
+            Say what&rsquo;s going on: what&rsquo;s good, what&rsquo;s hard, what you want to be
+            true. There&rsquo;s no right length and no scorecard reading it back to you.
           </FieldHelp>
         </Label>
-        <Input
-          id="area-hours"
-          type="number"
-          min={0}
-          max={168}
-          step={0.5}
-          placeholder="e.g. 5"
-          {...form.register('targetWeeklyHours')}
+        <Textarea
+          id="area-description"
+          rows={3}
+          placeholder="What's going on here at the moment, and why it's on your mind…"
+          {...form.register('description')}
         />
-        {form.formState.errors.targetWeeklyHours && (
-          <p className="text-destructive text-xs">
-            {form.formState.errors.targetWeeklyHours.message}
-          </p>
-        )}
-      </div>
-
-      <div className="space-y-1.5">
-        <Label htmlFor="area-description">What belongs in here?</Label>
-        <Textarea id="area-description" rows={2} {...form.register('description')} />
       </div>
 
       <div className="space-y-1.5">
         <Label htmlFor="area-colour" className="flex items-center gap-1.5">
           Colour
           <FieldHelp title="Colour">
-            Used as a dot beside tasks so you can see at a glance which part of your life a list is
-            weighted toward. Any CSS colour.
+            Used as a dot beside tasks so you can see at a glance which part of your life a list
+            belongs to. Any CSS colour.
           </FieldHelp>
         </Label>
         <Input id="area-colour" placeholder="#0d9488" {...form.register('colour')} />

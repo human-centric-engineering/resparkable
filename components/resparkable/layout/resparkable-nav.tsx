@@ -119,7 +119,7 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
     items: [
       { href: RESPARKABLE_ROUTES.PROJECTS, label: 'Projects', icon: FolderKanban },
       { href: RESPARKABLE_ROUTES.GOALS, label: 'Goals', icon: Target },
-      { href: RESPARKABLE_ROUTES.AREAS, label: 'Areas', icon: Compass },
+      { href: RESPARKABLE_ROUTES.AREAS, label: 'Life', icon: Compass },
       { href: RESPARKABLE_ROUTES.BOARDS, label: 'Boards', icon: LayoutGrid },
     ],
   },

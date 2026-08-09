@@ -28,7 +28,6 @@
  * - Truncation from the wins read is surfaced
  * - Overdue is computed from the due date against `now`, sorted worst-first, and same-day is not overdue
  * - A task with no due date is never overdue
- * - Capacity renders hours, and says so when no capacity is set
  * - The rendered block contains no Markdown syntax
  *
  * @see lib/framework/resparkable/services/briefing-facts.ts
@@ -61,16 +60,10 @@ function snapshot(overrides: Partial<SnapshotPayload> = {}): SnapshotPayload {
     workStyle: 'balanced',
     today: { date: '2026-08-04', weekday: 'Tuesday', isoWeek: 32 },
     counts: { inbox: 3, openTasks: 12, connections: 2 },
-    capacity: {
-      weeklyCapacityMinutes: 2400,
-      plannedMinutesThisWeek: 600,
-      remainingMinutes: 1800,
-    },
     goals: { items: [], truncated: false },
     projects: { items: [], truncated: false },
     topTasks: { items: [], truncated: false },
     areas: { items: [], truncated: false },
-    mostNeglectedArea: null,
     latestReview: null,
     ...overrides,
   };
@@ -230,33 +223,12 @@ describe('buildBriefingFacts', () => {
     expect(facts.text).toContain('Overdue: nothing.');
   });
 
-  it('renders capacity in hours', async () => {
+  it('goes straight from overdue to the counts line, with nothing in between', async () => {
     const facts = await buildBriefingFacts(SCOPE, NOW, 7);
 
-    expect(facts.text).toContain('Capacity: 10h planned of 40h this week, 30h left.');
-  });
-
-  it('says so when no weekly capacity is set', async () => {
-    mockedSnapshot.mockResolvedValue(
-      snapshot({
-        capacity: { weeklyCapacityMinutes: 0, plannedMinutesThisWeek: 0, remainingMinutes: 0 },
-      })
-    );
-
-    const facts = await buildBriefingFacts(SCOPE, NOW, 7);
-
-    expect(facts.text).toContain('Capacity: no weekly capacity set.');
-  });
-
-  it('includes the neglected area only when there is one', async () => {
-    const withoutArea = await buildBriefingFacts(SCOPE, NOW, 7);
-    expect(withoutArea.text).not.toContain('Most neglected area');
-
-    mockedSnapshot.mockResolvedValue(
-      snapshot({ mostNeglectedArea: { id: 'area_1', name: 'Health', neglect: 0.8 } })
-    );
-    const withArea = await buildBriefingFacts(SCOPE, NOW, 7);
-    expect(withArea.text).toContain('Most neglected area: Health.');
+    expect(facts.text).not.toContain('Capacity');
+    expect(facts.text).not.toContain('Most neglected area');
+    expect(facts.text).toContain('Inbox: 3 un-triaged. Open tasks: 12. Unreviewed connections: 2.');
   });
 
   it('emits plain text — no Markdown syntax survives into the email path', async () => {

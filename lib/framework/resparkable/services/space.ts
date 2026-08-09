@@ -3,8 +3,8 @@
  *
  * One row per user, carrying the settings that are genuinely per-person:
  * timezone (snooze presets and retention windows resolve there, never in server
- * time), weekly capacity, scorer weights, retention windows, work style, and
- * the inbox token that routes captured email.
+ * time), scorer weights, retention windows, work style, and the inbox token
+ * that routes captured email.
  *
  * **Everything else in the brain requires this row to exist**, because the
  * hand-written FK cascade (probe B1) runs `user → space → everything`. So
@@ -147,7 +147,6 @@ export async function findSpaceByInboxToken(inboxToken: string): Promise<Respark
  */
 export interface ResparkableSettings {
   timezone: string;
-  weeklyCapacityMinutes: number;
   workStyle: string;
   priorityWeights: PriorityWeights;
   energyProfile: EnergyProfile;
@@ -209,7 +208,6 @@ export async function updateResparkableSettings(
 function toSettings(space: ResparkableSpace): ResparkableSettings {
   return {
     timezone: space.timezone,
-    weeklyCapacityMinutes: space.weeklyCapacityMinutes,
     workStyle: space.workStyle,
     priorityWeights: resolvePriorityWeights(space.priorityWeights),
     energyProfile: resolveEnergyProfile(space.energyProfile),

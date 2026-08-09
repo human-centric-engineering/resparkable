@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { SparkGlyph } from '@/components/brand/spark-glyph';
 import { BRAND } from '@/lib/brand';
 
 const description = `What ${BRAND.name} stores, what leaves the system, and what you can do about both.`;
@@ -15,7 +16,7 @@ export const metadata: Metadata = {
  * Privacy page.
  *
  * **Fork-owned scaffold.** What was here before was the template's generic
- * filler — "describe what personal information you collect" — which tells a
+ * filler ("describe what personal information you collect"), which tells a
  * reader nothing and quietly implies a policy exists. This says what the
  * software actually does, in words a person can check against their own account.
  *
@@ -27,8 +28,16 @@ export default function PrivacyPage() {
   return (
     <div className="container mx-auto px-4 pt-14 pb-16 md:pt-20 md:pb-24">
       <div className="mx-auto max-w-3xl">
-        <p className="term-label">privacy</p>
-        <h1 className="mt-5 text-4xl sm:text-5xl">What is stored.</h1>
+        <SparkGlyph className="obsidian-reveal mb-5 h-5 w-[38px] opacity-40" />
+        <p className="term-label obsidian-reveal" style={{ animationDelay: '70ms' }}>
+          privacy
+        </p>
+        <h1
+          className="obsidian-reveal mt-5 text-4xl sm:text-5xl"
+          style={{ animationDelay: '140ms' }}
+        >
+          What is stored.
+        </h1>
         <p className="term-meta mt-6">Last updated 6 August 2026</p>
 
         <div className="bg-card border-border mt-8 rounded-lg border p-5">

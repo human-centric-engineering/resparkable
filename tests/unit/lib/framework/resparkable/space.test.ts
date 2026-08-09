@@ -206,7 +206,6 @@ describe('getResparkableSettings (phase 3)', () => {
         priorityWeights: null,
         energyProfile: null,
         retentionPolicy: null,
-        weeklyCapacityMinutes: 2400,
       })
     );
 
@@ -227,7 +226,7 @@ describe('getResparkableSettings (phase 3)', () => {
   it('flags which values are the user’s own', async () => {
     // Arrange: "customised" is what lets the UI offer "reset to defaults" only
     // where there is something to reset.
-    const custom = { ...DEFAULT_PRIORITY_WEIGHTS, urgency: 0.2, goalAlignment: 0.35 };
+    const custom = { ...DEFAULT_PRIORITY_WEIGHTS, urgency: 0.25, goalAlignment: 0.4 };
     findUnique.mockResolvedValue(
       spaceRow({ priorityWeights: custom, energyProfile: null, retentionPolicy: null })
     );

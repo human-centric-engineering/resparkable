@@ -7,7 +7,7 @@
  * irrelevance comes here instead and gets asked. Nothing in this file writes,
  * except the explicit answer a person gives.
  *
- * The four windows are separate because the questions are not comparable — a
+ * The three windows are separate because the questions are not comparable: a
  * project quiet for six weeks probably is dead, and a life goal untouched for a
  * year certainly is not. They are constants rather than user settings on
  * purpose: these tune *how often you are asked something*, and a retention
@@ -26,7 +26,6 @@
 
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
-  findAreasWithoutTime,
   findDormantEntities,
   findDormantProjects,
   findGoalsPastTarget,
@@ -48,8 +47,6 @@ export const STALE_WINDOW_DAYS = {
   project: 90,
   /** A target date that has passed, with no progress behind it. */
   goal: 90,
-  /** "Zero logged time in 60 days" — the shortest, because a week is the unit. */
-  area: 60,
   /** "You haven't touched Acme since April" — never auto-archived, only asked. */
   entity: 90,
 } as const;
@@ -80,7 +77,7 @@ export interface StaleDigest {
 /**
  * Build the digest for one brain.
  *
- * Four bounded queries plus one for the entity link check — a fixed count, not
+ * Three bounded queries plus one for the entity link check: a fixed count, not
  * one per row, for the same reason every other Resparkable surface assembles in a
  * fixed count: this is rendered as a page and read by a workflow, and an N+1
  * here would be invisible until someone had two hundred entities.
@@ -89,17 +86,15 @@ export async function buildStaleDigest(
   scope: OwnerScope,
   now: Date = new Date()
 ): Promise<StaleDigest> {
-  const [projects, goals, areas, entities] = await Promise.all([
+  const [projects, goals, entities] = await Promise.all([
     findDormantProjects(scope, daysBefore(now, STALE_WINDOW_DAYS.project)),
     findGoalsPastTarget(scope, now, daysBefore(now, STALE_WINDOW_DAYS.goal)),
-    findAreasWithoutTime(scope, daysBefore(now, STALE_WINDOW_DAYS.area)),
     findDormantEntities(scope, daysBefore(now, STALE_WINDOW_DAYS.entity)),
   ]);
 
   const sections: StaleSection[] = [
     section('project', projects, now),
     section('goal', goals, now),
-    section('area', areas, now),
     section('entity', entities, now),
   ];
 

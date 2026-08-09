@@ -24,7 +24,6 @@ export const metadata: Metadata = {
  */
 const settingsSchema = z.object({
   timezone: z.string(),
-  weeklyCapacityMinutes: z.number(),
   workStyle: z.string(),
   priorityWeights: z.record(z.string(), z.number()),
   connectionStrengthFloor: z.number(),

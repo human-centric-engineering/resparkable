@@ -32,17 +32,18 @@ import {
 import { logger } from '@/lib/logging';
 
 /**
- * The plan's formula (§10), verbatim:
+ * The plan's formula (§10), verbatim. Redistributed proportionally after
+ * `areaBalance` was removed (design-principles.md): the ratios between the
+ * remaining five factors are unchanged from before.
  *
- *   base = 0.30·urgency + 0.25·goalAlignment + 0.15·projectMomentum
- *        + 0.15·areaBalance + 0.10·effortFit + 0.05·staleness
+ *   base = 0.35·urgency + 0.30·goalAlignment + 0.18·projectMomentum
+ *        + 0.12·effortFit + 0.05·staleness
  */
 export const DEFAULT_PRIORITY_WEIGHTS: PriorityWeights = {
-  urgency: 0.3,
-  goalAlignment: 0.25,
-  projectMomentum: 0.15,
-  areaBalance: 0.15,
-  effortFit: 0.1,
+  urgency: 0.35,
+  goalAlignment: 0.3,
+  projectMomentum: 0.18,
+  effortFit: 0.12,
   staleness: 0.05,
 };
 
@@ -63,9 +64,6 @@ export const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
   eventDays: 400,
   planTimeBlockDays: 90,
 };
-
-/** Weekly minutes a user expects to have. 2400 = 40 hours, matching the column default. */
-export const DEFAULT_WEEKLY_CAPACITY_MINUTES = 2400;
 
 /**
  * Read the scorer weights, normalising so they always sum to 1.
@@ -112,7 +110,6 @@ export function normaliseWeights(weights: PriorityWeights): PriorityWeights {
     urgency: weights.urgency / total,
     goalAlignment: weights.goalAlignment / total,
     projectMomentum: weights.projectMomentum / total,
-    areaBalance: weights.areaBalance / total,
     effortFit: weights.effortFit / total,
     staleness: weights.staleness / total,
   };

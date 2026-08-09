@@ -39,7 +39,7 @@ describe('priorityWeightsSchema', () => {
 
   it('accepts a rebalanced set that still sums to 1', () => {
     // Someone who cares less about deadlines and more about goal alignment.
-    const rebalanced = { ...DEFAULT_PRIORITY_WEIGHTS, urgency: 0.2, goalAlignment: 0.35 };
+    const rebalanced = { ...DEFAULT_PRIORITY_WEIGHTS, urgency: 0.25, goalAlignment: 0.4 };
 
     expect(priorityWeightsSchema.safeParse(rebalanced).success).toBe(true);
   });
@@ -90,9 +90,8 @@ describe('priorityWeightsSchema', () => {
       urgency: 0.1,
       goalAlignment: 0.2,
       projectMomentum: 0.3,
-      areaBalance: 0.2,
-      effortFit: 0.1,
-      staleness: 0.1,
+      effortFit: 0.2,
+      staleness: 0.2,
     };
 
     expect(priorityWeightsSchema.safeParse(drifted).success).toBe(true);
@@ -211,15 +210,6 @@ describe('updateSpaceSchema', () => {
 
   it('rejects a userId', () => {
     expect(updateSpaceSchema.safeParse({ userId: 'user_b' }).success).toBe(false);
-  });
-
-  it('rejects a weekly capacity beyond the hours in a week', () => {
-    expect(updateSpaceSchema.safeParse({ weeklyCapacityMinutes: 20_000 }).success).toBe(false);
-  });
-
-  it('allows a weekly capacity of zero', () => {
-    // A legitimate state — someone on leave, or tracking a personal area only.
-    expect(updateSpaceSchema.safeParse({ weeklyCapacityMinutes: 0 }).success).toBe(true);
   });
 });
 

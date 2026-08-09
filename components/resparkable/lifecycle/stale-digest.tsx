@@ -16,13 +16,6 @@
  * would be a screen that nudges people into tidying away things they still care
  * about. The blunt copy §11 asks for belongs in the *question*, not in the
  * weighting of the answers.
- *
- * ## Why areas have no "still live"
- *
- * An area has no `lastActivityAt` to stamp, and giving it one would be a column
- * that exists only to record a dismissal. Booking time against an area is the
- * same answer expressed in the data the question was asked from, so the row says
- * that instead of offering a button that would write a field nothing reads.
  */
 
 import * as React from 'react';
@@ -56,13 +49,6 @@ const SECTIONS: Record<
     noun: 'goal',
     stillLive: true,
   },
-  area: {
-    heading: 'Areas with no time logged',
-    question: 'Nothing has been booked against these — planned or actual.',
-    collection: RESPARKABLE_API.AREAS,
-    noun: 'area',
-    stillLive: false,
-  },
   entity: {
     heading: 'People and companies nobody has mentioned',
     question: 'Nothing links to them, and nothing has touched them.',
@@ -78,7 +64,7 @@ export function StaleDigest({ digest }: { digest: StaleDigestWire }): React.Reac
       <div className="bg-card rounded-lg border border-dashed p-6 text-center">
         <p className="text-sm font-medium">Nothing has gone quiet.</p>
         <p className="text-muted-foreground mt-1 text-sm">
-          Every project, goal, area and person has shown some sign of life inside its window.
+          Every project, goal and person has shown some sign of life inside its window.
         </p>
       </div>
     );

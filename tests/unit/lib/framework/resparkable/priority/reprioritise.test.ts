@@ -4,8 +4,8 @@
  * `score.ts` holds the decisions and is tested against a table with no mocks.
  * This file holds the queries, so it tests the things a pure scorer cannot:
  * that the batch is loaded in a fixed number of round trips however many tasks
- * there are, that the task → project → goal → area walk assembles the right
- * inputs, and that a task's score is written to that task and no other.
+ * there are, that the task → project → goal walk assembles the right inputs,
+ * and that a task's score is written to that task and no other.
  *
  * @see lib/framework/resparkable/priority/reprioritise.ts
  */
@@ -19,11 +19,9 @@ vi.mock('@/lib/framework/resparkable/repo/tasks', () => ({
 }));
 vi.mock('@/lib/framework/resparkable/repo/projects', () => ({ findProjectsByIds: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/goals', () => ({ findGoalsByIds: vi.fn() }));
-vi.mock('@/lib/framework/resparkable/repo/areas', () => ({ findAreasByIds: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/links', () => ({ findAcceptedGoalLinks: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/time-blocks', () => ({
   listTimeBlocks: vi.fn(),
-  sumMinutesByArea: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ getResparkableSpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/context/invalidate', () => ({
@@ -31,7 +29,6 @@ vi.mock('@/lib/framework/resparkable/context/invalidate', () => ({
 }));
 
 import { reprioritiseTasks, rescoreTask } from '@/lib/framework/resparkable/priority/reprioritise';
-import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
 import { findAcceptedGoalLinks } from '@/lib/framework/resparkable/repo/links';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
@@ -42,11 +39,10 @@ import {
   writeTaskScores,
   type TaskScoringRow,
 } from '@/lib/framework/resparkable/repo/tasks';
-import { listTimeBlocks, sumMinutesByArea } from '@/lib/framework/resparkable/repo/time-blocks';
+import { listTimeBlocks } from '@/lib/framework/resparkable/repo/time-blocks';
 import { getResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
 import type {
-  ResparkableArea,
   ResparkableGoal,
   ResparkableProject,
   ResparkableSpace,
@@ -91,16 +87,13 @@ beforeEach(() => {
     priorityWeights: null,
     energyProfile: null,
     retentionPolicy: null,
-    weeklyCapacityMinutes: 2400,
     workStyle: 'balanced',
   } as ResparkableSpace);
 
   vi.mocked(findProjectsByIds).mockResolvedValue([]);
   vi.mocked(findGoalsByIds).mockResolvedValue([]);
-  vi.mocked(findAreasByIds).mockResolvedValue([]);
   vi.mocked(findAcceptedGoalLinks).mockResolvedValue([]);
   vi.mocked(listTimeBlocks).mockResolvedValue([]);
-  vi.mocked(sumMinutesByArea).mockResolvedValue([]);
   vi.mocked(writeTaskScores).mockImplementation((_scope, updates) =>
     Promise.resolve(updates.length)
   );
@@ -145,7 +138,6 @@ describe('reprioritiseTasks — batching', () => {
     // Assert
     expect(findProjectsByIds).toHaveBeenCalledTimes(1);
     expect(findProjectsByIds).toHaveBeenCalledWith(scope, ['proj_0', 'proj_1', 'proj_2']);
-    expect(findAreasByIds).toHaveBeenCalledTimes(1);
     expect(findGoalsByIds).toHaveBeenCalledTimes(1);
   });
 
@@ -274,59 +266,6 @@ describe('reprioritiseTasks — the goal walk', () => {
     // Assert: falls back to the unlinked floor rather than throwing.
     expect(vi.mocked(writeTaskScores).mock.calls[0]?.[1][0]?.priorityFactors).toMatchObject({
       goalAlignment: 0.15,
-    });
-  });
-});
-
-describe('reprioritiseTasks — the area walk', () => {
-  it('feeds this week logged minutes into areaBalance', async () => {
-    // Arrange: 150 of the area's 300 weekly minutes are already spent.
-    vi.mocked(listTasksForScoring).mockResolvedValue([task({ projectId: 'proj_1' })]);
-    vi.mocked(findProjectsByIds).mockResolvedValue([
-      {
-        id: 'proj_1',
-        areaId: 'area_1',
-        lastActivityAt: NOW,
-        snoozedUntil: null,
-      } as ResparkableProject,
-    ]);
-    vi.mocked(findAreasByIds).mockResolvedValue([
-      { id: 'area_1', targetWeeklyMinutes: 300 } as ResparkableArea,
-    ]);
-    vi.mocked(sumMinutesByArea).mockResolvedValue([{ areaId: 'area_1', minutes: 150 }]);
-
-    // Act
-    await reprioritiseTasks(scope, { now: NOW });
-
-    // Assert
-    expect(vi.mocked(writeTaskScores).mock.calls[0]?.[1][0]?.priorityFactors).toMatchObject({
-      areaBalance: 0.5,
-    });
-  });
-
-  it('treats an area with no logged time as fully neglected', async () => {
-    // Arrange: the un-summed area is absent from the grouped query entirely,
-    // which must read as zero minutes rather than as "no data".
-    vi.mocked(listTasksForScoring).mockResolvedValue([task({ projectId: 'proj_1' })]);
-    vi.mocked(findProjectsByIds).mockResolvedValue([
-      {
-        id: 'proj_1',
-        areaId: 'area_1',
-        lastActivityAt: NOW,
-        snoozedUntil: null,
-      } as ResparkableProject,
-    ]);
-    vi.mocked(findAreasByIds).mockResolvedValue([
-      { id: 'area_1', targetWeeklyMinutes: 300 } as ResparkableArea,
-    ]);
-    vi.mocked(sumMinutesByArea).mockResolvedValue([{ areaId: null, minutes: 90 }]);
-
-    // Act
-    await reprioritiseTasks(scope, { now: NOW });
-
-    // Assert: this is the term that floats a neglected Health area to the top.
-    expect(vi.mocked(writeTaskScores).mock.calls[0]?.[1][0]?.priorityFactors).toMatchObject({
-      areaBalance: 1,
     });
   });
 });

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 34" fill="currentColor" role="img" aria-labelledby="rmm-t rmm-d">
+  <title id="rmm-t">Resparkable</title>
+  <desc id="rmm-d">A faceted infinity loop with a spark at its crossing: an idea captured, carried round, and lit again. Single colour, inherits currentColor.</desc>
+  <mask id="rmm-clear">
+    <rect x="-10" y="-10" width="84" height="54" fill="#fff"/>
+    <path d="M32,6.5C32,12.275 36.725,17 42.5,17C36.725,17 32,21.725 32,27.5C32,21.725 27.275,17 21.5,17C27.275,17 32,12.275 32,6.5Z" fill="#000" stroke="#000" stroke-width="2.8" stroke-linejoin="round"/>
+  </mask>
+  <path mask="url(#rmm-clear)" fill="none" stroke="currentColor" stroke-width="4.6" stroke-miterlimit="10" opacity=".7" d="M32,17 L23,6 L12,6 L4,17 L12,28 L23,28 L32,17 L41,6 L52,6 L60,17 L52,28 L41,28 Z"/>
+  <path d="M32,6.5C32,12.275 36.725,17 42.5,17C36.725,17 32,21.725 32,27.5C32,21.725 27.275,17 21.5,17C27.275,17 32,12.275 32,6.5Z"/>
+</svg>

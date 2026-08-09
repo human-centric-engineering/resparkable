@@ -2,7 +2,7 @@
  * Unit Tests: `resparkable_get_stale_digest`.
  *
  * The one capability whose entire job is to hand the model something it must
- * not be able to act on: four dormancy questions, never a verdict. Two things
+ * not be able to act on: three dormancy questions, never a verdict. Two things
  * are worth proving here that no other test in this directory covers —
  *
  *   - The digest is built for the **caller's own scope**, not some default or
@@ -51,7 +51,6 @@ function digestWithEntityName(name: string): StaleDigest {
     sections: [
       { type: 'project', windowDays: 90, rows: [] },
       { type: 'goal', windowDays: 90, rows: [] },
-      { type: 'area', windowDays: 60, rows: [] },
       {
         type: 'entity',
         windowDays: 90,
@@ -173,7 +172,7 @@ describe('resparkable_get_stale_digest — provenance', () => {
    * redaction — args and resultPreview both — so a name smuggled into either
    * half would still be caught.
    */
-  it('never lets a project, goal, area or person name reach the audit row', () => {
+  it('never lets a project, goal or person name reach the audit row', () => {
     const cap = capability();
     const digest = digestWithEntityName('Acme Corp');
 

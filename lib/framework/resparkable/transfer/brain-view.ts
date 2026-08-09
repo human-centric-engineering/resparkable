@@ -74,7 +74,6 @@ const areaSchema = z.object({
   description: text,
   colour: text,
   sortOrder: count,
-  targetWeeklyMinutes: count,
   archivedAt: dateish,
 });
 

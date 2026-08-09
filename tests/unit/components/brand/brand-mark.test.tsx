@@ -3,7 +3,7 @@
  *
  * The fork-owned header/footer brand slot. Resparkable's default body renders
  * `BRAND.name` as a bare string; Resparkable has taken the slot up on its offer and
- * renders a shard mark alongside the wordmark, which is exactly the modification
+ * renders the loop-and-spark mark alongside the wordmark, which is exactly the modification
  * the seam exists to absorb.
  *
  * So the contract these tests hold is the seam's, not the default body's: the
@@ -45,7 +45,7 @@ describe('BrandMark default', () => {
     expect(container.textContent).toBe('Acme');
   });
 
-  it('renders the shard mark as decoration, not as content', async () => {
+  it('renders the mark as decoration, not as content', async () => {
     const container = await renderBrandMark('Acme');
     const svg = container.querySelector('svg');
 

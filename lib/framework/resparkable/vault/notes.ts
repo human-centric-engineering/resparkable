@@ -89,7 +89,6 @@ export interface AreaSource {
   description?: string | null;
   colour?: string | null;
   sortOrder?: number;
-  targetWeeklyMinutes?: number | null;
   archivedAt?: Date | null;
 }
 
@@ -101,7 +100,6 @@ export function encodeArea(area: AreaSource): ParsedNote {
       title: area.name,
       slug: area.slug,
       colour: text(area.colour),
-      'target-weekly-minutes': area.targetWeeklyMinutes ?? undefined,
       'sort-order': area.sortOrder || undefined,
       archived: iso(area.archivedAt),
     },

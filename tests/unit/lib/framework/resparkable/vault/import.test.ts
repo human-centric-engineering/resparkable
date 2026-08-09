@@ -639,7 +639,7 @@ describe('applyImportPlan — the defaults a bare note falls back to', () => {
 
     expect(createArea).toHaveBeenCalledWith(
       SCOPE,
-      expect.objectContaining({ name: 'Health', sortOrder: 0, targetWeeklyMinutes: null })
+      expect.objectContaining({ name: 'Health', sortOrder: 0 })
     );
   });
 
@@ -881,7 +881,7 @@ describe('applyImportPlan — failures beyond the first pass', () => {
 });
 
 describe('applyImportPlan — every declared field is written, not only the first one tested', () => {
-  it('updates every declared area field: title, target minutes and sort order', async () => {
+  it('updates every declared area field: title and sort order', async () => {
     await applyImportPlan(
       SCOPE,
       plan({
@@ -889,8 +889,8 @@ describe('applyImportPlan — every declared field is written, not only the firs
           note({
             type: 'area',
             targetId: 'area_1',
-            fields: { title: 'Renamed', 'target-weekly-minutes': 300, 'sort-order': 2 },
-            changedKeys: ['title', 'target-weekly-minutes', 'sort-order'],
+            fields: { title: 'Renamed', 'sort-order': 2 },
+            changedKeys: ['title', 'sort-order'],
           }),
         ],
         updates: 1,
@@ -899,7 +899,6 @@ describe('applyImportPlan — every declared field is written, not only the firs
 
     expect(updateArea).toHaveBeenCalledWith(SCOPE, 'area_1', {
       name: 'Renamed',
-      targetWeeklyMinutes: 300,
       sortOrder: 2,
     });
   });

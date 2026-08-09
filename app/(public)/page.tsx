@@ -3,12 +3,14 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { LandingHero } from '@/components/marketing/resparkable/landing-hero';
 import { PublicSection, NumberedItem } from '@/components/marketing/resparkable/public-section';
+import { VerbDiagram } from '@/components/marketing/resparkable/verb-diagram';
+import { SparkGlyph } from '@/components/brand/spark-glyph';
 
 const description =
-  'Capture an idea in one line and get it back when it matters. Resparkable keeps your ideas, notes, tasks, projects and goals in one place, connects them for you, and lets you share them with the people who should see them.';
+  'Catch a spark in one line, kindle it while it is live, and use it to light someone else up. Resparkable holds your ideas, notes, tasks, projects and goals in one place, joins them up for you, and is built so everything in it can leave.';
 
 export const metadata: Metadata = {
-  title: 'Resparkable: never lose a good idea',
+  title: 'Resparkable: catch and kindle the spark of an idea',
   description,
   openGraph: { title: 'Resparkable', description, type: 'website' },
   twitter: { card: 'summary_large_image', title: 'Resparkable', description },
@@ -17,31 +19,56 @@ export const metadata: Metadata = {
 /**
  * The whole product in three verbs.
  *
- * The order is the order a reader meets it in: you write something down, it
- * comes back to you, you pass it on. Nothing here is a metaphor for anything —
- * if a line cannot be read aloud to someone who has never used the app, it does
- * not belong on the front page.
+ * The order is the order a reader meets it in, and the middle one has changed
+ * twice. It was "Keep it." first, which is what every product in this genre
+ * promises and the wrong promise here: keeping is a claim about storage, and
+ * storage is not what makes an idea worth anything; a spark filed away is a
+ * spark that went out quietly in a folder. Then it was "Carry it.", which fixed
+ * the claim but not the verb. Carrying is something you do to luggage.
+ *
+ * ## Why these three and not the other three
+ *
+ * `catch · kindle · ignite` is one metaphor followed all the way through, where
+ * `catch · carry · pass on` was three unrelated things you do with your hands.
+ * A spark that is caught and left alone goes out. What the overnight pass
+ * actually does to it is closer to kindling than to carrying: give it air, put
+ * it next to the other dry thing in the pile, bring it back warm. And the third
+ * verb is the argument of the whole page, so it should be the strongest word
+ * available: handing an idea on is not delivery, it is ignition, and the source
+ * does not dim to pay for it.
+ *
+ * The first verb stays "catch" deliberately. "Spark it." was on the table and is
+ * wrong twice: *spark* is already this app's noun for a caught idea, and the verb
+ * would claim you generate the thing, which is the opposite of what `/about`
+ * argues. You do not strike the spark. You are there when it lands.
+ *
+ * Nothing here is a metaphor for anything the product does not do. If a line
+ * cannot be read aloud to someone who has never used the app, it does not belong
+ * on the front page.
  */
 const CORE = [
   {
+    kind: 'catch',
     term: 'Catch it.',
-    body: 'An idea takes one line. No project to choose, no date to set, no folder to pick. Write it and get on with your day. The filing happens without you.',
+    body: 'A spark takes one line. No project to choose, no date to set, no folder to pick. Write it before it goes and get on with your day: being asked where a thought belongs is the fastest way to lose the thought.',
   },
   {
-    term: 'Keep it.',
-    body: 'It comes back when it is useful: in your morning briefing, beside the project it turns out to belong to, or next to something you wrote weeks ago about the same thing and had forgotten.',
+    kind: 'kindle',
+    term: 'Kindle it.',
+    body: 'A spark on its own goes out, and filing it away is not what keeps it going. This one gets air: it comes back in your morning briefing, beside the project it turned out to belong to, or next to something you wrote six weeks ago about the same thing and had forgotten. Kept warm rather than kept safe.',
   },
   {
-    term: 'Share it.',
-    body: 'Send an idea, a project or a whole board to the people who should see it, with a link that stays yours to withdraw.',
+    kind: 'ignite',
+    term: 'Ignite others.',
+    body: 'An idea does its work in other hands, or in the thing you build out of it. Everything here is written to leave: plain markdown that opens anywhere, an export that carries your edits with it, an assistant that will draft the version you can actually send. Light someone else up and yours is not one bit dimmer.',
   },
-];
+] as const;
 
 /** What you get, said plainly. One line each, no internals. */
 const FEATURES = [
   {
-    term: 'Capture from anywhere',
-    body: 'Type it, speak it, send it from your phone, or hand it to an assistant. One line is enough, and the same idea sent twice stays one idea.',
+    term: 'Catch it anywhere',
+    body: 'Type it, speak it, send it from your phone, or hand it to an assistant you already talk to. One line is enough, and the same idea sent twice stays one idea.',
   },
   {
     term: 'A morning briefing',
@@ -49,7 +76,7 @@ const FEATURES = [
   },
   {
     term: 'Priorities you did not have to set',
-    body: 'Your tasks arrive in a sensible order: what is due, what is blocking something, what actually serves a goal you care about. Move anything up yourself and it stays there.',
+    body: 'Your tasks arrive in a sensible order: what is due, what is blocking something, what actually serves a goal you care about, and what fits the time you have. Move anything up yourself and it stays there.',
   },
   {
     term: 'Search that understands you',
@@ -57,11 +84,11 @@ const FEATURES = [
   },
   {
     term: 'Connections you would have missed',
-    body: 'Overnight it reads back over what you have kept and offers the links: two notes that were the same thought, a task that belongs to a goal, a person who keeps coming up. You take the ones that are right.',
+    body: 'Overnight it reads back over everything you have written and offers the links: two notes that were the same thought, a task that belongs to a goal, a person who keeps coming up. You take the ones that are right. This is the resparking, and it is the part you cannot do from memory.',
   },
   {
     term: 'Goals from this week to this lifetime',
-    body: 'Goals nest inside each other, and the areas of your life carry a weekly target, so the one you have been neglecting comes back into view on its own.',
+    body: 'Goals nest inside each other, from the one that is done by Friday to the one you will still be holding in ten years, each sitting in an area of your life you named and described yourself. No quotas and no hours to fill: this is a tool for understanding what you are doing, not for scoring you on it.',
   },
   {
     term: 'Boards for the work in flight',
@@ -80,8 +107,8 @@ const FEATURES = [
     body: 'A conversation that already knows your goals, your live projects and what is on top of the pile, and it tells you what it looked at before answering.',
   },
   {
-    term: 'Yours to take with you',
-    body: 'Everything exports as plain markdown that opens in Obsidian or any editor, edits included. Nothing is locked in, and nothing you wrote is ever deleted on a timer.',
+    term: 'Built to leave',
+    body: 'Everything exports as plain markdown that opens in Obsidian or any editor, edits included. Nothing is locked in, nothing you wrote is deleted on a timer, and a system you can walk out of is the only kind worth putting your thinking into.',
   },
 ];
 
@@ -99,11 +126,11 @@ const AHEAD = [
   },
   {
     term: 'Work with other people',
-    body: 'Shared projects, shared boards and shared reviews, with each person keeping their own private inbox. You choose exactly what leaves your side, and can take it back.',
+    body: 'Shared projects, shared boards and shared reviews, with each person keeping their own private inbox. You choose exactly what leaves your side, and you can take it back.',
   },
   {
     term: 'Ideas that travel',
-    body: 'With your say-so, one idea at a time, compared against what other people are willing to share. What comes back is a framing you would not have reached on your own.',
+    body: 'With your say-so, one idea at a time, set beside what other people have chosen to put out. What comes back is a framing you would not have reached on your own; whoever sharpened yours is not left holding any less.',
   },
 ];
 
@@ -116,6 +143,25 @@ const AHEAD = [
  * pricing, and nothing framed by what is missing. It describes the product,
  * including where it is going, in the voice of someone showing you round rather
  * than someone auditing themselves.
+ *
+ * ## What the page argues, and why the argument moved
+ *
+ * It used to argue loss: never lose a good idea, keep everything, get it back.
+ * That is the note-taking genre's default pitch and it frames a thought as
+ * property: something you accumulate, guard, and are richer for holding. This
+ * product does not believe that. A spark arrives from somewhere nobody can
+ * account for, it lights you up, and its worth is entirely in what happens
+ * next: acted on, built with, or handed to someone who can do more with it than
+ * you can. Capture is in service of that, not a substitute for it.
+ *
+ * So the page is written in the other mode throughout. Catch, kindle, ignite:
+ * never hold, own, or bank. The `Built to leave` feature and the export promise
+ * are load-bearing rather than reassurance: a system you cannot walk out of is
+ * asking you to treat your own thinking as its inventory.
+ *
+ * The one line the whole page hangs off sits in the statement band below the
+ * three verbs, and it is a plain fact rather than a flourish: light is the thing
+ * that does not divide when you share it.
  */
 export default function LandingPage() {
   return (
@@ -124,18 +170,39 @@ export default function LandingPage() {
 
       <PublicSection
         label="what it is"
-        title="Catch it. Keep it. Share it."
-        lede="Three things. Together they are the whole idea."
+        title="Catch it. Kindle it. Ignite others."
+        lede="Three verbs, one fire. Not one of them is storage."
       >
-        <div className="space-y-8">
-          {CORE.map(({ term, body }) => (
+        <div className="space-y-10">
+          {CORE.map(({ kind, term, body }) => (
             <div key={term}>
+              <VerbDiagram kind={kind} className="mb-4" />
               <h3 className="text-xl">{term}</h3>
               <p className="text-muted-foreground mt-2 max-w-2xl text-lg leading-relaxed">{body}</p>
             </div>
           ))}
         </div>
       </PublicSection>
+
+      {/* The statement band. One idea, centred, nothing else on the screen:
+          the only place on any public page that breaks the left-aligned rail,
+          and it earns that by being the sentence the rest of the page follows
+          from. `traced` is safe here: the glyph is 36px tall. */}
+      <section className="border-border/70 border-t">
+        <div className="container mx-auto px-4 py-16 md:py-20">
+          <div className="mx-auto max-w-3xl text-center">
+            <SparkGlyph traced className="mx-auto h-9 w-[68px]" />
+            <p className="mt-8 text-2xl leading-snug text-balance sm:text-3xl">
+              A spark is fleeting. It is also the only thing you can hand over and still be holding.
+            </p>
+            <p className="text-muted-foreground mx-auto mt-6 max-w-xl leading-relaxed">
+              Nothing is subtracted when you light someone else up. That is not a nice thought about
+              generosity: it is the plain arithmetic of ideas, and it is why a system built to store
+              them is solving the wrong half of the problem.
+            </p>
+          </div>
+        </div>
+      </section>
 
       <PublicSection
         id="built"
@@ -169,8 +236,9 @@ export default function LandingPage() {
           </p>
           <p className="text-foreground">
             Most of it you already knew. Then two fragments written six weeks apart turn out to have
-            been the same idea, and neither of them said so at the time. That is the whole reason it
-            runs.
+            been the same thought, and neither of them said so at the time. Alone, neither was worth
+            much. Struck together they are worth more than both, which is the whole reason it runs
+            at night.
           </p>
         </div>
       </PublicSection>
@@ -192,10 +260,11 @@ export default function LandingPage() {
 
       <section className="border-border/70 border-t">
         <div className="container mx-auto px-4 py-16 text-center md:py-24">
-          <h2 className="text-2xl sm:text-3xl">Start with one idea.</h2>
+          <SparkGlyph className="mx-auto h-6 w-[45px] opacity-60" />
+          <h2 className="mt-6 text-2xl sm:text-3xl">Catch the next one.</h2>
           <p className="text-muted-foreground mx-auto mt-4 max-w-lg leading-relaxed">
-            Write down the thing you would otherwise have lost by Thursday. What happens to it after
-            that is the part you do not have to do.
+            There will be one today, and it will arrive while you are doing something else. Write it
+            down in one line. What happens to it after that is the part you do not have to do.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Button asChild size="lg">

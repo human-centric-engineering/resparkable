@@ -114,10 +114,6 @@ than one briefly flagged wrongly.
 Several of this product's behaviours are silent when they misfire. The UI names
 them, and these strings are not decoration:
 
-- **An area with no weekly target does not participate in `areaBalance` at all.**
-  It looks configured; the term is simply off for it.
-- **Targets summing past your weekly capacity** make every area read as
-  neglected, flattening the factor rather than sharpening it.
 - **A sweep that hit its cap** looks exactly like a sweep that found everything.
   `cappedTypes` is rendered prominently; so is the graph's `truncated`.
 - **An expired pin** stops applying. `PriorityExplainer` reports
@@ -156,9 +152,11 @@ relationship `zodResolver` needs, and the only escape is an `as`).
 it — and only the form knows which an empty input means.
 
 Help text says **what the field does to the system**, not what it is. "Which
-domain of your life this belongs to" is a definition; "a neglected area floats its
-work up your list, and this is 15% of every task's score" is the reason someone
-would fill it in.
+domain of your life this belongs to" is a definition; "blocking time narrows the
+gap `effortFit` compares your next task's estimate against" is the reason someone
+would fill it in. Not every field has a mechanism behind it, though: Life's
+`description` has none, deliberately (`design-principles.md`), and its help text
+says so rather than inventing one.
 
 ## 10. The capture sidekick
 

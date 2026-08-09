@@ -206,8 +206,6 @@ export const createAreaSchema = z
     description: noteBodySchema.optional(),
     colour: z.string().trim().max(16).nullish(),
     sortOrder: z.number().int().min(0).max(1000).optional(),
-    /** The field that makes this a life organiser rather than a task list. */
-    targetWeeklyMinutes: z.number().int().positive().max(10_080).nullish(),
   })
   .strict();
 
@@ -1230,7 +1228,7 @@ export type ResparkableAdminSettingsResponse = z.infer<
 // ─── Space settings ──────────────────────────────────────────────────────────
 
 /**
- * The six scorer factors, in the order they appear in the plan's formula.
+ * The five scorer factors, in the order they appear in the plan's formula.
  *
  * One const array drives the Zod schema, the defaults table, the
  * `priorityFactors` payload and (later) the settings UI — so adding a seventh
@@ -1240,7 +1238,6 @@ export const PRIORITY_FACTORS = [
   'urgency',
   'goalAlignment',
   'projectMomentum',
-  'areaBalance',
   'effortFit',
   'staleness',
 ] as const;
@@ -1266,7 +1263,6 @@ export const priorityWeightsSchema = z
     urgency: weightSchema,
     goalAlignment: weightSchema,
     projectMomentum: weightSchema,
-    areaBalance: weightSchema,
     effortFit: weightSchema,
     staleness: weightSchema,
   })
@@ -1297,7 +1293,6 @@ export const priorityFactorsSchema = z.object({
   urgency: z.number(),
   goalAlignment: z.number(),
   projectMomentum: z.number(),
-  areaBalance: z.number(),
   effortFit: z.number(),
   staleness: z.number(),
   base: z.number(),
@@ -1400,7 +1395,6 @@ function isValidTimezone(value: string): boolean {
 export const updateSpaceSchema = z
   .object({
     timezone: timezoneSchema,
-    weeklyCapacityMinutes: z.number().int().min(0).max(10_080),
     workStyle: z.enum(WORK_STYLES),
     priorityWeights: priorityWeightsSchema.nullish(),
     energyProfile: energyProfileSchema.nullish(),

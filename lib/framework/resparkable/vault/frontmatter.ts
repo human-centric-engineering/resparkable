@@ -122,7 +122,6 @@ export const areaFrontmatterSchema = z.looseObject({
   ...baseFields,
   slug: shortText.optional(),
   colour: z.string().trim().max(16).optional(),
-  'target-weekly-minutes': integer(0, 10_080).optional(),
   'sort-order': integer(-10_000, 10_000).optional(),
 });
 

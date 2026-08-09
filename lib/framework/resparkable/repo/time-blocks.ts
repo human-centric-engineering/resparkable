@@ -67,28 +67,6 @@ export async function countTimeBlocks(
   return prisma.resparkableTimeBlock.count({ where: timeBlockWhere(scope, filters) });
 }
 
-/**
- * Total minutes logged in a window, grouped by area — the input to
- * `areaBalance`. Computed in SQL rather than by loading blocks and summing in
- * JS, because this runs for every task on every reprioritise pass.
- */
-export async function sumMinutesByArea(
-  scope: OwnerScope,
-  from: Date,
-  to: Date
-): Promise<Array<{ areaId: string | null; minutes: number }>> {
-  const rows = await prisma.$queryRaw<Array<{ areaId: string | null; minutes: number }>>`
-    SELECT "areaId",
-           COALESCE(SUM(EXTRACT(EPOCH FROM ("endAt" - "startAt")) / 60), 0)::float AS minutes
-    FROM "framework_resparkable_time_block"
-    WHERE "userId" = ${scope.userId}
-      AND "startAt" >= ${from}
-      AND "startAt" <= ${to}
-    GROUP BY "areaId"
-  `;
-  return rows;
-}
-
 export async function findTimeBlock(
   scope: OwnerScope,
   id: string

@@ -20,6 +20,9 @@
  * doesn't pin, discovered months later. The API refuses it; this form shows the
  * running total so nobody has to submit to find out.
  *
+ * There is deliberately no weekly-hours field on this card: Resparkable does not
+ * ask how many hours a week anyone has (`design-principles.md`).
+ *
  * ## The connection floor is model-dependent, which is why it is a setting
  *
  * Phase 4 shipped with the plan's 0.72 and the engine proposed nothing at all —
@@ -56,14 +59,11 @@ import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { PRIORITY_FACTORS, WORK_STYLES } from '@/lib/framework/resparkable/validations';
 import { cn } from '@/lib/utils';
 
-const MINUTES_PER_HOUR = 60;
-
 /** What each weight actually does, in the user's terms. */
 const FACTOR_LABELS: Record<(typeof PRIORITY_FACTORS)[number], string> = {
   urgency: 'How soon it’s due',
   goalAlignment: 'Whether it serves a goal',
   projectMomentum: 'Whether its project is moving',
-  areaBalance: 'Whether that part of your life needs attention',
   effortFit: 'Whether it fits the time you have',
   staleness: 'How long it’s been waiting',
 };
@@ -144,7 +144,6 @@ const WORK_STYLE_LABELS: Record<(typeof WORK_STYLES)[number], string> = {
 
 export interface SpaceSettings {
   timezone: string;
-  weeklyCapacityMinutes: number;
   workStyle: string;
   priorityWeights: Record<string, number>;
   connectionStrengthFloor: number;
@@ -154,10 +153,6 @@ export interface SpaceSettings {
 
 const formSchema = z.object({
   timezone: z.string().trim().min(1, 'Pick a timezone'),
-  weeklyCapacityHours: z
-    .string()
-    .refine((value) => Number.isFinite(Number(value)), 'Use a number')
-    .refine((value) => Number(value) >= 0 && Number(value) <= 168, 'A week has 168 hours'),
   workStyle: z.enum(WORK_STYLES),
   weights: z.record(z.string(), z.number()),
   connectionStrengthFloor: z.number().min(0.2).max(0.95),
@@ -198,7 +193,6 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
     mode: 'onTouched',
     defaultValues: {
       timezone: initial.timezone,
-      weeklyCapacityHours: String(initial.weeklyCapacityMinutes / MINUTES_PER_HOUR),
       // `workStyle` arrives as plain `string` — validate it against the enum the form
       // declares rather than asserting it. See CLAUDE.md: never `as` on external data.
       // `.catch` preserves the default-on-miss the cast relied on.
@@ -226,7 +220,6 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
       apiClient.patch(RESPARKABLE_API.SPACE, {
         body: {
           timezone: values.timezone,
-          weeklyCapacityMinutes: Math.round(Number(values.weeklyCapacityHours) * MINUTES_PER_HOUR),
           workStyle: values.workStyle,
           priorityWeights: Object.fromEntries(
             PRIORITY_FACTORS.map((key) => [key, values.weights[key] ?? 0])
@@ -284,35 +277,6 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
                 ))}
               </SelectContent>
             </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="settings-capacity" className="flex items-center gap-1.5">
-              Hours a week you actually have
-              <FieldHelp title="Weekly capacity">
-                <p>
-                  Compared against the time you block out, so Today can tell you how full your week
-                  already is.
-                </p>
-                <p>
-                  Real hours, not contracted ones — the number is only useful if it is the amount
-                  you can genuinely spend.
-                </p>
-              </FieldHelp>
-            </Label>
-            <Input
-              id="settings-capacity"
-              type="number"
-              min={0}
-              max={168}
-              step={0.5}
-              {...form.register('weeklyCapacityHours')}
-            />
-            {form.formState.errors.weeklyCapacityHours && (
-              <p className="text-destructive text-xs">
-                {form.formState.errors.weeklyCapacityHours.message}
-              </p>
-            )}
           </div>
 
           <div className="space-y-1.5">

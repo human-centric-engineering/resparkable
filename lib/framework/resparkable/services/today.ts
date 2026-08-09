@@ -24,13 +24,12 @@ import { getStoredBriefing } from '@/lib/framework/resparkable/services/briefing
 import { countTasks, listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { readFactorFlag } from '@/lib/framework/resparkable/priority/score';
 import { countThoughts } from '@/lib/framework/resparkable/repo/thoughts';
-import { listTimeBlocks, sumMinutesByArea } from '@/lib/framework/resparkable/repo/time-blocks';
+import { listTimeBlocks } from '@/lib/framework/resparkable/repo/time-blocks';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
 import {
   addZonedDays,
   endOfZonedDay,
   startOfZonedDay,
-  startOfZonedWeek,
 } from '@/lib/framework/resparkable/time/zoned';
 import type { ResparkableLink, ResparkableReview, ResparkableTimeBlock } from '@prisma/client';
 
@@ -100,11 +99,6 @@ export interface TodayPayload {
     stale: boolean;
     ageHours: number | null;
   };
-  capacity: {
-    weeklyCapacityMinutes: number;
-    plannedMinutesThisWeek: number;
-    remainingMinutes: number;
-  };
 }
 
 export async function buildToday(scope: OwnerScope, now = new Date()): Promise<TodayPayload> {
@@ -114,8 +108,6 @@ export async function buildToday(scope: OwnerScope, now = new Date()): Promise<T
   const { timezone } = settings;
 
   const dayEnd = endOfZonedDay(now, timezone);
-  const weekStart = startOfZonedWeek(now, timezone);
-  const weekEnd = addZonedDays(weekStart, 7, timezone);
 
   const openTaskFilters = { excludeStatuses: CLOSED_TASK_STATUSES, hideDeferred: true };
 
@@ -128,7 +120,6 @@ export async function buildToday(scope: OwnerScope, now = new Date()): Promise<T
     unreviewedLinkCount,
     unreviewedLinkItems,
     latestReview,
-    weekMinutes,
     briefing,
   ] = await Promise.all([
     listTasks(scope, openTaskFilters, { take: TASK_LIMIT }),
@@ -152,7 +143,6 @@ export async function buildToday(scope: OwnerScope, now = new Date()): Promise<T
     countUnreviewedLinks(scope, now),
     listUnreviewedLinks(scope, UNREVIEWED_LINK_LIMIT, now),
     findLatestReview(scope),
-    sumMinutesByArea(scope, weekStart, weekEnd),
     // The briefing rides this read rather than a second page-level fetch, per
     // `ui.md` rule 1. It costs one indexed lookup and no model call — the
     // overnight workflow does the writing (§6), and the point of storing it is
@@ -167,10 +157,6 @@ export async function buildToday(scope: OwnerScope, now = new Date()): Promise<T
 
   const projectsById = new Map(projects.map((project) => [project.id, project]));
   const areasById = new Map(areas.map((area) => [area.id, area]));
-
-  const plannedMinutesThisWeek = Math.round(
-    weekMinutes.reduce((total, row) => total + row.minutes, 0)
-  );
 
   return {
     generatedAt: now.toISOString(),
@@ -231,13 +217,6 @@ export async function buildToday(scope: OwnerScope, now = new Date()): Promise<T
           generatedAt: latestReview.generatedAt,
         }
       : null,
-    capacity: {
-      weeklyCapacityMinutes: settings.weeklyCapacityMinutes,
-      plannedMinutesThisWeek,
-      // Floored at zero: an over-booked week is a real state, but "you have
-      // minus four hours left" is not a number anybody can act on.
-      remainingMinutes: Math.max(0, settings.weeklyCapacityMinutes - plannedMinutesThisWeek),
-    },
   };
 }
 

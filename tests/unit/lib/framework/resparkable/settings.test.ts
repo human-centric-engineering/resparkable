@@ -42,11 +42,10 @@ describe('DEFAULT_PRIORITY_WEIGHTS', () => {
 
   it('matches the formula in the plan', () => {
     expect(DEFAULT_PRIORITY_WEIGHTS).toEqual({
-      urgency: 0.3,
-      goalAlignment: 0.25,
-      projectMomentum: 0.15,
-      areaBalance: 0.15,
-      effortFit: 0.1,
+      urgency: 0.35,
+      goalAlignment: 0.3,
+      projectMomentum: 0.18,
+      effortFit: 0.12,
       staleness: 0.05,
     });
   });
@@ -72,10 +71,9 @@ describe('resolvePriorityWeights', () => {
     const stored = {
       urgency: 0.2,
       goalAlignment: 0.35,
-      projectMomentum: 0.15,
-      areaBalance: 0.15,
-      effortFit: 0.1,
-      staleness: 0.05,
+      projectMomentum: 0.2,
+      effortFit: 0.15,
+      staleness: 0.1,
     };
 
     // Assert
@@ -125,7 +123,6 @@ describe('normaliseWeights', () => {
       urgency: 4,
       goalAlignment: 1,
       projectMomentum: 1,
-      areaBalance: 1,
       effortFit: 1,
       staleness: 1,
     };
@@ -148,7 +145,6 @@ describe('normaliseWeights', () => {
       urgency: 0,
       goalAlignment: 0,
       projectMomentum: 0,
-      areaBalance: 0,
       effortFit: 0,
       staleness: 0,
     };

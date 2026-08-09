@@ -80,7 +80,6 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
     description: null,
     colour: null,
     sortOrder: 0,
-    targetWeeklyMinutes: null,
     archivedAt: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',

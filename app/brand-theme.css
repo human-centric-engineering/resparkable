@@ -64,74 +64,109 @@
    room. Geometry and typography are identical to dark; only the material
    changes: the same instrument, milled from paper instead of glass.
 
-   ## Why the accent is indigo here and ember there
+   ## Why the accent is vermilion here and ember there
 
-   This is the one place the brand hue is mode-dependent, and it is a constraint
-   before it is a choice. Amber is a *light* colour — #f5a524 is 1.9:1 on white,
-   invisible. To clear AA on paper it has to come down to roughly #b45309, and
-   any warm yellow-orange dark enough to pass reads as **brown**. There is no
-   amber that is both legible on white and still amber. Light mode ran rust for
-   a while and it looked like a filing cabinet.
+   Both modes run the same fire; paper only gets it at a lower temperature.
 
-   Indigo-700, #4338ca, is what it runs on instead: 7.9:1 on a white card, so it
-   carries link text as well as filling a button, which is what keeps it from
-   needing a second readable hue beside it. Deep enough to read as an instrument
-   rather than as the lavender every AI product reached for; blue enough not to
-   be mistaken for the violet reserved by `--color-sheen`.
+   The constraint is real and it is worth stating precisely, because it is what
+   sent this token to indigo for a long time. Amber is a *light* colour: #f5a524
+   is 1.9:1 on white, invisible. Any warm **yellow-orange** dark enough to clear
+   AA on paper reads as brown: #b45309 is the honest example, and light mode ran
+   it for a while and looked like a filing cabinet.
 
-   Dark stays on the ember. Two faces of one material rather than two brands: the
-   glass with the heat still in it, and the same glass in daylight.
+   The move that resolves it is hue, not lightness. #b45309 sits at OKLCH hue 49°
+   with chroma 0.146: that is the brown end. Vermilion #c2410c is hue 38° with
+   chroma 0.174: redder, more saturated, and 5.18:1 on a white card. It reads as
+   fire rather than as furniture, and the difference is visible the moment the
+   two are set side by side. "Dark amber reads brown" was true; "no warm accent
+   can work on paper" was the overcorrection.
 
-   ## The neutrals moved with it
+   It is also, exactly, the cool end of the ember the dark mode runs. The dark
+   ramp's tail is #a3480a, hue 47°, nine degrees from this. Light mode is not a
+   second brand colour; it is the same coal, further from the flame.
 
-   They were warm (#faf9f7) for the amber, then faintly green for a teal that
-   didn't survive review. Neutrals carry a trace of whatever the accent is, or
-   the page fights the buttons — warm greys under a cool accent read as beige,
-   and green-tinted greys under indigo read as dirty. These carry a whisper of
-   the indigo, which is what makes white cards sit on the page as objects rather
-   than as holes in it. */
+   What this costs, stated plainly: link text falls from indigo's 7.9:1 to
+   5.18:1. Still AA at body size, no longer AAA. That is the price of a warm
+   accent on paper and there is no arrangement of the hue that avoids it.
+
+   ## The signals had to move with it
+
+   The warm slot on paper is crowded, and re-pointing into it collides with two
+   signals at once. `destructive` sat at hue 17° and `warn` at 66°; a spark
+   colour wants to live between them, and the best any warm accent can manage
+   without moving anything is ~24° from each, against the 34° this palette
+   already tolerates at its worst (primary against `info`). So both moved:
+   `destructive` down to #96123f, which buys 29° of separation *and* improves its
+   own contrast from 6.3:1 to 8.6:1, and `warn` up to #936f00, a truer gold, 48°
+   clear.
+
+   `sheen` was left where it is. It sits 74° off the new primary, which is ample.
+   But note that the reason it was pushed most of the way to fuchsia has now
+   lifted. It went there to stop reading as a slightly-off indigo. Nothing stops
+   it returning to the violet it means, if someone wants it back.
+
+   ## The neutrals moved with it too
+
+   They were warm for the original amber, then faintly green for a teal that
+   didn't survive review, then a whisper of indigo, and now warm again. Neutrals
+   carry a trace of whatever the accent is or the page fights the buttons: cool
+   greys under a warm accent read as *dirty*, and warm greys under a cool one
+   read as beige. Every one of these was re-hued to ~52° at its original
+   lightness, so the whole set moved without a single contrast ratio dropping:
+   `foreground` holds at 17.1:1 and `muted-foreground` at 6.4:1. */
 :root {
-  --color-background: #f8f8fb;
-  --color-foreground: #15161c;
+  --color-background: #fbf8f6;
+  --color-foreground: #1b1511;
 
   --color-card: #ffffff;
-  --color-card-foreground: #15161c;
+  --color-card-foreground: #1b1511;
   --color-popover: #ffffff;
-  --color-popover-foreground: #15161c;
+  --color-popover-foreground: #1b1511;
 
-  --color-primary: #4338ca;
-  --color-primary-foreground: #f5f4ff;
+  --color-primary: #c2410c;
+  --color-primary-foreground: #fff6f1;
 
-  --color-secondary: #eeeef4;
-  --color-secondary-foreground: #24252e;
+  /* The mark's gradient ramp, in-app. Mirrors `resparkable-mark-light.svg`'s
+     stops so the header logo and the standalone files agree. See
+     `components/brand/brand-gradients.tsx`. */
+  --brand-loop-0: #f0a882;
+  --brand-loop-1: #dd6a2a;
+  --brand-loop-2: #c2410c;
+  --brand-spark-0: #fbbf24;
+  --brand-spark-1: #f59e0b;
+
+  --color-secondary: #f3edea;
+  --color-secondary-foreground: #2d241e;
 
   /* `muted-foreground` is the single most-used colour in this app — every
      timestamp, count, blurb and helper line — and the most commonly botched.
      6.3:1 here, not the 3.5:1 that "subtle grey" usually lands on. Secondary
      text that you have to lean in for is text nobody reads. */
-  --color-muted: #f0f0f5;
-  --color-muted-foreground: #585b6b;
+  --color-muted: #f4efed;
+  --color-muted-foreground: #68584f;
 
-  --color-accent: #e9e9f1;
-  --color-accent-foreground: #15161c;
+  --color-accent: #f0e8e4;
+  --color-accent-foreground: #1b1511;
 
-  --color-destructive: #be123c;
-  --color-destructive-foreground: #fff5f7;
+  --color-destructive: #96123f;
+  --color-destructive-foreground: #fff2f5;
 
-  --color-border: #e0e0ea;
-  --color-input: #c9c9d8;
-  --color-ring: #4338ca;
+  --color-border: #e9dfd9;
+  --color-input: #d6c7bf;
+  --color-ring: #c2410c;
 
   /* Signals, darkened for paper. The luminous dark-mode versions are set in
      globals.css `@theme`; these are the same hues taken down to AA.
 
-     `sheen` is the one that has to be watched. It is violet, and violet next to
-     indigo is a distinction nobody makes at a glance — so on paper it is pushed
-     most of the way to fuchsia. It still reads as the sheen on a fracture; it
-     just stops looking like a slightly-off primary. */
+     `sheen` is the one that has to be watched. It is pushed most of the way to
+     fuchsia here, a hedge against the indigo this token used to sit beside,
+     where violet-next-to-indigo was a distinction nobody made at a glance. It
+     clears the vermilion by 74°, so it is safe as it stands; it simply no longer
+     *has* to be fuchsia. `warn` is the one that moved: amber-700 sat 17° off the
+     new primary, which is not a signal, it is a near-miss. */
   --color-signal: #047857;
   --color-info: #0369a1;
-  --color-warn: #a16207;
+  --color-warn: #936f00;
   --color-sheen: #a21caf;
 
   /* ── Atmosphere ────────────────────────────────────────────────────────
@@ -149,10 +184,10 @@
      a shape. 0.045 is roughly the point where it stops being a thing you can
      point at and starts being a room the page is lit in. If you can name its
      colour, it is too strong. */
-  --obs-grid-line: rgb(21 22 28 / 0.04);
+  --obs-grid-line: rgb(27 21 17 / 0.04);
   --obs-grid-size: 48px;
-  --obs-bloom: rgb(67 56 202 / 0.045);
-  --obs-hairline: rgb(21 22 28 / 0.1);
+  --obs-bloom: rgb(194 65 12 / 0.045);
+  --obs-hairline: rgb(27 21 17 / 0.1);
   --obs-panel: rgb(255 255 255 / 0.72);
   --obs-inset-highlight: rgb(255 255 255 / 0.9);
 
@@ -203,6 +238,13 @@
      needing a second brand hue to do the readable half of the job. */
   --color-primary: #f5a524;
   --color-primary-foreground: #0a0b0f;
+
+  /* Mirrors `resparkable-mark-dark.svg`'s ember ramp. */
+  --brand-loop-0: #a3480a;
+  --brand-loop-1: #e0891c;
+  --brand-loop-2: #f5a524;
+  --brand-spark-0: #fff8ea;
+  --brand-spark-1: #ffc65c;
 
   --color-secondary: #191c25;
   --color-secondary-foreground: #dfe3ec;
@@ -273,6 +315,14 @@
   --color-primary-foreground: #f0fdfa;
   --color-ring: #0f766e;
   --obs-bloom: rgb(15 118 110 / 0.045);
+
+  /* Admin has no brand story of its own (see the block comment above): the
+     mark collapses to flat teal here instead of carrying the consumer ramp. */
+  --brand-loop-0: #0f766e;
+  --brand-loop-1: #0f766e;
+  --brand-loop-2: #0f766e;
+  --brand-spark-0: #0f766e;
+  --brand-spark-1: #0f766e;
 }
 
 :root[data-surface='admin'].dark {
@@ -280,6 +330,12 @@
   --color-primary-foreground: #04211d;
   --color-ring: #2dd4bf;
   --obs-bloom: rgb(45 212 191 / 0.07);
+
+  --brand-loop-0: #2dd4bf;
+  --brand-loop-1: #2dd4bf;
+  --brand-loop-2: #2dd4bf;
+  --brand-spark-0: #2dd4bf;
+  --brand-spark-1: #2dd4bf;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -628,11 +684,175 @@
     }
   }
 
+  /* ── The mesh: nodes, edges, and one spark going round ────────────────
+     The only continuous motion in the product, and it is fenced to the public
+     pages on purpose. Inside the app the rule still holds: one arrival, then
+     stillness, because a thing that moves while you are trying to think is a
+     thing you end up hiding. A marketing page is the opposite situation: the
+     reader is deciding whether this is alive.
+
+     What it draws is the mark read as what it already is: a graph. Eleven
+     vertices, twelve straight facets, and a pulse that laps it. The vertices
+     light as the pulse reaches them and go back down behind it, which is the
+     claim the page is making in one picture: a spark is not held anywhere, it
+     is passing through.
+
+     Everything is driven by two custom properties set at the call site,
+     `--spark-lap` and `--spark-phase`, so the timing lives with the geometry
+     that computed it (`components/brand/geometry.ts`) rather than being
+     duplicated here in numbers nobody can check. */
+
+  /* The traveller. `pathLength="100"` on the path normalises the dash maths, so
+     a 14/86 dash is 14% of the lap regardless of what the facets actually
+     measure, and the same rule works unchanged on the small diagrams, which
+     are a different size entirely. */
+  .spark-trace {
+    stroke-dasharray: 14 86;
+    animation: spark-trace var(--spark-lap, 11s) linear infinite;
+  }
+
+  @keyframes spark-trace {
+    from {
+      stroke-dashoffset: 0;
+    }
+    to {
+      stroke-dashoffset: -100;
+    }
+  }
+
+  /* A vertex. Rests dim, flares as the head arrives, settles back.
+
+     `transform-box: fill-box` is load-bearing: without it an SVG transform
+     origin resolves against the whole viewport's user space, and every node
+     scales towards the top-left corner of the drawing instead of about itself. */
+  .spark-node {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: spark-node var(--spark-lap, 11s) ease-out infinite;
+    animation-delay: var(--spark-phase, 0s);
+  }
+
+  @keyframes spark-node {
+    0%,
+    100% {
+      opacity: 0.32;
+      transform: scale(1);
+    }
+    6% {
+      opacity: 1;
+      transform: scale(2.2);
+    }
+    26% {
+      opacity: 0.32;
+      transform: scale(1);
+    }
+  }
+
+  /* A mote: one of the far nodes that are not on the loop at all. They breathe
+     on their own long cycle rather than waiting for the pulse, because the
+     field is not something the loop drives: the loop is one knot in it. */
+  .spark-mote {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: spark-mote var(--spark-mote-lap, 9s) ease-in-out infinite;
+    animation-delay: var(--spark-phase, 0s);
+  }
+
+  @keyframes spark-mote {
+    0%,
+    100% {
+      opacity: 0.22;
+    }
+    50% {
+      opacity: 0.8;
+    }
+  }
+
+  /* A relay: a far node that catches, shortly after the spark crosses the
+     centre. Two of these fire per lap and the crossing does not dim to pay for
+     them, which is the one thing this whole graphic is here to say. */
+  .spark-relay {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: spark-relay var(--spark-lap, 11s) ease-out infinite;
+    animation-delay: var(--spark-phase, 0s);
+  }
+
+  @keyframes spark-relay {
+    0%,
+    100% {
+      opacity: 0.24;
+      transform: scale(1);
+    }
+    9% {
+      opacity: 0.95;
+      transform: scale(1.9);
+    }
+    34% {
+      opacity: 0.24;
+      transform: scale(1);
+    }
+  }
+
+  /* The spark at the crossing. Twice a lap, and the flare is scale-and-opacity
+     rather than a filter: a `drop-shadow` here costs a repaint of the whole
+     graphic every frame, and on a page that also scrolls that is the difference
+     between free and janky. */
+  .spark-core {
+    transform-box: fill-box;
+    transform-origin: center;
+    animation: spark-core var(--spark-lap, 11s) ease-out infinite;
+    animation-delay: var(--spark-phase, 0s);
+  }
+
+  @keyframes spark-core {
+    0%,
+    100% {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+    5% {
+      opacity: 1;
+      transform: scale(1.22);
+    }
+    24% {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+    55% {
+      opacity: 1;
+      transform: scale(1.22);
+    }
+    74% {
+      opacity: 0.85;
+      transform: scale(1);
+    }
+  }
+
   /* The whole aesthetic still has to work with motion off — nothing here
-     carries meaning that only the animation conveys. */
+     carries meaning that only the animation conveys.
+
+     The mesh is deliberately frozen rather than hidden. Every animation above
+     rests at a legible state, so with motion off the graphic is a still
+     diagram of a graph with a lit crossing, which is the picture anyway. */
   @media (prefers-reduced-motion: reduce) {
-    .obsidian-reveal {
+    .obsidian-reveal,
+    .spark-trace,
+    .spark-node,
+    .spark-mote,
+    .spark-relay,
+    .spark-core {
       animation: none;
+    }
+
+    .spark-node,
+    .spark-mote,
+    .spark-relay {
+      opacity: 0.45;
     }
   }
 }

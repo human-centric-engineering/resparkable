@@ -57,9 +57,8 @@ const MAX_AREAS = 6;
  * Titles are bounded at 500 characters by `titleSchema`, so the row caps alone
  * do not bound the block: eight goals and eight projects with long names is
  * already past the budget on their own, and the line loop below would then stop
- * before it ever reached `LOAD` — dropping the inbox count, the remaining
- * capacity and the area balance, which are the cheapest and most useful lines in
- * the whole block.
+ * before it ever reached `LOAD`, dropping the inbox count and the life areas,
+ * which are the cheapest and most useful lines in the whole block.
  *
  * Truncating the line instead is safe here because **every id is rendered before
  * the prose on the line it belongs to** (`- <id> · <title> · <when>`), so a cut
@@ -87,16 +86,6 @@ const HORIZON_ORDER = ['life', 'year', 'quarter', 'month', 'week'] as const;
 function horizonRank(horizon: string): number {
   const index = HORIZON_ORDER.indexOf(horizon as (typeof HORIZON_ORDER)[number]);
   return index === -1 ? HORIZON_ORDER.length : index;
-}
-
-/** Minutes as something a person would say. 90 → "1h 30m", 45 → "45m". */
-function duration(minutes: number): string {
-  if (minutes <= 0) return '0m';
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  if (hours === 0) return `${rest}m`;
-  if (rest === 0) return `${hours}h`;
-  return `${hours}h ${rest}m`;
 }
 
 /** "in 4 days", "overdue by 2 days", "today" — never a bare date the model has to subtract. */
@@ -165,32 +154,18 @@ export function renderResparkableContext(snapshot: SnapshotPayload): string {
     }
   }
 
-  // 5. Load. The three numbers someone would want before agreeing to anything.
+  // 5. Load. What someone would want to know before agreeing to anything.
   lines.push(
     '',
     'LOAD',
-    `- Inbox: ${snapshot.counts.inbox} un-triaged · open tasks: ${snapshot.counts.openTasks} · unreviewed connections: ${snapshot.counts.connections}`,
-    `- Capacity this week: ${duration(snapshot.capacity.remainingMinutes)} left of ${duration(snapshot.capacity.weeklyCapacityMinutes)}`
+    `- Inbox: ${snapshot.counts.inbox} un-triaged · open tasks: ${snapshot.counts.openTasks} · unreviewed connections: ${snapshot.counts.connections}`
   );
 
-  // 6. Balance. Only areas that actually carry a target — one with none does not
-  //    participate in `areaBalance` at all, and calling it "fully attended"
-  //    would be a lie the agent then repeats back (ui.md §7).
-  const areas = snapshot.areas.items
-    .filter((area) => area.targetWeeklyMinutes !== null && area.neglect !== null)
-    .slice(0, MAX_AREAS);
+  // 6. The standing parts of their life: an orientation, not a scorecard. No
+  //    hours, no targets: see design-principles.md.
+  const areas = snapshot.areas.items.slice(0, MAX_AREAS);
   if (areas.length > 0) {
-    lines.push('', 'AREA BALANCE (this week, against target)');
-    for (const area of areas) {
-      lines.push(
-        line(
-          `- ${area.name}: ${duration(area.minutesThisWeek)} of ${duration(area.targetWeeklyMinutes ?? 0)}`
-        )
-      );
-    }
-  }
-  if (snapshot.mostNeglectedArea) {
-    lines.push(line(`- Most neglected: ${snapshot.mostNeglectedArea.name}`));
+    lines.push('', 'LIFE', line(`- ${areas.map((area) => area.name).join(', ')}`));
   }
 
   if (snapshot.latestReview) {

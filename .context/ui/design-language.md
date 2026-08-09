@@ -41,29 +41,53 @@ people chose when they had to read all day — lower flicker perception, warmer
 adaptation. This is an app you keep open, so it takes the phosphor that was
 picked for endurance rather than the one that reads as retro.
 
-### Why the accent is indigo in light mode
+### Why the accent is vermilion in light mode
 
-**This is the only token whose hue depends on the mode, and it is a constraint
-before it is a choice.** Amber is a light colour: `#f5a524` is 1.9:1 on white —
-invisible. Dragging it down to AA lands around `#b45309`, and _any_ warm
-yellow-orange dark enough to pass on paper reads as **brown**. There is no amber
-that is both legible on white and still amber. Light mode ran rust for a while
-and looked like a filing cabinet.
+**This is the only token whose hue depends on the mode.** Both modes run the same
+fire; paper just gets it further from the flame.
 
-Indigo-700 `#4338ca` is what it runs on instead — 7.9:1 on a white card, so it
-carries link text as well as filling a button, which stops it needing a second
-readable hue beside it. Deep enough to read as an instrument rather than the
-lavender every AI product reached for, and blue enough not to be confused with
-the violet `--color-sheen` reserves.
+The constraint that shapes it is real, and worth stating precisely because it
+once sent this token all the way to indigo. Amber is a light colour: `#f5a524` is
+1.9:1 on white: invisible. And any warm **yellow-orange** dragged down far
+enough to clear AA does read as brown; `#b45309` is the honest example, and light
+mode ran it for a while and looked like a filing cabinet.
 
-Dark stays on the ember. Two faces of one material, not two brands: the glass
-with the heat still in it, and the same glass in daylight.
+The escape is hue, not lightness. `#b45309` is OKLCH hue 49°, chroma 0.146: the
+brown end. Vermilion `#c2410c` is hue 38°, chroma 0.174: redder, more saturated,
+5.18:1 on a white card. It reads as fire rather than furniture. **"Dark amber
+reads brown" was true; "no warm accent works on paper" was the overcorrection.**
 
-**The neutrals move with the accent, every time.** They were warm for the amber,
-then faintly green for a teal that didn't survive review, and are now a whisper
-of the indigo. A page whose greys disagree with its buttons reads as beige (warm
-under cool) or as dirty (green under indigo). This is the step that gets
-forgotten when a primary is re-pointed.
+It is also the cool end of the ember dark mode already runs: the dark ramp's
+tail is `#a3480a`, hue 47°, nine degrees away. Not a second brand colour: the
+same coal, further from the flame.
+
+State the cost plainly: link text falls from indigo's 7.9:1 to 5.18:1, still AA
+at body size, no longer AAA. No arrangement of a warm hue avoids that.
+
+### Re-pointing the primary moves the signals with it
+
+The warm slot on paper is crowded, and this is the part that bites. `destructive`
+sat at hue 17° and `warn` at 66°; a spark colour wants to live between them, and
+**the best any warm accent can manage without moving anything is ~24° from each**,
+against the 34° this palette already tolerates at its worst (primary against
+`info`). Both moved:
+
+| Token         | Was       | Now       | Why                                            |
+| ------------- | --------- | --------- | ---------------------------------------------- |
+| `destructive` | `#be123c` | `#96123f` | 29° clear of primary; contrast 6.3 → **8.6:1** |
+| `warn`        | `#a16207` | `#936f00` | 48° clear; amber-700 was a 17° near-miss       |
+
+`sheen` stayed. It clears the vermilion by 74°, so it is safe, but the reason it
+was pushed most of the way to fuchsia has lifted. It went there to stop reading
+as a slightly-off indigo. Nothing now stops it returning to the violet it means.
+
+**The neutrals move with the accent, every time.** They were warm for the original
+amber, then faintly green for a teal that didn't survive review, then a whisper of
+indigo, and are warm again. A page whose greys disagree with its buttons reads as
+beige (warm under cool) or as **dirty** (cool under warm). Each was re-hued to
+~52° at its original lightness, so the set moved without one contrast ratio
+dropping: `foreground` holds 17.1:1, `muted-foreground` 6.4:1. This is the step
+that gets forgotten when a primary is re-pointed.
 
 ---
 
@@ -204,6 +228,10 @@ consumer; when consumer light went teal the two sat ~24° apart, and when it wen
 indigo the blue that had replaced the cyan sat ~21° from _that_. Neither was
 wrong on its own; both quietly stopped doing the one job this shift has.
 
+The move to vermilion is the first re-point that made this pair _better_ without
+being touched: teal sits 148° off the new consumer primary, against 91° off the
+old indigo. Nothing to do here, but check it the next time, not this time.
+
 **If you re-point the consumer accent, check this pair again — roughly 60° of hue
 separation is the floor.** A surface-distinguishing colour that no longer
 distinguishes is worse than none, because it is still claiming to.
@@ -327,6 +355,24 @@ time a count changes is a bug wearing a costume.
 
 Everything motion-related is behind `prefers-reduced-motion`, and nothing carries
 meaning that only the animation conveys.
+
+### The one exception, and its fence
+
+`SparkMesh` on the public pages animates continuously: a pulse laps the mark's
+loop, vertices light as it reaches them, far nodes catch behind it. The classes
+are `.spark-trace` / `.spark-node` / `.spark-mote` / `.spark-relay` /
+`.spark-core`.
+
+**It is fenced to the `(public)` route group and must stay there.** Inside the product the
+rule above is unchanged, and the reason is not taste: a thing that moves while
+you are trying to think is a thing you end up hiding, and a feature people turn
+off is a feature that failed. A marketing page is the opposite situation: the
+reader has not committed to anything and is deciding whether this is alive.
+
+All five freeze at a legible resting state under `prefers-reduced-motion` rather
+than disappearing, so the graphic degrades to a still diagram. Every moving
+property is `opacity`, `transform` or `stroke-dashoffset`, so it is composited
+and costs no layout or paint; if you add to it, keep that true.
 
 ---
 

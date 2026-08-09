@@ -317,7 +317,6 @@ export function buildLogseqGraph(view: BrainView, generatedAt: Date): Record<str
         property('type', 'area'),
         property('slug', area.slug),
         property('colour', area.colour),
-        property('target-weekly-minutes', area.targetWeeklyMinutes),
         property('archived', area.archivedAt ? isoDate(area.archivedAt) : null),
       ]),
       ...proseBullets(area.description),

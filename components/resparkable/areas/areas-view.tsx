@@ -1,22 +1,13 @@
 'use client';
 
 /**
- * AreasView — the parts of your life, and how much of your week each gets.
+ * AreasView is the Life page: the standing parts of someone's life, and what's
+ * on their mind about each one right now.
  *
- * ## The warning this page has to carry
- *
- * `areaBalance` is 15% of every task's score and is computed against
- * `targetWeeklyMinutes`. An area with **no target contributes nothing** — it looks
- * set up, its projects rank normally, and the term that makes this a life organiser
- * rather than a work queue is silently switched off for it. That is invisible unless
- * a screen says so, so this one does, per area.
- *
- * ## Why the totals line is worth the space
- *
- * Targets that sum to more hours than a week has is a common and self-defeating
- * setup: every area then reads as neglected, `areaBalance` saturates near 1 for
- * everything, and the term stops discriminating. Showing the sum against the
- * week's capacity makes that visible before it quietly flattens the ranking.
+ * No targets, no capacity, no balancing. Resparkable is a reflection and
+ * understanding tool, not an optimisation one: see
+ * `.context/framework/resparkable/design-principles.md`. This page's only job
+ * is to make it easy to say what matters and why.
  */
 
 import * as React from 'react';
@@ -25,7 +16,6 @@ import { Compass, Pencil, Plus } from 'lucide-react';
 import { AreaForm } from '@/components/resparkable/areas/area-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
-import { formatMinutes } from '@/components/resparkable/today/task-row';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -33,57 +23,32 @@ import type { AreaWire } from '@/lib/framework/resparkable/ui/payloads';
 
 export interface AreasViewProps {
   areas: AreaWire[];
-  /** From `/resparkable/space`, so the totals line compares against the real setting. */
-  weeklyCapacityMinutes: number | null;
 }
 
-export function AreasView({ areas, weeklyCapacityMinutes }: AreasViewProps): React.ReactElement {
+export function AreasView({ areas }: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<AreaWire | null>(null);
-
-  const targeted = areas.filter((area) => area.targetWeeklyMinutes !== null);
-  const totalTarget = targeted.reduce((sum, area) => sum + (area.targetWeeklyMinutes ?? 0), 0);
-  const overCapacity =
-    weeklyCapacityMinutes !== null &&
-    weeklyCapacityMinutes > 0 &&
-    totalTarget > weeklyCapacityMinutes;
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-muted-foreground text-sm">
-          {targeted.length > 0 ? (
-            <>
-              {formatMinutes(totalTarget)} a week claimed across {targeted.length}{' '}
-              {targeted.length === 1 ? 'area' : 'areas'}
-              {weeklyCapacityMinutes !== null && weeklyCapacityMinutes > 0 && (
-                <> of {formatMinutes(weeklyCapacityMinutes)} capacity</>
-              )}
-            </>
-          ) : (
-            'No weekly targets set yet'
-          )}
+          {areas.length > 0
+            ? `${areas.length} ${areas.length === 1 ? 'part of your life' : 'parts of your life'}`
+            : "Nothing here yet, and that's fine"}
         </div>
 
         <Button size="sm" onClick={() => setCreateOpen(true)}>
           <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
-          New area
+          Add what matters
         </Button>
       </div>
-
-      {overCapacity && (
-        <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          Your targets add up to more than your weekly capacity. Every area will read as neglected,
-          which flattens the balancing rather than sharpening it — either raise your capacity in
-          settings or lower some targets.
-        </p>
-      )}
 
       {areas.length === 0 ? (
         <EmptyState
           icon={Compass}
-          title="No areas yet"
-          description="Areas are the standing parts of your life — Career, Health, Family. Give each a weekly time target and a neglected one starts floating its work up your list, which is what stops this becoming a pure work queue."
+          title="What's going on in your life right now?"
+          description="Career, health, family, whatever it is: add the standing parts of your life you want to keep in view, and say a bit about why each one matters at the moment."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Add the first
@@ -104,17 +69,6 @@ export function AreasView({ areas, weeklyCapacityMinutes }: AreasViewProps): Rea
               />
 
               <span className="font-medium">{area.name}</span>
-
-              {area.targetWeeklyMinutes !== null ? (
-                <Badge variant="secondary" className="text-[11px]">
-                  {formatMinutes(area.targetWeeklyMinutes)} a week
-                </Badge>
-              ) : (
-                // The silent-no-op case. Stated, because nothing else would say it.
-                <span className="text-muted-foreground text-xs">
-                  no weekly target — this area isn&rsquo;t part of the balancing
-                </span>
-              )}
 
               {area.archivedAt !== null && (
                 <Badge variant="outline" className="text-[11px]">

@@ -1,28 +1,18 @@
 /**
  * AreasView Component Tests
  *
- * `areaBalance` is 15% of every task's score and is computed against
- * `targetWeeklyMinutes`. Two failure modes here are completely silent and this
- * screen is the only place either becomes visible:
- *
- * **An area with no target contributes nothing.** It looks set up, its projects rank
- * normally, and the term that makes this a life organiser rather than a work queue is
- * simply off for it. Nothing errors. So the row has to say so in words.
- *
- * **Targets summing past the week's capacity flattens the balancing.** Every area
- * then reads as neglected, `areaBalance` saturates near 1 across the board, and the
- * factor stops discriminating between them — the ranking gets subtly worse while
- * every individual setting looks reasonable.
+ * "Life": the standing parts of someone's life, and what's on their mind
+ * about each one right now. No targets, no capacity, no balancing:
+ * Resparkable is a reflection and understanding tool, not an optimisation
+ * one (`.context/framework/resparkable/design-principles.md`).
  *
  * Test Coverage:
- * - An area with no weekly target is called out as not participating
- * - An area with one shows the target in hours, not raw minutes
- * - The totals line sums only areas that HAVE a target
- * - Over-capacity totals produce the warning; at or under capacity do not
- * - A missing capacity (settings unavailable) suppresses the comparison rather than
- *   guessing
+ * - The summary line counts areas (singular/plural) or says the space is empty
  * - Archived areas are badged
  * - The empty state explains what areas are for
+ * - Create dialog opens from the header button and from the empty state's action
+ * - Edit dialog opens pre-filled with the clicked area, then closes on escape
+ * - The colour swatch and description render when an area has them
  *
  * @see components/resparkable/areas/areas-view.tsx
  */
@@ -47,7 +37,6 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
     description: null,
     colour: null,
     sortOrder: 0,
-    targetWeeklyMinutes: null,
     archivedAt: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -56,122 +45,75 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
 }
 
 describe('AreasView', () => {
-  it('says outright when an area has no weekly target', () => {
-    render(<AreasView areas={[area()]} weeklyCapacityMinutes={2400} />);
+  it('counts a single area in the singular', () => {
+    render(<AreasView areas={[area()]} />);
 
-    expect(screen.getByText(/isn’t part of the balancing/i)).toBeInTheDocument();
+    expect(screen.getByText('1 part of your life')).toBeInTheDocument();
   });
 
-  it('shows a set target in hours', () => {
-    render(<AreasView areas={[area({ targetWeeklyMinutes: 300 })]} weeklyCapacityMinutes={2400} />);
+  it('counts multiple areas in the plural', () => {
+    render(<AreasView areas={[area({ id: 'a' }), area({ id: 'b' })]} />);
 
-    expect(screen.getByText('5h a week')).toBeInTheDocument();
-    expect(screen.queryByText(/isn’t part of the balancing/i)).not.toBeInTheDocument();
+    expect(screen.getByText('2 parts of your life')).toBeInTheDocument();
   });
 
-  it('sums only the areas that have a target', () => {
-    render(
-      <AreasView
-        areas={[
-          area({ id: 'a', targetWeeklyMinutes: 300 }),
-          area({ id: 'b', targetWeeklyMinutes: 120 }),
-          area({ id: 'c', targetWeeklyMinutes: null }),
-        ]}
-        weeklyCapacityMinutes={2400}
-      />
-    );
+  it('says the space is empty when there are no areas', () => {
+    render(<AreasView areas={[]} />);
 
-    expect(screen.getByText(/7h a week claimed across 2 areas/i)).toBeInTheDocument();
-  });
-
-  it('warns when the targets exceed the week’s capacity', () => {
-    render(
-      <AreasView areas={[area({ targetWeeklyMinutes: 3000 })]} weeklyCapacityMinutes={2400} />
-    );
-
-    expect(screen.getByText(/add up to more than your weekly capacity/i)).toBeInTheDocument();
-  });
-
-  it('does not warn when the targets fit', () => {
-    render(<AreasView areas={[area({ targetWeeklyMinutes: 600 })]} weeklyCapacityMinutes={2400} />);
-
-    expect(screen.queryByText(/add up to more than/i)).not.toBeInTheDocument();
-  });
-
-  it('does not warn when they exactly fill the week', () => {
-    render(
-      <AreasView areas={[area({ targetWeeklyMinutes: 2400 })]} weeklyCapacityMinutes={2400} />
-    );
-
-    expect(screen.queryByText(/add up to more than/i)).not.toBeInTheDocument();
-  });
-
-  it('suppresses the comparison when capacity is unknown rather than guessing', () => {
-    // The settings read failed. Claiming over-commitment against a made-up capacity
-    // would be worse than saying nothing.
-    render(
-      <AreasView areas={[area({ targetWeeklyMinutes: 9000 })]} weeklyCapacityMinutes={null} />
-    );
-
-    expect(screen.queryByText(/add up to more than/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/capacity/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Nothing here yet, and that's fine")).toBeInTheDocument();
   });
 
   it('badges an archived area', () => {
-    render(
-      <AreasView
-        areas={[area({ archivedAt: '2026-01-01T00:00:00.000Z' })]}
-        weeklyCapacityMinutes={2400}
-      />
-    );
+    render(<AreasView areas={[area({ archivedAt: '2026-01-01T00:00:00.000Z' })]} />);
 
     expect(screen.getByText('archived')).toBeInTheDocument();
   });
 
   it('explains what areas are for when there are none', () => {
-    render(<AreasView areas={[]} weeklyCapacityMinutes={2400} />);
+    render(<AreasView areas={[]} />);
 
-    expect(screen.getByText('No areas yet')).toBeInTheDocument();
-    expect(screen.getByText(/floating its work up your list/i)).toBeInTheDocument();
+    expect(screen.getByText("What's going on in your life right now?")).toBeInTheDocument();
+    expect(screen.getByText(/career, health, family, whatever it is/i)).toBeInTheDocument();
   });
 
-  it('opens the create dialog from the header "New area" button', async () => {
+  it('opens the create dialog from the header "Add what matters" button', async () => {
     const user = userEvent.setup();
-    render(<AreasView areas={[area()]} weeklyCapacityMinutes={2400} />);
+    render(<AreasView areas={[area()]} />);
 
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /^new area$/i }));
+    await user.click(screen.getByRole('button', { name: /add what matters/i }));
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('heading', { name: 'New area' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('heading', { name: 'What matters right now?' })
+    ).toBeInTheDocument();
     // A create form, not an edit — the name field starts blank.
     expect(within(dialog).getByLabelText('Name')).toHaveValue('');
   });
 
   it('opens the create dialog from the empty state\'s "Add the first" button', async () => {
     const user = userEvent.setup();
-    render(<AreasView areas={[]} weeklyCapacityMinutes={2400} />);
+    render(<AreasView areas={[]} />);
 
     await user.click(screen.getByRole('button', { name: 'Add the first' }));
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('heading', { name: 'New area' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('heading', { name: 'What matters right now?' })
+    ).toBeInTheDocument();
   });
 
   it('opens the edit dialog pre-filled with the clicked area, then closes on escape', async () => {
     const user = userEvent.setup();
-    render(
-      <AreasView
-        areas={[area({ name: 'Career', targetWeeklyMinutes: 300 })]}
-        weeklyCapacityMinutes={2400}
-      />
-    );
+    render(<AreasView areas={[area({ name: 'Career' })]} />);
 
     await user.click(screen.getByRole('button', { name: 'Edit Career' }));
 
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('heading', { name: 'Edit area' })).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('heading', { name: 'Edit this part of your life' })
+    ).toBeInTheDocument();
     // Pre-filled from the clicked area, not blank — proves `editing` carries the row through.
     expect(within(dialog).getByLabelText('Name')).toHaveValue('Career');
 
@@ -183,22 +125,11 @@ describe('AreasView', () => {
 
   it('renders the colour swatch and description when an area has them', () => {
     render(
-      <AreasView
-        areas={[area({ colour: '#0d9488', description: 'Anything client-facing.' })]}
-        weeklyCapacityMinutes={2400}
-      />
+      <AreasView areas={[area({ colour: '#0d9488', description: 'Anything client-facing.' })]} />
     );
 
     expect(screen.getByText('Anything client-facing.')).toBeInTheDocument();
     const swatch = document.querySelector('span[aria-hidden="true"].rounded-full');
     expect(swatch).toHaveStyle({ backgroundColor: '#0d9488' });
-  });
-
-  it('hides the "of X capacity" suffix and the over-capacity warning when capacity is 0', () => {
-    render(<AreasView areas={[area({ targetWeeklyMinutes: 300 })]} weeklyCapacityMinutes={0} />);
-
-    expect(screen.getByText(/5h a week claimed across 1 area/i)).toBeInTheDocument();
-    expect(screen.queryByText(/of.*capacity/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/add up to more than/i)).not.toBeInTheDocument();
   });
 });
