@@ -14,6 +14,8 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 
 > **On hold, 2026-08-08: ongoing vault sync.** The one-time zip export/import (phase 15 + the zip half of 17, at `/resparkable/vault`) shipped and stays. Everything that makes it a standing _sync_ rather than a download/upload — the reconciler (phase 16), the Managed transport and tick sweep (rest of 17), and all of Release 4's live folder transports (git, Dropbox, Google Drive) — is paused. Not dropped: still fully specified below, just not being built right now. See §15 for the exact boundary.
 
+> **Added 2026-08-08: Situations (§21).** A fourth thing sits alongside the second brain, sharing and Obsidian: **Situations** — describe or upload a life question, problem or piece of raw material (a transcript, a thread), and work it through four deliberate stages — framing → perspectives → tensions → resolution — that draw on your own brain, on collaborators who've shared with you, and on the model's own read of what hasn't been considered yet. The name **Resparkable** is literally about this: old captured sparks (`ResparkableThought`), reignited against fresh references. Full spec at §21; phased as Release 7 in §15.
+
 ### The Obsidian question, answered
 
 **Postgres + pgvector is the store. Obsidian is a co-equal editing surface synced against it.** Not either/or.
@@ -259,6 +261,8 @@ Four-step pipeline each: TS class → `registerAppCapability` in `lib/app/capabi
 `resparkable-companion` (conversational face, temp 0.4) · `resparkable-triage` (nightly inbox processor, temp 0.1) · `resparkable-connector` (writes connection rationales, temp 0.6 — this one wants divergence) · `resparkable-strategist` (reviews, goal alignment, capacity, temp 0.3) · **`resparkable-judge`** (`kind: 'judge'`, temp 0.0 — the agent `resparkable-horizon-check`'s `judge_call` step actually calls; §6 used the step without seeding its target).
 
 All five share a seeded **`resparkable-core` `AiAgentProfile`** carrying the persona and guardrails, with each agent setting `guardrailsMode: 'append'` and keeping only its own `systemInstructions` (§7). All `knowledgeAccessMode: 'restricted'` — the global KB is not the user's notes. Guard modes set explicitly rather than left at defaults, `citationGuardMode` on especially (§7).
+
+A seventh agent, **`resparkable-instruct`**, arrives in Release 6 (§19) — broadly bound (17 of 18 capabilities) rather than narrowly scoped like the six above, because its whole purpose is carrying out an arbitrary multi-step instruction in one turn.
 
 ### Context contributor — "always knows my goals"
 
@@ -551,6 +555,8 @@ Also: **`lib/orchestration/review-schema/`** defines a declarative schema for re
 **Chat capture** — nothing extra; `resparkable_capture` bound to `resparkable-companion` covers it.
 
 `ResparkableThought.source` therefore becomes `web | pwa | voice | image | shortcut | email | chat | agent | api`.
+
+**Instruct** (Release 6, §19) **is not a capture channel and gets no new `source` value.** It's a second mode on the same bar — where Capture always does exactly one thing (append text, `POST /thoughts`), Instruct hands the text to `resparkable-instruct` as a turn that may call several capabilities, each of which already stamps its own correct `source` (a capture triggered through Instruct is still `source: 'agent'`, same as one triggered through chat today).
 
 ---
 
@@ -1022,7 +1028,7 @@ Two more: **a public link must render the DB row, not the vault file** (a mid-fl
 
 ## 15. Phasing
 
-Four releases. **Release 1 is a complete no-Obsidian build** and is the only one that must happen — every later release is optional and additive, and none of them requires a migration against data Release 1 has already written. Commit per phase.
+Seven releases. **Release 1 is a complete no-Obsidian build** and is the only one that must happen — every later release is optional and additive, and none of them requires a migration against data Release 1 has already written. Commit per phase.
 
 ### Release 1 — the second brain (no Obsidian, no sharing UI)
 
@@ -1118,6 +1124,38 @@ Requires Releases 1 and 2. **Independent of Releases 3 and 4** — it can ship s
 
 **Core-file edits: zero, and now actually zero.** Resparkable is a framework-tier module, so every edit to a Sunrise-owned file is a merge conflict inflicted on every host project. Both edits that needed seams were upstreamed and landed on 2026-07-31 — `run-tick.ts` → `lib/app/jobs.ts` (#469), `protected-nav.tsx` → `lib/app/protected-nav.ts` (#473) — and `app/robots.ts` was dropped as a requirement in favour of per-page `robots` metadata and `X-Robots-Tag`, which are the stronger controls anyway. **Any PR that touches a Sunrise-owned file should be treated as a design failure and sent back for a seam.**
 
+### Release 6 — Instruct mode & billing (§19, §20)
+
+**Requires only Release 1** — the agent layer, capability catalogue and chat plumbing it builds on all shipped in phases 0–8/7b. Independent of Releases 2–5: no sharing, no vault, no pool. Can be built any time after Release 1, in either order relative to Releases 2–5. Phase numbering continues from 29.
+
+| #   | Deliverable                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Verifiable by                                                                                                                                                                                                                                                                   |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 29  | **Billing foundation** (§20): `ResparkableCreditAccount` + `ResparkableCreditLedgerEntry` + `ResparkableBillingSettings` + migration; cost attribution wired into the chat route, the per-user scheduled jobs and the on-demand buttons (briefing regenerate, reindex, ideate); pre-flight hard-block on zero balance; admin billing page (grant credits, exchange rate, service-charge %, visibility default)                                                                                                                                                                                                         | grant credits to a test user; a chat turn's ledger debit matches that turn's summed `AiCostLog.totalCostUsd` plus the configured service charge; a zero-balance user's next model-backed call is refused before any provider request is made                                    |
+| 30  | **Instruct mode** (§19): Capture⇄Instruct toggle on the quick-capture bar; `resparkable-instruct` agent (17 of 18 capabilities — `resparkable_write_review` withheld) added to the chat-agent allowlist; inline instruct panel reusing the existing SSE chat stream and a lightweight, billing-attributable `AiConversation` per turn; `destructive` flag added to the capability catalogue (registration refuses a write capability that omits it; none are `true` yet — no delete/archive capability exists to gate); clarifying-question behaviour on missing required arguments; per-instruction outcome checklist | the worked example — update a goal, capture an idea, add a project, list the inbox — completes in one turn with a 4-item outcome checklist; an instruction missing a required field (e.g. "add a project" with no name) produces a clarifying question, never an invented value |
+| 31  | _(future — not required for v1)_ Multi-agent escalation via the existing `orchestrator` workflow step, for an instruction that genuinely needs a capability deliberately withheld from `resparkable-instruct`                                                                                                                                                                                                                                                                                                                                                                                                          | —                                                                                                                                                                                                                                                                               |
+
+**No new npm dependencies.** Both phases are additive to infrastructure Release 1 already ships — the chat stream, the capability dispatch path, `AiCostLog`, the `orchestrator` step — none of it touches a Sunrise-owned file, per the same rule as every other release here.
+
+**Phase 29 ships before phase 30, not after.** Instruct mode is the highest-volume, highest-stakes consumer of the ledger (a single turn can trigger several billed capability calls), so the pre-flight balance check needs to exist before the feature that would otherwise run for free. The existing chat surface (`resparkable-companion`) starts getting billed and traced the moment phase 29 lands, ahead of Instruct mode existing at all.
+
+**The destructive-confirm gate is designed now with nothing to gate.** None of the 18 existing capabilities can delete or archive anything on a user's behalf — archival today is server-driven only (§11). Phase 30 lands the mechanism (the flag, the pending-action table, the confirm/cancel round trip) so that the first future capability that needs it — an eventual "archive this via chat" — is safe by construction rather than retrofitted under pressure.
+
+### Release 7 — Situations (§21)
+
+**Requires only Release 1.** Shared perspectives (§21.5) additionally need Release 2's `ResparkableGrant` and `access/*` — without it, situations still work end-to-end on own-brain perspectives alone; the feature degrades rather than blocks. Independent of Releases 3–6. Phase numbering continues from 32.
+
+| #   | Deliverable                                                                                                                                                                                                                                                                      | Verifiable by                                                                                                                                                              |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 32  | Schema (`ResparkableSituation`, `ResparkablePerspective`) + migration + `situation` added to `ResparkableEmbedding`'s type list + repo/services/CRUD routes                                                                                                                      | `db:drift-check` green; cross-user isolation test                                                                                                                          |
+| 33  | Framing: `resparkable-situation-framer` agent + `resparkable_update_situation` + readiness gate via the existing `resparkable-judge` + document-source attach (`ResparkableLink{kind:'source'}`)                                                                                 | a framing conversation that stays below the readiness floor never reaches `perspectives`                                                                                   |
+| 34  | Perspectives: `resparkable-perspective` agent + `resparkable_generate_perspectives` — grounded (area/goal) + `generated` + `shared_synthesized` (reads through Release 2's `access/*`)                                                                                           | a situation with no grants produces zero `shared_synthesized` rows and does not error                                                                                      |
+| 35  | Tensions: `resparkable-tension-mapper` agent + `resparkable_map_tensions` + `ResparkableLink{kind:'tension'}` + `GET /resparkable/situations/[id]/graph` + graph UI wiring (existing `d3-force`/React Flow, no new deps)                                                         | a fixture with two opposing perspectives produces a tension a pure embedding-distance pass would have missed                                                               |
+| 36  | Resolution: `resparkable-resolver` agent + `resparkable_propose_resolutions` + `ResparkableReview{horizon:'situation'}` + `resparkable_promote_situation_option`                                                                                                                 | promoting an option creates exactly the named task/project and nothing else                                                                                                |
+| 37  | Sharing: `ResparkableGrant.entityType` gains `'situation'` + `allowSynthesizedPerspective` flag (default off) + live-invite accept flow + review-screen "AI-drafted, not their words" treatment                                                                                  | a grant with the flag off produces no `shared_synthesized` row for that collaborator even when otherwise content-eligible                                                  |
+| 38  | Drafted output (§21.8): `resparkable-drafter` agent + `resparkable_draft_situation_output({outputFormat})` + versioned `ResparkableReview{kind:'drafted_output'}` rows + entity-targeted framing (`ResparkableLink{kind:'concerns'}` to a `ResparkableEntity`, no schema change) | three successive drafts of the same output produce three retrievable review rows, never an overwrite; a situation with no `tensions` stage reached cannot trigger drafting |
+
+**No new npm dependencies.** The graph view, the document pipeline, the invite-token shape, the judge agent and the promote-to-task pattern are all reused as-is — the only genuinely new machinery is the two tables, five new agents (four plus reuse of `resparkable-judge`), and their capabilities.
+
 ---
 
 ## 16. Verification
@@ -1210,6 +1248,16 @@ Requires Releases 1 and 2. **Independent of Releases 3 and 4** — it can ship s
 6i. **Pay-to-rank arriving through the billing system.** The intended model is that paying buys more exposure (§18.10), and the easy implementation of that sentence — weight a paid facet up in the candidate set — reintroduces the status filter §18.4 abolishes, in the one place users cannot see it. A paid facet outranking a more salient free one means someone else's fusion silently got worse. _Money changes how much you participate (facet cap, cadence, `maxFusionsPerCycle`, verbatim, circles), never how favourably you rank in someone else's match; Stage B's salience score stays the only thing ordering a candidate set. The seam that keeps this honest is `resolvePoolEntitlements()` returning **caps only** — no field on it should ever be a weight or a multiplier._
 
 6j. **Nibbles becoming a scoreboard.** Cast updates (18.1) are the feature's only recurring feedback loop, which makes them the natural place for a metric to grow — an exact count, then a comparison, then a percentile, and now people write facets for the number rather than for what is true. _Buckets not integers, never comparative, k-anonymity floor on anything shaped, and no push notification for a near-miss. The whole point of a nibble is to tell you your line is in the right water, not to score you._
+
+**Added by §19 (Instruct mode) and §20 (Billing):**
+
+19a. **A capability ships destructive and unguarded because nobody remembered to set the flag.** The whole confirm-gate depends on `destructive` being set correctly on every write capability, forever, including ones written by someone who never reads this plan. _Mirror the existing `redactProvenance` pattern — registration refuses a capability that doesn't declare `destructive` explicitly, so the unsafe default is a build failure, not a silent gap._
+
+19b. **The clarifying-question guarantee is a prompt, not a wall.** "Never guess" is enforced two ways — required Zod fields the model structurally cannot satisfy without asking, and a persona instruction for everything else — and only the first is a hard guarantee. A sufficiently leading instruction can still talk a confident model into filling in a plausible-but-wrong value for an optional field. _Keep the required-field surface as wide as honestly possible on write capabilities (an optional `title` is a design smell here specifically); treat the prompt-level instruction as a real but probabilistic control, not a substitute for one._
+
+20a. **Estimate leaking into the charge.** §18.4 already established that `estimateWorkflowCost`/`estimateCastCost` are planning-grade, never billing-grade — the same discipline has to hold for the credit pre-flight check, or a systematically-low estimate quietly undercharges every turn while `AiCostLog` shows the truth. _The pre-flight check only ever blocks (compares balance against an estimate with margin); the actual ledger debit is always computed from the real `AiCostLog` rows a turn produced, never the estimate that gated it._
+
+20b. **A credit account that outlives the user.** §6's per-user schedule rows already taught this lesson once — a row keyed by `userId` with `onDelete: SetNull` survives `eraseUser()` and keeps acting. `ResparkableCreditAccount`/`ResparkableCreditLedgerEntry` hold real financial history, which argues for `onDelete: Cascade` (personal data, §"Critical Rules" in `CLAUDE.md`) rather than retention — but a cascade also deletes the record of what a since-deleted user was charged, which is the thing an admin might need for a dispute. _Decide explicitly at implementation time rather than by migration default; whichever way it goes, add it to `SUBJECT_DATA_SOURCES` and to the erasure test matrix (§16.6) before phase 29 ships, not after._
 
 ---
 
@@ -1514,3 +1562,180 @@ Paying users therefore subsidise free users' deliveries, and that is the right w
 > **The trap inside "both parties pay".** Once allowance is checked pairwise, the tempting optimisation is to prefer pairs where both sides can pay — better economics per fusion. That is pay-to-rank (risk 6i) with a spreadsheet's blessing: free users would systematically drift to the back of every candidate set. **Allowance is a gate applied _before_ salience ordering, never a tiebreak within it.** A free user's facet with a salience of 0.9 beats a payer's at 0.7, always, and the payer's allowance covers the delivery.
 
 **A free tier is structurally required, not a growth tactic.** The floor is 25 currently-cast facets from 5 distinct users. A paywall in front of publishing means an empty pool, which means nobody's first experience is good, including the people who paid. Free users must be able to publish and receive; what they buy is _more_.
+
+---
+
+## 19. Instruct mode — natural language, multiple steps, one turn
+
+**Capture and Instruct are the same bar, two modes.** Capture (§8) is deliberately dumb: one field, one `POST /thoughts`, no model call, optimised for never losing a thought. Instruct is the same `components/resparkable/layout/quick-capture.tsx` surface with a mode toggle — submitting in Instruct mode hands the text to a new agent instead of the thoughts endpoint, so "update my goal, record this idea, add a project, and tell me what's in my inbox" runs as one turn, not four trips to four different pages.
+
+**Not a full-page hand-off.** The exchange — including a clarifying question or a destructive-action confirmation, both below — happens inline in a small panel anchored under the bar, reusing the existing `/api/v1/resparkable/chat/stream` SSE plumbing. It never navigates to `/resparkable/chat`. Each Instruct turn still creates a real `AiConversation` (so provenance and billing, §20, have somewhere to attach, and so a user who wants to see the full trace later can), but it's tagged and excluded from the primary conversation list by default — Instruct is a mode of the capture bar, not a new item in chat history.
+
+### The agent
+
+**`resparkable-instruct`** — a seventh agent, seeded alongside the existing six (§5), sharing the `resparkable-core` profile. Bound to 17 of the 18 capabilities in the catalogue — everything except `resparkable_write_review`, which stays `resparkable-strategist`'s alone, the same "narrow, deliberate exclusion with a stated reason" pattern every other agent in §5 already follows. This is the "either all the capabilities needed, or delegate" fork resolved in favour of the simpler side: the chat tool-loop already supports several capability calls in a single assistant turn (it's how a companion chat message can capture _and_ search today), so a broadly-bound single agent covers the worked example — goal, idea, project, inbox — without needing cross-agent delegation.
+
+**Deliberately deferred, not designed away:** true multi-agent dispatch for instructions that need a capability `resparkable-instruct` doesn't have (most plausibly `write_review`) can reuse the `orchestrator` workflow step the connection-finder and morning-briefing workflows already use (§6) — plan → delegate in parallel or sequence → replan, bounded by `maxRounds`/`maxDelegationsPerRound`/`budgetLimitUsd`. It is not built in phase 30 (§15) because nothing in the stated use case needs it yet, and reaching for it before usage proves the need would mean carrying workflow-execution latency and cost on every Instruct turn instead of only the ones that require it.
+
+`resparkable-instruct` is added to the chat route's `RESPARKABLE_CHAT_AGENT_SLUGS` allowlist alongside `resparkable-companion` — still resparkable-owned, still unreachable except through the app's own routes, not exposed over MCP (§7) at launch. An unattended MCP client instructing the brain to create and modify data is a materially different risk profile than a browser session with a human reading every response; revisit only if there's a real request for it.
+
+### Never guessing
+
+Two layers, of different strength, and the plan says so plainly rather than overselling either:
+
+1. **Structural (a real guarantee).** A write capability's Zod schema is `.strict()` and its required fields are actually required — `resparkable_upsert_project` cannot be called without a title because the schema won't validate a call without one. An ambiguous instruction that's missing a required field mechanically cannot be satisfied by invention; the model's only path forward is to ask.
+2. **Prompt-level (a strong but probabilistic guarantee, same as every other guardrail in this plan).** `resparkable-instruct`'s `systemInstructions` state the rule directly — if an instruction could reasonably mean more than one thing, or a value is only being guessed at, ask one specific question naming what's missing, rather than picking a plausible default. This is enforced the same way `guardrailsMode`/`citationGuardMode` are enforced everywhere else in §5 — a strong instruction to a well-behaved model, not a technical constraint. Risk 19b (§17) records this explicitly so it isn't mistaken for the same kind of guarantee as (1).
+
+### The destructive-confirm gate
+
+**Ambiguity gets a clarifying question; destructiveness gets a confirmation, regardless of confidence.** Even an instruction the model is completely sure about — "archive the Q2 planning project" — stops for an explicit yes before it runs, because confidence and reversibility are different axes and only one of them is safe to act on alone.
+
+**Mechanism.** Every capability catalogue entry gains a required `destructive: boolean` field. Following the existing `redactProvenance`-must-be-overridden pattern (§5), **registration refuses a write capability that doesn't declare it** — an unsafe default becomes a build failure, not a silent gap (risk 19a, §17). None of today's 18 capabilities are destructive; there is no delete or archive capability yet (archival is server-driven only, §11). The gate is built now, with nothing to gate, so the first future capability that needs it — an eventual "archive this via chat" — is safe by construction.
+
+At runtime: when `resparkable-instruct` wants to call a capability flagged `destructive: true`, the handler intercepts before dispatch. It does not execute. Instead it persists a short-lived `ResparkableInstructPendingAction` (capability slug, the validated and pinned arguments — not re-editable, only confirmable or cancellable — conversation id, an expiry of a few minutes) and returns a "confirm required" event in the SSE stream, rendered as a Confirm/Cancel affordance in the Instruct panel. Confirming calls `POST /api/v1/resparkable/instruct/actions/[id]/confirm`, which re-checks ownership and expiry and then dispatches the pinned arguments through the **same** capability path a normal call would take — so a confirmed destructive action is exactly as audited and traced as anything else. Cancelling, or letting it expire, does nothing, and the model's next turn is told the action was declined so it can report that back rather than silently retrying.
+
+This is a Resparkable-owned mechanism, not a reuse of the platform's `human_approval` workflow step / chat approval-card (which exist and do something adjacent — see `.context/orchestration/workflows.md` and `.context/admin/orchestration-approvals.md`). That machinery pauses an entire `AiWorkflowExecution`; gating one capability call inside a live chat turn is a much smaller problem and doesn't need a workflow underneath it.
+
+### Confirming it was done, and feeding that back
+
+Every Instruct turn's final assistant message is required, by prompt contract, to enumerate what it was asked to do and the outcome of each — **done**, **needs your confirmation** (the destructive case above), or **couldn't do it, because…** — rendered as a short checklist in the panel rather than prose. This generalises the existing tool-call-chip precedent from `resparkable-chat` (`agents.md` §12, "a chip naming which tools ran") from one chip per tool call to one line per _instruction_, since a single instruction can resolve to zero, one, or several capability calls.
+
+---
+
+## 20. Cost tracing & billing
+
+**Nothing here exists today, in either direction.** `AiCostLog` (`prisma/schema/orchestration-providers.prisma`) logs `inputTokens`/`outputTokens`/`inputCostUsd`/`outputCostUsd`/`totalCostUsd` per `agentId`/`conversationId`/`workflowExecutionId` — but has **no `userId` column**, and nothing in the orchestration schema has an organization or account concept at all; `AiOrchestrationSettings` is a single global singleton. There is no credit, balance, wallet or service-charge concept anywhere in the codebase. Both a per-user ledger and a markup on top of raw token cost are new, whichever tier they're built in.
+
+**Built entirely inside the Resparkable tier — no edits to `AiCostLog` or any other Sunrise-owned model.** Attribution works by reading the cost rows the platform already writes and joining them back to a user through data Resparkable already owns (a conversation or workflow execution's `userId`), the same "loose, soft reference across the tier boundary" pattern `transfer.md` documents for cross-table references elsewhere in this plan. This was a real fork in the road — a platform-wide credit system would be more broadly useful (any AI feature in the app could bill against it, not just Resparkable) but means adding `userId` and a ledger to Sunrise-owned schema, which needs an upstream ask and a seam landing first, the same sequence phase 0b already went through twice. Scoped to Resparkable for now; nothing here rules out generalising it later; §20's closing note flags the one place (§18's `resolvePoolEntitlements()`) it would matter first.
+
+### Schema — `prisma/schema/framework-resparkable.prisma`
+
+- **`ResparkableCreditAccount`** — `userId` (unique, FK, `onDelete: Cascade` pending the erasure-order decision risk 20b flags), `balanceCredits`, created alongside `ensureResparkableSpace()`.
+- **`ResparkableCreditLedgerEntry`** — append-only, never mutated or deleted (the same instinct as `AiAgentCapability`'s revoke-not-delete and `ResparkableLink`'s status-not-deletion elsewhere in this plan): `userId`, `kind` (`admin_grant | agent_spend | refund`), `creditsDelta`, `tokenCostUsd`, `serviceChargeUsd`, `totalUsd`, loose references (`relatedConversationId?`, `relatedWorkflowExecutionId?`, `relatedCostLogId?` — no FK across the tier boundary, matching the soft-reference pattern), `note?`, `createdByAdminId?` (grants only), `createdAt`. The balance is the sum of this table; whether `ResparkableCreditAccount.balanceCredits` is a maintained cache or a live aggregate is an implementation choice, not a design one.
+- **`ResparkableBillingSettings`** — one global admin singleton, `slug: 'global'` (mirrors `AiOrchestrationSettings`): `creditsPerUsd` (the exchange rate — an admin can run this as literal dollars at 1:1, or as an abstract "credits" unit), `serviceChargePercent` (Resparkable's markup on top of raw token cost), `costVisibleToUsersDefault` (boolean — the one global on/off switch this plan ships; a per-user override is not v1), `currencyLabel` (display only), `newUserGrantCredits` (defaults to **0** — a welcome grant is opt-in, not a silent giveaway of real provider spend).
+
+### Attribution — reading what the platform already logs
+
+Resparkable already owns the code at every point a billable action happens, so attribution never needs a hook into Sunrise-owned code:
+
+1. **Chat turns** (`resparkable-companion` and `resparkable-instruct`) — right after a turn resolves in `POST /api/v1/resparkable/chat/stream`, sum that turn's `AiCostLog` rows by `conversationId`, compute `serviceChargeUsd = tokenCostUsd × serviceChargePercent / 100`, convert to credits via `creditsPerUsd`, write one `agent_spend` entry.
+2. **Scheduled workflows already keyed to a user** (§6's five workflows, each run via a per-user `AiWorkflowSchedule`) — same read, keyed by `workflowExecutionId`, at the point `registerResparkableJobs()`'s pass finishes that user's run.
+3. **On-demand buttons** outside chat (briefing regenerate, reindex, ideate) — same read, keyed by whichever execution/conversation id that route already receives back.
+
+**Pre-flight is a block, never the charge.** Before dispatching a model-backed action, check `ResparkableCreditAccount.balanceCredits`. At zero or below, refuse before any provider call is made — a blocked user never burns tokens their balance can't cover (the "hard block" decision). Capability dispatches that never touch a model (`resparkable_reprioritise`, purely deterministic) aren't gated at all. Where an estimate is useful for the refusal message, reuse `estimateWorkflowCost`/`estimateCastCost` (§18) — but per §18.4's own warning and risk 20a (§17), **the estimate only ever informs the block; the ledger debit that actually happens afterward is always computed from real `AiCostLog` rows**, never the estimate.
+
+### Admin allocation
+
+A **Billing** tab on `/admin/resparkable/settings` (which already exists, for document handling — the framework README's status table): a per-user balance table with a "grant credits" action (amount + note, logged as `admin_grant`), and the `ResparkableBillingSettings` form. This is the whole of v1's billing UI — **"to begin with it will be pretend billing"** means exactly this and nothing more; a real purchase flow is a payments integration and its own separate plan item, written when the product actually needs one, not designed here.
+
+### Showing it to the user
+
+`MessageProvenance` (`.context/orchestration/provenance.md` — "the shape is open for extension") gains a `costTrace` field: `{ agentSlug, tokenCostUsd, serviceChargeUsd, totalCreditsCharged, visible }`, `visible` resolved server-side from `ResparkableBillingSettings.costVisibleToUsersDefault`. **The ledger entry is always written regardless of this setting — turning display off hides it from the user, it never loses the audit trail.** Rendered, when visible, under a chat turn's footer, under an Instruct-panel outcome checklist, and as a small readout on the on-demand-button results (briefing regenerate, reindex, ideate) — "per turn, or per click of a button that invokes an agent call," per the ask that started this section.
+
+**"Which agents were invoked"** reuses `capabilityCalls: ToolCallTrace[]`, already on `MessageProvenance` and already listing every capability a turn dispatched, in order (§19's per-instruction checklist is a coarser view over the same data). Each entry gains the `agentSlug` that made the call — trivial while it's always `resparkable-companion` or `resparkable-instruct`, and the field that becomes load-bearing if §19's deferred multi-agent escalation ever ships, where an entry could be attributed to a delegated sub-agent instead of the top-level one.
+
+### One thing this doesn't unify
+
+§18 (Cross-Pollination, not yet built) already has a cost-adjacent concept — `resolvePoolEntitlements()`, a hardcoded free-tier seam gating a cadence allowance (fusions per fortnight), deliberately **caps only, never a weight** (risk 6i). That's a different axis from this ledger — a matching-cadence throttle, not a dollar-denominated spend account — and this plan does not merge them. If Release 6 ships before Release 5, `resolvePoolEntitlements()` reading from `ResparkableCreditAccount` instead of staying hardcoded is a natural follow-up, flagged here so the two don't drift apart by accident, not designed further now.
+
+---
+
+## 21. Situations — perspectives, tensions, resolution
+
+**Added 2026-08-08.** The name **Resparkable** is about re-_sparking_ — old captured fragments (`ResparkableThought`, the etymological "spark") brought back and set against fresh references. Situations is the mechanism that does that on purpose, at the moment you actually need it: not a background sweep finding a connection you didn't ask for (§4, §6), but a deliberate "help me think this through," ending with the same connective tissue — perspectives, tensions, options — the rest of the brain builds passively.
+
+A **situation** is a life question, a decision, a problem, or raw external material (a transcript, a thread, a video's captions) worked through in four stages: **framing → perspectives → tensions → resolution**. Each stage is a deliberate step the user (or their agent) advances explicitly — never automatic, unlike the nightly sweeps in §6.
+
+### 21.1 Data model
+
+New table `ResparkableSituation` (D1: satellite off `ResparkableSpace`, `userId` cascade):
+
+| Field                                        | Notes                                                                                                                 |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `title`, `body Text`                         | grown through the framing conversation, not a fixed-length capture                                                    |
+| `stage`                                      | `framing \| perspectives \| tensions \| resolution \| resolved`                                                       |
+| `readinessScore Float?`                      | written once by `resparkable-judge`'s framing-readiness call (§21.2), gates the `framing` → `perspectives` transition |
+| `resolvedAt DateTime?`                       | set on the terminal transition; a resolved situation can be reopened, which clears it rather than blocking a new pass |
+| `visibility`, `archivedAt`, `archivedReason` | same columns and same semantics as every other typed entity (§1)                                                      |
+
+New table `ResparkablePerspective` (D1, `userId` cascade — belongs to the _situation owner_, never to the collaborator it may describe):
+
+| Field                  | Notes                                                                                                                                                                                                                                                                                                                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `situationId`          | FK, cascade                                                                                                                                                                                                                                                                                                                                                 |
+| `basis`                | `area \| goal \| pattern \| generated \| shared_synthesized \| shared_live`                                                                                                                                                                                                                                                                                 |
+| `basisRef`             | `areaId`/`goalId` when grounded, null for `generated`/`shared_*`                                                                                                                                                                                                                                                                                            |
+| `sourceUserId String?` | the collaborator, for `shared_*` only. **`onDelete: SetNull`** — CLAUDE.md's rule for a retained-but-non-personal FK. If the collaborator is erased, the drafted perspective is the owner's own reflection material now (same precedent as a kept Cross-Pollination fusion surviving the counterpart's erasure, §18.6) and stays; only the attribution goes |
+| `summary Text`         | the perspective itself                                                                                                                                                                                                                                                                                                                                      |
+| `status`               | `draft \| confirmed` — `shared_live` rows start `draft` until the collaborator actually writes their own text; everything else is `confirmed` on generation                                                                                                                                                                                                 |
+
+**No new embedding table.** Tension-finding doesn't need one (§21.4), and a perspective's text is short-lived, situation-scoped, and not worth the re-embed/drift-probe surface D2 exists to avoid paying for six times over. `ResparkableEmbedding`'s type list gains **`situation`** (the body is worth finding later — "what did I think about this in March"), not `perspective`.
+
+**Tensions reuse `ResparkableLink`**, `sourceType`/`targetType: 'perspective'`, `kind: 'tension'`, `strength`, `rationale` — D2's whole argument (one polymorphic edge table) applies unchanged; a second tension-specific table would be exactly the kind of table D2 was written to prevent.
+
+**Resolution reuses `ResparkableReview`**, `horizon: 'situation'` — same "background workflows persist output the UI renders" role it already plays for the weekly/monthly reviews (§1, §6). A `kind String` discriminator (`decision | drafted_output`, additive string value per §1's convention — not a migration) distinguishes the two resolution modes §21.6 and §21.8 write.
+
+**Situations are absent from `score.ts`, on purpose** — the same reasoning §1 gives for excluding `ResparkableEntity`: a situation sitting open for three weeks should not inflate anything's priority score by proximity. It surfaces through its own `stage`, not through the scorer.
+
+### 21.2 Framing
+
+`resparkable-situation-framer` (new agent, temp 0.4, shares the `resparkable-core` profile like the other agents in §5) — a conversational agent bound to exactly `resparkable_update_situation` and `resparkable_search`, so it can ground questions against your existing notes — "you mentioned this client before, is that related?" — without ever writing outside the one situation it's scoped to.
+
+Readiness to advance is **not** a new agent — it's the existing `resparkable-judge` (`kind: 'judge'`, temp 0.0), scoring 0–1 on "is there enough here to generate perspectives against," the same shape as the horizon-check's goal-evidence call (§6). Below a floor, the framer keeps asking; the UI never blocks on it — a situation can sit in `framing` indefinitely, same as an unfinished thought sits in the inbox.
+
+Uploaded source material (a transcript, a thread) goes through the **existing document pipeline unchanged** — `ingestDocument()`, same parsers, same chunker, same `ResparkableDocument` table (§4) — and attaches via `ResparkableLink{kind: 'source'}`. No new upload surface.
+
+### 21.3 Perspectives
+
+`resparkable-perspective` (new agent, temp 0.6–0.7, the same "wants divergence" brief §6 gives `resparkable-connector`) generates, in one call per situation:
+
+1. One **grounded lens per active `Area`/live `Goal`** — mechanical, not creative: the same context assembly `loadResparkableContext` already does (§5), reframed as "how does this look against X."
+2. Up to N **`generated`** framings — angles nobody's raised, capped (mirrors `resparkable_ideate`'s `count` parameter, §5) and rendered in the UI with a visibly different treatment (label + muted styling) from the grounded ones — the plan's existing rule that "a sweep that stopped at its cap looks like it found everything" (§9) applies here too: a generated perspective must never look like a fact about you.
+3. **`shared_synthesized`** perspectives for every collaborator who both (a) has an active `ResparkableGrant` on relevant content and (b) has set the new **`allowSynthesizedPerspective`** flag on it (§21.5). Reads go through `access/*`, never `repo/*` — D5 unchanged, because this is a shared query, not a third kind.
+
+Perspective generation is a **capability** (`resparkable_generate_perspectives`), triggerable from chat or the situation page, and re-runnable — a second pass adds to the set rather than replacing it, since a perspective the user has already read and reacted to shouldn't silently vanish.
+
+### 21.4 Tensions — the one deliberate departure from D4
+
+§4's connection-finder (D4) works because two _similar_ things are the interesting case — embed everything, order by distance, done for free. Tension-finding inverts that: two perspectives **in conflict** are very often the _closest_ pair in embedding space, because they're arguing about the same thing. Distance-based candidate generation would systematically miss the tensions that matter and surface only the boring, unrelated pairs — the opposite failure mode from Cross-Pollination's near-duplicate problem (§18.6), solved the opposite way.
+
+So tensions skip embeddings entirely. `resparkable-tension-mapper` (new agent, temp 0.3–0.5 — measured, not divergent; the job is finding real disagreement, not manufacturing drama) reads **all** of a situation's perspectives in one call — a situation has single-digit-to-teens of them, never the thousands D4 is built for — and returns pairwise tensions with a rationale and a strength, written as `ResparkableLink` rows (§21.1). Cheap: one call per situation, not a scheduled sweep.
+
+### 21.5 Sharing — the Grant extension this forces
+
+Extend `ResparkableGrant.entityType` (§13) to accept `'situation'`, `role: 'commenter'` — a collaborator invited this way can write exactly one `ResparkablePerspective{basis: 'shared_live', status: 'draft' → 'confirmed'}` and nothing else on the owner's brain. Reuses the existing invite-token shape (§13, `inviteTokenHash`, `expiresAt`) rather than a parallel construct — the plan's existing rule for Cross-Pollination's endgame ("no second sharing mechanism," §18) applies here just as much.
+
+**New consent surface, not a rename of an old one.** An existing Grant means "you can read what I shared" — it says nothing about "an AI may draft a simulated opinion of mine from it inside someone else's private reflection." Those are different acts on the same data, so `allowSynthesizedPerspective Boolean @default(false)` is its own field, defaulted **off**, set per grant, changeable at any time, and every `shared_synthesized` perspective it produces is rendered with an unmistakable "AI-drafted, not X's own words" treatment — the review-screen precedent §18.3 sets for facets applies here too: never let generated text masquerade as a real person's statement.
+
+**Erasure.** The collaborator's own erasure never touches the owner's situation or its perspectives (`sourceUserId` is `SetNull`, §21.1) — same shape as a kept Cross-Pollination artefact outliving its counterpart (§18).
+
+### 21.6 Resolution
+
+`resparkable-resolver` (new agent, temp 0.4) reads the situation, its perspectives and its tension map, and drafts options — the same `llm_call → reflect → review` shape as the weekly review (§6) — persisted as `ResparkableReview{horizon: 'situation', kind: 'decision'}`, each option naming which tensions it resolves and which it trades away. **Read-only, like every review-writing agent to date** (§6b): it proposes, it never creates a task. Turning a chosen option into real work is a separate, explicit capability, `resparkable_promote_situation_option`, mirroring `resparkable_promote_thought` (§7b) exactly — same rule that the model can write most of the brain, but a promotion is always a named, deliberate act.
+
+### 21.7 Graph
+
+`GET /resparkable/situations/[id]/graph` returns perspectives as nodes and tensions as edges, in the same `{ nodes[], edges[] }` shape the entity graph already returns (§3, §9) — rendered by the **existing** `d3-force` + React Flow graph view with zero new client dependencies. Edge weight/colour by `strength`, the same convention the entity graph uses for `ResparkableLink.strength` today.
+
+### 21.8 A second resolution mode — drafted output
+
+**Added 2026-08-08.** §21.6's resolution mode answers "what should I do." This one answers "what should I _say_" — the same tension map, pointed at a piece of writing instead of a set of actions. A YouTube script, a podcast outline, an article, a social post, a difficult email — the framing → perspectives → tensions pipeline is identical up to this point (a situation still has to clear `tensions` before either mode is reachable, so drafted output is never a one-shot "make me a post about X" shortcut around the thing that makes it good: the friction between viewpoints is the material). Only the last step changes what it produces.
+
+`resparkable-drafter` (new agent, temp 0.7 — creative, format-aware, shares `resparkable-core` by default) — capability `resparkable_draft_situation_output({ outputFormat })`, `outputFormat String @db.VarChar(32)` validated by Zod against a starting set (`youtube_script | podcast_outline | article | social_post | email | talking_points`) but stored as a plain string, same "additive value, not a migration" convention as `basis` and `origin` elsewhere in this plan. Each run writes a **new** `ResparkableReview{horizon: 'situation', kind: 'drafted_output', outputFormat}` row rather than overwriting the last one — the same append-don't-mutate instinct as `ResparkableCreditLedgerEntry` and `ResparkableLink`'s status-not-deletion (§1, §20): a discarded third draft is still evidence of how the piece evolved, and "what did I try before this" is a real question a writer asks.
+
+**No forced promotion path, and deliberately so.** A decision-option needs `resparkable_promote_situation_option` (§21.6) because "pick option B" isn't yet task-shaped — the system has to decide what tasks that implies. A drafted script or email is already the finished (or draft) artefact; its destination is outside Resparkable — a camera, a send button, a publish flow. If someone wants to track _producing_ it as a project (storyboard → record → edit → publish), that's just `resparkable_upsert_project`/`resparkable_upsert_task` used normally — no new capability, because nothing new is happening: a content project is a project.
+
+**Entity-targeted framing is what unifies "draft the video" and "draft the email to Acme."** A situation can already link to a `ResparkableEntity` the same way it links to a source document (§21.2) — `ResparkableLink{sourceType:'situation', targetType:'entity', kind:'concerns'}`, no schema change. When it does, perspectives naturally include the counterpart's likely view (`shared_synthesized` if they've granted access and opted in, `generated` as a steelman otherwise, §21.3–21.5 unchanged), and a drafted `email`/`talking_points` output is addressed to them. Public content and a hard conversation with a client are the same mechanism pointed at a different `outputFormat` and, optionally, a different kind of counterpart.
+
+**Voice is an open question, not a build item here.** `resparkable-drafter` inherits `resparkable-core`'s persona by default, but a public-facing script and a private companion probably want different voices — Agent Profiles already support exactly this composition (`.context/orchestration/agent-profiles.md`), so a later `resparkable-content` profile is a rebind, not new machinery. Flagged, not designed further now.
+
+### 21.9 Other use-case journeys the same engine already supports
+
+No new schema for any of these — they're existing pieces of §21 used for a different-shaped problem than "personal decision":
+
+- **Preparing for a hard conversation.** The email/talking-points end of §21.8, generalised: a performance review, a negotiation, a difficult conversation with a partner. The counterpart's perspective is synthesized or (with `shared_live`) genuinely theirs; the tensions _are_ the things you're bracing for; the resolution is what you actually say. This is §21.8's `email`/`talking_points` formats plus the entity-targeting note above — no separate feature.
+- **Group decision facilitation.** `shared_live` (§21.5) already lets more than one real person contribute a perspective — a situation framed for a team ("should we pivot the roadmap") with two or three collaborators genuinely weighing in is a lightweight structured alternative to a meeting, using nothing beyond what §21.3–21.5 already specify. Worth naming as its own journey because it's the reason `shared_live` earns its complexity rather than being an edge case nobody uses.
+- **Closing the loop.** §21.1 already allows reopening a resolved situation, which clears `resolvedAt` rather than blocking a new pass. The journey worth naming: reopen it a few weeks later specifically to add a `pattern`-basis perspective — "what actually happened" — and run resolution once more into a short retrospective. That reflection is exactly the kind of "what you actually finished" material the morning briefing already surfaces from `ResparkableEvent` (§6) — a situation that closes the loop on itself is free content for a feature that already exists.
+- **Multi-source synthesis.** Framing already accepts uploaded material (§21.2) — a situation seeded from several documents (three articles on the same topic, a lecture transcript plus your notes) doesn't have to be a _decision_ at all. Perspectives become "what each source argues," tensions become where they disagree, and resolution is a synthesized explainer. Nothing here is decision-shaped, and nothing needs to be — the pipeline doesn't know or care whether what it's reconciling is your own conflicting instincts or three authors who disagree with each other.
+
+Phasing is Release 7, §15.
