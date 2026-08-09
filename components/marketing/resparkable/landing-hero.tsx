@@ -32,8 +32,11 @@ import { SparkMesh } from '@/components/brand/spark-mesh';
  * product actually does, in plain terms, and the subhead fills in the rest.
  *
  * The second half was "Get it back when it matters.", which was accurate and
- * flat. The headline now runs the full arc instead: catch, kindle, ignite, in
- * one sentence, ending on the claim the rest of the page argues for.
+ * flat, then "Catch and kindle the spark of an idea, then ignite others.",
+ * which ran the full arc but read as a description rather than a hook. The
+ * headline now asks the question instead: "Is your idea resparkable?" puts
+ * the product's own name in the reader's mouth as a verb, and the rest of the
+ * page is the answer.
  *
  * ## Why the type is a step smaller than a hero's usually is
  *
@@ -72,7 +75,7 @@ export function LandingHero(): React.ReactNode {
             className="obsidian-reveal mt-5 text-3xl sm:text-4xl md:text-5xl"
             style={{ animationDelay: '70ms' }}
           >
-            Catch and kindle the spark of an idea, then ignite others
+            Is your idea resparkable?
           </h1>
 
           <p
