@@ -24,8 +24,8 @@ export default function PublicError({
       reset={reset}
       boundaryName="PublicError"
       tag="public"
-      title="Oops! Something went wrong"
-      description="We encountered an unexpected error. Please try again or return to the home page."
+      title="That did not work."
+      description="Something broke on our side rather than yours. Try again, or head back to the front page. If it keeps happening, the contact page reaches the people who can fix it."
       fallback={{
         label: 'Go home',
         href: '/',

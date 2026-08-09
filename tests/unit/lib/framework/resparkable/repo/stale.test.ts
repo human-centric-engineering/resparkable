@@ -1,9 +1,9 @@
 /**
  * Unit Tests: the dormancy queries behind the stale digest.
  *
- * Each of the four asks its question differently, and the differences are the
+ * Each of the three asks its question differently, and the differences are the
  * substance — a single shared "quiet since `lastActivityAt`" query would be
- * simpler and wrong in four distinct ways:
+ * simpler and wrong in three distinct ways:
  *
  * **Projects** need the two-part test. `lastActivityAt` moves when the project
  * row is touched, so a project whose tasks are being ticked off but whose own
@@ -15,15 +15,10 @@
  * mentioned in six live projects. `ResparkableLink` is polymorphic with no FK, so
  * the id can sit on either end — and a link is a signal from whichever end.
  *
- * **Areas** have no `lastActivityAt` at all, deliberately. Time blocks already
- * answer the question and a second column would be a second thing to keep in
- * sync.
- *
  * Test Coverage:
  * - Projects require both no activity and no completed task in the window
  * - Only active/live rows are considered — the archive is not re-proposed
  * - Goals need a target date in the past; a null date never matches
- * - Areas are asked via time blocks, counting plan and actual alike
  * - An entity linked inside the window is excluded, from either end of the edge
  * - `markStillLive` targets `{ id, userId }` together and returns false on a miss
  *
@@ -36,7 +31,6 @@ vi.mock('@/lib/db/client', () => ({
   prisma: {
     resparkableProject: { findMany: vi.fn(), update: vi.fn() },
     resparkableGoal: { findMany: vi.fn(), update: vi.fn() },
-    resparkableArea: { findMany: vi.fn() },
     resparkableEntity: { findMany: vi.fn(), update: vi.fn() },
     resparkableLink: { findMany: vi.fn() },
   },
@@ -45,7 +39,6 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
-  findAreasWithoutTime,
   findDormantEntities,
   findDormantProjects,
   findGoalsPastTarget,
@@ -65,7 +58,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(prisma.resparkableProject.findMany).mockResolvedValue([]);
   vi.mocked(prisma.resparkableGoal.findMany).mockResolvedValue([]);
-  vi.mocked(prisma.resparkableArea.findMany).mockResolvedValue([]);
   vi.mocked(prisma.resparkableEntity.findMany).mockResolvedValue([]);
   vi.mocked(prisma.resparkableLink.findMany).mockResolvedValue([]);
 });
@@ -109,29 +101,6 @@ describe('findGoalsPastTarget', () => {
     const where = whereOf(vi.mocked(prisma.resparkableGoal.findMany));
     expect(where.status).toBe('active');
     expect(where.targetDate).toEqual({ lt: NOW });
-  });
-});
-
-describe('findAreasWithoutTime', () => {
-  it('asks through time blocks, counting anything booked in the window', async () => {
-    // Both `plan` and `actual` count. An area you keep scheduling and never
-    // reaching is a live concern with a scheduling problem, and proposing to
-    // archive it would be wrong.
-    await findAreasWithoutTime(SCOPE, CUTOFF);
-
-    const where = whereOf(vi.mocked(prisma.resparkableArea.findMany));
-    expect(where.timeBlocks).toEqual({ none: { startAt: { gte: CUTOFF } } });
-    expect(JSON.stringify(where)).not.toContain('source');
-  });
-
-  it('reports no last signal — an area has no lastActivityAt to read', async () => {
-    vi.mocked(prisma.resparkableArea.findMany).mockResolvedValue([
-      { id: 'a1', name: 'Health', createdAt: CUTOFF },
-    ] as never);
-
-    const rows = await findAreasWithoutTime(SCOPE, CUTOFF);
-
-    expect(rows).toEqual([{ id: 'a1', title: 'Health', lastSignalAt: null }]);
   });
 });
 

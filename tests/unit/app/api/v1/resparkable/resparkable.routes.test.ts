@@ -79,7 +79,6 @@ function todayPayload(overrides: Record<string, unknown> = {}) {
     goalsAtRisk: [],
     unreviewedLinks: { count: 0, items: [] },
     latestReview: null,
-    capacity: { weeklyCapacityMinutes: 2400, plannedMinutesThisWeek: 0, remainingMinutes: 2400 },
     ...overrides,
   };
 }
@@ -95,13 +94,11 @@ function inboxPayload(overrides: Record<string, unknown> = {}) {
 
 const SETTINGS = {
   timezone: 'UTC',
-  weeklyCapacityMinutes: 2400,
   workStyle: 'balanced',
   priorityWeights: {
     urgency: 0.3,
     goalAlignment: 0.25,
-    projectMomentum: 0.15,
-    areaBalance: 0.15,
+    projectMomentum: 0.3,
     effortFit: 0.1,
     staleness: 0.05,
   },
@@ -359,7 +356,6 @@ describe('PATCH /resparkable/space', () => {
           urgency: 0.9,
           goalAlignment: 0.25,
           projectMomentum: 0.15,
-          areaBalance: 0.15,
           effortFit: 0.1,
           staleness: 0.05,
         },
@@ -385,6 +381,19 @@ describe('PATCH /resparkable/space', () => {
     const response = await invoke(
       SPACE_PATCH,
       req('http://x/api/v1/resparkable/space', { inboxToken: 'b'.repeat(32) }),
+      SESSION_A
+    );
+
+    expect(response.status).toBe(400);
+    expect(updateResparkableSettings).not.toHaveBeenCalled();
+  });
+
+  it('rejects the retired weekly capacity field rather than dropping it silently', async () => {
+    // `.strict()` makes a field the schema no longer knows about a visible 400,
+    // not a quietly ignored write. Weekly capacity per area was removed.
+    const response = await invoke(
+      SPACE_PATCH,
+      req('http://x/api/v1/resparkable/space', { weeklyCapacityMinutes: 2400 }),
       SESSION_A
     );
 

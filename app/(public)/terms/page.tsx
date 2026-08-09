@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { SparkGlyph } from '@/components/brand/spark-glyph';
 import { BRAND } from '@/lib/brand';
 
 const description = `The terms under which ${BRAND.name} is provided, and who owns what.`;
@@ -14,8 +15,8 @@ export const metadata: Metadata = {
 /**
  * Terms page.
  *
- * **Fork-owned scaffold.** Replaces the template's placeholder — which included
- * a Payment Terms section for a product that does not yet charge — with what is
+ * **Fork-owned scaffold.** Replaces the template's placeholder (which included
+ * a Payment Terms section for a product that does not yet charge) with what is
  * actually true. The status box at the top is not marketing copy and should not
  * be read as one: it is there because an unreviewed document that presents
  * itself as a finished contract is the more expensive mistake. Delete it when a
@@ -25,8 +26,16 @@ export default function TermsPage() {
   return (
     <div className="container mx-auto px-4 pt-14 pb-16 md:pt-20 md:pb-24">
       <div className="mx-auto max-w-3xl">
-        <p className="term-label">terms</p>
-        <h1 className="mt-5 text-4xl sm:text-5xl">The arrangement.</h1>
+        <SparkGlyph className="obsidian-reveal mb-5 h-5 w-[38px] opacity-40" />
+        <p className="term-label obsidian-reveal" style={{ animationDelay: '70ms' }}>
+          terms
+        </p>
+        <h1
+          className="obsidian-reveal mt-5 text-4xl sm:text-5xl"
+          style={{ animationDelay: '140ms' }}
+        >
+          The arrangement.
+        </h1>
         <p className="term-meta mt-6">Last updated 6 August 2026</p>
 
         <div className="bg-card border-border mt-8 rounded-lg border p-5">

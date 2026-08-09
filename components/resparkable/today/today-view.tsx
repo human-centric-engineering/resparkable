@@ -18,9 +18,7 @@
  * 2. **The ranked list**, in `priorityScore` order straight from the endpoint. No
  *    client-side sorting — the scorer owns the order, and a component that
  *    re-sorted would eventually disagree with the number it displays.
- * 3. **Capacity**, because "here are twelve tasks" without "you have six hours" is
- *    a list, not a plan.
- * 4. **Everything else** — blocks, goals at risk, suggestions, the last review —
+ * 3. **Everything else**: blocks, goals at risk, suggestions, the last review,
  *    as context beneath the decision, not competing with it.
  */
 
@@ -29,7 +27,6 @@ import Link from 'next/link';
 import { AlertTriangle, CalendarClock, Inbox, Link2, Sun } from 'lucide-react';
 
 import { BriefingCard } from '@/components/resparkable/today/briefing-card';
-import { CapacityMeter } from '@/components/resparkable/today/capacity-meter';
 import { TaskRow, formatMinutes } from '@/components/resparkable/today/task-row';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
@@ -94,7 +91,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
               description={
                 payload.inboxCount > 0
                   ? 'You have thoughts waiting in the inbox. Turn one into a task and it starts being ranked.'
-                  : 'Capture a thought on the right, then promote it to a task. Tasks are ranked by what is due, what serves a goal, and which part of your life needs attention.'
+                  : 'Capture a thought on the right, then promote it to a task. Tasks are ranked by what is due, what serves a goal, and whether its project is moving.'
               }
               action={
                 payload.inboxCount > 0 ? (
@@ -114,49 +111,38 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Capacity</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CapacityMeter {...payload.capacity} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="flex items-center gap-2 text-sm">
-              <CalendarClock className="h-4 w-4" aria-hidden="true" />
-              Today&rsquo;s blocks
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {payload.timeBlocks.length === 0 ? (
-              <p className="text-muted-foreground text-xs">
-                Nothing blocked out.{' '}
-                <Link href={RESPARKABLE_ROUTES.PLAN} className="underline">
-                  Plan your day
-                </Link>{' '}
-                — blocked time is what makes the capacity number and the effort-fit ranking real.
-              </p>
-            ) : (
-              <ul className="space-y-1.5 text-xs">
-                {payload.timeBlocks.map((block) => (
-                  <li key={block.id} className="flex items-baseline justify-between gap-2">
-                    <span className="truncate">{block.title ?? 'Blocked time'}</span>
-                    <span className="text-muted-foreground shrink-0">
-                      <ClientDate date={block.startAt} showTime />
-                      {' · '}
-                      {formatMinutes(minutesBetween(block.startAt, block.endAt))}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <CalendarClock className="h-4 w-4" aria-hidden="true" />
+            Today&rsquo;s blocks
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {payload.timeBlocks.length === 0 ? (
+            <p className="text-muted-foreground text-xs">
+              Nothing blocked out.{' '}
+              <Link href={RESPARKABLE_ROUTES.PLAN} className="underline">
+                Plan your day
+              </Link>
+              {'. '}Blocked time is what makes the effort-fit ranking real.
+            </p>
+          ) : (
+            <ul className="space-y-1.5 text-xs">
+              {payload.timeBlocks.map((block) => (
+                <li key={block.id} className="flex items-baseline justify-between gap-2">
+                  <span className="truncate">{block.title ?? 'Blocked time'}</span>
+                  <span className="text-muted-foreground shrink-0">
+                    <ClientDate date={block.startAt} showTime />
+                    {' · '}
+                    {formatMinutes(minutesBetween(block.startAt, block.endAt))}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
 
       {payload.goalsAtRisk.length > 0 && (
         <Card className="border-destructive/40">

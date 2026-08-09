@@ -41,7 +41,6 @@ function factors(overrides: Record<string, unknown> = {}): Record<string, unknow
     urgency: 0.8,
     goalAlignment: 0.4,
     projectMomentum: 0.6,
-    areaBalance: 0.2,
     effortFit: 0.5,
     staleness: 0.1,
     base: 0.54,
@@ -77,8 +76,8 @@ describe('PriorityExplainer', () => {
   });
 
   it('names the dominant factor in plain English', () => {
-    render(<PriorityExplainer factors={factors({ dominantFactor: 'areaBalance' })} score={0.4} />);
-    expect(screen.getByRole('button')).toHaveTextContent('Area needs attention');
+    render(<PriorityExplainer factors={factors({ dominantFactor: 'staleness' })} score={0.4} />);
+    expect(screen.getByRole('button')).toHaveTextContent('Been waiting a while');
   });
 
   it('reads an active positive boost as pinned by you', () => {

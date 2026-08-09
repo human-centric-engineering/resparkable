@@ -1,5 +1,5 @@
 /**
- * TodayView + CapacityMeter Component Tests
+ * TodayView Component Tests
  *
  * Two invariants, both from §10 and both silent when broken.
  *
@@ -14,11 +14,6 @@
  * feeds deliberately unsorted input and asserts the DOM order matches the payload
  * rather than the scores.
  *
- * The capacity meter's own invariant: `remainingMinutes` is floored at zero by the
- * service because "minus four hours left" is not actionable, so over-commitment has
- * to be recomputed here or it becomes invisible — a full week and a 40%-over week
- * would look identical.
- *
  * Test Coverage:
  * - Returned-from-snooze tasks appear in their own group, once, and not in the list
  * - Ranked order follows the payload even when scores disagree with it
@@ -26,16 +21,14 @@
  * - The empty state differs depending on whether the inbox has anything in it
  * - Inbox and connection counts render, with a link only when there is something
  * - Goals at risk render only when there are any
- * - Capacity: normal, over-committed, and zero-capacity cases
+ * - Time blocks render, with a fallback title and a computed duration
  *
  * @see components/resparkable/today/today-view.tsx
- * @see components/resparkable/today/capacity-meter.tsx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
-import { CapacityMeter } from '@/components/resparkable/today/capacity-meter';
 import { TodayView } from '@/components/resparkable/today/today-view';
 import type {
   TodayPayloadWire,
@@ -97,11 +90,6 @@ function payload(overrides: Partial<TodayPayloadWire> = {}): TodayPayloadWire {
     // No briefing by default — a brand-new brain before its first overnight run,
     // which is the state most of these cases are describing.
     briefing: { review: null, stale: true, ageHours: null },
-    capacity: {
-      weeklyCapacityMinutes: 2400,
-      plannedMinutesThisWeek: 600,
-      remainingMinutes: 1800,
-    },
     ...overrides,
   };
 }
@@ -206,6 +194,7 @@ describe('TodayView', () => {
     expect(screen.getByText('Nothing ranked yet')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /go to the inbox/i })).not.toBeInTheDocument();
     expect(screen.getByText(/Capture a thought/)).toBeInTheDocument();
+    expect(screen.getByText(/whether its project is moving/)).toBeInTheDocument();
   });
 
   it('offers triage only when the inbox has something in it', () => {
@@ -260,6 +249,7 @@ describe('TodayView', () => {
   it('nudges toward planning when nothing is blocked out', () => {
     render(<TodayView payload={payload()} />);
     expect(screen.getByRole('link', { name: /plan your day/i })).toBeInTheDocument();
+    expect(screen.getByText(/effort-fit ranking real/)).toBeInTheDocument();
   });
 
   it('lists a blocked-out time block with its title and computed duration', () => {
@@ -295,44 +285,5 @@ describe('TodayView', () => {
     );
 
     expect(screen.getByText('Blocked time')).toBeInTheDocument();
-  });
-});
-
-describe('CapacityMeter', () => {
-  it('reports what is left when the week is not full', () => {
-    render(
-      <CapacityMeter
-        weeklyCapacityMinutes={2400}
-        plannedMinutesThisWeek={600}
-        remainingMinutes={1800}
-      />
-    );
-
-    expect(screen.getByText('30h unplanned')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25');
-  });
-
-  it('names an over-commitment the service had to floor at zero', () => {
-    // The endpoint sends `remainingMinutes: 0` for an over-booked week, so without
-    // recomputing here a 40%-over week would read exactly like a full one.
-    render(
-      <CapacityMeter
-        weeklyCapacityMinutes={2400}
-        plannedMinutesThisWeek={3000}
-        remainingMinutes={0}
-      />
-    );
-
-    expect(screen.getByText(/over-committed by 10h/i)).toBeInTheDocument();
-    expect(screen.queryByText(/unplanned/)).not.toBeInTheDocument();
-  });
-
-  it('steps aside rather than dividing by zero when no capacity is set', () => {
-    render(
-      <CapacityMeter weeklyCapacityMinutes={0} plannedMinutesThisWeek={120} remainingMinutes={0} />
-    );
-
-    expect(screen.getByText(/2h planned this week/i)).toBeInTheDocument();
-    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   });
 });

@@ -53,7 +53,7 @@ vi.mock('@/components/resparkable/goals/goals-view', () => ({
 }));
 
 vi.mock('@/components/resparkable/areas/areas-view', () => ({
-  AreasView: (props: { areas: unknown[]; weeklyCapacityMinutes: number | null }) => (
+  AreasView: (props: { areas: unknown[] }) => (
     <div data-testid="areas-view" data-props={JSON.stringify(props)} />
   ),
 }));
@@ -321,14 +321,14 @@ describe('ResparkableGoalsPage', () => {
 // ─── Areas ────────────────────────────────────────────────────────────────────
 
 describe('ResparkableAreasPage', () => {
-  it('reads areas and the space settings concurrently', async () => {
+  it('reads only the areas endpoint', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableAreasPage } =
       await import('@/app/(protected)/resparkable/areas/page');
 
     await ResparkableAreasPage();
 
-    expect(callPaths()).toEqual([`${RESPARKABLE_API.AREAS}?limit=200`, RESPARKABLE_API.SPACE]);
+    expect(callPaths()).toEqual([`${RESPARKABLE_API.AREAS}?limit=200`]);
   });
 
   it('renders LoadError when the areas read fails', async () => {
@@ -343,40 +343,17 @@ describe('ResparkableAreasPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('areas down');
   });
 
-  it('passes null weeklyCapacityMinutes when the space read fails', async () => {
+  it('forwards the areas data when the read succeeds', async () => {
     const areas = [{ id: 'a1' }];
-    vi.mocked(readResparkable).mockImplementation(async (path) =>
-      path.startsWith(RESPARKABLE_API.AREAS) ? ok(areas) : fail(500, 'space down')
-    );
+    vi.mocked(readResparkable).mockResolvedValue(ok(areas));
     const { default: ResparkableAreasPage } =
       await import('@/app/(protected)/resparkable/areas/page');
 
     render(await ResparkableAreasPage());
 
     const view = screen.getByTestId('areas-view');
-    const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
-      areas: unknown[];
-      weeklyCapacityMinutes: number | null;
-    };
+    const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { areas: unknown[] };
     expect(props.areas).toEqual(areas);
-    expect(props.weeklyCapacityMinutes).toBeNull();
-  });
-
-  it('forwards the weekly capacity minutes when the space read succeeds', async () => {
-    const areas = [{ id: 'a1' }];
-    vi.mocked(readResparkable).mockImplementation(async (path) =>
-      path.startsWith(RESPARKABLE_API.AREAS) ? ok(areas) : ok({ weeklyCapacityMinutes: 2400 })
-    );
-    const { default: ResparkableAreasPage } =
-      await import('@/app/(protected)/resparkable/areas/page');
-
-    render(await ResparkableAreasPage());
-
-    const view = screen.getByTestId('areas-view');
-    const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
-      weeklyCapacityMinutes: number | null;
-    };
-    expect(props.weeklyCapacityMinutes).toBe(2400);
   });
 });
 

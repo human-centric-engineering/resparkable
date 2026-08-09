@@ -109,7 +109,6 @@ function makeArea(overrides: Record<string, unknown> = {}) {
     description: null,
     colour: '#ff0000',
     sortOrder: 1,
-    targetWeeklyMinutes: 300,
     archivedAt: null,
     createdAt: ISO,
     updatedAt: ISO,
@@ -549,11 +548,6 @@ describe('todayPayloadSchema', () => {
         stale: false,
         ageHours: 6,
       },
-      capacity: {
-        weeklyCapacityMinutes: 600,
-        plannedMinutesThisWeek: 200,
-        remainingMinutes: 400,
-      },
       ...overrides,
     };
   }
@@ -563,7 +557,6 @@ describe('todayPayloadSchema', () => {
     expect(result.success).toBe(true);
     if (result.success) {
       expect(result.data.tasks).toHaveLength(1);
-      expect(result.data.capacity.remainingMinutes).toBe(400);
     }
   });
 
@@ -577,11 +570,6 @@ describe('todayPayloadSchema', () => {
       makeTodayPayload({ tasks: [makeTodayTask({ id: 42 })] })
     );
     expect(result.success).toBe(false);
-  });
-
-  it('rejects a missing capacity object', () => {
-    const { capacity: _capacity, ...withoutCapacity } = makeTodayPayload();
-    expect(todayPayloadSchema.safeParse(withoutCapacity).success).toBe(false);
   });
 
   it('drops an unknown top-level key rather than failing the whole payload', () => {

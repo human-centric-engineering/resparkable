@@ -190,9 +190,9 @@ export function addZonedMonths(instant: Date, months: number, timeZone: string):
 /**
  * Monday-midnight that starts `instant`'s local week.
  *
- * Monday because `areaBalance` compares logged minutes against
- * `ResparkableArea.targetWeeklyMinutes`, and a week that resets mid-weekend would
- * split a Saturday's work across two budgets.
+ * Monday because that is the convention every "this week" reading in the tier
+ * (snooze presets, retention windows) shares: a week that reset mid-weekend
+ * would be a different answer depending on which caller asked.
  */
 export function startOfZonedWeek(instant: Date, timeZone: string): Date {
   const wall = wallClockAt(instant, timeZone);

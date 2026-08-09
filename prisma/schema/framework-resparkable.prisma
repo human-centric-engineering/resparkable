@@ -69,8 +69,6 @@ model ResparkableSpace {
   /// the kind of small wrongness that makes a tool feel careless (§10).
   timezone String @default("UTC") @db.VarChar(64)
 
-  weeklyCapacityMinutes Int @default(2400)
-
   /// Time-of-day energy profile, Zod-validated at the boundary.
   energyProfile Json?
 
@@ -142,9 +140,10 @@ model ResparkableSpace {
   @@map("framework_resparkable_space")
 }
 
-/// Life domains (Health, Career…). `targetWeeklyMinutes` is what makes this a
-/// life organiser rather than a task list — it drives `areaBalance` in the
-/// scorer, floating a neglected area above a hot work project (§10).
+/// Life domains (Health, Career…): the standing parts of a person's life, kept
+/// deliberately free of any hour target or quota. Resparkable is a reflection
+/// and understanding tool, not an optimisation tool: no scorer factor weighs an
+/// Area by time logged against it (see `.context/framework/resparkable/design-principles.md`).
 model ResparkableArea {
   id     String @id @default(cuid())
   userId String
@@ -154,8 +153,6 @@ model ResparkableArea {
   description String? @db.Text
   colour      String? @db.VarChar(16)
   sortOrder   Int     @default(0)
-
-  targetWeeklyMinutes Int?
 
   /// private | link. NEVER a filter on the owner's own read path (D5, §13).
   visibility String @default("private") @db.VarChar(16)
@@ -695,10 +692,8 @@ model ResparkableChecklistItem {
 
 /// People, companies and market segments — first-class nodes, NOT Areas.
 ///
-/// An Area is a domain of your life with a weekly time target, and
-/// `areaBalance` deliberately floats neglected ones upward. A client is not
-/// that: balancing attention across customers the way you balance Health
-/// against Career is wrong, and overloading Areas would corrupt the scorer.
+/// An Area is a domain of your life (Health, Career…); a client is not that,
+/// and using Areas for clients would blur a distinction worth keeping.
 /// Entities are therefore DELIBERATELY ABSENT from score.ts — a neglected
 /// client surfaces through the stale digest, never by inflating task scores
 /// (§1, §11).

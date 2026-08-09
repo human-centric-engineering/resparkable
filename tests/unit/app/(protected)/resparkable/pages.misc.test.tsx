@@ -320,7 +320,7 @@ describe('ResparkableSettingsPage', () => {
   });
 
   it('forwards the settings to SpaceSettingsForm as `initial` on success', async () => {
-    const settings = { timezone: 'UTC', weeklyCapacityMinutes: 2400 };
+    const settings = { timezone: 'UTC', workStyle: 'balanced' };
     vi.mocked(readResparkable).mockResolvedValue(ok(settings));
     const { default: ResparkableSettingsPage } =
       await import('@/app/(protected)/resparkable/settings/page');

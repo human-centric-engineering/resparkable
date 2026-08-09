@@ -103,7 +103,7 @@ export type RefTarget =
  * not idempotent and a report that claims work it did not do.
  */
 export const WRITABLE_KEYS: Record<string, readonly string[]> = {
-  area: ['title', 'colour', 'target-weekly-minutes', 'sort-order'],
+  area: ['title', 'colour', 'sort-order'],
   goal: ['title', 'horizon', 'status', 'target-date', 'parent', 'area'],
   project: ['title', 'status', 'area'],
   task: [

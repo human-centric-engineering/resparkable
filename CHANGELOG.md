@@ -18,6 +18,136 @@ release process.
 
 ### Added
 
+- **`SparkMesh`, `SparkGlyph`/`SparkRule` and `VerbDiagram`: the mark, opened
+  out into the graph it is drawn from.** `components/brand/spark-mesh.tsx` draws
+  the lemniscate as eleven vertices and twelve facets inside a wider field of far
+  nodes, with a pulse lapping the loop, the vertices lighting as it reaches them,
+  and three far nodes catching shortly after the spark crosses the centre, while
+  the crossing does not dim to pay for it. Server Components throughout: every
+  moving part is `opacity`, `transform` or `stroke-dashoffset`, so there is no
+  rAF loop, no client bundle and no hydration.
+
+  Timing lives in the new `components/brand/geometry.ts` beside the vertex table
+  that computes it. The facets are not equal lengths (14.213 / 11 / 13.601 per
+  lobe), so evenly-spaced flashes drift visibly out of step with the pulse by the
+  far lobe. That module is also now the single source for `LOOP_PATH` and
+  `SPARK_PATH`; `BrandMark` reads them from there instead of carrying its own
+  copies.
+
+- **A continuous-motion exception, fenced to the public pages.** `brand-theme.css`
+  gains `.spark-trace`, `.spark-node`, `.spark-mote`, `.spark-relay` and
+  `.spark-core`, driven by `--spark-lap` / `--spark-phase`. The app's one-arrival-
+  then-stillness rule is unchanged everywhere else: a thing that moves while you
+  are trying to think is a thing you end up hiding. All five freeze at a legible
+  resting state under `prefers-reduced-motion`, so the graphic degrades to a
+  still diagram rather than vanishing.
+
+- **A brand sheet at `/resparkable/brand`, and the mark it documents.** Nine SVGs
+  in `public/brand/` (lockup and mark, each adaptive / ember / vermilion /
+  `currentColor`, plus a tile icon), generated from
+  `scripts/framework/resparkable/build-brand.py`. The wordmark is Martian Mono 600
+  converted to outlines, so the lockups carry no font dependency.
+
+  The adaptive files switch on `prefers-color-scheme` and carry the light palette
+  as presentation attributes beneath the CSS variables, so renderers without
+  `var()` support (librsvg, most image pipelines) land on the light palette rather
+  than on black. Pin a variant wherever the ground is fixed.
+
+  The page's swatches are filled from `var(--color-*)` and captioned by token name
+  rather than hex, so it reports whatever the palette currently is instead of a
+  snapshot of it. Documented in
+  `.context/framework/resparkable/brand-assets.md`.
+
+- **The app icon is wired through the Next `app/icon.svg` convention.**
+  `public/favicon.svg` existed but nothing linked it, so browsers were falling
+  back to `public/favicon.ico`, which is now regenerated from the mark at six
+  resolutions (16→256).
+
+### Changed
+
+- **The three verbs are now catch, kindle, ignite.** They were catch, carry,
+  pass on, which was three unrelated things you do with your hands; this is one
+  metaphor followed through. "Carry" fixed the storage claim but not the verb
+  (carrying is something you do to luggage), and the overnight pass is closer to
+  kindling anyway: give a caught spark air, put it next to the other dry thing in
+  the pile, bring it back warm. The third verb carries the page's whole argument
+  so it now uses the strongest word available. "Spark it." was rejected for the
+  first verb: *spark* is already the app's noun for a caught idea, and the verb
+  would claim you generate the thing, which is the opposite of what `/about`
+  argues. `VerbDiagram`'s `kind` prop renames with it
+  (`'carry' | 'pass'` → `'kindle' | 'ignite'`), and the landing headline is now
+  the whole arc in one sentence: "Catch and kindle the spark of an idea, then
+  ignite others" (it was "Catch an idea in one line. Get it back when it
+  matters."). The `h1` drops one size step at every breakpoint to carry it.
+
+- **The public pages argue the opposite of what they used to.** The landing
+  headline was "Never lose a good idea." (loss-aversion, which is this genre's
+  default pitch and frames a thought as property you are richer for holding). It
+  now states what the product does instead of what you stand to lose, the three
+  verbs are **catch, carry, pass on** (the middle one was "Keep it."), a
+  statement band carries the line the rest of the page follows from, and
+  `/about` opens on "Nobody owns an idea." with a new section on the difference
+  between having a thought and living with one. `BrandMark`, `SparkGlyph` and `SparkMesh` appear across the hero,
+  every section rail, the statement band, the closing calls to action and a new
+  `FooterBand` above the platform footer.
+
+- **The landing page no longer claims withdrawable share links.** "Send an idea,
+  a project or a whole board to the people who should see it, with a link that
+  stays yours to withdraw" described something that does not exist: there is no
+  share model in the schema, and `/`'s own "where this goes" section lists shared
+  projects and boards as ahead. `Pass it on.` now rests on what is real (markdown
+  export that carries your edits, an assistant that drafts the sendable version)
+  and the collaboration claim stays where it belongs, in the forward-looking
+  section.
+
+- **The goals feature no longer advertises weekly area targets.** Copy still
+  promised that "the areas of your life carry a weekly target, so the one you
+  have been neglecting comes back into view" (a description of
+  `targetWeeklyMinutes`, removed in the life-areas change, and of exactly the
+  framing `.context/framework/resparkable/design-principles.md` now rules out).
+
+- **`BrandMark` renders the loop-and-spark mark instead of the split shard.** One
+  change reaches every header: `AppHeader` serves both `(protected)` and
+  `(public)`, and the auth layout renders the slot directly.
+
+  The mark stays a single `currentColor` silhouette rather than the gradient the
+  standalone files in `public/brand/` carry. A gradient would pin the header to
+  the consumer accent and silently break the `/admin` teal swap, and at 18px no
+  one can see a ramp. For the same reason the spark is not a second opacity of
+  the accent: two opacities of one colour over near-black go muddy; a mask clears
+  a hairline of ground around the spark and the silhouette does the separating.
+
+  Still a fork-owned scaffold: the stable contract is the export, not the body.
+
+- **Light mode's accent is vermilion `#c2410c`, not indigo `#4338ca`.** Both modes
+  now run one fire at two temperatures: the new primary sits 9° (OKLCH) from
+  `#a3480a`, the tail of the ember ramp dark mode already used.
+
+  This reverses a documented decision, so the reasoning is worth stating. The old
+  argument, that any warm accent dark enough for paper reads as brown, was true
+  of *yellow-orange*: `#b45309` is hue 49°, chroma 0.146, and light mode ran it
+  once and looked like a filing cabinet. The escape is hue rather than lightness.
+  `#c2410c` is hue 38°, chroma 0.174: redder and more saturated. It reads as fire.
+
+  **Two signals moved with it, and forks that re-skin will want to check theirs.**
+  The warm slot on paper is crowded: `destructive` sat at hue 17° and `warn` at
+  66°, leaving any warm accent no more than ~24° from each, against the 34° this
+  palette already tolerates at its worst. So `--color-destructive` moved
+  `#be123c` → `#96123f` (29° clear, and its own contrast improves 6.3:1 → 8.6:1)
+  and `--color-warn` moved `#a16207` → `#936f00` (48° clear). `--color-sheen` was
+  left alone at 74° of separation, though the reason it was pushed to fuchsia (not
+  reading as a slightly-off indigo) has now lifted.
+
+  **The neutrals were re-hued from an indigo cast to a warm one** (~52° at their
+  original lightness): cool greys under a warm accent read as dirty. No contrast
+  ratio dropped: `foreground` holds 17.1:1 and `muted-foreground` 6.4:1.
+
+  One regression, stated plainly: link text falls from 7.9:1 to 5.18:1. Still AA at
+  body size, no longer AAA. No arrangement of a warm hue on paper avoids it.
+
+  Nothing outside `app/brand-theme.css` hardcoded these values, so the change is
+  confined to the token block. Rationale lives in `.context/ui/design-language.md`.
+
 - **Administrators can transfer an account on its owner's behalf.** `POST
   /api/v1/admin/users/[id]/transfer` queues an export (JSON body) or an import
   (multipart with `file`) for the named user; `GET` lists that account's
@@ -1055,6 +1185,15 @@ release process.
 
 ### Changed
 
+- **The Areas nav item and page are relabelled "Life"**, with copy that invites
+  saying what's important right now rather than assigning a weekly time
+  budget. See the `Removed` entry for `targetWeeklyMinutes` below. No route,
+  API, or model name changed; this is the user-facing label and copy only.
+- **The priority-scoring formula is reweighted to five factors.**
+  `base = 0.35·urgency + 0.30·goalAlignment + 0.18·projectMomentum + 0.12·effortFit + 0.05·staleness`,
+  proportionally redistributing the removed `areaBalance` factor's 0.15
+  across the rest. `PRIORITY_FACTORS`, `priorityWeightsSchema`, and
+  `priorityFactorsSchema` all drop the `areaBalance` key.
 - **`exportAccount()` returns a format-neutral result.** `AccountExport` drops
   `manifest` — which only the JSON bundle has — and gains `contentType`,
   `format` and `totalRows`. The route reads `totalRows` for its
@@ -1343,6 +1482,14 @@ release process.
   `framework_resparkable_space("userId") ON DELETE CASCADE`, and the migration
   deletes rows already orphaned by its absence. Found by the isolation smoke
   script against a real database; no mocked test could have caught it.
+- **`ResparkableArea.targetWeeklyMinutes` and `ResparkableSpace.weeklyCapacityMinutes`**
+  (`20260809123004_resparkable_drop_area_hours`), along with the `areaBalance`
+  priority-scoring factor, the dashboard capacity meter, the Areas-over-capacity
+  warning, and the "areas with no time logged" stale-digest section. Resparkable
+  is a reflection and understanding tool, not an optimisation one. See
+  `.context/framework/resparkable/design-principles.md`. Removed rather than
+  hidden behind a flag, so nothing dormant remains for a later change to revive
+  by accident.
 
 ### Fixed
 

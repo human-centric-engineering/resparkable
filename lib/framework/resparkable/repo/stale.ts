@@ -7,7 +7,7 @@
  * from `repo/retention.ts`, which acts on a clock, and it is why the two live in
  * separate files despite both being about age.
  *
- * **Age is a poor proxy for irrelevance**, which is why each of the four
+ * **Age is a poor proxy for irrelevance**, which is why each of the three
  * questions below is asked differently:
  *
  *   - A **project** is dormant if nothing has moved *and* nothing has been
@@ -15,10 +15,6 @@
  *     being completed by someone who never opens the project row itself.
  *   - A **goal** is dormant if its target date has passed with no evidence
  *     behind it. Age since creation says nothing: a life goal is meant to be old.
- *   - An **area** is dormant if no time has been logged against it. It has no
- *     `lastActivityAt` column and should not gain one — time blocks already
- *     answer the question, and a second column would be a second thing to keep
- *     in sync.
  *   - An **entity** is dormant if nothing links to it and nothing has touched
  *     it. Entities are the one type §11 says must **never** be auto-archived —
  *     a dormant client is not a dead one — so this query exists precisely
@@ -118,31 +114,6 @@ export async function findGoalsPastTarget(
 }
 
 /**
- * Areas with no time logged inside the window.
- *
- * Both `plan` and `actual` blocks count. Intent is a signal too: an area you
- * keep scheduling and never quite reaching is a live concern with a scheduling
- * problem, not a dead one, and the digest would be wrong to propose archiving it.
- */
-export async function findAreasWithoutTime(
-  scope: OwnerScope,
-  cutoff: Date,
-  limit = STALE_SECTION_LIMIT
-): Promise<StaleRow[]> {
-  const rows = await prisma.resparkableArea.findMany({
-    where: {
-      ...liveOwnerWhere(scope),
-      timeBlocks: { none: { startAt: { gte: cutoff } } },
-    },
-    select: { id: true, name: true, createdAt: true },
-    orderBy: [{ name: 'asc' }],
-    take: limit,
-  });
-
-  return rows.map((row) => ({ id: row.id, title: row.name, lastSignalAt: null }));
-}
-
-/**
  * Entities nothing has touched, and nothing links to, inside the window.
  *
  * The link half matters: an entity is mostly referenced *by* other things rather
@@ -217,11 +188,6 @@ export type StillLiveType = (typeof STILL_LIVE_TYPES)[number];
  * user *did* just engage with the thing — they read a prompt about it and made a
  * decision. Writing the engagement down is what stops it reappearing next month,
  * with no second "dismissed until" column to keep in step with the first.
- *
- * `area` is deliberately not in `STILL_LIVE_TYPES`: it has no `lastActivityAt`,
- * and adding one to store a dismissal would be a column that exists only to be
- * dismissed. An area you want to keep gets time booked against it, which is the
- * same answer expressed in the data the question was asked from.
  */
 export async function markStillLive(
   scope: OwnerScope,

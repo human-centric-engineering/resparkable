@@ -34,12 +34,11 @@ import { ClientDate } from '@/components/ui/client-date';
 import { priorityFactorsSchema } from '@/lib/framework/resparkable/validations';
 import { cn } from '@/lib/utils';
 
-/** Plain-English names for the six factors. No jargon, no camelCase on screen. */
+/** Plain-English names for the five factors. No jargon, no camelCase on screen. */
 const FACTOR_LABELS: Record<string, string> = {
   urgency: 'Due soon',
   goalAlignment: 'Serves a goal',
   projectMomentum: 'Project is moving',
-  areaBalance: 'Area needs attention',
   effortFit: 'Fits your day',
   staleness: 'Been waiting a while',
 };
@@ -102,7 +101,8 @@ export function PriorityExplainer({
         <div>
           <p className="font-semibold">{rank ? `Ranked #${rank}` : 'Ranking'}</p>
           <p className="text-muted-foreground text-xs">
-            Score {score.toFixed(2)} — the six factors below, weighted, plus anything you pinned.
+            Score {score.toFixed(2)}, from the five factors below, weighted, plus anything you
+            pinned.
           </p>
         </div>
 

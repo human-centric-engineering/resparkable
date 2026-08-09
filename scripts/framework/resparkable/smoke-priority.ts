@@ -8,7 +8,7 @@
  * first write returning a 500 on a foreign-key violation — was invisible to a
  * full green suite and was caught by the sibling isolation script.
  *
- * Four things only a database can answer:
+ * Three things only a database can answer:
  *
  *   1. **The space bootstrap actually fixes the FK violation.** A create by a
  *      user with no `ResparkableSpace` row must now succeed rather than fail in
@@ -16,9 +16,7 @@
  *   2. **The batch score write applies.** `writeTaskScores` chunks per-row
  *      updates into transactions; a mock proves the arguments, not that the
  *      rows moved.
- *   3. **`sumMinutesByArea`'s raw SQL still runs** against the week window the
- *      scorer hands it, and its `EXTRACT(EPOCH …)` arithmetic returns minutes.
- *   4. **The ranking comes back in the right order** through a real indexed
+ *   3. **The ranking comes back in the right order** through a real indexed
  *      `ORDER BY priorityScore DESC` — the whole point of persisting the column
  *      (D3), and the one assertion that ties the pure scorer to what a user
  *      actually sees.
@@ -40,7 +38,6 @@ import { prisma } from '@/lib/db/client';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
-import { sumMinutesByArea } from '@/lib/framework/resparkable/repo/time-blocks';
 import { buildInbox } from '@/lib/framework/resparkable/services/inbox';
 import { taskResource, thoughtResource } from '@/lib/framework/resparkable/services/resources';
 import { snoozeItem, unsnoozeItem } from '@/lib/framework/resparkable/services/snooze';
@@ -49,7 +46,6 @@ import {
   updateResparkableSettings,
 } from '@/lib/framework/resparkable/services/space';
 import { buildToday } from '@/lib/framework/resparkable/services/today';
-import { startOfZonedWeek } from '@/lib/framework/resparkable/time/zoned';
 
 const stamp = Date.now();
 const PREFIX = 'smoke-resparkable-prio';
@@ -124,13 +120,12 @@ async function main(): Promise<void> {
     console.log('\nSettings');
 
     const defaults = await getResparkableSettings(userA);
-    check(defaults.priorityWeights.urgency === 0.3, 'defaults resolve when the column is null');
+    check(defaults.priorityWeights.urgency === 0.35, 'defaults resolve when the column is null');
     check(defaults.customised.priorityWeights === false, 'nothing is marked customised yet');
     check(!('inboxToken' in defaults), 'the settings payload never carries the inbox token');
 
     const zoned = await updateResparkableSettings(userA, {
       timezone: 'Pacific/Auckland',
-      weeklyCapacityMinutes: 1200,
     });
     check(zoned.timezone === 'Pacific/Auckland', 'the timezone persists');
 
@@ -139,8 +134,7 @@ async function main(): Promise<void> {
         urgency: 0.5,
         goalAlignment: 0.2,
         projectMomentum: 0.1,
-        areaBalance: 0.1,
-        effortFit: 0.05,
+        effortFit: 0.15,
         staleness: 0.05,
       },
     });
@@ -150,7 +144,7 @@ async function main(): Promise<void> {
     // path that proves "reset to defaults" actually reaches the column.
     const reset = await updateResparkableSettings(userA, { priorityWeights: null });
     check(reset.customised.priorityWeights === false, 'null resets the column to SQL NULL');
-    check(reset.priorityWeights.urgency === 0.3, 'and the defaults come back');
+    check(reset.priorityWeights.urgency === 0.35, 'and the defaults come back');
 
     // ── 3. Ranking, end to end ───────────────────────────────────────────────
     console.log('\nRanking');
@@ -225,25 +219,7 @@ async function main(): Promise<void> {
     check(afterUnsnooze.snoozeCount === 1, 'and never decrements the count');
     check(afterUnsnooze.priorityScore > 0, 'the task is ranked again immediately');
 
-    // ── 5. The raw week-window SQL ───────────────────────────────────────────
-    console.log('\nTime blocks');
-
-    await prisma.resparkableTimeBlock.create({
-      data: {
-        userId: userA,
-        title: 'a two-hour block',
-        startAt: new Date(Date.now() + 3_600_000),
-        endAt: new Date(Date.now() + 3 * 3_600_000),
-        source: 'plan',
-      },
-    });
-
-    const weekStart = startOfZonedWeek(new Date(), 'Pacific/Auckland');
-    const minutes = await sumMinutesByArea(scopeA, weekStart, daysFromNow(7));
-    const total = minutes.reduce((sum, row) => sum + row.minutes, 0);
-    check(Math.round(total) === 120, 'the raw EXTRACT(EPOCH …) query returns minutes, not seconds');
-
-    // ── 6. The aggregate endpoints, against real rows ────────────────────────
+    // ── 5. The aggregate endpoints, against real rows ────────────────────────
     console.log('\nAggregates');
 
     await thoughtResource.create(scopeA, { content: 'a half-formed idea', source: 'web' });
@@ -253,14 +229,12 @@ async function main(): Promise<void> {
     check(today.tasks.length === 4, 'today lists the live, undeferred tasks');
     check(today.tasks[0]?.id === pinnedId, 'today leads with the pinned task');
     check(today.inboxCount === 1, 'today counts the inbox');
-    check(today.capacity.weeklyCapacityMinutes === 1200, 'today reports the configured capacity');
-    check(today.capacity.plannedMinutesThisWeek === 120, 'and the minutes already planned');
 
     const inbox = await buildInbox(scopeA);
     check(inbox.total === 1, 'the inbox returns the captured thought');
     check(inbox.items[0]?.suggestedLinks.length === 0, 'with no suggestions until phase 4');
 
-    // ── 7. None of it leaks ──────────────────────────────────────────────────
+    // ── 6. None of it leaks ──────────────────────────────────────────────────
     console.log('\nIsolation of the new surfaces');
 
     const otherToday = await buildToday(scopeB);

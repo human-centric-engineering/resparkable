@@ -2,9 +2,8 @@
  * Unit Tests: `lib/framework/resparkable/repo/time-blocks.ts` filter branches.
  *
  * `tests/unit/lib/framework/resparkable/repo/isolation.test.ts` already proves
- * every call here is owner-scoped and covers `sumMinutesByArea`'s userId
- * binding in the raw query — neither is re-proven below. This file closes
- * the branch gap `isolation.test.ts` leaves open: it calls `listTimeBlocks`
+ * every call here is owner-scoped. That is not re-proven below. This file
+ * closes the branch gap `isolation.test.ts` leaves open: it calls `listTimeBlocks`
  * with no filters, so only the falsy arm of each optional-filter ternary in
  * `timeBlockWhere` ever runs. These tests set each filter — individually and
  * all five together — and assert the `where` object Prisma actually

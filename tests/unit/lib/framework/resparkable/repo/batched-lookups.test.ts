@@ -125,7 +125,6 @@ describe('updateSpaceSettings', () => {
     // The "save settings" button sends the lot.
     await updateSpaceSettings('user_x', {
       timezone: 'UTC',
-      weeklyCapacityMinutes: 1200,
       workStyle: 'structured',
       priorityWeights: { urgency: 1 },
       energyProfile: { morning: 'high' },
@@ -141,7 +140,6 @@ describe('updateSpaceSettings', () => {
       'priorityWeights',
       'retentionPolicy',
       'timezone',
-      'weeklyCapacityMinutes',
       'workStyle',
     ]);
   });

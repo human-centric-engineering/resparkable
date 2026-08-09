@@ -22,8 +22,8 @@
  *
  * The formula (plan §10):
  *
- *   base  = 0.30·urgency + 0.25·goalAlignment + 0.15·projectMomentum
- *         + 0.15·areaBalance + 0.10·effortFit + 0.05·staleness      ∈ [0,1]
+ *   base  = 0.35·urgency + 0.30·goalAlignment + 0.18·projectMomentum
+ *         + 0.12·effortFit + 0.05·staleness                         ∈ [0,1]
  *
  *   score = clamp(base + activeManualBoost, -1, 2)
  *
@@ -67,7 +67,7 @@ const STALENESS_CEILING_DAYS = 30;
 
 /**
  * Returned when a factor has no reading at all — a task with no project, or an
- * area with no weekly target.
+ * effort/energy fit that can't be assessed yet.
  *
  * Neutral rather than zero, deliberately. Zero would bury every unfiled task in
  * the inbox beneath every filed one, which punishes the user for the exact
@@ -102,12 +102,6 @@ export interface ScorableProject {
   snoozedUntil: Date | null;
 }
 
-export interface ScorableArea {
-  targetWeeklyMinutes: number | null;
-  /** Minutes logged against this area since the local week began. */
-  minutesThisWeek: number;
-}
-
 export interface ScoreInput {
   task: ScorableTask;
   /** Passed in, never read from the clock — see the file header. */
@@ -115,7 +109,6 @@ export interface ScoreInput {
   weights: PriorityWeights;
   goal: ScorableGoal | null;
   project: ScorableProject | null;
-  area: ScorableArea | null;
   /** Longest uncommitted stretch left in the local day, from the time blocks. */
   largestFreeGapMinutes: number | null;
   /** The energy band the user's local clock is currently in. */
@@ -141,7 +134,6 @@ export interface PriorityFactors {
   urgency: number;
   goalAlignment: number;
   projectMomentum: number;
-  areaBalance: number;
   effortFit: number;
   staleness: number;
   /** The weighted sum, before any boost. Always within `[0, 1]`. */
@@ -201,7 +193,6 @@ export function scoreTask(input: ScoreInput): PriorityResult {
   const urgency = scoreUrgency(task.dueAt, now);
   const goalAlignment = scoreGoalAlignment(input.goal, now);
   const projectMomentum = scoreProjectMomentum(input.project, now);
-  const areaBalance = scoreAreaBalance(input.area);
   const effortFit = scoreEffortFit(task, input.largestFreeGapMinutes, input.energyNow);
   const staleness = scoreStaleness(task.createdAt, now);
 
@@ -209,7 +200,6 @@ export function scoreTask(input: ScoreInput): PriorityResult {
     urgency: urgency * input.weights.urgency,
     goalAlignment: goalAlignment * input.weights.goalAlignment,
     projectMomentum: projectMomentum * input.weights.projectMomentum,
-    areaBalance: areaBalance * input.weights.areaBalance,
     effortFit: effortFit * input.weights.effortFit,
     staleness: staleness * input.weights.staleness,
   };
@@ -230,7 +220,6 @@ export function scoreTask(input: ScoreInput): PriorityResult {
       urgency,
       goalAlignment,
       projectMomentum,
-      areaBalance,
       effortFit,
       staleness,
       base,
@@ -302,19 +291,6 @@ function scoreProjectMomentum(project: ScorableProject | null, now: Date): numbe
 }
 
 /**
- * `clamp(1 - minutesThisWeek / targetWeeklyMinutes, 0, 1)`.
- *
- * **This is the term that makes Resparkable a life organiser rather than a task
- * list** — a Health area with a weekly target you have not touched floats above
- * a hot work project, which no amount of urgency weighting would ever do.
- */
-function scoreAreaBalance(area: ScorableArea | null): number {
-  if (!area?.targetWeeklyMinutes) return NO_SIGNAL;
-
-  return clamp(1 - area.minutesThisWeek / area.targetWeeklyMinutes, 0, 1);
-}
-
-/**
  * 1.0 when the task fits the day's largest free gap **and** its energy matches
  * the current band; 0.5 otherwise (§10).
  *
@@ -357,7 +333,6 @@ function deferredResult(input: ScoreInput): PriorityResult {
       urgency: 0,
       goalAlignment: 0,
       projectMomentum: 0,
-      areaBalance: 0,
       effortFit: 0,
       staleness: 0,
       base: 0,

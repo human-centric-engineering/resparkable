@@ -41,7 +41,6 @@ function input(overrides: InputOverrides = {}): ScoreInput {
     weights: DEFAULT_PRIORITY_WEIGHTS,
     goal: null,
     project: null,
-    area: null,
     largestFreeGapMinutes: null,
     energyNow: 'medium',
     ...overrides,
@@ -71,8 +70,8 @@ describe('scoreTask — base is always a probability', () => {
   });
 
   it('reaches at most 1 when every factor is maxed', () => {
-    // Arrange: overdue, week goal, active project, untouched area, perfect fit,
-    // month-old — the best possible reading of all six factors at once.
+    // Arrange: overdue, week goal, active project, perfect fit, month-old (the
+    // best possible reading of all five factors at once).
     const { factors } = scoreTask(
       input({
         task: {
@@ -87,7 +86,6 @@ describe('scoreTask — base is always a probability', () => {
         },
         goal: { horizon: 'week', targetDate: null },
         project: { lastActivityAt: NOW, snoozedUntil: null },
-        area: { targetWeeklyMinutes: 300, minutesThisWeek: 0 },
         largestFreeGapMinutes: 120,
         energyNow: 'high',
       })
@@ -204,35 +202,6 @@ describe('scoreTask — project momentum', () => {
   });
 });
 
-describe('scoreTask — area balance', () => {
-  it('floats a neglected area to the top', () => {
-    // Arrange: this is the term that makes Resparkable a life organiser.
-    const untouched = scoreTask(input({ area: { targetWeeklyMinutes: 300, minutesThisWeek: 0 } }))
-      .factors.areaBalance;
-    const halfDone = scoreTask(input({ area: { targetWeeklyMinutes: 300, minutesThisWeek: 150 } }))
-      .factors.areaBalance;
-
-    // Assert
-    expect(untouched).toBe(1);
-    expect(halfDone).toBeCloseTo(0.5, 6);
-  });
-
-  it('clamps an over-served area at zero rather than going negative', () => {
-    // A negative factor would drag `base` below zero and break the boost floor.
-    expect(
-      scoreTask(input({ area: { targetWeeklyMinutes: 60, minutesThisWeek: 600 } })).factors
-        .areaBalance
-    ).toBe(0);
-  });
-
-  it('is neutral when the area has no weekly target', () => {
-    expect(
-      scoreTask(input({ area: { targetWeeklyMinutes: null, minutesThisWeek: 0 } })).factors
-        .areaBalance
-    ).toBe(0.5);
-  });
-});
-
 describe('scoreTask — effort fit', () => {
   it('rewards a task that fits the gap and matches the energy band', () => {
     expect(
@@ -304,7 +273,6 @@ describe('scoreTask — manualBoost is a guarantee, not a nudge', () => {
       },
       goal: { horizon: 'week', targetDate: null },
       project: { lastActivityAt: NOW, snoozedUntil: null },
-      area: { targetWeeklyMinutes: 300, minutesThisWeek: 0 },
       largestFreeGapMinutes: 120,
       energyNow: 'high',
     })
@@ -491,7 +459,7 @@ describe('scoreTask — returnedFromSnooze', () => {
 
 describe('scoreTask — resilience', () => {
   it('names the dominant factor', () => {
-    // Arrange: overdue with default weights makes urgency (0.30 × 1.0) the
+    // Arrange: overdue with default weights makes urgency (0.35 × 1.0) the
     // largest single contribution.
     const { factors } = scoreTask(input({ task: { dueAt: daysFromNow(-1) } }));
 

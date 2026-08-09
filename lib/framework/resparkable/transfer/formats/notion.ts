@@ -106,12 +106,11 @@ export function buildNotionExport(view: BrainView, generatedAt: Date): Record<st
   const files: Record<string, string> = {};
 
   files['Areas.csv'] = csvDocument(
-    ['Name', 'Description', 'Colour', 'Weekly target (minutes)', 'Archived'],
+    ['Name', 'Description', 'Colour', 'Archived'],
     view.areas.map((area) => [
       area.name,
       prose(area.description),
       area.colour ?? '',
-      area.targetWeeklyMinutes === null ? '' : String(area.targetWeeklyMinutes),
       day(area.archivedAt),
     ])
   );

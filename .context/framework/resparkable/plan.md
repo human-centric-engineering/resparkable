@@ -143,8 +143,8 @@ All tables `@@map("resparkable_*")`, all with `userId` and a `@@index([userId, �
 
 | Model                      | Purpose                            | Notes                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | -------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ResparkableSpace`         | one row per user                   | `inboxToken @unique` (email routing), `timezone`, `weeklyCapacityMinutes`, `energyProfile Json`, `priorityWeights Json`, `retentionPolicy Json` (§11), **`workStyle`** = `structured\|balanced\|exploratory` (default `balanced`, see §6). **The only table needing an FK drift probe.**                                                                                                                                            |
-| `ResparkableArea`          | life domains (Health, Career…)     | `targetWeeklyMinutes` — this is what makes it a _life_ organiser, not a task list                                                                                                                                                                                                                                                                                                                                                   |
+| `ResparkableSpace`         | one row per user                   | `inboxToken @unique` (email routing), `timezone`, `energyProfile Json`, `priorityWeights Json`, `retentionPolicy Json` (§11), **`workStyle`** = `structured\|balanced\|exploratory` (default `balanced`, see §6). **The only table needing an FK drift probe.**                                                                                                                                                                     |
+| `ResparkableArea`          | life domains (Health, Career…)     | No hour target and nothing derived from one. Life is a reflection surface, not a scheduling input. See `design-principles.md`.                                                                                                                                                                                                                                                                                                      |
 | `ResparkableGoal`          | horizons                           | `horizon` = `life\|year\|quarter\|month\|week`, `parentGoalId` self-relation `SetNull`, `areaId SetNull`                                                                                                                                                                                                                                                                                                                            |
 | `ResparkableProject`       |                                    | `status`, `areaId SetNull`, `priorityScore`, `lastActivityAt`, `snoozedUntil`                                                                                                                                                                                                                                                                                                                                                       |
 | `ResparkableTask`          |                                    | `projectId` **`SetNull`** (deleting a project must not destroy tasks — they fall back to inbox), `dueAt`, `deferUntil`, `estimateMinutes`, `energy`, `contextTag`, `priorityScore`, `priorityFactors Json`, `manualBoost Float @default(0)` + `manualBoostExpiresAt DateTime?` + `manualBoostReason String?` (§10). `deferUntil` doubles as snooze; `snoozeCount Int @default(0)` + `lastSnoozedAt` (§10). Generated `searchVector` |
@@ -164,7 +164,7 @@ All tables `@@map("resparkable_*")`, all with `userId` and a `@@index([userId, �
 
 **Embedded types:** `thought`, `project`, `goal`, `area`, `entity`, `document`. **Not `task`** — titles are short, high-churn and semantically thin; a tsvector on the task table gives better recall for less money.
 
-**Why `ResparkableEntity` is not just an Area.** An Area is a _domain of your life_ with a weekly time target, and `areaBalance` (§10) deliberately floats neglected ones upward. A client is not that — balancing attention across customers the way you balance Health against Career is wrong, and overloading Areas would corrupt the scorer. Entities are therefore a separate node type that is **deliberately absent from `score.ts`**; neglected clients surface through the stale digest (§11), not by inflating task scores. This is what makes "what should we do for Acme this quarter?" the same connection query as everything else, just pointed at a different node.
+**Why `ResparkableEntity` is not just an Area.** An Area is a _domain of your life_ (Health, Career…); a client is not that. Entities are therefore a separate node type that is **deliberately absent from `score.ts`**; neglected clients surface through the stale digest (§11), not by inflating task scores. This is what makes "what should we do for Acme this quarter?" the same connection query as everything else, just pointed at a different node.
 
 **Entities and documents connect via `ResparkableLink`, not FK columns.** A project can serve several clients; a document can be relevant to several projects. Adding `entityId` to `ResparkableProject` would force a primary-client fiction and give the codebase two relationship mechanisms. The edge table already handles polymorphic many-to-many — use it (D2).
 
@@ -268,7 +268,7 @@ A seventh agent, **`resparkable-instruct`**, arrives in Release 6 (§19) — bro
 
 `lib/framework/resparkable/context/contributor.ts` → `registerContextContributor('resparkable', loadResparkableContext)` in `lib/app/context-contributors.ts`. The loader **ignores `id` and reads `request.userId`**, returning `''` if absent — a shared cache partition must never leak another user's goals.
 
-Contents, in order, each section truncated: today's date + timezone + week number; life & year goals; current month + week goals with target dates; active projects with next action and days-since-activity; top 5 tasks with dominant factor; inbox backlog, remaining capacity, most-neglected area. **Hard-cap at ~1200 tokens** — this is injected on _every_ turn and otherwise grows unbounded. Every mutating service calls `invalidateContext('resparkable', userId, { userId })`.
+Contents, in order, each section truncated: today's date + timezone + week number; life & year goals; current month + week goals with target dates; active projects with next action and days-since-activity; top 5 tasks with dominant factor; inbox backlog; the standing parts of the person's life, by name. **Hard-cap at ~1200 tokens**: this is injected on _every_ turn and otherwise grows unbounded. Every mutating service calls `invalidateContext('resparkable', userId, { userId })`.
 
 ### App-owned chat route
 
@@ -314,7 +314,7 @@ The rule that makes this real: **`workStyle` changes what data the briefing sele
 
 | `workStyle`   | Leads with     | Data actually selected                                                                                                                                                                                           |
 | ------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `structured`  | The plan       | Top 5 by `priorityScore`, anything overdue, today's time blocks, WIP-limit breaches, remaining weekly capacity                                                                                                   |
+| `structured`  | The plan       | Top 5 by `priorityScore`, anything overdue, today's time blocks, WIP-limit breaches                                                                                                                              |
 | `exploratory` | The unexpected | Highest-`strength` unreviewed `ResparkableLink` suggestions, one resurfaced thought from >90 days ago, one `resparkable_ideate` angle on an active project. Deadlines appear as a short footer, not the headline |
 | `balanced`    | One of each    | Top 3 tasks, then the single strongest unreviewed connection                                                                                                                                                     |
 
@@ -597,16 +597,23 @@ Node colour by `entityType`, edge thickness by `ResparkableLink.strength`, dashe
 Pure function, no I/O, in `lib/framework/resparkable/priority/score.ts` — the most testable and most business-critical code in the build.
 
 ```
-base  = 0.30·urgency + 0.25·goalAlignment + 0.15·projectMomentum
-      + 0.15·areaBalance + 0.10·effortFit + 0.05·staleness      // ∈ [0,1]
+base  = 0.35·urgency + 0.30·goalAlignment + 0.18·projectMomentum
+      + 0.12·effortFit + 0.05·staleness      // ∈ [0,1]
 
 score = clamp(base + activeManualBoost, -1, 2)
 ```
 
+> **`areaBalance` was removed.** An earlier version of this formula carried a
+> sixth term (`clamp(1 - minutesThisWeekInArea / area.targetWeeklyMinutes, 0, 1)`)
+> that floated a Life area's tasks above a hot work project if you hadn't
+> logged time against it that week. Resparkable is a reflection and
+> understanding tool, not an optimisation one; the weights above are the old
+> ones proportionally redistributed across the remaining five factors. See
+> `design-principles.md`.
+
 - **urgency** — `deferUntil > now` ⇒ **hard zero, short-circuit**. Overdue ⇒ 1.0. Else `1/(1 + daysUntilDue/3)`. No due date ⇒ 0.2.
 - **goalAlignment** — walk task → project → goal via `projectId` and accepted `ResparkableLink`s. Nearest horizon reached: week 1.0, month 0.8, quarter 0.6, year 0.45, life 0.35 (near horizons are more actionable). ×0.7 if the goal's target date has passed. Unlinked ⇒ 0.15.
 - **projectMomentum** — `exp(-daysSinceLastActivity/14)`. Stalled projects surface via `staleness` and the weekly review instead.
-- **areaBalance** — `clamp(1 - minutesThisWeekInArea / area.targetWeeklyMinutes, 0, 1)`. **This is the term that makes it a life organiser** — a neglected Health area floats above a hot work project.
 - **effortFit** — 1.0 when `estimateMinutes` fits today's largest free gap _and_ `energy` matches the time-of-day profile; 0.5 otherwise.
 - **staleness** — `min(1, daysSinceCreated/30)`, so nothing rots forever.
 
@@ -614,7 +621,7 @@ Weights read from `ResparkableSpace.priorityWeights` (Zod-validated, above as de
 
 ### Manual override — `manualBoost`
 
-The six factors handle "what should generally matter". They cannot handle "I don't care what the maths says, _this_ one first" — which is a real and frequent need, and without it the whole ranking loses credibility the first time it's wrong.
+The five factors handle "what should generally matter". They cannot handle "I don't care what the maths says, _this_ one first", which is a real and frequent need, and without it the whole ranking loses credibility the first time it's wrong.
 
 - **`manualBoost Float @default(0)`**, clamped to `[-1, +1]`. **Applied additively _after_ the weighted sum, never as a seventh weighted term.** A weighted term gets diluted by its own weight and can't guarantee anything; additive-after means `+1` provably outranks every unboosted task (base maxes at 1.0) and `-1` provably sinks below them. The guarantee is the whole point.
 - **Negative boost is equally useful** — "bury this, I can't delete it but I don't want to see it". Cheap, and it stops the list filling with undeletable noise.

@@ -12,11 +12,13 @@
  * pair in the brain and a floor of 1 proposes none — both read as the feature being
  * broken rather than as a setting being wrong, so the control cannot reach either.
  *
+ * There is deliberately no weekly-hours field on this form: Resparkable does not ask
+ * how many hours a week anyone has (`design-principles.md`).
+ *
  * Test Coverage:
  * - Save is blocked while the weights do not sum to 1, and no request is made
  * - The running total is announced, not just implied by a disabled button
  * - Valid weights submit, converted to the API's shape
- * - Hours are converted to minutes
  * - The timezone the user already has is offered even if it is not in the common list
  * - The floor round-trips as a number within its bounds
  * - A failed save surfaces the API's message and does not refresh
@@ -49,10 +51,9 @@ const refresh = vi.fn();
 const BALANCED_WEIGHTS = {
   urgency: 0.3,
   goalAlignment: 0.25,
-  projectMomentum: 0.15,
-  areaBalance: 0.15,
-  effortFit: 0.1,
-  staleness: 0.05,
+  projectMomentum: 0.2,
+  effortFit: 0.15,
+  staleness: 0.1,
 };
 
 /** The §11 defaults, as `GET /resparkable/space` resolves them for an uncustomised brain. */
@@ -70,7 +71,6 @@ const DEFAULT_WINDOWS = {
 function settings(overrides: Partial<SpaceSettings> = {}): SpaceSettings {
   return {
     timezone: 'Europe/London',
-    weeklyCapacityMinutes: 2400,
     workStyle: 'balanced',
     priorityWeights: { ...BALANCED_WEIGHTS },
     connectionStrengthFloor: 0.55,
@@ -103,8 +103,6 @@ describe('SpaceSettingsForm', () => {
       expect(mockedPatch).toHaveBeenCalledWith('/api/v1/resparkable/space', {
         body: {
           timezone: 'Europe/London',
-          // Hours in the form, minutes on the wire.
-          weeklyCapacityMinutes: 2400,
           workStyle: 'balanced',
           priorityWeights: BALANCED_WEIGHTS,
           connectionStrengthFloor: 0.55,
@@ -155,18 +153,6 @@ describe('SpaceSettingsForm', () => {
     });
   });
 
-  it('shows a validation message for an out-of-range weekly capacity', async () => {
-    const user = userEvent.setup();
-    render(<SpaceSettingsForm initial={settings()} />);
-
-    const capacity = screen.getByRole('spinbutton', { name: /hours a week/i });
-    await user.clear(capacity);
-    await user.type(capacity, '999');
-    await user.tab();
-
-    expect(await screen.findByText('A week has 168 hours')).toBeInTheDocument();
-  });
-
   it('says what the total actually is, rather than only disabling the button', async () => {
     render(
       <SpaceSettingsForm
@@ -184,23 +170,6 @@ describe('SpaceSettingsForm', () => {
 
     expect(screen.getByText('Adds up to 100% — good.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled();
-  });
-
-  it('converts hours to minutes', async () => {
-    const user = userEvent.setup();
-    render(<SpaceSettingsForm initial={settings()} />);
-
-    // By role: the label contains a `<FieldHelp>` button, so a text lookup matches
-    // both the input and that button.
-    const capacity = screen.getByRole('spinbutton', { name: /hours a week/i });
-    await user.clear(capacity);
-    await user.type(capacity, '30');
-    await user.click(screen.getByRole('button', { name: /save settings/i }));
-
-    await waitFor(() => {
-      const body = mockedPatch.mock.calls[0]?.[1]?.body as { weeklyCapacityMinutes: number };
-      expect(body.weeklyCapacityMinutes).toBe(1800);
-    });
   });
 
   it('offers a timezone the user already has, even if it is unusual', () => {

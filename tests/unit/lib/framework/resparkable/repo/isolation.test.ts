@@ -285,7 +285,6 @@ const RAW_SQL_CALLS: Array<[string, () => Promise<unknown>]> = [
       }),
   ],
   ['embeddings.searchTaskKeywords', () => embeddings.searchTaskKeywords(SCOPE, 'q', 10)],
-  ['timeBlocks.sumMinutesByArea', () => timeBlocks.sumMinutesByArea(SCOPE, new Date(), new Date())],
 ];
 
 /** Collect every `where`/`data` object handed to Prisma across all delegates. */
@@ -580,17 +579,6 @@ describe('the repo layer cannot be pointed at another user', () => {
 
     const call = vi.mocked(prisma.resparkableTask.delete).mock.calls[0]?.[0];
     expect(call?.where).toEqual({ id: 'task_owned_by_b', userId: 'user_a' });
-  });
-
-  it('binds userId as a parameter in the one raw query', async () => {
-    // `sumMinutesByArea` is the only hand-written SQL in the repo layer.
-    // Prisma's tagged template binds values as parameters — the test asserts
-    // the id is passed as a value, not interpolated into the string.
-    await timeBlocks.sumMinutesByArea(SCOPE, new Date(0), new Date());
-
-    const call = vi.mocked(prisma.$queryRaw).mock.calls[0];
-    expect(call).toBeDefined();
-    expect(call?.slice(1)).toContain('user_a');
   });
 });
 

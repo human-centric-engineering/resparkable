@@ -23,16 +23,17 @@ Namespaced _inside_ the tier, never at its root — so a project already running
 
 ## Contents
 
-| File                                   | What it is                                                                                                                                                                                                                                                            |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`plan.md`](./plan.md)                 | The full implementation plan — data model, migrations, API, agents, workflows, prioritisation, lifecycle, boards, sharing, Obsidian sync, **Cross-Pollination (§18)**, **Instruct mode (§19)**, **billing (§20)**, **Situations (§21)**, phasing, verification, risks |
-| [`install.md`](./install.md)           | How a host Sunrise project installs Resparkable — tier directories, one-line seam registrations, env vars, migration, verification. Kept current by every phase                                                                                                       |
-| [`ui.md`](./ui.md)                     | The UI's rules and why each exists — one fetch per surface, read/mutate split, wire-shape parsing, the fork-owned primitives, and the checklist for adding a surface                                                                                                  |
-| [`agents.md`](./agents.md)             | The agent layer's rules — one truth for four places, the owner-scope guard, what an agent deliberately cannot do, the redaction line, the five agents, and why bindings are the enforcement                                                                           |
-| [`mcp.md`](./mcp.md)                   | What the brain exposes over MCP and why that list _is_ the access control — the `scopedAgentId` gotcha, the eight tools, the three prompts, the operator setup, and why resources are deferred                                                                        |
-| [`evaluations.md`](./evaluations.md)   | How you find out triage has got worse — the thirty cases, the 0.5/0.5 score, and why the runner is a script rather than a batch run                                                                                                                                   |
-| [`dev-proxy.md`](./dev-proxy.md)       | Why dev runs on `https://resparkable.test` not `localhost:3016` — the shared HCE proxy registry, the port that must agree in two places, the `herd unproxy` step `apply.sh` won't do, why Google login can't work here                                                |
-| [`sunrise-asks.md`](./sunrise-asks.md) | What Resparkable needs from upstream Sunrise — missing seams, core files a fork is forced to edit, platform gaps. Every row also gets an issue on the Sunrise repo                                                                                                    |
+| File                                             | What it is                                                                                                                                                                                                                                                           |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`plan.md`](./plan.md)                           | The full implementation plan: data model, migrations, API, agents, workflows, prioritisation, lifecycle, boards, sharing, Obsidian sync, **Cross-Pollination (§18)**, **Instruct mode (§19)**, **billing (§20)**, **Situations (§21)**, phasing, verification, risks |
+| [`design-principles.md`](./design-principles.md) | Reflection over optimisation: why Life has no hour targets, why `areaBalance` was removed rather than hidden, what that rules out for anything added later                                                                                                           |
+| [`install.md`](./install.md)                     | How a host Sunrise project installs Resparkable: tier directories, one-line seam registrations, env vars, migration, verification. Kept current by every phase                                                                                                       |
+| [`ui.md`](./ui.md)                               | The UI's rules and why each exists: one fetch per surface, read/mutate split, wire-shape parsing, the fork-owned primitives, and the checklist for adding a surface                                                                                                  |
+| [`agents.md`](./agents.md)                       | The agent layer's rules: one truth for four places, the owner-scope guard, what an agent deliberately cannot do, the redaction line, the five agents, and why bindings are the enforcement                                                                           |
+| [`mcp.md`](./mcp.md)                             | What the brain exposes over MCP and why that list _is_ the access control: the `scopedAgentId` gotcha, the eight tools, the three prompts, the operator setup, and why resources are deferred                                                                        |
+| [`evaluations.md`](./evaluations.md)             | How you find out triage has got worse: the thirty cases, the 0.5/0.5 score, and why the runner is a script rather than a batch run                                                                                                                                   |
+| [`dev-proxy.md`](./dev-proxy.md)                 | Why dev runs on `https://resparkable.test` not `localhost:3016`: the shared HCE proxy registry, the port that must agree in two places, the `herd unproxy` step `apply.sh` won't do, why Google login can't work here                                                |
+| [`sunrise-asks.md`](./sunrise-asks.md)           | What Resparkable needs from upstream Sunrise: missing seams, core files a fork is forced to edit, platform gaps. Every row also gets an issue on the Sunrise repo                                                                                                    |
 
 `plan.md` is the working copy that travels with the code. It is not auto-synced with any copy held outside the repository.
 
@@ -83,7 +84,7 @@ and image capture, and email-to-inbox — which closes Release 1.
 ## The UI, and the rules it follows (phase 5)
 
 Fourteen surfaces under `app/(protected)/resparkable/`: Today, Inbox, **Chat**,
-Search, Projects (+ detail), Goals, Areas, People (+ detail), Documents,
+Search, Projects (+ detail), Goals, Life, People (+ detail), Documents,
 Connections, Graph, Boards (+ board), Plan, Settings, **Archive** (phase 8).
 
 Archive is the one deliberately absent from the nav. §11 makes the archived list
@@ -114,11 +115,8 @@ Four rules shape all of them, and each exists because breaking it is invisible:
    generic data table. Three new dependencies total: `d3-force` for graph layout,
    `@dnd-kit/core` + `@dnd-kit/sortable` for the board.
 
-Two things the UI says out loud because nothing else would:
+One thing the UI says out loud because nothing else would:
 
-- **An area with no weekly target does not participate in balancing at all**, and
-  targets summing past your weekly capacity make every area read as neglected —
-  which flattens the term rather than sharpening it.
 - **A sweep that stopped at its cap looks exactly like a sweep that found
   everything.** `cappedTypes` and the graph's `truncated` are rendered prominently
   for that reason.

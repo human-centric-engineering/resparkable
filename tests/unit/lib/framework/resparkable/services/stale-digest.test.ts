@@ -9,10 +9,10 @@
  * §11 says must never be auto-archived, because a dormant client is not a dead
  * one.
  *
- * The second thing tested here is **the four windows staying different**. They
- * are 90/90/60/90 because the types go stale at different speeds, and the
- * tempting simplification — one shared constant — would start asking about
- * areas a month late and about goals a month early.
+ * The second thing tested here is **the three windows staying independent**.
+ * They are constants per type, not one shared number, because the tempting
+ * simplification would start asking about projects a month late or goals a
+ * month early.
  *
  * Test Coverage:
  * - Each section is queried with its own window, from one `now`
@@ -31,7 +31,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('@/lib/framework/resparkable/repo/stale', () => ({
   findDormantProjects: vi.fn(),
   findGoalsPastTarget: vi.fn(),
-  findAreasWithoutTime: vi.fn(),
   findDormantEntities: vi.fn(),
   markStillLive: vi.fn(),
 }));
@@ -40,7 +39,6 @@ vi.mock('@/lib/framework/resparkable/services/events', () => ({ recordResparkabl
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import { daysBefore } from '@/lib/framework/resparkable/repo/retention';
 import {
-  findAreasWithoutTime,
   findDormantEntities,
   findDormantProjects,
   findGoalsPastTarget,
@@ -60,21 +58,19 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(findDormantProjects).mockResolvedValue([]);
   vi.mocked(findGoalsPastTarget).mockResolvedValue([]);
-  vi.mocked(findAreasWithoutTime).mockResolvedValue([]);
   vi.mocked(findDormantEntities).mockResolvedValue([]);
   vi.mocked(markStillLive).mockResolvedValue(true);
 });
 
 describe('buildStaleDigest', () => {
   it('asks each question with its own window', async () => {
-    // 90/90/60/90, not one shared number. An area is measured in weeks because a
-    // week is the unit people plan in; a project quiet for a month is normal.
+    // Each type has its own constant rather than one shared number, even where
+    // the current values happen to agree.
     await buildStaleDigest(SCOPE, NOW);
 
     expect(findDormantProjects).toHaveBeenCalledWith(SCOPE, daysBefore(NOW, 90));
-    expect(findAreasWithoutTime).toHaveBeenCalledWith(SCOPE, daysBefore(NOW, 60));
     expect(findDormantEntities).toHaveBeenCalledWith(SCOPE, daysBefore(NOW, 90));
-    expect(STALE_WINDOW_DAYS.area).toBe(60);
+    expect(STALE_WINDOW_DAYS).toEqual({ project: 90, goal: 90, entity: 90 });
   });
 
   it('passes goals both now and the cutoff — a date passed, with nothing behind it', async () => {
@@ -83,19 +79,14 @@ describe('buildStaleDigest', () => {
     expect(findGoalsPastTarget).toHaveBeenCalledWith(SCOPE, NOW, daysBefore(NOW, 90));
   });
 
-  it('returns all four sections even when empty', async () => {
+  it('returns all three sections even when empty', async () => {
     // "No dormant entities" and "entities were never checked" are different
     // facts, and a caller rendering the digest needs to be able to tell them
     // apart — including the workflow, which is told to say nothing about an
     // empty section rather than inventing reassurance about one it never ran.
     const digest = await buildStaleDigest(SCOPE, NOW);
 
-    expect(digest.sections.map((section) => section.type)).toEqual([
-      'project',
-      'goal',
-      'area',
-      'entity',
-    ]);
+    expect(digest.sections.map((section) => section.type)).toEqual(['project', 'goal', 'entity']);
     expect(digest.total).toBe(0);
   });
 

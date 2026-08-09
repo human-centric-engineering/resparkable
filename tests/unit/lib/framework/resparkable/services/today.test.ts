@@ -27,7 +27,6 @@ vi.mock('@/lib/framework/resparkable/repo/links', () => ({
 }));
 vi.mock('@/lib/framework/resparkable/repo/time-blocks', () => ({
   listTimeBlocks: vi.fn(),
-  sumMinutesByArea: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ getResparkableSettings: vi.fn() }));
 
@@ -39,7 +38,7 @@ import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { countTasks, listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { countThoughts } from '@/lib/framework/resparkable/repo/thoughts';
-import { listTimeBlocks, sumMinutesByArea } from '@/lib/framework/resparkable/repo/time-blocks';
+import { listTimeBlocks } from '@/lib/framework/resparkable/repo/time-blocks';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
 import { buildToday } from '@/lib/framework/resparkable/services/today';
 import {
@@ -80,7 +79,6 @@ beforeEach(() => {
 
   vi.mocked(getResparkableSettings).mockResolvedValue({
     timezone: 'UTC',
-    weeklyCapacityMinutes: 2400,
     workStyle: 'balanced',
     priorityWeights: DEFAULT_PRIORITY_WEIGHTS,
     energyProfile: DEFAULT_ENERGY_PROFILE,
@@ -99,7 +97,6 @@ beforeEach(() => {
   vi.mocked(countUnreviewedLinks).mockResolvedValue(0);
   vi.mocked(listUnreviewedLinks).mockResolvedValue([]);
   vi.mocked(listTimeBlocks).mockResolvedValue([]);
-  vi.mocked(sumMinutesByArea).mockResolvedValue([]);
 });
 
 describe('buildToday — the single-fetch contract', () => {
@@ -268,41 +265,6 @@ describe('buildToday — the surrounding context', () => {
 
     expect(payload.unreviewedLinks.count).toBe(42);
     expect(listUnreviewedLinks).toHaveBeenCalledWith(scope, 5, NOW);
-  });
-});
-
-describe('buildToday — capacity', () => {
-  it('sums the whole local week and subtracts it from the target', async () => {
-    // Arrange: 09:00 and 06:00 logged across two areas.
-    vi.mocked(sumMinutesByArea).mockResolvedValue([
-      { areaId: 'area_1', minutes: 540 },
-      { areaId: null, minutes: 360 },
-    ]);
-
-    // Act
-    const payload = await buildToday(scope, NOW);
-
-    // Assert: Monday-to-Monday, in the user's zone.
-    expect(sumMinutesByArea).toHaveBeenCalledWith(
-      scope,
-      new Date('2026-07-27T00:00:00.000Z'),
-      new Date('2026-08-03T00:00:00.000Z')
-    );
-    expect(payload.capacity).toEqual({
-      weeklyCapacityMinutes: 2400,
-      plannedMinutesThisWeek: 900,
-      remainingMinutes: 1500,
-    });
-  });
-
-  it('floors an over-booked week at zero', async () => {
-    // "You have minus four hours left" is not a number anybody can act on.
-    vi.mocked(sumMinutesByArea).mockResolvedValue([{ areaId: null, minutes: 3000 }]);
-
-    const payload = await buildToday(scope, NOW);
-
-    expect(payload.capacity.remainingMinutes).toBe(0);
-    expect(payload.capacity.plannedMinutesThisWeek).toBe(3000);
   });
 });
 

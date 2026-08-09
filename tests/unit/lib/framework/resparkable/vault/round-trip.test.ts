@@ -49,7 +49,6 @@ const collected: CollectedNote[] = [
       name: 'The business',
       slug: 'the-business',
       description: 'Everything that pays for itself.',
-      targetWeeklyMinutes: 1200,
     }),
   },
   {

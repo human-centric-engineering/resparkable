@@ -138,15 +138,6 @@ function renderOverdue(overdue: OverdueTask[]): string[] {
   return lines;
 }
 
-function renderCapacity(snapshot: SnapshotPayload): string {
-  const { weeklyCapacityMinutes, plannedMinutesThisWeek, remainingMinutes } = snapshot.capacity;
-  if (weeklyCapacityMinutes <= 0) {
-    return 'Capacity: no weekly capacity set.';
-  }
-  const hours = (minutes: number): string => (minutes / 60).toFixed(1).replace(/\.0$/, '');
-  return `Capacity: ${hours(plannedMinutesThisWeek)}h planned of ${hours(weeklyCapacityMinutes)}h this week, ${hours(remainingMinutes)}h left.`;
-}
-
 /**
  * Gather and render the factual half.
  *
@@ -172,13 +163,8 @@ export async function buildBriefingFacts(
     '',
     ...renderOverdue(overdue),
     '',
-    renderCapacity(snapshot),
     `Inbox: ${snapshot.counts.inbox} un-triaged. Open tasks: ${snapshot.counts.openTasks}. Unreviewed connections: ${snapshot.counts.connections}.`,
   ];
-
-  if (snapshot.mostNeglectedArea) {
-    lines.push(`Most neglected area: ${snapshot.mostNeglectedArea.name}.`);
-  }
 
   return { text: lines.join('\n'), snapshot, wins, overdue };
 }

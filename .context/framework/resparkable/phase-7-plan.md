@@ -119,17 +119,17 @@ that resolves to nothing. Two consequences:
 
 Verified present, so phase 7 builds on it rather than around it.
 
-| Needed                     | Where it is                                                                                                                                                                                          |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Per-user execution scoping | `scheduler.ts:335` stamps `userId: schedule.createdBy` onto the execution — the mechanism holds after the upstream merge (`plan.md` cites the pre-merge line 314)                                    |
-| The tick that drives it    | `run-tick.ts:171` calls `processDueSchedules()`; app jobs run alongside under the same tick                                                                                                          |
-| The app-job seam           | `lib/app/jobs.ts` — shipped empty by upstream #469, `registerAppJob({ name, intervalMs, run })`                                                                                                      |
-| Every step type §6 names   | `report`, `route`, `judge-call`, `orchestrator`, `notification`, `guard`, `llm-call`, `agent-call`, `tool-call` all registered                                                                       |
-| The email template         | `emails/workflow-notification.tsx`, used by `send_notification` — **Resparkable needs no template of its own**, so nothing new lands in the core-owned `emails/` directory. Read §2a before using it |
-| Workflow seeding precedent | `prisma/seeds/004-builtin-templates.ts` → `createInitialVersion` from `workflows/version-service`                                                                                                    |
-| The snapshot               | `services/snapshot.ts` — `SnapshotPayload` already carries `workStyle`, capacity, counts, goals, projects, `topTasks`, areas, `mostNeglectedArea`                                                    |
-| The schedule hook point    | `services/space.ts:80`, stubbed with a comment naming `ensureResparkableSchedules(userId)`                                                                                                           |
-| Review storage             | `repo/reviews.ts` — write path landed in phase 6 precisely so the workflows would have somewhere to put output                                                                                       |
+| Needed                     | Where it is                                                                                                                                                                                                |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-user execution scoping | `scheduler.ts:335` stamps `userId: schedule.createdBy` onto the execution; the mechanism holds after the upstream merge (`plan.md` cites the pre-merge line 314)                                           |
+| The tick that drives it    | `run-tick.ts:171` calls `processDueSchedules()`; app jobs run alongside under the same tick                                                                                                                |
+| The app-job seam           | `lib/app/jobs.ts`: shipped empty by upstream #469, `registerAppJob({ name, intervalMs, run })`                                                                                                             |
+| Every step type §6 names   | `report`, `route`, `judge-call`, `orchestrator`, `notification`, `guard`, `llm-call`, `agent-call`, `tool-call` all registered                                                                             |
+| The email template         | `emails/workflow-notification.tsx`, used by `send_notification`: **Resparkable needs no template of its own**, so nothing new lands in the core-owned `emails/` directory. Read §2a before using it        |
+| Workflow seeding precedent | `prisma/seeds/004-builtin-templates.ts` → `createInitialVersion` from `workflows/version-service`                                                                                                          |
+| The snapshot               | `services/snapshot.ts`: `SnapshotPayload` carries `workStyle`, counts, goals, projects, `topTasks`, areas (`capacity` and `mostNeglectedArea` were removed with `areaBalance`; see `design-principles.md`) |
+| The schedule hook point    | `services/space.ts:80`, stubbed with a comment naming `ensureResparkableSchedules(userId)`                                                                                                                 |
+| Review storage             | `repo/reviews.ts`: write path landed in phase 6 precisely so the workflows would have somewhere to put output                                                                                              |
 
 ### 2a. The email template takes plain text, and the briefing should not be in it
 

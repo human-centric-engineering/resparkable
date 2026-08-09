@@ -266,7 +266,6 @@ describe('collectVaultNotes — cross-references resolved from raw rows', () => 
     name: 'The business',
     slug: 'the-business',
     description: null,
-    targetWeeklyMinutes: null,
   };
   const GOAL = {
     id: 'goal_1',

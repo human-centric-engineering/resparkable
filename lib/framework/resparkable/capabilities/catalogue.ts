@@ -276,7 +276,7 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
     functionDefinition: {
       name: RESPARKABLE_CAPABILITY_SLUGS.listTasks,
       description:
-        "List the user's tasks, highest priority first. The order comes from a deterministic scorer over deadlines, goal alignment, project momentum, area balance, effort fit and staleness — it is not yours to second-guess, and you must never present a different ranking as though it were theirs. Use this to answer 'what should I do', 'what's on my plate', or to find a task before updating it.",
+        "List the user's tasks, highest priority first. The order comes from a deterministic scorer over deadlines, goal alignment, project momentum, effort fit and staleness. It is not yours to second-guess, and you must never present a different ranking as though it were theirs. Use this to answer 'what should I do', 'what's on my plate', or to find a task before updating it.",
       parameters: {
         type: 'object',
         properties: {
@@ -463,14 +463,14 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
     slug: RESPARKABLE_CAPABILITY_SLUGS.getSnapshot,
     name: 'Resparkable — Get a snapshot of the brain',
     description:
-      'The whole brain in one LLM-shaped payload: goals, projects, top tasks, areas, capacity and counts.',
+      'The whole brain in one LLM-shaped payload: goals, projects, top tasks, life areas and counts.',
     executionHandler: 'ResparkableGetSnapshotCapability',
     rateLimit: 30,
     isIdempotent: true,
     functionDefinition: {
       name: RESPARKABLE_CAPABILITY_SLUGS.getSnapshot,
       description:
-        "Get the current state of the user's whole system in one call: their goals at every horizon, active projects with days-since-activity, their top-ranked tasks, life areas with how balanced they are, remaining capacity this week, and today's date in their own timezone. Use it once at the start of anything that needs the big picture — a review, a plan, a 'how am I doing' question. Do not call it for a single fact you could search for.",
+        "Get the current state of the user's whole system in one call: their goals at every horizon, active projects with days-since-activity, their top-ranked tasks, the standing life areas they've named, and today's date in their own timezone. Use it once at the start of anything that needs the big picture: a review, a plan, a 'how am I doing' question. Do not call it for a single fact you could search for.",
       parameters: { type: 'object', properties: {}, required: [] },
     },
   },
@@ -588,7 +588,7 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
     functionDefinition: {
       name: RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs,
       description:
-        "Gather the material for writing a morning briefing: the factual half already rendered (completions, overdue, capacity), plus whichever of tasks, connections and a resurfaced older thought the user's work style leads with. Returns a `promptKey` naming which briefing to write. Call this once, then write the briefing from what it returns — do not go looking for more material.",
+        "Gather the material for writing a morning briefing: the factual half already rendered (completions, overdue), plus whichever of tasks, connections and a resurfaced older thought the user's work style leads with. Returns a `promptKey` naming which briefing to write. Call this once, then write the briefing from what it returns. Do not go looking for more material.",
       parameters: {
         type: 'object',
         properties: {

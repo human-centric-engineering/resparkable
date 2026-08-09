@@ -1,11 +1,11 @@
 /**
  * DayPlanner Component Tests
  *
- * The scorer's `areaBalance` and `effortFit` factors are computed from time
- * blocks (§12 in the component's own header), so this screen has one job:
- * turn two `datetime-local` fields into an exact `startAt`/`endAt` pair and
- * POST it. A `datetime-local` input carries no timezone — the browser's local
- * zone decides the instant — so the test pins the POST body to what `new
+ * The scorer's `effortFit` factor is computed from time blocks (see the
+ * component's own header), so this screen has one job: turn two
+ * `datetime-local` fields into an exact `startAt`/`endAt` pair and POST it. A
+ * `datetime-local` input carries no timezone: the browser's local zone
+ * decides the instant. So the test pins the POST body to what `new
  * Date(value).toISOString()` produces for the values actually typed, not a
  * hardcoded literal that would only be correct in one timezone.
  *
@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import * as React from 'react';
 import type { ReactNode } from 'react';
@@ -109,7 +109,6 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
     description: null,
     colour: null,
     sortOrder: 0,
-    targetWeeklyMinutes: null,
     archivedAt: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -226,9 +225,12 @@ describe('DayPlanner', () => {
     );
 
     // `getByLabelText` would also match the FieldHelp "More information"
-    // button nested inside the "Counts toward" <Label> (it wraps both), so
-    // this scopes to the combobox by its computed accessible name instead.
-    await user.selectOptions(screen.getByRole('combobox', { name: /counts toward/i }), 'area_9');
+    // button nested inside the "Part of your life" <Label> (it wraps both),
+    // so this scopes to the combobox by its computed accessible name instead.
+    await user.selectOptions(
+      screen.getByRole('combobox', { name: /part of your life/i }),
+      'area_9'
+    );
     await user.selectOptions(screen.getByRole('combobox', { name: /^on$/i }), 'project_7');
     await user.click(screen.getByRole('button', { name: /block it out/i }));
 
@@ -287,8 +289,13 @@ describe('DayPlanner', () => {
     );
 
     expect(screen.getByText('Focus time')).toBeInTheDocument();
-    expect(screen.getByText(/counts toward health/i)).toBeInTheDocument();
-    expect(screen.getByText(/on q4 launch/i)).toBeInTheDocument();
+
+    // Scoped to the block's own list item: the area picker also renders
+    // "Health" as an <option>, and the block shows just the area name with
+    // no "counts toward" prefix.
+    const item = screen.getByText('Focus time').closest('li') as HTMLElement;
+    expect(within(item).getByText('Health')).toBeInTheDocument();
+    expect(within(item).getByText(/on q4 launch/i)).toBeInTheDocument();
   });
 
   it('removes a block via its own item path and refreshes on success', async () => {

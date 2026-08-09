@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 34" role="img" aria-labelledby="rm-t rm-d">
+  <title id="rm-t">Resparkable</title>
+  <desc id="rm-d">A faceted infinity loop with a spark at its crossing: an idea captured, carried round, and lit again. Follows the viewer's colour scheme.</desc>
+  <style>
+    :root{ --e0:#f0a882; --e1:#dd6a2a; --e2:#c2410c; --kc:#fbbf24; --kt:#f59e0b; --ink:#1b1511; --hot:#c2410c; }
+    @media (prefers-color-scheme: dark){
+      :root{ --e0:#a3480a; --e1:#e0891c; --e2:#f5a524; --kc:#fff8ea; --kt:#ffc65c; --ink:#e9ebf2; --hot:#f5a524; }
+    }
+  </style>
+  <defs>
+    <linearGradient id="rm-ember" gradientUnits="userSpaceOnUse" x1="4" y1="30" x2="60" y2="4">
+      <stop offset="0" stop-color="#f0a882" style="stop-color:var(--e0)"/><stop offset=".46" stop-color="#dd6a2a" style="stop-color:var(--e1)"/><stop offset="1" stop-color="#c2410c" style="stop-color:var(--e2)"/>
+    </linearGradient>
+    <radialGradient id="rm-spark" gradientUnits="userSpaceOnUse" cx="32" cy="17" r="11.5">
+      <stop offset="0" stop-color="#fbbf24" style="stop-color:var(--kc)"/><stop offset="1" stop-color="#f59e0b" style="stop-color:var(--kt)"/>
+    </radialGradient>
+    <mask id="rm-clear">
+      <rect x="-10" y="-10" width="84" height="54" fill="#fff"/>
+      <path d="M32,6.5C32,12.275 36.725,17 42.5,17C36.725,17 32,21.725 32,27.5C32,21.725 27.275,17 21.5,17C27.275,17 32,12.275 32,6.5Z" fill="#000" stroke="#000" stroke-width="2.8" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <path mask="url(#rm-clear)" fill="none" stroke="url(#rm-ember)" stroke-width="4.6" stroke-miterlimit="10" d="M32,17 L23,6 L12,6 L4,17 L12,28 L23,28 L32,17 L41,6 L52,6 L60,17 L52,28 L41,28 Z"/>
+  <path fill="url(#rm-spark)" d="M32,6.5C32,12.275 36.725,17 42.5,17C36.725,17 32,21.725 32,27.5C32,21.725 27.275,17 21.5,17C27.275,17 32,12.275 32,6.5Z"/>
+</svg>

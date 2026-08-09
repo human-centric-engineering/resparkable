@@ -409,7 +409,6 @@ async function writeNote(
         await updateArea(scope, note.targetId, {
           ...when(str(note.fields, 'title'), (name) => ({ name })),
           ...when(nullableStr(note.fields, 'colour'), (colour) => ({ colour })),
-          ...when(num(note.fields, 'target-weekly-minutes'), (v) => ({ targetWeeklyMinutes: v })),
           ...when(num(note.fields, 'sort-order'), (v) => ({ sortOrder: v ?? 0 })),
           ...(note.bodyChanged ? { description: note.body || null } : {}),
         });
@@ -426,7 +425,6 @@ async function writeNote(
         }),
         description: note.body || null,
         colour: str(note.fields, 'colour') ?? null,
-        targetWeeklyMinutes: num(note.fields, 'target-weekly-minutes') ?? null,
         sortOrder: num(note.fields, 'sort-order') ?? 0,
       });
       return created.id;

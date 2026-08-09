@@ -134,11 +134,6 @@ export const todayPayloadSchema = z.object({
     stale: z.boolean(),
     ageHours: z.number().nullable(),
   }),
-  capacity: z.object({
-    weeklyCapacityMinutes: z.number(),
-    plannedMinutesThisWeek: z.number(),
-    remainingMinutes: z.number(),
-  }),
 });
 
 export type TodayPayloadWire = z.infer<typeof todayPayloadSchema>;
@@ -257,7 +252,6 @@ export const areaSchema = z.object({
   description: z.string().nullable(),
   colour: z.string().nullable(),
   sortOrder: z.number(),
-  targetWeeklyMinutes: z.number().nullable(),
   archivedAt: isoDate.nullable(),
   /** `manual | aged_out | project_closed` — why it left (§11, phase 8). */
   archivedReason: z.string().nullable().optional(),

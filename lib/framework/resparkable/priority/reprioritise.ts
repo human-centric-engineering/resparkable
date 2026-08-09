@@ -7,10 +7,10 @@
  * be reviewed without reading a single Prisma call.
  *
  * **Everything is loaded in batch.** A pass over a user's tasks issues a fixed
- * number of queries — tasks, their projects, those projects' goals and areas,
- * this week's logged minutes, today's remaining blocks — regardless of how many
- * tasks there are. CLAUDE.md bans N+1 on list pages; the same reasoning applies
- * with more force to a loop that runs nightly over every row a user owns.
+ * number of queries: tasks, their projects, those projects' linked goals,
+ * today's remaining blocks, regardless of how many tasks there are. CLAUDE.md
+ * bans N+1 on list pages; the same reasoning applies with more force to a loop
+ * that runs nightly over every row a user owns.
  *
  * Triggered from three places (§10):
  *   - the nightly workflow, over everything (phase 7)
@@ -20,7 +20,6 @@
  */
 
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
-import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
 import { findAcceptedGoalLinks } from '@/lib/framework/resparkable/repo/links';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
@@ -32,24 +31,19 @@ import {
   type TaskScoreWrite,
   type TaskScoringRow,
 } from '@/lib/framework/resparkable/repo/tasks';
-import { listTimeBlocks, sumMinutesByArea } from '@/lib/framework/resparkable/repo/time-blocks';
+import { listTimeBlocks } from '@/lib/framework/resparkable/repo/time-blocks';
 import { largestFreeGapMinutes } from '@/lib/framework/resparkable/priority/free-gap';
 import {
   readFactorFlag,
   scoreTask,
   type PriorityResult,
-  type ScorableArea,
   type ScorableGoal,
   type ScorableProject,
 } from '@/lib/framework/resparkable/priority/score';
 import { resolveEnergyProfile, resolvePriorityWeights } from '@/lib/framework/resparkable/settings';
 import type { EnergyProfile, PriorityWeights } from '@/lib/framework/resparkable/validations';
 import { getResparkableSpace } from '@/lib/framework/resparkable/services/space';
-import {
-  endOfZonedDay,
-  startOfZonedWeek,
-  timeOfDayAt,
-} from '@/lib/framework/resparkable/time/zoned';
+import { endOfZonedDay, timeOfDayAt } from '@/lib/framework/resparkable/time/zoned';
 import { logger } from '@/lib/logging';
 import type { Prisma } from '@prisma/client';
 
@@ -141,9 +135,8 @@ export async function rescoreTask(scope: OwnerScope, taskId: string): Promise<vo
 
 /** Everything the batch shares, loaded once. */
 interface ScoringContext {
-  projectsById: Map<string, ScorableProject & { areaId: string | null }>;
+  projectsById: Map<string, ScorableProject>;
   goalByProjectId: Map<string, ScorableGoal>;
-  areasById: Map<string, ScorableArea>;
   largestFreeGap: number;
 }
 
@@ -156,13 +149,8 @@ async function loadScoringContext(
   const projectIds = unique(tasks.map((task) => task.projectId));
   const projects = await findProjectsByIds(scope, projectIds);
 
-  const [goalEdges, areas, minutesByArea, todaysBlocks] = await Promise.all([
+  const [goalEdges, todaysBlocks] = await Promise.all([
     findAcceptedGoalLinks(scope, projectIds),
-    findAreasByIds(scope, unique(projects.map((project) => project.areaId))),
-    // The week starts at local Monday midnight, so a Sunday-evening session
-    // counts against the week it felt like, not the one the server's UTC clock
-    // had already rolled into.
-    sumMinutesByArea(scope, startOfZonedWeek(now, timezone), now),
     listTimeBlocks(
       scope,
       { from: now, to: endOfZonedDay(now, timezone) },
@@ -173,24 +161,9 @@ async function loadScoringContext(
   const goals = await findGoalsByIds(scope, unique(goalEdges.map((edge) => edge.goalId)));
   const goalsById = new Map(goals.map((goal) => [goal.id, goal]));
 
-  const minutesByAreaId = new Map(
-    minutesByArea
-      .filter((row): row is { areaId: string; minutes: number } => row.areaId !== null)
-      .map((row) => [row.areaId, row.minutes])
-  );
-
   return {
     projectsById: new Map(projects.map((project) => [project.id, project])),
     goalByProjectId: nearestGoalByProject(goalEdges, goalsById, now),
-    areasById: new Map(
-      areas.map((area) => [
-        area.id,
-        {
-          targetWeeklyMinutes: area.targetWeeklyMinutes,
-          minutesThisWeek: minutesByAreaId.get(area.id) ?? 0,
-        },
-      ])
-    ),
     largestFreeGap: largestFreeGapMinutes(todaysBlocks, now, endOfZonedDay(now, timezone)),
   };
 }
@@ -257,7 +230,6 @@ function scoreOne(
   shared: SharedScoringInputs
 ): PriorityResult {
   const project = task.projectId ? (context.projectsById.get(task.projectId) ?? null) : null;
-  const area = project?.areaId ? (context.areasById.get(project.areaId) ?? null) : null;
   const goal = task.projectId ? (context.goalByProjectId.get(task.projectId) ?? null) : null;
 
   const currentlyDeferred = task.deferUntil !== null && task.deferUntil > shared.now;
@@ -270,7 +242,6 @@ function scoreOne(
     project: project
       ? { lastActivityAt: project.lastActivityAt, snoozedUntil: project.snoozedUntil }
       : null,
-    area,
     largestFreeGapMinutes: context.largestFreeGap,
     energyNow: shared.energyNow,
     returnedFromSnooze: readFactorFlag(task.priorityFactors, 'deferred') && !currentlyDeferred,

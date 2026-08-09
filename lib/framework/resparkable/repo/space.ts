@@ -96,7 +96,6 @@ export async function markSpacesSwept(userIds: string[], at: Date): Promise<numb
 /** The settings patch in domain terms — `null` means "reset me to the defaults". */
 export interface SpaceSettingsPatch {
   timezone?: string;
-  weeklyCapacityMinutes?: number;
   workStyle?: string;
   priorityWeights?: object | null;
   energyProfile?: object | null;
@@ -129,9 +128,6 @@ export async function updateSpaceSettings(
   const data: Prisma.ResparkableSpaceUncheckedUpdateInput = {};
 
   if (patch.timezone !== undefined) data.timezone = patch.timezone;
-  if (patch.weeklyCapacityMinutes !== undefined) {
-    data.weeklyCapacityMinutes = patch.weeklyCapacityMinutes;
-  }
   if (patch.workStyle !== undefined) data.workStyle = patch.workStyle;
   if (patch.priorityWeights !== undefined) data.priorityWeights = jsonOrNull(patch.priorityWeights);
   if (patch.energyProfile !== undefined) data.energyProfile = jsonOrNull(patch.energyProfile);
