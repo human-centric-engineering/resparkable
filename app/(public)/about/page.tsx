@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { PublicSection, NumberedItem } from '@/components/marketing/resparkable/public-section';
 import { SparkWordmark } from '@/components/brand/spark-wordmark';
 import { SparkMesh } from '@/components/brand/spark-mesh';
-import { SparkGlyph } from '@/components/brand/spark-glyph';
+import { SparkGlyph, SparkRule } from '@/components/brand/spark-glyph';
 
 const description =
   'Why Resparkable exists, how it works, and the promises it makes about the things you write down.';
@@ -214,7 +214,10 @@ export default function AboutPage() {
         </div>
       </PublicSection>
 
-      <section className="border-border/70 border-t">
+      <section>
+        <div className="container mx-auto px-4">
+          <SparkRule withGlyph={false} />
+        </div>
         <div className="container mx-auto px-4 py-16 text-center md:py-20">
           <SparkGlyph className="mx-auto h-6 w-[45px] opacity-60" />
           <p className="mx-auto mt-6 max-w-xl text-xl leading-snug text-balance sm:text-2xl">

@@ -84,7 +84,7 @@ export function SparkGlyph({
         stroke={`url(#${BRAND_LOOP_GRADIENT_ID})`}
         strokeWidth={traced ? 1.6 : 4.6}
         strokeMiterlimit="10"
-        opacity={traced ? 0.24 : 1}
+        opacity={traced ? 0.55 : 1}
       />
 
       {traced ? (
@@ -133,18 +133,52 @@ export function SparkGlyph({
 /**
  * A section rule with the mark set into it.
  *
- * The public pages separate sections with a single hairline, because banding
- * them would cover `.obsidian-field`'s grid — the alignment reference every
- * column is set against. This keeps the hairline and interrupts it once, which
- * is as much brand as a divider can carry before it becomes a graphic in its
- * own right and starts asking to be read.
+ * The public pages separate sections with a single line rather than banding
+ * them, because banding would cover `.obsidian-field-hex`'s grid — the
+ * alignment reference every column is set against. That line used to be a
+ * flat `--color-border` hairline, and against the honeycomb it disappeared:
+ * a neutral hairline at low opacity and the hex grid's own lines are the
+ * same kind of mark on the same background, so nothing told them apart. This
+ * draws in `--brand-rule` instead — the one warm colour the page reserves
+ * for "something is here" — fading up from each edge to a peak at the
+ * centre rather than sitting at one flat strength, so it reads as a
+ * deliberate mark rather than as one more grid line.
+ *
+ * `withGlyph` off is for the callers that already place their own `SparkGlyph`
+ * near the rule (the closing sections on `/` and `/about`) — the mark doesn't
+ * need to appear twice, just the line.
  */
-export function SparkRule({ className }: { className?: string }): React.ReactNode {
+export function SparkRule({
+  className,
+  withGlyph = true,
+}: {
+  className?: string;
+  /** Draw the mark at the rule's centre. On by default. */
+  withGlyph?: boolean;
+}): React.ReactNode {
+  if (!withGlyph) {
+    return (
+      <div
+        className={cn('h-px', className)}
+        style={{
+          background: 'linear-gradient(to right, transparent, var(--brand-rule) 50%, transparent)',
+        }}
+        aria-hidden="true"
+      />
+    );
+  }
+
   return (
     <div className={cn('flex items-center gap-4', className)} aria-hidden="true">
-      <span className="bg-border/70 h-px flex-1" />
-      <SparkGlyph className="h-[14px] w-[26px] opacity-45" />
-      <span className="bg-border/70 h-px flex-1" />
+      <span
+        className="h-px flex-1"
+        style={{ background: 'linear-gradient(to right, transparent, var(--brand-rule))' }}
+      />
+      <SparkGlyph className="h-[14px] w-[26px] opacity-60" />
+      <span
+        className="h-px flex-1"
+        style={{ background: 'linear-gradient(to left, transparent, var(--brand-rule))' }}
+      />
     </div>
   );
 }
