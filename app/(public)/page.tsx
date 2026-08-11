@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { LandingHero } from '@/components/marketing/resparkable/landing-hero';
 import { PublicSection, NumberedItem } from '@/components/marketing/resparkable/public-section';
 import { VerbDiagram } from '@/components/marketing/resparkable/verb-diagram';
-import { SparkGlyph } from '@/components/brand/spark-glyph';
+import { SparkGlyph, SparkRule } from '@/components/brand/spark-glyph';
 
 const description =
   'Catch a spark in one line, kindle it while it is live, and use it to light someone else up. Resparkable holds your ideas, notes, tasks, projects and goals in one place, joins them up for you, and is built so everything in it can leave.';
@@ -188,7 +188,10 @@ export default function LandingPage() {
           the only place on any public page that breaks the left-aligned rail,
           and it earns that by being the sentence the rest of the page follows
           from. `traced` is safe here: the glyph is 36px tall. */}
-      <section className="border-border/70 border-t">
+      <section>
+        <div className="container mx-auto px-4">
+          <SparkRule withGlyph={false} />
+        </div>
         <div className="container mx-auto px-4 py-16 md:py-20">
           <div className="mx-auto max-w-3xl text-center">
             <SparkGlyph traced className="mx-auto h-9 w-[68px]" />
@@ -258,7 +261,10 @@ export default function LandingPage() {
         </div>
       </PublicSection>
 
-      <section className="border-border/70 border-t">
+      <section>
+        <div className="container mx-auto px-4">
+          <SparkRule withGlyph={false} />
+        </div>
         <div className="container mx-auto px-4 py-16 text-center md:py-24">
           <SparkGlyph className="mx-auto h-6 w-[45px] opacity-60" />
           <h2 className="mt-6 text-2xl sm:text-3xl">Catch the next one.</h2>

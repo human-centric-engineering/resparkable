@@ -1,5 +1,4 @@
-import { SparkGlyph } from '@/components/brand/spark-glyph';
-import { cn } from '@/lib/utils';
+import { SparkGlyph, SparkRule } from '@/components/brand/spark-glyph';
 
 /**
  * PublicSection — the marketing pages' one layout unit.
@@ -29,10 +28,11 @@ import { cn } from '@/lib/utils';
  *
  * ## Why sections have no background
  *
- * The page runs `.obsidian-field`, and the grid is the alignment reference every
- * column here is set against. Banding alternate sections would cover it and put
- * the layout back on the reader's word rather than the page's. Separation is one
- * hairline `border-t` instead — the same line the app draws between panels.
+ * The page runs `.obsidian-field-hex`, and the grid is the alignment reference
+ * every column here is set against. Banding alternate sections would cover it
+ * and put the layout back on the reader's word rather than the page's.
+ * Separation is `SparkRule` instead — see that component for why a plain
+ * `border-t` hairline stopped working once the background became a honeycomb.
  */
 export function PublicSection({
   label,
@@ -56,11 +56,14 @@ export function PublicSection({
   glyph?: boolean;
 }): React.ReactNode {
   return (
-    <section id={id} className={cn('border-border/70 border-t', className)}>
+    <section id={id} className={className}>
+      <div className="container mx-auto px-4">
+        <SparkRule withGlyph={false} />
+      </div>
       <div className="container mx-auto px-4 py-16 md:py-24">
         <div className="grid gap-8 lg:grid-cols-12 lg:gap-16">
           <header className="lg:sticky lg:top-24 lg:col-span-4 lg:self-start">
-            {glyph ? <SparkGlyph className="mb-4 h-4 w-[30px] opacity-30" /> : null}
+            {glyph ? <SparkGlyph className="mb-4 h-4 w-[30px] opacity-45" /> : null}
             <p className="term-label">{label}</p>
             <h2 className="mt-4 text-2xl sm:text-3xl">{title}</h2>
             {lede ? (

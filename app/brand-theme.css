@@ -188,8 +188,28 @@
   --obs-grid-size: 48px;
   --obs-bloom: rgb(194 65 12 / 0.045);
   --obs-hairline: rgb(27 21 17 / 0.1);
+  /* `.obsidian-field-hex`'s own line — see that rule for why it can't just
+     reuse `--obs-hairline`. A touch lighter than that token on purpose: a
+     hairline covering the whole page reads differently from one marking a
+     single divider, and paired with the brand artwork that now sits on top
+     of it (`SparkMesh`), the honeycomb at full `--obs-hairline` strength was
+     landing louder than either was tuned against. Pull this much lower,
+     though, and the enlarged tile (r=40 below) drops so much total line
+     length that the page reads as empty rather than quiet — the two knobs
+     compound, so this one only needed to move partway. */
+  --obs-hex-line: rgb(27 21 17 / 0.075);
   --obs-panel: rgb(255 255 255 / 0.72);
   --obs-inset-highlight: rgb(255 255 255 / 0.9);
+  /* The public pages' section rule (`SparkRule`) — deliberately not built
+     from `--obs-hairline`. A neutral hairline at any opacity this file's
+     other tokens use lands within a couple of `rgb()` steps of the hex
+     grid's own rendered colour: both are the same low-alpha neutral over the
+     same background, so a "divider" drawn that way is not visually a
+     divider, it is one more line in the texture. This is the ember instead
+     — `--color-primary`'s own hue, the one colour on the page reserved for
+     "something is here" — so a section break reads as a deliberate mark
+     rather than as more grid. */
+  --brand-rule: rgb(194 65 12 / 0.4);
 
   /* ═════════════════════════════════════════════════════════════════════
      2. GEOMETRY — the fracture
@@ -274,8 +294,14 @@
   --obs-grid-size: 48px;
   --obs-bloom: rgb(245 165 36 / 0.09);
   --obs-hairline: rgb(233 235 242 / 0.09);
+  /* See the light-mode block above — same reasoning, darker being the dark-mode
+     direction of "quieter against its own background". */
+  --obs-hex-line: rgb(233 235 242 / 0.07);
   --obs-panel: rgb(16 18 26 / 0.72);
   --obs-inset-highlight: rgb(255 255 255 / 0.05);
+  /* See the light-mode block above. Same amber `--color-primary` carries here
+     too, since the ember is the constant across modes. */
+  --brand-rule: rgb(245 165 36 / 0.4);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -531,30 +557,37 @@
      the square one is — three families of straight lines crossing the whole
      canvas tile into triangles, not hexagons, because every crossing has six
      lines meeting instead of three. So this is a small tileable SVG (one
-     flat-top hexagon, radius 32, repeated) drawn as a `mask-image` over a
+     flat-top hexagon, radius 40, repeated) drawn as a `mask-image` over a
      solid-colour layer, rather than a `background-image` — a mask can be
      recoloured by an ordinary CSS colour (including one that changes
      between light and dark mode) the way a baked SVG data-URI can't be.
-     The tile is 96×55.43px: a flat-top hex of radius r tiles with period
-     `3r × r√3`, and r=32 was chosen over the square grid's proportionate
-     r=16 (cell width 48px, matching `--obs-grid-size`) because at parity
-     the hexagon read as noticeably smaller than the square grid at a
-     glance — its vertices sit inside the cell's own bounding box, where a
-     square's corners meet the box exactly, so the same period reads as
-     sparser.
+     The tile is 120×69.282px: a flat-top hex of radius r tiles with period
+     `3r × r√3`.
 
-     Colour is `--obs-hairline`, not `--obs-grid-line`: the square grid's
+     r=40, not the r=32 this shipped with. At r=32 — chosen only for parity
+     with the square grid's r=16 (cell width 48px, matching
+     `--obs-grid-size`) — the honeycomb sat under `SparkMesh` (the animated
+     mark on the hero and `/about`) for the first time and the two grids
+     visibly competed: similar line weight, similar spacing, so the eye
+     couldn't tell the mark's own hairlines from the texture behind them.
+     Fewer, bigger cells means fewer crossings competing with the mark in
+     any given patch of it. r=40 keeps the honeycomb legible as a grid
+     rather than a fog while giving the artwork more room to read as the
+     foreground.
+
+     Colour is `--obs-hex-line`, not `--obs-grid-line`: the square grid's
      lines are axis-aligned, so a browser paints a 1px `linear-gradient`
      hard stop with no anti-aliasing at all. A hexagon's edges are mostly
      diagonal, and a diagonal line at the same nominal width anti-aliases
      across a wider footprint at lower peak coverage, so the identical
      opacity read visibly fainter — worse in dark mode, where the line
      colour is already the lower-contrast one of the two palettes.
-     `--obs-hairline` (already the "this needs to actually register"
-     version of the same neutral, ~2.5× `--obs-grid-line` — see the dashed
-     section rule below) plus a 1.5px stroke instead of 1px compensates for
+     `--obs-hex-line` plus a 1.5px stroke instead of 1px compensates for
      that loss without making the honeycomb louder than the square grid
-     actually is. */
+     actually is — it is its own token rather than `--obs-hairline` (the
+     "this needs to actually register" divider colour, ~2.5× `--obs-grid-line`)
+     precisely so it can be tuned quieter than a divider without weakening
+     any divider that reads from the same variable. */
   .obsidian-field-hex {
     position: relative;
     background-color: var(--color-background);
@@ -571,13 +604,13 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background-color: var(--obs-hairline);
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='55.4256' viewBox='0 0 96 55.4256'%3E%3Cpath d='M32 0L16 27.71L-16 27.71L-32 0L-16 -27.71L16 -27.71ZM32 55.43L16 83.14L-16 83.14L-32 55.43L-16 27.71L16 27.71ZM80 -27.71L64 0L32 0L16 -27.71L32 -55.43L64 -55.43ZM80 27.71L64 55.43L32 55.43L16 27.71L32 0L64 0ZM128 0L112 27.71L80 27.71L64 0L80 -27.71L112 -27.71ZM128 55.43L112 83.14L80 83.14L64 55.43L80 27.71L112 27.71Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-color: var(--obs-hex-line);
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
     mask-repeat: repeat;
-    mask-size: 96px 55.4256px;
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='96' height='55.4256' viewBox='0 0 96 55.4256'%3E%3Cpath d='M32 0L16 27.71L-16 27.71L-32 0L-16 -27.71L16 -27.71ZM32 55.43L16 83.14L-16 83.14L-32 55.43L-16 27.71L16 27.71ZM80 -27.71L64 0L32 0L16 -27.71L32 -55.43L64 -55.43ZM80 27.71L64 55.43L32 55.43L16 27.71L32 0L64 0ZM128 0L112 27.71L80 27.71L64 0L80 -27.71L112 -27.71ZM128 55.43L112 83.14L80 83.14L64 55.43L80 27.71L112 27.71Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
+    mask-size: 120px 69.282px;
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
     -webkit-mask-repeat: repeat;
-    -webkit-mask-size: 96px 55.4256px;
+    -webkit-mask-size: 120px 69.282px;
   }
 
   @media (hover: hover) and (pointer: fine) {
@@ -815,7 +848,7 @@
   @keyframes spark-node {
     0%,
     100% {
-      opacity: 0.32;
+      opacity: 0.55;
       transform: scale(1);
     }
     6% {
@@ -823,7 +856,7 @@
       transform: scale(2.2);
     }
     26% {
-      opacity: 0.32;
+      opacity: 0.55;
       transform: scale(1);
     }
   }
@@ -841,10 +874,10 @@
   @keyframes spark-mote {
     0%,
     100% {
-      opacity: 0.22;
+      opacity: 0.5;
     }
     50% {
-      opacity: 0.8;
+      opacity: 0.92;
     }
   }
 
@@ -861,15 +894,15 @@
   @keyframes spark-relay {
     0%,
     100% {
-      opacity: 0.24;
+      opacity: 0.55;
       transform: scale(1);
     }
     9% {
-      opacity: 0.95;
+      opacity: 1;
       transform: scale(1.9);
     }
     34% {
-      opacity: 0.24;
+      opacity: 0.55;
       transform: scale(1);
     }
   }
@@ -932,7 +965,7 @@
     .spark-node,
     .spark-mote,
     .spark-relay {
-      opacity: 0.45;
+      opacity: 0.6;
     }
   }
 }
