@@ -121,6 +121,8 @@ export const RESPARKABLE_API = {
    * admin-only transcribe endpoint; the audio is never persisted.
    */
   TRANSCRIBE: '/api/v1/resparkable/transcribe',
+  /** One-shot vision extraction for the capture box's camera button. */
+  TRANSCRIBE_IMAGE: '/api/v1/resparkable/transcribe/image',
 
   /**
    * The whole brain as an Obsidian vault — the one endpoint that returns a file

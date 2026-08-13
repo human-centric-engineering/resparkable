@@ -15,6 +15,19 @@ export const metadata: Metadata = {
     default: 'Resparkable',
   },
   description: 'Your second brain — capture, connect and prioritise.',
+  /**
+   * iOS has no `manifest.json` install prompt — `apple-mobile-web-app-*`
+   * meta tags are the whole of what makes "Add to Home Screen" produce a
+   * standalone window instead of a bookmark that opens Safari chrome.
+   * Declared here rather than the root layout because only `/resparkable`
+   * is meant to be installed as an app; the marketing and admin surfaces
+   * are not.
+   */
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Resparkable',
+  },
 };
 
 /**

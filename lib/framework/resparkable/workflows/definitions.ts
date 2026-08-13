@@ -351,9 +351,67 @@ const horizonCheck: ResparkableWorkflowSpec = {
   },
 };
 
+/**
+ * The one workflow here that is triggered, not scheduled — no cron row, no
+ * `ensureResparkableSchedules()` entry. `008-capture-intake-trigger.ts` points
+ * an `AiWorkflowTrigger` (`channel: 'postmark'`) at this slug, so a verified
+ * inbound email fires it directly.
+ */
+export const RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG = 'resparkable-capture-intake';
+
+/**
+ * Email-to-inbox intake (phase 9). One step, no LLM — deferred from phase 7
+ * (`phase-7-plan.md` item 3) because `resparkable_capture_for_token` is a
+ * phase 9 capability.
+ *
+ * `resparkable_capture` is "no structure, no triage, no decisions" by design
+ * (`capabilities/capture.ts`), and an inbound email deserves the same
+ * treatment — `resparkable-triage` processes it overnight along with
+ * everything else in the inbox, same as a thought typed into the web box.
+ * There is nothing here for a model to decide, so there is no `agent_call`.
+ */
+const captureIntake: ResparkableWorkflowSpec = {
+  slug: RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG,
+  name: 'Resparkable — capture intake',
+  description:
+    'Files a verified inbound email as a thought in the owner’s inbox. Fired by the Postmark inbound-trigger route, not on a schedule.',
+  patternsUsed: [1],
+  // The lowest value the admin form accepts (min $0.01) — genuinely $0 in
+  // practice, since the one step is a tool_call with no LLM behind it, but
+  // `maxCostPerExecutionUsd` has no zero option and there is no reason to
+  // special-case this workflow's cap to be exempt from the same field every
+  // other workflow sets.
+  maxCostPerExecutionUsd: 0.01,
+  definition: {
+    entryStepId: 'capture_email',
+    errorStrategy: 'fail',
+    steps: [
+      {
+        id: 'capture_email',
+        name: 'Capture the email',
+        description:
+          'resparkable_capture_for_token resolves the owner from the payload itself and verifies the sender — see its own header for the two checks that stand in for a session.',
+        type: 'tool_call',
+        // **No `args` key, deliberately** — same reason `gather_inputs` in
+        // `morningBriefing` above has none: `tool_call` resolves arguments as
+        // `config.args` → `config.argsFrom` → `ctx.inputData`, and `tool_call`
+        // is the one step type that never template-interpolates `config.args`
+        // (`interpolatePrompt` has ten call sites; `executors/tool-call.ts`
+        // is not one of them). Omitting the key lets the raw inbound payload
+        // — `{ trigger: <Postmark adapter's normalised payload> }`, written
+        // verbatim by the inbound route — reach the capability, which is
+        // built to read exactly that shape (`agentCaptureForTokenSchema`).
+        config: { capabilitySlug: C.captureForToken },
+        nextSteps: [],
+      },
+    ],
+  },
+};
+
 export const RESPARKABLE_WORKFLOWS: readonly ResparkableWorkflowSpec[] = [
   nightlyTriage,
   morningBriefing,
   weeklyReview,
   horizonCheck,
+  captureIntake,
 ];

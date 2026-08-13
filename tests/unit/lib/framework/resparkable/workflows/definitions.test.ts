@@ -28,7 +28,10 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { RESPARKABLE_WORKFLOWS } from '@/lib/framework/resparkable/workflows/definitions';
+import {
+  RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG,
+  RESPARKABLE_WORKFLOWS,
+} from '@/lib/framework/resparkable/workflows/definitions';
 import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/schedules/ensure';
@@ -39,11 +42,18 @@ const CAPABILITY_SLUGS = new Set<string>(Object.values(RESPARKABLE_CAPABILITY_SL
 const AGENT_SLUGS = new Set<string>(Object.values(RESPARKABLE_AGENT_SLUGS));
 
 describe('the workflow set', () => {
-  it('covers exactly the workflows ensureResparkableSchedules creates rows for', () => {
+  it('covers exactly the scheduled workflows, plus the one that is triggered instead', () => {
     // A schedule with no workflow silently never runs; a workflow with no
-    // schedule silently never fires. Both are invisible.
+    // schedule and no trigger silently never fires. `resparkable-capture-intake`
+    // is the one deliberate exception — phase 9's own workflow, fired by the
+    // Postmark inbound-trigger route (`008-capture-intake-trigger.ts`) rather
+    // than a cron row, so it is named here explicitly rather than folded into
+    // `RESPARKABLE_SCHEDULED_WORKFLOWS`.
     expect(RESPARKABLE_WORKFLOWS.map((w) => w.slug).sort()).toEqual(
-      Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS).sort()
+      [
+        ...Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS),
+        RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG,
+      ].sort()
     );
   });
 
@@ -145,6 +155,23 @@ describe.each(RESPARKABLE_WORKFLOWS.map((w) => [w.slug, w] as const))('%s', (slu
       const config = step.config as { capabilitySlug?: string; args?: unknown };
       if (config.capabilitySlug !== 'resparkable_get_briefing_inputs') continue;
       expect(config.args, `${slug}/${step.id} must not pin empty args`).toBeUndefined();
+    }
+  });
+
+  it('lets the capture-intake step fall through to ctx.inputData, the trigger payload', () => {
+    // Same shape as the briefing-inputs check above, and the reason matters
+    // more here: `args: {}` wouldn't just lose an override, it would make
+    // every inbound email dispatch `resparkable_capture_for_token` with an
+    // empty object — failing schema validation on every single delivery.
+    for (const step of steps) {
+      if (step.type !== 'tool_call') continue;
+      const config = step.config as { capabilitySlug?: string; args?: unknown; argsFrom?: unknown };
+      if (config.capabilitySlug !== RESPARKABLE_CAPABILITY_SLUGS.captureForToken) continue;
+      expect(config.args, `${slug}/${step.id} must not pin empty args`).toBeUndefined();
+      expect(
+        config.argsFrom,
+        `${slug}/${step.id} must read ctx.inputData directly`
+      ).toBeUndefined();
     }
   });
 

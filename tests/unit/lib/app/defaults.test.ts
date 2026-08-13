@@ -118,7 +118,8 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // IDENTITY — no app rules at all. Resparkable fills this seam with per-flow
     // sub-caps for its expensive routes (every `/search` request embeds the
     // query; `/reindex` and `/connections/sweep` start batch jobs; `/documents`
-    // parses an upload; `/transcribe` ships audio to a paid provider; `/vault`
+    // parses an upload; `/transcribe` ships audio to a paid provider,
+    // `/transcribe/image` one photo to a vision model; `/vault`
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
     // connection open for a tool loop). Asserting the exact set keeps the
@@ -127,7 +128,10 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     //
     // The order matters and is the registration order in
     // `lib/framework/resparkable/rate-limit.ts` — a rule spliced in the wrong place
-    // is a rule that never matches.
+    // is a rule that never matches. `/transcribe/image` is registered ahead of
+    // `/transcribe` deliberately: both matchers accept a trailing path, and
+    // first-match-wins means the more specific one has to come first or it
+    // would be shadowed.
     assert: () => {
       registerAppRateLimits();
 
@@ -139,6 +143,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/documents(?:\/|$)/),
+        String(/^\/api\/v1\/resparkable\/transcribe\/image(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/transcribe(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/vault(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/ideate(?:\/|$)/),

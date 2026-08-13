@@ -24,6 +24,15 @@ export const RESPARKABLE_ROUTES = {
   SETTINGS: `${BASE}/settings`,
   PLAN: `${BASE}/plan`,
 
+  /**
+   * The PWA share-target landing page (phase 9, §8). Android's share sheet
+   * opens `CAPTURE?title=…&text=…&url=…` (declared in `app/manifest.ts`);
+   * nothing else links here — the capture drawer already covers every other
+   * entry point, and a permanent nav link would be a second way to do what
+   * `⌘/Ctrl+K` already does.
+   */
+  CAPTURE: `${BASE}/capture`,
+
   PROJECTS: `${BASE}/projects`,
   project: (id: string): string => `${BASE}/projects/${id}`,
 

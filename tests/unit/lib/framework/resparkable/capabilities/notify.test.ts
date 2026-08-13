@@ -62,7 +62,11 @@ function capability() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedContact.mockResolvedValue({ email: 'owner@example.com', name: 'Owner' });
+  mockedContact.mockResolvedValue({
+    email: 'owner@example.com',
+    name: 'Owner',
+    emailVerified: true,
+  });
   mockedSend.mockResolvedValue({ success: true } as never);
 });
 
@@ -79,7 +83,11 @@ describe('resparkable_notify — what it sends', () => {
   it('sends for every notification kind, with a subject', async () => {
     for (const kind of RESPARKABLE_NOTIFICATIONS) {
       vi.clearAllMocks();
-      mockedContact.mockResolvedValue({ email: 'owner@example.com', name: 'Owner' });
+      mockedContact.mockResolvedValue({
+        email: 'owner@example.com',
+        name: 'Owner',
+        emailVerified: true,
+      });
       mockedSend.mockResolvedValue({ success: true } as never);
 
       const cap = capability();

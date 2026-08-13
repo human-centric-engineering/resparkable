@@ -22,18 +22,26 @@
  * **back into the box** with the error — never a toast over an empty field, which
  * is how you lose the one thing you were trying not to lose.
  *
- * `source: 'web'` is the default in `createThoughtSchema`, so it is not sent: the
- * other sources (`voice`, `shortcut`, `email`) belong to the paths that actually
- * produced them, and a client that could name its own source would make the field
- * unreliable for exactly the debugging it exists for.
+ * ## Four ways in, one destination — and `source` follows the most recent one
  *
- * ## Three ways in, one destination
+ * Typing, dictating, photographing and dropping a file all end in the same
+ * textarea rather than each posting something of their own. A transcript is
+ * edited before it is saved because dictation mishears; a photo's extracted
+ * text the same, because a phone camera at an angle misreads too. Extracted
+ * document text is cut down to the part that mattered. All of these are
+ * *drafts* until a person presses Capture — which is the property that makes
+ * it safe to make the easy paths this easy.
  *
- * Typing, dictating and dropping a file all end in the same textarea rather than
- * each posting something of their own. A transcript is edited before it is saved
- * because dictation mishears; extracted document text is cut down to the part
- * that mattered. Both are *drafts* until a person presses Capture — which is the
- * property that makes it safe to make the easy paths this easy.
+ * The box also remembers whether the words on screen most recently arrived by
+ * dictation or photo, and says so. `append()` takes an optional source, set by
+ * `VoiceCaptureButton` to `'voice'` and `ImageCaptureButton` to `'image'`; any
+ * keystroke in the textarea — including editing a transcript after the fact —
+ * clears it back to unset, which is what sends as the schema's own default,
+ * `'web'`. Extracted document text does the same: `THOUGHT_SOURCES` has no
+ * distinct value for "read out of a file", so it is `'web'` too, same as
+ * anything typed. A client naming its own source would be unreliable if it
+ * could claim provenance it didn't have; this can't; it can only report what
+ * this box itself just did.
  */
 
 import * as React from 'react';
@@ -41,6 +49,7 @@ import { useRouter } from 'next/navigation';
 import { Send } from 'lucide-react';
 
 import { AttachButton, AttachmentCard } from '@/components/resparkable/layout/capture-attachment';
+import { ImageCaptureButton } from '@/components/resparkable/layout/image-capture-button';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
@@ -58,16 +67,35 @@ export interface QuickCaptureProps {
   focusSignal?: number;
   /** Additional classes for the form element — the shell stretches it to full height. */
   className?: string;
+  /**
+   * Pre-fills the box — the share-target landing page's whole reason to use
+   * this component rather than a bare textarea (`app/(protected)/resparkable/capture/page.tsx`).
+   * Still a draft: nothing is sent until Capture is pressed, same as anything
+   * typed by hand.
+   */
+  initialValue?: string;
+  /** Paired with `initialValue` — `'pwa'` when the box was pre-filled from a share intent. */
+  initialSource?: 'voice' | 'image' | 'pwa';
 }
 
 export function QuickCapture({
   focusSignal,
   className,
+  initialValue,
+  initialSource,
 }: QuickCaptureProps = {}): React.ReactElement {
   const router = useRouter();
   const { state, message, run } = useSaveStatus();
-  const [value, setValue] = React.useState('');
+  const [value, setValue] = React.useState(initialValue ?? '');
   const [file, setFile] = React.useState<File | null>(null);
+  /**
+   * Undefined means "let the schema default to `web`". Set by `append()` when the
+   * text it just added came from a capture modality worth recording; cleared by
+   * any manual keystroke, because editing the box by hand is itself what makes
+   * `web` the honest answer again. Seeded from `initialSource` for the one case
+   * where provenance is known before the box even mounts — a share-target open.
+   */
+  const [source, setSource] = React.useState<'voice' | 'image' | 'pwa' | undefined>(initialSource);
   /** Said in the status line under the box: transcription errors, "read 4,000 characters", etc. */
   const [note, setNote] = React.useState<{ text: string; tone: 'info' | 'error' } | null>(null);
   const [dragging, setDragging] = React.useState(false);
@@ -78,28 +106,42 @@ export function QuickCapture({
     inputRef.current?.focus();
   }, [focusSignal]);
 
-  /** Append rather than replace: dictated and extracted text join what you already wrote. */
-  const append = React.useCallback((text: string) => {
+  /**
+   * Append rather than replace: dictated and extracted text join what you already
+   * wrote. `newSource` is omitted for document extraction (no distinct source
+   * value exists for it — see the header note) and passed by the capture buttons
+   * that do have one.
+   */
+  const append = React.useCallback((text: string, newSource?: 'voice' | 'image') => {
     setValue((current) => (current.trim() ? `${current.replace(/\s+$/, '')}\n\n${text}` : text));
+    setSource(newSource);
     inputRef.current?.focus();
   }, []);
 
   async function submit(): Promise<void> {
     const content = value.trim();
     if (!content) return;
+    const capturedSource = source;
 
     // Cleared before the await — see the header note.
     setValue('');
+    setSource(undefined);
     setNote(null);
 
-    const ok = await run(() => apiClient.post(RESPARKABLE_API.THOUGHTS, { body: { content } }));
+    const ok = await run(() =>
+      apiClient.post(RESPARKABLE_API.THOUGHTS, {
+        body: { content, ...(capturedSource ? { source: capturedSource } : {}) },
+      })
+    );
 
     if (ok) {
       // The inbox count in the nav and any inbox list on screen are now stale.
       router.refresh();
     } else {
-      // Give the words back. Losing them is the one unforgivable failure here.
+      // Give the words (and their source) back. Losing them is the one
+      // unforgivable failure here.
       setValue(content);
+      setSource(capturedSource);
       inputRef.current?.focus();
     }
   }
@@ -151,7 +193,10 @@ export function QuickCapture({
           'terminal-surface',
           dragging && 'border-primary ring-primary/30 ring-2'
         )}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => {
+          setValue(event.target.value);
+          setSource(undefined);
+        }}
         onKeyDown={(event) => {
           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
             event.preventDefault();
@@ -203,8 +248,16 @@ export function QuickCapture({
         <div className="flex items-center gap-1.5">
           <VoiceCaptureButton
             onTranscript={(text) => {
-              append(text);
+              append(text, 'voice');
               setNote({ tone: 'info', text: 'Transcribed — check it reads right before saving.' });
+            }}
+            onError={(text) => setNote({ tone: 'error', text })}
+            disabled={state === 'saving'}
+          />
+          <ImageCaptureButton
+            onExtracted={(text) => {
+              append(text, 'image');
+              setNote({ tone: 'info', text: 'Read from your photo — check it before saving.' });
             }}
             onError={(text) => setNote({ tone: 'error', text })}
             disabled={state === 'saving'}

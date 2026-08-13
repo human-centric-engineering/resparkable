@@ -99,6 +99,12 @@ const BINDINGS: readonly AgentBindings[] = [
       'Two rows: gather the inputs, write the artefact. Deliberately not resparkable_get_snapshot or resparkable_search — the briefing’s facts are counted deterministically before the model sees them, and an agent that could go and look up its own numbers is one that will eventually report a different total than the block above it. Not resparkable_notify either: telling someone the briefing is ready is the workflow’s decision, not the writer’s.',
     capabilities: [C.getBriefingInputs, C.writeReview],
   },
+  {
+    agentSlug: RESPARKABLE_AGENT_SLUGS.intake,
+    rationale:
+      'One row, and it is the only agent bound to it. resparkable_capture_for_token resolves its own owner from a bearer token rather than context.userId (capture-for-token.ts) — the compensating control is that no chat-reachable agent is ever bound to it, so this capability appears in no tool list a browser-driven turn could reach.',
+    capabilities: [C.captureForToken],
+  },
 ];
 
 const unit: SeedUnit = {

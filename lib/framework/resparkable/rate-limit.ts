@@ -8,7 +8,7 @@
  * one import and one call. When Resparkable adds a fifth expensive route, hosts get
  * it on upgrade without editing anything.
  *
- * ## Why these eight routes need their own caps at all
+ * ## Why these nine routes need their own caps at all
  *
  * `/api/v1/**` already inherits 100/min keyed on the session user from
  * `proxy.ts`, and CLAUDE.md is explicit that handlers must not call section
@@ -27,6 +27,9 @@
  *     loop, and each turn is an LLM call plus whatever tools it decides to run.
  *   - **`/transcribe`** ships up to 25 MB of audio to a paid speech-to-text
  *     provider that bills per audio-minute.
+ *   - **`/transcribe/image`** makes one vision-completion call per photo,
+ *     billed per image rather than per token — same shape as `/transcribe`,
+ *     registered ahead of it so the more specific path isn't shadowed.
  *   - **`/vault`** reads every table the brain has to build an export, and on
  *     import inflates an archive and plans thousands of row writes.
  *
@@ -136,6 +139,21 @@ const resparkableAudioLimiter = createRateLimiter({
 });
 
 /**
+ * Image capture: 10/min.
+ *
+ * Same shape and same reasoning as voice: one non-streaming vision completion
+ * per request, billed per image rather than per token (`operation: 'vision'`
+ * in `lib/orchestration/llm/cost-tracker.ts`), so this is a per-call cost
+ * ceiling, not a per-second one. Ten photographs a minute is far past what
+ * anyone does by hand and well under what a stuck camera-retry loop would send.
+ */
+const resparkableImageLimiter = createRateLimiter({
+  interval: MINUTE,
+  maxRequests: 10,
+  uniqueTokenPerInterval: 500,
+});
+
+/**
  * Register Resparkable's tiers and rules.
  *
  * Idempotent: both registrars dedupe (by identical limiter instance and by rule
@@ -149,6 +167,7 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitTier('resparkable-ideate', resparkableIdeateLimiter);
   registerRateLimitTier('resparkable-chat', resparkableChatLimiter);
   registerRateLimitTier('resparkable-audio', resparkableAudioLimiter);
+  registerRateLimitTier('resparkable-image', resparkableImageLimiter);
   registerRateLimitTier('resparkable-vault', resparkableVaultLimiter);
 
   // Keyed on the session user, not the IP: this is authenticated, per-person
@@ -177,6 +196,16 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitRule({
     match: /^\/api\/v1\/resparkable\/documents(?:\/|$)/,
     tier: 'resparkable-upload',
+    key: 'session-user',
+  });
+
+  // Registered ahead of the `/transcribe` rule below: both matchers accept a
+  // trailing `/…`, and the policy table's "first match wins" rule means the
+  // more specific path — `/transcribe/image` — has to be listed first or every
+  // image-capture request would silently land on the audio tier instead.
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/transcribe\/image(?:\/|$)/,
+    tier: 'resparkable-image',
     key: 'session-user',
   });
 

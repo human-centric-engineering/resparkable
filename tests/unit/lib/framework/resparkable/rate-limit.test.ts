@@ -47,6 +47,11 @@ const EXPECTED: Array<{ path: string; tier: string }> = [
   { path: '/api/v1/resparkable/connections/sweep', tier: 'resparkable-batch' },
   { path: '/api/v1/resparkable/documents', tier: 'resparkable-upload' },
   { path: '/api/v1/resparkable/ideate', tier: 'resparkable-ideate' },
+  { path: '/api/v1/resparkable/transcribe', tier: 'resparkable-audio' },
+  // The one that matters most: both this matcher and `/transcribe`'s own accept
+  // a trailing path, so this only lands on the right tier if the image rule is
+  // registered — and therefore evaluated — before the audio one.
+  { path: '/api/v1/resparkable/transcribe/image', tier: 'resparkable-image' },
 ];
 
 beforeEach(() => {
@@ -64,6 +69,8 @@ describe('registerResparkableRateLimits', () => {
         'resparkable-batch',
         'resparkable-upload',
         'resparkable-ideate',
+        'resparkable-audio',
+        'resparkable-image',
       ])
     );
   });

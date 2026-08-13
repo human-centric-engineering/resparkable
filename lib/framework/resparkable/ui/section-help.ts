@@ -423,6 +423,22 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
+    href: RESPARKABLE_ROUTES.CAPTURE,
+    title: 'Capture',
+    blurb: 'Opened by your phone’s share sheet — the box works the same as the drawer.',
+    blocks: [
+      {
+        heading: 'Why this page exists',
+        body: 'Android’s share sheet opens a page, not the capture drawer. Sharing a page from your browser or an app lands here with the title, text and link already filled in — edit it down to what matters, then press Capture.',
+      },
+      {
+        heading: 'iOS uses a Shortcut instead',
+        body: 'Apple’s share sheet has no equivalent of this page, so the two-second capture path there is an iOS Shortcut posting to the API directly. Ask an admin if you need one set up.',
+      },
+    ],
+  },
+
+  {
     href: RESPARKABLE_ROUTES.ARCHIVE,
     title: 'Archive',
     blurb: 'Items you have put away, and items that have gone quiet.',

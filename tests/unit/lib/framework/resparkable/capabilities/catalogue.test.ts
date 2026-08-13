@@ -36,6 +36,7 @@ import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capab
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import {
   agentBriefingInputsSchema,
+  agentCaptureForTokenSchema,
   agentCaptureSchema,
   agentFindConnectionsSchema,
   agentGetBriefingSchema,
@@ -112,19 +113,22 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
   [RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs]: agentBriefingInputsSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.notify]: agentNotifySchema,
   [RESPARKABLE_CAPABILITY_SLUGS.getStaleDigest]: agentStaleDigestSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.captureForToken]: agentCaptureForTokenSchema,
 };
 
 describe('Resparkable capability catalogue', () => {
-  it('holds exactly the eighteen capabilities the agent layer promises', () => {
+  it('holds exactly the nineteen capabilities the agent layer promises', () => {
     // Thirteen in plan.md §5, plus `resparkable_promote_thought`: none of the
     // thirteen could mark a thought as processed, so a nightly triage run left
     // every note looking un-triaged and re-processed the lot the next night.
     // Phase 7 adds three: the briefing read, its deterministic input-gathering
     // (which replaced the `route` step §6 specified), and the notifier. Phase 8
     // adds the stale digest — the read that lets the horizon check ask about
-    // dormant work without being able to act on the answer.
-    expect(RESPARKABLE_CAPABILITIES).toHaveLength(18);
-    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(18);
+    // dormant work without being able to act on the answer. Phase 9 adds the
+    // email-to-inbox intake, the one capability that resolves its owner from a
+    // bearer token instead of context.userId (see capture-for-token.ts).
+    expect(RESPARKABLE_CAPABILITIES).toHaveLength(19);
+    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(19);
   });
 
   it('uses unique, namespaced slugs', () => {

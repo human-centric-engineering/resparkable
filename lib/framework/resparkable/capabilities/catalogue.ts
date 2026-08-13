@@ -1,5 +1,5 @@
 /**
- * The eighteen capability rows, as data.
+ * The nineteen capability rows, as data.
  *
  * **One source of truth for a capability's identity, and it is not the class.**
  * A capability exists in three places at once — a TypeScript handler, an
@@ -44,7 +44,7 @@ import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilit
  *
  * Namespaced rather than reusing core's `internal` / `knowledge` so an operator
  * looking at a capability list with a host project's own tools in it can tell at
- * a glance which eighteen reach into someone's brain.
+ * a glance which nineteen reach into someone's brain.
  */
 export const RESPARKABLE_CAPABILITY_CATEGORY = 'resparkable';
 
@@ -68,6 +68,8 @@ export const RESPARKABLE_CAPABILITY_SLUGS = {
   getBriefingInputs: 'resparkable_get_briefing_inputs',
   notify: 'resparkable_notify',
   getStaleDigest: 'resparkable_get_stale_digest',
+  /** Email-to-inbox intake (phase 9). Bound to the intake agent only — see its class header. */
+  captureForToken: 'resparkable_capture_for_token',
 } as const;
 
 export type ResparkableCapabilitySlug =
@@ -646,6 +648,60 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         "Find what has gone quiet: projects with no activity and nothing completed, goals whose target date passed with no progress behind them, areas with no time logged, and people nobody has mentioned in months. Each row is a question for the owner, not a conclusion — say what the evidence is and let them decide. Never describe an item as dead or abandoned; you cannot see the reason it went quiet, and 'still a client?' is a fair question where 'this client is gone' is not yours to say.",
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.captureForToken,
+    name: 'Resparkable — Capture from inbound email',
+    description:
+      'Email-to-inbox intake. Resolves the owner from a bearer inbox token rather than the caller — never bind this to a chat-reachable agent. See capture-for-token.ts.',
+    executionHandler: 'ResparkableCaptureForTokenCapability',
+    rateLimit: 30,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.captureForToken,
+      description:
+        "Capture an inbound email as a thought in the owner's inbox. Not a general-purpose tool, and never shown to a model in practice — it is bound to no chat-reachable agent and exposed over no MCP tool. The owner is resolved from `trigger.mailboxHash`, not from who is calling, and the message is only captured if `trigger.from.email` matches that owner's own verified account email. The shape is the raw Postmark-adapter payload, unwrapped, because `tool_call` steps don't template-interpolate their args — see `agentCaptureForTokenSchema`'s header for why.",
+      parameters: {
+        type: 'object',
+        properties: {
+          trigger: {
+            type: 'object',
+            description:
+              "The inbound-trigger route's normalised Postmark payload, passed through whole.",
+            properties: {
+              from: {
+                type: 'object',
+                properties: {
+                  email: { type: 'string', description: "The message's From address." },
+                },
+                required: ['email'],
+              },
+              subject: {
+                type: 'string',
+                description: 'The message subject, if any. Prefixed onto the captured content.',
+              },
+              textBody: { type: 'string', description: 'The raw plain-text body.' },
+              strippedTextReply: {
+                type: 'string',
+                description:
+                  'The body with quoted history removed. Preferred over textBody when present.',
+              },
+              mailboxHash: {
+                type: 'string',
+                description:
+                  'The routing token from the recipient address, brain+<token>@<domain>.',
+              },
+              messageId: {
+                type: 'string',
+                description: "Postmark's MessageID. Used to dedupe a redelivered webhook.",
+              },
+            },
+            required: ['from', 'mailboxHash', 'messageId'],
+          },
+        },
+        required: ['trigger'],
+      },
     },
   },
 ];
