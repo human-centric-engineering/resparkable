@@ -40,7 +40,7 @@ Namespaced _inside_ the tier, never at its root — so a project already running
 
 ## Status
 
-**Release 1 complete — all ten phases (0–9, plus 7b) landed.** The tier is wired, the data model exists, every core type has an owner-scoped CRUD API, tasks are ranked by a deterministic scorer, the brain is searchable by meaning, there is a UI (fifteen surfaces at `/resparkable`, including a kanban board), and **you can now talk to it**: nineteen capabilities, seven agents, the shared profile they inherit, a per-turn context block that means the agent already knows your goals, and a chat page at `/resparkable/chat`. Phase 7 added the background: four workflows on per-user schedules, the
+**Release 1 complete — all ten phases (0–9, plus 7b) landed.** The tier is wired, the data model exists, every core type has an owner-scoped CRUD API, tasks are ranked by a deterministic scorer, the brain is searchable by meaning, there is a UI (seventeen surfaces at `/resparkable`, including a kanban board), and **you can now talk to it**: nineteen capabilities, seven agents, the shared profile they inherit, a per-turn context block that means the agent already knows your goals, and a chat page at `/resparkable/chat`. Phase 7 added the background: four workflows on per-user schedules, the
 connection sweep as an app job, the morning briefing, and the tier's first
 erasure hook. Phase 8 added the lifecycle: retention on the same rotation, the
 stale digest, and the archive surface. Phase 7b took it **outside the app**:
@@ -84,7 +84,7 @@ path still ships on the wider `chat` scope, unchanged since phase 7b.
 | Zoned time                              | `lib/framework/resparkable/time/zoned.ts` — every schedule resolves in the user's zone                                                                                                                                                                                                                                                                                         |
 | UI contracts                            | `lib/framework/resparkable/ui/*` — `RESPARKABLE_ROUTES`, wire-shape schemas, the one server-read helper                                                                                                                                                                                                                                                                        |
 | API                                     | `app/api/v1/resparkable/**` — 71 route files, plus one admin pair (`GET`/`PATCH` on `admin/resparkable/settings`)                                                                                                                                                                                                                                                              |
-| User UI                                 | `app/(protected)/resparkable/**` — 15 surfaces; components in `components/resparkable/**`                                                                                                                                                                                                                                                                                      |
+| User UI                                 | `app/(protected)/resparkable/**` — 17 surfaces; components in `components/resparkable/**`                                                                                                                                                                                                                                                                                      |
 | MCP exposure                            | `prisma/seeds/framework-resparkable/006-mcp.ts` from `lib/framework/resparkable/mcp/exposure.ts` — eight tools, three prompts, **no code** (phase 7b)                                                                                                                                                                                                                          |
 | Vault (Obsidian)                        | `lib/framework/resparkable/vault/*` — layout, markdown codec, frontmatter schemas, note encoders, zip transport, export, pure import planner, apply (Release 3, phase 15 + the zip half of 17). **Ongoing sync (reconciler, Managed transport, Release 4) on hold, 2026-08-08**                                                                                                |
 | Account transfer (policy)               | `lib/framework/resparkable/transfer/policy.ts` — every brain table classified for account export/import: dispositions, merge keys, soft references and `Json` id paths. Data only, no imports, so it sits inside the tier's Prisma boundary. Engine and guards live in core `lib/portability/*`; see `.context/framework/resparkable/transfer.md` (Phase A)                    |
@@ -93,10 +93,11 @@ path still ships on the wider `chat` scope, unchanged since phase 7b.
 
 ## The UI, and the rules it follows (phase 5)
 
-Fifteen surfaces under `app/(protected)/resparkable/`: Today, Inbox, **Chat**,
+Seventeen surfaces under `app/(protected)/resparkable/`: Today, Inbox, **Chat**,
 Search, Projects (+ detail), Goals, Life, People (+ detail), Documents,
 Connections, Graph, Boards (+ board), Plan, Settings, **Archive** (phase 8),
-**Capture** (phase 9 — the PWA share-target landing page; see `capture-channels.md`).
+**Vault** (Release 3), **Capture** (phase 9 — the PWA share-target landing
+page; see `capture-channels.md`).
 
 Archive is the one deliberately absent from the nav. §11 makes the archived list
 views and `?includeArchived=true` the only two ways to reach archived items, and

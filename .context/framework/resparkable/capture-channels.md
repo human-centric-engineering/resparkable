@@ -108,6 +108,20 @@ Two checks stand in for the session it doesn't have:
 Failing either captures nothing. There is no partial-trust path — the message
 is either filed under the right brain or not filed at all.
 
+**`inboxToken` is stored in plaintext, not hashed.** Every other bearer
+credential in this codebase — `AiApiKey.keyHash` — is a one-way SHA-256 hash;
+the raw key is shown once at creation and never persisted. `inboxToken` can't
+follow that pattern: it's half of a capture address
+(`brain+<inboxToken>@<domain>`) the owner needs to see indefinitely on the
+Resparkable settings page, not a secret shown once and then forgotten. A
+one-way hash can't be reversed to redisplay it. This is an accepted,
+documented deviation, not an oversight — a database compromise that leaks
+`inboxToken` lets an attacker forge capture emails for that space (mitigated
+by the sender-email check above still gating the second half), which is a
+real but bounded risk: the capability only writes captured thoughts, it
+reads nothing back. Revisit if that changes — reversible encryption or a
+show-once/regenerate UX are both real fixes, just not free ones.
+
 ### Why chat and MCP can't reach it, even though nothing stops a `tool_call` step from calling any capability
 
 `tool_call` steps dispatch under a synthetic `agentId: workflow:${workflowId}`,

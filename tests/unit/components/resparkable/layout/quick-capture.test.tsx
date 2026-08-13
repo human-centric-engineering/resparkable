@@ -25,11 +25,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { QuickCapture } from '@/components/resparkable/layout/quick-capture';
+
+vi.mock('@/components/resparkable/documents/upload-request', () => ({
+  uploadDocument: vi.fn(),
+}));
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn() },
@@ -75,6 +79,9 @@ vi.mock('@/lib/hooks/use-voice-recording', () => ({
 }));
 
 import { apiClient } from '@/lib/api/client';
+import { uploadDocument } from '@/components/resparkable/documents/upload-request';
+
+const mockedUpload = vi.mocked(uploadDocument);
 
 const mockedPost = apiClient.post as ReturnType<typeof vi.fn>;
 const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
@@ -408,5 +415,93 @@ describe('QuickCapture', () => {
         body: { content: 'Shared from another app — worth following up' },
       });
     });
+  });
+
+  it('lights up the drop zone on dragover and clears it on dragleave', () => {
+    render(<QuickCapture />);
+
+    fireEvent.dragOver(textarea(), { dataTransfer: { types: ['Files'] } });
+    expect(textarea().className).toMatch(/border-primary/);
+
+    fireEvent.dragLeave(textarea());
+    expect(textarea().className).not.toMatch(/border-primary/);
+  });
+
+  it('does not light up the drop zone for a drag that carries no files', () => {
+    render(<QuickCapture />);
+
+    fireEvent.dragOver(textarea(), { dataTransfer: { types: ['text/plain'] } });
+    expect(textarea().className).not.toMatch(/border-primary/);
+  });
+
+  it('forgets a dropped file without reading or filing it', async () => {
+    render(<QuickCapture />);
+    dropFile(new File(['x'], 'report.pdf', { type: 'application/pdf' }));
+
+    const card = await screen.findByTestId('capture-attachment');
+    await userEvent
+      .setup()
+      .click(within(card).getByRole('button', { name: /forget report\.pdf/i }));
+
+    expect(screen.queryByTestId('capture-attachment')).not.toBeInTheDocument();
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('reports and refreshes after "Add to Documents" filing a new file', async () => {
+    const user = userEvent.setup();
+    mockedUpload.mockResolvedValue({ ok: true, deduped: false });
+
+    render(<QuickCapture />);
+    dropFile(new File(['x'], 'report.pdf', { type: 'application/pdf' }));
+    await user.click(await screen.findByRole('button', { name: /add to documents/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/becomes searchable once indexed/i)).toBeInTheDocument()
+    );
+    expect(refresh).toHaveBeenCalled();
+    expect(screen.queryByTestId('capture-attachment')).not.toBeInTheDocument();
+  });
+
+  it('reports a dedupe distinctly from a newly filed document', async () => {
+    const user = userEvent.setup();
+    mockedUpload.mockResolvedValue({ ok: true, deduped: true });
+
+    render(<QuickCapture />);
+    dropFile(new File(['x'], 'report.pdf', { type: 'application/pdf' }));
+    await user.click(await screen.findByRole('button', { name: /add to documents/i }));
+
+    await waitFor(() => expect(screen.getByText(/same file, so nothing new/i)).toBeInTheDocument());
+  });
+
+  it('shows a dictation failure as an alert, not an info note', async () => {
+    hookState.error = { code: 'permission_denied', message: 'Microphone access was blocked' };
+    render(<QuickCapture />);
+
+    // The error tone renders role="alert" (note.tone === 'error'); the info
+    // tone renders role="status" — this is what proves the branch was taken.
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent('Microphone access was blocked');
+    });
+  });
+
+  it('shows an image extraction failure as an alert', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ success: false, error: { code: 'NO_VISION_PROVIDER' } }),
+    } as unknown as Response);
+
+    render(<QuickCapture />);
+    const photo = new File(['x'], 'note.jpg', { type: 'image/jpeg' });
+    await user.upload(
+      document.querySelector('input[type="file"][accept="image/*"]') as HTMLInputElement,
+      photo
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(/vision-capable model/i);
+    });
+    expect(mockedPost).not.toHaveBeenCalled();
   });
 });

@@ -71,7 +71,10 @@ function imageErrorMessage(code: string | undefined, fallback: string): string {
       return 'That photo is too large. Try a smaller image.';
     case 'IMAGE_INVALID_TYPE':
       return 'This browser captured a format we can’t read. Try another camera app.';
-    case 'RATE_LIMITED':
+    // `createRateLimitResponse` (`lib/security/rate-limit.ts`) is what actually
+    // answers a 429 — its code is `RATE_LIMIT_EXCEEDED`, not `RATE_LIMITED`.
+    // Found in code review: this case never matched anything before.
+    case 'RATE_LIMIT_EXCEEDED':
       return 'That’s a lot of photos in a short time. Give it a minute.';
     default:
       return fallback;

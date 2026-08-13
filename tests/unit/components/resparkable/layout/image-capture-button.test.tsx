@@ -18,7 +18,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { ImageCaptureButton } from '@/components/resparkable/layout/image-capture-button';
@@ -115,6 +115,70 @@ describe('ImageCaptureButton', () => {
     await waitFor(() => {
       expect(props.onError).toHaveBeenCalledWith(expect.stringContaining('extraction service'));
     });
+  });
+
+  it('clicking the visible button opens the hidden camera input', async () => {
+    const user = userEvent.setup();
+    render(<ImageCaptureButton {...makeProps()} />);
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const clickSpy = vi.spyOn(input, 'click');
+
+    await user.click(screen.getByRole('button', { name: /photograph a note/i }));
+
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['IMAGE_DISABLED', /switched off on this instance/i],
+    ['IMAGE_TOO_LARGE', /too large/i],
+    ['IMAGE_INVALID_TYPE', /format we can.t read/i],
+    ['RATE_LIMIT_EXCEEDED', /lot of photos/i],
+  ])('turns %s into its own sentence', async (code, expected) => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue(jsonResponse(503, { success: false, error: { code } }));
+
+    const props = makeProps();
+    render(<ImageCaptureButton {...props} />);
+    const photo = new File(['x'], 'note.jpg', { type: 'image/jpeg' });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, photo);
+
+    await waitFor(() =>
+      expect(props.onError).toHaveBeenCalledWith(expect.stringMatching(expected))
+    );
+  });
+
+  it('falls back to the server-supplied message for an unrecognised error code', async () => {
+    const user = userEvent.setup();
+    fetchMock.mockResolvedValue(
+      jsonResponse(500, {
+        success: false,
+        error: { code: 'SOMETHING_NEW', message: 'a new failure mode' },
+      })
+    );
+
+    const props = makeProps();
+    render(<ImageCaptureButton {...props} />);
+    const photo = new File(['x'], 'note.jpg', { type: 'image/jpeg' });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, photo);
+
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith('a new failure mode'));
+  });
+
+  it('falls back to a generic message when the response body does not even parse', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(500, { totally: 'unexpected shape' }));
+    const user = userEvent.setup();
+
+    const props = makeProps();
+    render(<ImageCaptureButton {...props} />);
+    const photo = new File(['x'], 'note.jpg', { type: 'image/jpeg' });
+    await user.upload(document.querySelector('input[type="file"]') as HTMLInputElement, photo);
+
+    await waitFor(() =>
+      expect(props.onError).toHaveBeenCalledWith(
+        expect.stringContaining('didn’t come back as words')
+      )
+    );
   });
 
   it('lets the same photo be chosen twice in a row', async () => {

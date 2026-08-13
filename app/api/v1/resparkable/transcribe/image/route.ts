@@ -45,8 +45,7 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { errorResponse, successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { prisma } from '@/lib/db/client';
-import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
+import { resolveCaptureRouteGating } from '@/lib/framework/resparkable/capture-route-shared';
 import { resolveAgentProviderAndModel } from '@/lib/orchestration/llm/agent-resolver';
 import { logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { ProviderError } from '@/lib/orchestration/llm/provider';
@@ -83,40 +82,12 @@ export const POST = withAuth(async (request, session) => {
   const oversize = enforceContentLengthCap(request);
   if (oversize) return oversize;
 
-  const settings = await prisma.aiOrchestrationSettings.findUnique({
-    where: { slug: 'global' },
-    select: { imageInputGloballyEnabled: true },
+  const gating = await resolveCaptureRouteGating(request, 'imageInputGloballyEnabled', {
+    message: 'Image input is disabled at the platform level',
+    code: 'IMAGE_DISABLED',
   });
-  if (settings && !settings.imageInputGloballyEnabled) {
-    return errorResponse('Image input is disabled at the platform level', {
-      code: 'IMAGE_DISABLED',
-      status: 403,
-    });
-  }
-
-  // Resolved server-side for model/attribution — see the header. Its absence
-  // means the Resparkable seeds have not been applied, an install problem
-  // rather than a bad request.
-  const agent = await prisma.aiAgent.findUnique({
-    where: { slug: RESPARKABLE_AGENT_SLUGS.companion },
-    select: { id: true, provider: true, model: true, fallbackProviders: true },
-  });
-  if (!agent) {
-    return errorResponse('Resparkable is not fully installed on this instance', {
-      code: 'AGENT_NOT_SEEDED',
-      status: 503,
-    });
-  }
-
-  let formData: FormData;
-  try {
-    formData = await request.formData();
-  } catch {
-    return errorResponse('Expected multipart/form-data body', {
-      code: 'INVALID_BODY',
-      status: 400,
-    });
-  }
+  if (!gating.ok) return gating.response;
+  const { agent, formData } = gating.value;
 
   const validation = validateImageCaptureUpload(formData);
   if (!validation.ok) return validation.response;
