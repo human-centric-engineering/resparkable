@@ -38,6 +38,7 @@ describe('static route entries', () => {
     ['CONNECTIONS', RESPARKABLE_ROUTES.CONNECTIONS, '/resparkable/connections'],
     ['GRAPH', RESPARKABLE_ROUTES.GRAPH, '/resparkable/graph'],
     ['BOARDS', RESPARKABLE_ROUTES.BOARDS, '/resparkable/boards'],
+    ['CAPTURE', RESPARKABLE_ROUTES.CAPTURE, '/resparkable/capture'],
   ])('%s resolves to %s', (_name, actual, expected) => {
     expect(actual).toBe(expected);
   });

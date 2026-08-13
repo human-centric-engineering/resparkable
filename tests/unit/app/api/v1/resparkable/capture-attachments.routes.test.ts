@@ -307,4 +307,74 @@ describe('POST /api/v1/resparkable/transcribe', () => {
     const response = await invoke(TRANSCRIBE_POST, request);
     expect(response.status).toBe(415);
   });
+
+  it('rejects an oversize body BEFORE materialising it', async () => {
+    const formDataSpy = vi.fn();
+    // MAX_REQUEST_BYTES (lib/validations/transcribe.ts) is 25 MB plus 4 KB of
+    // multipart headroom, not a flat 25 MB — this must clear that, not just
+    // MAX_TRANSCRIBE_BYTES.
+    const { request } = multipartRequest(
+      'http://x/api/v1/resparkable/transcribe',
+      { audio: AUDIO },
+      { contentLength: String(25 * 1024 * 1024 + 4 * 1024 + 1), formDataSpy }
+    );
+
+    const response = await invoke(TRANSCRIBE_POST, request);
+    expect(response.status).toBe(413);
+    expect(formDataSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes a client-supplied language through to the provider and the response', async () => {
+    const { request } = audioRequest({ language: 'fr' });
+
+    const response = await invoke(TRANSCRIBE_POST, request);
+
+    const provider = (await vi.mocked(getAudioProvider).mock.results[0]?.value) as {
+      provider: { transcribe: ReturnType<typeof vi.fn> };
+    };
+    expect(provider.provider.transcribe).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ language: 'fr' })
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it('echoes the language the provider detected, and logs it on the cost row', async () => {
+    vi.mocked(getAudioProvider).mockResolvedValue({
+      provider: {
+        transcribe: vi.fn(async () => ({
+          text: 'bonjour',
+          durationMs: 1000,
+          language: 'fr',
+        })),
+      },
+      modelId: 'whisper-1',
+      providerSlug: 'openai',
+    } as never);
+
+    const { request } = audioRequest();
+    const response = await invoke(TRANSCRIBE_POST, request);
+
+    expect((await body(response)).data).toMatchObject({ language: 'fr' });
+    expect(logCost).toHaveBeenCalledWith(expect.objectContaining({ metadata: { language: 'fr' } }));
+  });
+
+  it('stringifies a non-Error throw rather than crashing on error.message', async () => {
+    vi.mocked(getAudioProvider).mockResolvedValue({
+      provider: {
+        transcribe: vi.fn(async () => {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- deliberately non-Error, to pin the String(error) fallback
+          throw 'upstream is on fire';
+        }),
+      },
+      modelId: 'whisper-1',
+      providerSlug: 'openai',
+    } as never);
+
+    const { request } = audioRequest();
+    const response = await invoke(TRANSCRIBE_POST, request);
+
+    expect(response.status).toBe(502);
+    expect((await body(response)).error).toMatchObject({ code: 'TRANSCRIPTION_FAILED' });
+  });
 });

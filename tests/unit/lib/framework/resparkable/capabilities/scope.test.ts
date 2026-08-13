@@ -209,7 +209,15 @@ describe('every Resparkable capability refuses an ownerless run', () => {
     vi.clearAllMocks();
   });
 
-  for (const handler of resparkableCapabilityHandlers()) {
+  // `resparkable_capture_for_token` is the one deliberate exception this sweep
+  // exists to *not* catch: it extends `BaseCapability` directly rather than
+  // `ResparkableCapability`, precisely because it must run with no context
+  // owner at all — its owner comes from the payload's `mailboxHash`. See its
+  // own test file (`capture-for-token.test.ts`) for the property that stands
+  // in for this one.
+  for (const handler of resparkableCapabilityHandlers().filter(
+    (h) => h.slug !== 'resparkable_capture_for_token'
+  )) {
     it(`${handler.slug} returns no_user_context and touches nothing`, async () => {
       const args = handler.validate(VALID_ARGS[handler.slug]);
 
@@ -225,4 +233,14 @@ describe('every Resparkable capability refuses an ownerless run', () => {
       }
     });
   }
+
+  it('does not silently exclude the one exception by a stale slug', () => {
+    // If `resparkable_capture_for_token` were ever renamed without updating the
+    // filter above, the filter would match nothing and this sweep would go
+    // back to covering it — asserting a property the capability is designed
+    // not to have. This guards the guard.
+    expect(resparkableCapabilityHandlers().map((h) => h.slug)).toContain(
+      'resparkable_capture_for_token'
+    );
+  });
 });

@@ -56,6 +56,7 @@ describe('findAgentBinding', () => {
       id: true,
       provider: true,
       model: true,
+      fallbackProviders: true,
     });
   });
 

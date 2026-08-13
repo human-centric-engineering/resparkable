@@ -558,6 +558,13 @@ Also: **`lib/orchestration/review-schema/`** defines a declarative schema for re
 
 **Instruct** (Release 6, §19) **is not a capture channel and gets no new `source` value.** It's a second mode on the same bar — where Capture always does exactly one thing (append text, `POST /thoughts`), Instruct hands the text to `resparkable-instruct` as a turn that may call several capabilities, each of which already stamps its own correct `source` (a capture triggered through Instruct is still `source: 'agent'`, same as one triggered through chat today).
 
+> **Corrected 2026-08-13, phase 9 — four departures from this section, against what actually shipped.** See [`phase-9-plan.md`](./phase-9-plan.md) for the full reasoning and [`capture-channels.md`](./capture-channels.md) for the standing reference.
+>
+> 1. **Voice capture shipped ahead of this plan, and not as `POST /resparkable/capture/voice`.** The real shape is `POST /transcribe` returning text to the client, appended into the same textarea a typed thought uses — never a server-side auto-created `source: 'voice'` thought. `source` only started actually being sent in phase 9 itself (a wiring gap this plan didn't anticipate: the client never sent it).
+> 2. **The `AiApiKey` `resparkable` scope was never buildable from this tier.** `AiApiKey.scopes` is a closed enum in two Sunrise-owned files — a fork cannot extend it without editing core, which the tier's whole design avoids. Tracked as `sunrise-asks.md` #34 ([sunrise#542](https://github.com/human-centric-engineering/sunrise/issues/542)); the Shortcut recipe ships on the wider `chat` scope instead, as it has since phase 7b.
+> 3. **`resparkable_capture_for_token`'s argument shape is the raw inbound-trigger envelope** (`{ trigger: <Postmark's normalised payload> }`), not the flat `{ inboxToken, from, subject, text, messageId }` above. `tool_call` steps never template-interpolate `config.args` — every other step type resolves its own `{{trigger.*}}` fields individually, and `executors/tool-call.ts` is not one of them — so the capability reads the payload directly rather than receiving pre-extracted fields.
+> 4. **Image capture has no ready-made primitive the way voice does.** `enableImageInput`/vision-model support exist only inside the full chat/conversation pipeline. The shipped route (`POST /transcribe/image`) composes `LlmProvider.chat()` directly with a single multimodal message — real new code, not a wire-up — and, like voice, never persists the original image.
+
 ---
 
 ## 9. UI

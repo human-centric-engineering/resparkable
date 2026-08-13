@@ -43,8 +43,7 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { errorResponse, successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { prisma } from '@/lib/db/client';
-import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
+import { resolveCaptureRouteGating } from '@/lib/framework/resparkable/capture-route-shared';
 import { logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { getAudioProvider } from '@/lib/orchestration/llm/provider-manager';
 import { enforceContentLengthCap, validateTranscribeUpload } from '@/lib/validations/transcribe';
@@ -60,40 +59,12 @@ export const POST = withAuth(async (request, session) => {
   const oversize = enforceContentLengthCap(request);
   if (oversize) return oversize;
 
-  const settings = await prisma.aiOrchestrationSettings.findUnique({
-    where: { slug: 'global' },
-    select: { voiceInputGloballyEnabled: true },
+  const gating = await resolveCaptureRouteGating(request, 'voiceInputGloballyEnabled', {
+    message: 'Voice input is disabled at the platform level',
+    code: 'VOICE_DISABLED',
   });
-  if (settings && !settings.voiceInputGloballyEnabled) {
-    return errorResponse('Voice input is disabled at the platform level', {
-      code: 'VOICE_DISABLED',
-      status: 403,
-    });
-  }
-
-  // Resolved server-side and used only for cost attribution — see the header.
-  // Its absence means the Resparkable seeds have not been applied, which is an
-  // install problem rather than a bad request.
-  const agent = await prisma.aiAgent.findUnique({
-    where: { slug: RESPARKABLE_AGENT_SLUGS.companion },
-    select: { id: true },
-  });
-  if (!agent) {
-    return errorResponse('Resparkable is not fully installed on this instance', {
-      code: 'AGENT_NOT_SEEDED',
-      status: 503,
-    });
-  }
-
-  let formData: FormData;
-  try {
-    formData = await request.formData();
-  } catch {
-    return errorResponse('Expected multipart/form-data body', {
-      code: 'INVALID_BODY',
-      status: 400,
-    });
-  }
+  if (!gating.ok) return gating.response;
+  const { agent, formData } = gating.value;
 
   // The shared validator requires an `agentId` field because the chat surfaces
   // address a specific agent. This surface does not, so the resolved id is

@@ -84,11 +84,26 @@ export function VoiceCaptureButton({
   const recording = useVoiceRecording();
   const [transcribing, setTranscribing] = React.useState(false);
 
+  // `onError` is passed as an inline closure by every caller in this codebase,
+  // so it is a new reference on every render of the *parent* — including a
+  // render this effect's own call to `onError` triggers (the parent renders a
+  // note in response). Depending on `onError` directly turns one real error
+  // into an infinite loop: fire → parent re-renders → new `onError` reference
+  // → effect's deps changed → fire again, forever, with `recording.error`
+  // never having to change at all. The ref keeps "call the latest onError"
+  // decoupled from "re-run because something in the parent re-rendered" — the
+  // effect body always sees the current closure, but only actually re-runs
+  // when the recorder reports a genuinely new error.
+  const onErrorRef = React.useRef(onError);
+  React.useEffect(() => {
+    onErrorRef.current = onError;
+  });
+
   // Recording-layer failures (no permission, no MediaRecorder) travel out through
   // the same channel as transcription failures, so the caller has one place to render.
   React.useEffect(() => {
-    if (recording.error) onError(recording.error.message);
-  }, [recording.error, onError]);
+    if (recording.error) onErrorRef.current(recording.error.message);
+  }, [recording.error]);
 
   const handleClick = React.useCallback(async () => {
     if (disabled || transcribing) return;
@@ -218,7 +233,10 @@ function voiceErrorMessage(code: string | undefined, fallback: string): string {
       return 'That recording is too long. Try again in shorter bursts.';
     case 'AUDIO_INVALID_TYPE':
       return 'This browser recorded in a format we can’t transcribe. Try another browser.';
-    case 'RATE_LIMITED':
+    // `createRateLimitResponse` (`lib/security/rate-limit.ts`) is what actually
+    // answers a 429 — its code is `RATE_LIMIT_EXCEEDED`, not `RATE_LIMITED`.
+    // Found in code review: this case never matched anything before.
+    case 'RATE_LIMIT_EXCEEDED':
       return 'That’s a lot of dictation in a short time. Give it a minute.';
     default:
       return fallback;

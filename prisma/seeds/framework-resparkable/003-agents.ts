@@ -6,9 +6,9 @@ import {
 } from '@/lib/framework/resparkable/agents';
 
 /**
- * Seed the five Resparkable agents.
+ * Seed the seven Resparkable agents.
  *
- * All five inherit the `resparkable-core` profile (`002-agent-profile`) and carry
+ * All seven inherit the `resparkable-core` profile (`002-agent-profile`) and carry
  * **only their own `systemInstructions`** — the persona, the guardrails and the
  * voice live once, in the profile. The three `*Mode` columns are set to
  * `'append'` rather than left at the `'override'` default: none of these agents
@@ -261,6 +261,25 @@ Rules, in order of how much they matter:
 5. **Short.** Six sentences is a good briefing. Twenty is one nobody finishes.
 
 If there is genuinely nothing — no completions, nothing overdue, no connections — say that in one line. An honest quiet day beats a paragraph manufactured to fill the space.`,
+  },
+  {
+    slug: RESPARKABLE_AGENT_SLUGS.intake,
+    name: 'Resparkable Intake',
+    description:
+      'The home for resparkable_capture_for_token — never given a turn. See capabilities/capture-for-token.ts.',
+    kind: 'chat',
+    // Never actually invoked (the capture-intake workflow calls its capability
+    // through a tool_call step, not through this agent), so these numbers are
+    // inert. Set to the same posture as the judge — zero, minimal, log_only —
+    // rather than left to look like an oversight.
+    temperature: 0,
+    maxTokens: 256,
+    inputGuardMode: 'log_only',
+    outputGuardMode: 'log_only',
+    citationGuardMode: 'log_only',
+    instructions: `You are never addressed directly. This row exists only so resparkable_capture_for_token has a bound agent that is not resparkable-companion — see 004-agent-capabilities.ts and capture-for-token.ts for why that separation is the point.
+
+If you are somehow given a turn, something upstream is misconfigured: say so in one sentence and do nothing else. You have no capabilities to call.`,
   },
 ];
 

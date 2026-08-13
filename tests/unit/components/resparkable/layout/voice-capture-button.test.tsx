@@ -19,6 +19,7 @@
  * @see components/resparkable/layout/voice-capture-button.tsx
  */
 
+import * as React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -176,6 +177,70 @@ describe('VoiceCaptureButton', () => {
     });
   });
 
+  it.each([
+    ['VOICE_DISABLED', /switched off on this instance/i],
+    ['AGENT_NOT_SEEDED', /speech-to-text provider/i],
+    ['AUDIO_TOO_LARGE', /too long/i],
+    ['AUDIO_INVALID_TYPE', /format we can.t transcribe/i],
+    ['RATE_LIMIT_EXCEEDED', /lot of dictation/i],
+  ])('turns %s into its own sentence', async (code, expected) => {
+    const user = userEvent.setup();
+    hookState.state = 'recording';
+    fetchMock.mockResolvedValue(jsonResponse(503, { success: false, error: { code } }));
+
+    const props = makeProps();
+    render(<VoiceCaptureButton {...props} />);
+    await user.click(screen.getByRole('button', { name: /stop recording/i }));
+
+    await waitFor(() =>
+      expect(props.onError).toHaveBeenCalledWith(expect.stringMatching(expected))
+    );
+  });
+
+  it('falls back to the server-supplied message for an unrecognised error code', async () => {
+    const user = userEvent.setup();
+    hookState.state = 'recording';
+    fetchMock.mockResolvedValue(
+      jsonResponse(500, {
+        success: false,
+        error: { code: 'SOMETHING_NEW', message: 'a new failure mode' },
+      })
+    );
+
+    const props = makeProps();
+    render(<VoiceCaptureButton {...props} />);
+    await user.click(screen.getByRole('button', { name: /stop recording/i }));
+
+    await waitFor(() => expect(props.onError).toHaveBeenCalledWith('a new failure mode'));
+  });
+
+  it.each([
+    ['audio/mp4', 'audio.mp4'],
+    ['audio/webm', 'audio.webm'],
+    ['audio/ogg', 'audio.ogg'],
+    ['application/octet-stream', 'audio.bin'],
+  ])(
+    'names the uploaded file %s → %s from the recorder-reported mime type',
+    async (mimeType, filename) => {
+      const user = userEvent.setup();
+      hookState.state = 'recording';
+      stopMock.mockResolvedValueOnce({
+        blob: new Blob([new Uint8Array([1, 2, 3, 4])], { type: mimeType }),
+        mimeType,
+        durationMs: 1000,
+      });
+      fetchMock.mockResolvedValue(jsonResponse(200, { success: true, data: { text: 'hi' } }));
+
+      render(<VoiceCaptureButton {...makeProps()} />);
+      await user.click(screen.getByRole('button', { name: /stop recording/i }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const body = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+      const file = body.get('audio') as File;
+      expect(file.name).toBe(filename);
+    }
+  );
+
   it('surfaces a permission failure from the recorder itself', async () => {
     hookState.error = { code: 'permission_denied', message: 'Microphone access was blocked' };
 
@@ -185,5 +250,46 @@ describe('VoiceCaptureButton', () => {
     await waitFor(() => {
       expect(props.onError).toHaveBeenCalledWith('Microphone access was blocked');
     });
+  });
+
+  /**
+   * Regression test. Every caller of this component in the codebase passes
+   * `onError` as an inline closure — a new function reference every time the
+   * *parent* re-renders, including a re-render the parent makes in response to
+   * this exact effect calling `onError`. An effect that depended on `onError`
+   * directly turned one real recorder error into an infinite loop: fire, parent
+   * re-renders, `onError` reference changes, effect's deps changed, fire again
+   * — forever, with `recording.error` never needing to change at all. This
+   * reproduces that shape (a parent that hands down a fresh closure on every
+   * render) and asserts the call count settles rather than growing.
+   */
+  it('calls onError once per real error, even when the caller hands it a new closure on every render', async () => {
+    hookState.error = { code: 'permission_denied', message: 'Microphone access was blocked' };
+    const calls = vi.fn();
+
+    function ChurningParent() {
+      const [, forceRerender] = React.useState(0);
+      // A fresh closure every render — the shape every real caller has.
+      return (
+        <>
+          <VoiceCaptureButton onTranscript={vi.fn()} onError={() => calls()} />
+          <button onClick={() => forceRerender((n) => n + 1)}>rerender parent</button>
+        </>
+      );
+    }
+
+    const user = userEvent.setup();
+    render(<ChurningParent />);
+
+    await waitFor(() => expect(calls).toHaveBeenCalledTimes(1));
+
+    // Force three more parent re-renders, each handing VoiceCaptureButton a
+    // brand-new `onError` closure. The buggy version re-fired the effect on
+    // every single one of these.
+    await user.click(screen.getByRole('button', { name: /rerender parent/i }));
+    await user.click(screen.getByRole('button', { name: /rerender parent/i }));
+    await user.click(screen.getByRole('button', { name: /rerender parent/i }));
+
+    expect(calls).toHaveBeenCalledTimes(1);
   });
 });

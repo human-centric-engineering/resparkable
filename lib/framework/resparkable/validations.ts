@@ -1143,6 +1143,52 @@ export const staleStillLiveSchema = z
 
 export type StaleStillLiveInput = z.infer<typeof staleStillLiveSchema>;
 
+// ─── Capture intake (phase 9) ─────────────────────────────────────────────────
+
+/**
+ * `resparkable_capture_for_token` — email-to-inbox, the one capability that does
+ * not trust `context.userId`.
+ *
+ * Every other capability in this file is reached by a session or an MCP key, so
+ * `userId` always arrives from the platform, never as an argument (§ the base
+ * class's own header comment). Inbound email is the one channel with no session
+ * to carry it: the Postmark adapter authenticates *Postmark*, not the sender, so
+ * the capability itself resolves the owner from `inboxToken` and independently
+ * checks that `from` is the address on that owner's account. See
+ * `capture-channels.md` for the full threat model this schema is half of.
+ *
+ * **Shape, and why it is nested rather than flat.** `tool_call` is the one step
+ * type whose `config.args` is never template-interpolated (every other step
+ * type resolves its own `{{trigger.*}}` fields individually — `interpolatePrompt`
+ * has ten call sites and `executors/tool-call.ts` is not one of them). So the
+ * `resparkable-capture-intake` workflow's step declares no `args` at all, which
+ * makes the executor fall through to passing `ctx.inputData` straight to
+ * `dispatch()` — and for an inbound-triggered execution that is
+ * `{ trigger: <the Postmark adapter's normalised payload> }`
+ * (`app/api/v1/inbound/[channel]/[slug]/route.ts`), verbatim, no substitution
+ * needed because nothing here is a string template. This schema validates that
+ * shape directly rather than a flattened one a `tool_call` step cannot actually
+ * produce today. Unlisted payload fields (`to`, `cc`, `date`, `htmlBody`,
+ * `messageStream`, `attachments`) are accepted and ignored, not rejected — this
+ * capability reads five fields out of a payload shape it does not own.
+ */
+export const agentCaptureForTokenSchema = z.object({
+  trigger: z.object({
+    from: z.object({ email: z.string().trim().min(1).max(320) }),
+    subject: z.string().max(500).optional(),
+    /** `textBody` is Postmark's raw body; used when there's no stripped reply. */
+    textBody: z.string().optional(),
+    /** Reply text with quoted history removed — preferred when present. */
+    strippedTextReply: z.string().optional(),
+    /** Routes to `ResparkableSpace.inboxToken` — the `+token` half of the address. */
+    mailboxHash: z.string().trim().min(1),
+    /** Postmark's `MessageID` — the replay-dedupe key, forwarded as `externalId`. */
+    messageId: z.string().trim().min(1).max(255),
+  }),
+});
+
+export type AgentCaptureForTokenInput = z.infer<typeof agentCaptureForTokenSchema>;
+
 // ─── Chat (phase 6c) ─────────────────────────────────────────────────────────
 
 /**

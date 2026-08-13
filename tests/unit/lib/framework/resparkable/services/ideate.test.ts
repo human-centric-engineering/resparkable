@@ -147,7 +147,7 @@ beforeEach(() => {
       strength: 0.51,
     },
   ]);
-  mockedAgent.mockResolvedValue({ id: 'agent_1', provider: '', model: '' });
+  mockedAgent.mockResolvedValue({ id: 'agent_1', provider: '', model: '', fallbackProviders: [] });
   mockedResolve.mockResolvedValue({
     providerSlug: 'openai',
     model: 'gpt-x',
@@ -436,7 +436,12 @@ describe('ideate prompt shaping', () => {
         strength: 0.51,
       },
     ]);
-    mockedAgent.mockResolvedValue({ id: 'agent_1', provider: '', model: '' });
+    mockedAgent.mockResolvedValue({
+      id: 'agent_1',
+      provider: '',
+      model: '',
+      fallbackProviders: [],
+    });
     mockedResolve.mockResolvedValue({ providerSlug: 'openai', model: 'gpt-x', fallbacks: [] });
     mockedProvider.mockResolvedValue({} as Awaited<ReturnType<typeof getProvider>>);
     completionReturning(

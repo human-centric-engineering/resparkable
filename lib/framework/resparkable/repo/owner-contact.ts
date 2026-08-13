@@ -39,6 +39,14 @@ import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 export interface OwnerContact {
   email: string;
   name: string | null;
+  /**
+   * Added for `resparkable_capture_for_token` (phase 9), which is the first
+   * caller that has to *check* this rather than trust a session. Every other
+   * caller reads a session-authenticated user's own address to tell them
+   * something; this one is asked whether an inbound email's `From` is the
+   * account's own address before treating the message as theirs.
+   */
+  emailVerified: boolean;
 }
 
 /**
@@ -51,9 +59,9 @@ export interface OwnerContact {
 export async function findOwnerContact(scope: OwnerScope): Promise<OwnerContact | null> {
   const user = await prisma.user.findUnique({
     where: { id: scope.userId },
-    select: { email: true, name: true },
+    select: { email: true, name: true, emailVerified: true },
   });
 
   if (!user?.email) return null;
-  return { email: user.email, name: user.name ?? null };
+  return { email: user.email, name: user.name ?? null, emailVerified: user.emailVerified };
 }

@@ -27,6 +27,8 @@ export interface ResparkableAgentBinding {
   /** Empty string means "resolve at runtime" — how every system agent is seeded. */
   provider: string;
   model: string;
+  /** Empty array unless the operator set explicit fallbacks in the agent form. */
+  fallbackProviders: string[];
 }
 
 /**
@@ -39,6 +41,6 @@ export interface ResparkableAgentBinding {
 export async function findAgentBinding(slug: string): Promise<ResparkableAgentBinding | null> {
   return prisma.aiAgent.findUnique({
     where: { slug },
-    select: { id: true, provider: true, model: true },
+    select: { id: true, provider: true, model: true, fallbackProviders: true },
   });
 }

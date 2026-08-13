@@ -779,6 +779,12 @@ restart, or wait.
 Also optional, and it needs nothing seeded. `POST /api/v1/resparkable/capture` is
 already reachable with a personal API key, because `withAuth` accepts one.
 
+**Still the whole of the Shortcut story after phase 9.** Phase 9 added the PWA
+share target (Android) and email-to-inbox (`capture-channels.md`), but the
+narrow `resparkable` key scope this section's own warning below asks for
+remained out of reach from this tier — see `sunrise-asks.md` #34. Nothing
+below changed.
+
 1. Mint a personal key. Resparkable ships the self-service routes but **no UI page**
    for them, so from the browser console of a logged-in session (same origin, so
    the cookie goes with it):

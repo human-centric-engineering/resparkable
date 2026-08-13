@@ -42,6 +42,10 @@ describe('coverage', () => {
     expect(findSectionHelp(RESPARKABLE_ROUTES.SEARCH)?.title).toBe('Search');
   });
 
+  it('covers Capture, reached from the PWA share target rather than the nav (phase 9)', () => {
+    expect(findSectionHelp(RESPARKABLE_ROUTES.CAPTURE)?.title).toBe('Capture');
+  });
+
   it('gives every entry a blurb and at least one block', () => {
     for (const entry of RESPARKABLE_SECTION_HELP) {
       expect(entry.blurb.length, `${entry.title} blurb`).toBeGreaterThan(0);

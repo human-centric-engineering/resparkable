@@ -20,7 +20,7 @@
  * which resolves the system default model when the ideation agent is absent).
  */
 
-/** The five agents seeded in phase 6. */
+/** The seven agents — five from phase 6, the briefer from phase 7, the intake from phase 9. */
 export const RESPARKABLE_AGENT_SLUGS = {
   /** The conversational face — the agent a person talks to at `/resparkable/chat`. */
   companion: 'resparkable-companion',
@@ -34,6 +34,17 @@ export const RESPARKABLE_AGENT_SLUGS = {
   judge: 'resparkable-judge',
   /** Writes the morning briefing, from inputs already selected for it (phase 7). */
   briefer: 'resparkable-briefer',
+  /**
+   * Bound to exactly one capability — `resparkable_capture_for_token`
+   * (phase 9) — and deliberately absent from `RESPARKABLE_CHAT_AGENT_SLUGS`
+   * below. Never issued a turn by any executor: the workflow that owns this
+   * capability calls it via a `tool_call` step, which dispatches under a
+   * synthetic `workflow:${workflowId}` id rather than a real agent's. This
+   * row exists so the binding has a named, chat-unreachable home instead of
+   * drifting onto `resparkable-companion` the day someone reorganises
+   * `004-agent-capabilities.ts`. See `capture-for-token.ts`.
+   */
+  intake: 'resparkable-intake',
 } as const;
 
 export type ResparkableAgentSlug =

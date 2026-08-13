@@ -18,6 +18,21 @@ release process.
 
 ### Added
 
+- **Phase 9 closes Release 1: PWA install, image capture, and email-to-inbox.**
+  `app/manifest.ts` (content in `lib/framework/resparkable/pwa/manifest.ts`)
+  makes `/resparkable` installable, with an Android share target (`GET
+  /resparkable/capture?title=&text=&url=`) landing on a new page
+  (`app/(protected)/resparkable/capture/`). `POST /api/v1/resparkable/transcribe/image`
+  is a new one-shot vision-extraction route for the capture box's camera
+  button — no original photo persisted, same as voice. A new capability,
+  `resparkable_capture_for_token`, resolves its owner from a Postmark
+  inbound email's routing token rather than a session, bound to a new
+  chat-unreachable `resparkable-intake` agent; `resparkable-capture-intake`
+  is a new workflow, fired by a Postmark `AiWorkflowTrigger` row instead of a
+  schedule. `ResparkableThought.source` values `'voice'`, `'image'` and
+  `'pwa'` are now actually produced (`THOUGHT_SOURCES` already listed them
+  since phase 1). See [`capture-channels.md`](./.context/framework/resparkable/capture-channels.md).
+
 - **`SparkMesh`, `SparkGlyph`/`SparkRule` and `VerbDiagram`: the mark, opened
   out into the graph it is drawn from.** `components/brand/spark-mesh.tsx` draws
   the lemniscate as eleven vertices and twelve facets inside a wider field of far

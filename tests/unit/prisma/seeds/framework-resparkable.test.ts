@@ -19,7 +19,7 @@
  * Test Coverage:
  * - Every catalogue capability is written, with the definition from the catalogue
  * - The update branch leaves isActive / rateLimit / requiresApproval alone
- * - All five agents inherit the profile and append rather than override
+ * - All seven agents inherit the profile and append rather than override
  * - Guard modes are set explicitly on every agent; nothing is left null
  * - The judge is `kind: 'judge'` at temperature 0 with no bindings
  * - Triage is bound to no structural-write capability
@@ -41,6 +41,7 @@ import {
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import {
   RESPARKABLE_AGENT_SLUGS,
+  RESPARKABLE_CHAT_AGENT_SLUGS,
   RESPARKABLE_PROFILE_SLUG,
 } from '@/lib/framework/resparkable/agents';
 import type { SeedContext } from '@/prisma/runner';
@@ -214,7 +215,7 @@ describe('framework-resparkable/003-agents', () => {
     return bySlug;
   }
 
-  it('seeds all five agents', async () => {
+  it('seeds all seven agents', async () => {
     const bySlug = await runAgents();
 
     expect([...bySlug.keys()].sort()).toEqual(Object.values(RESPARKABLE_AGENT_SLUGS).sort());
@@ -419,6 +420,27 @@ describe('framework-resparkable/004-agent-capabilities', () => {
     // Reviews are workflow artefacts and the ranker is not a conversational act.
     expect(companion).not.toContain(RESPARKABLE_CAPABILITY_SLUGS.writeReview);
     expect(companion).not.toContain(RESPARKABLE_CAPABILITY_SLUGS.reprioritise);
+  });
+
+  /**
+   * The intake agent's whole reason to exist: `resparkable_capture_for_token`
+   * resolves its own owner from a bearer token, so the only thing standing
+   * between it and a chat-reachable agent is which agent it is bound to.
+   */
+  it('binds the intake agent to capture-for-token and nothing else', async () => {
+    const bound = await boundSlugsByAgent();
+
+    expect(bound.get(RESPARKABLE_AGENT_SLUGS.intake)).toEqual([
+      RESPARKABLE_CAPABILITY_SLUGS.captureForToken,
+    ]);
+  });
+
+  it('never binds capture-for-token to a chat-reachable agent', async () => {
+    const bound = await boundSlugsByAgent();
+
+    for (const chatSlug of RESPARKABLE_CHAT_AGENT_SLUGS) {
+      expect(bound.get(chatSlug) ?? []).not.toContain(RESPARKABLE_CAPABILITY_SLUGS.captureForToken);
+    }
   });
 
   /**
