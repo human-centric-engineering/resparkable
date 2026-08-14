@@ -22,8 +22,9 @@
  * ## Parent goal, not area
  *
  * Goals nest (`parentGoalId`), which is how a life-level goal owns quarterly ones.
- * The area is optional and mostly informational here — a goal does not carry
- * `areaBalance`; its projects do.
+ * The area is optional and purely organisational — no field on any resource
+ * feeds anything back into how an area is scored (there is no such scoring;
+ * see `.context/framework/resparkable/design-principles.md`).
  */
 
 import * as React from 'react';
@@ -31,6 +32,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useCreateMode } from '@/components/resparkable/creation/create-mode-toggle';
+import { CreateDialog } from '@/components/resparkable/creation/create-dialog';
 import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
@@ -123,28 +126,21 @@ export function GoalForm({
   // then render nothing, because the node is never reachable from a root.
   const parentOptions = goals.filter((candidate) => candidate.id !== goal?.id);
 
-  return (
-    <ResourceDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      collection={RESPARKABLE_API.GOALS}
-      {...(goal ? { id: goal.id } : {})}
-      title={goal ? 'Edit goal' : 'New goal'}
-      description="Something you want to be true. Projects and tasks that serve it get ranked higher."
-      form={form}
-      toBody={(values) => ({
-        title: values.title,
-        description: values.description.trim() ? values.description.trim() : null,
-        horizon: values.horizon,
-        status: values.status,
-        targetDate: values.targetDate === '' ? null : values.targetDate,
-        parentGoalId: values.parentGoalId === NONE ? null : values.parentGoalId,
-        areaId: values.areaId === NONE ? null : values.areaId,
-      })}
-    >
+  const toBody = (values: GoalFormValues): Record<string, unknown> => ({
+    title: values.title,
+    description: values.description.trim() ? values.description.trim() : null,
+    horizon: values.horizon,
+    status: values.status,
+    targetDate: values.targetDate === '' ? null : values.targetDate,
+    parentGoalId: values.parentGoalId === NONE ? null : values.parentGoalId,
+    areaId: values.areaId === NONE ? null : values.areaId,
+  });
+
+  const fields = (
+    <>
       <div className="space-y-1.5">
-        <Label htmlFor="goal-title">What do you want to be true?</Label>
-        <Input id="goal-title" {...form.register('title')} />
+        <Label htmlFor="goal-title">Goal</Label>
+        <Input id="goal-title" placeholder="Ship the redesign" {...form.register('title')} />
         {form.formState.errors.title && (
           <p className="text-destructive text-xs">{form.formState.errors.title.message}</p>
         )}
@@ -271,6 +267,42 @@ export function GoalForm({
           </SelectContent>
         </Select>
       </div>
+    </>
+  );
+
+  // The chat/form choice only applies to create — an existing goal already has
+  // "Tell me more" for chat-based elaboration, and re-offering chat here would
+  // be a second, more confusing way to reach the same thing.
+  const [createMode, setCreateMode] = useCreateMode();
+  if (!goal) {
+    return (
+      <CreateDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        entityType="goal"
+        mode={createMode}
+        onModeChange={setCreateMode}
+        collection={RESPARKABLE_API.GOALS}
+        form={form}
+        toBody={toBody}
+      >
+        {fields}
+      </CreateDialog>
+    );
+  }
+
+  return (
+    <ResourceDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      collection={RESPARKABLE_API.GOALS}
+      id={goal.id}
+      title="Edit goal"
+      description="Projects and tasks that serve it get ranked higher."
+      form={form}
+      toBody={toBody}
+    >
+      {fields}
     </ResourceDialog>
   );
 }

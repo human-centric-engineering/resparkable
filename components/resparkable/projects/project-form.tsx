@@ -4,17 +4,17 @@
  * ProjectForm — create or edit a project.
  *
  * A project is the unit that carries goal alignment and momentum down to its
- * tasks, so two fields here have consequences beyond themselves and both get a
- * `<FieldHelp>` saying so:
+ * tasks, so **Status** gets a `<FieldHelp>` saying so: it is not cosmetic.
+ * `paused` and `abandoned` take the project out of the active list, and
+ * `projectMomentum` decays from `lastActivityAt` either way — so "paused" is
+ * the honest setting for something you have stopped working on, and leaving
+ * it `active` makes the decay read as neglect.
  *
- *   - **Area** decides which weekly time target this project's work counts
- *     against. `areaBalance` is 15% of every task score and deliberately floats a
- *     neglected area upward, so filing a work project under Health quietly distorts
- *     the ranking in both.
- *   - **Status** is not cosmetic. `paused` and `abandoned` take the project out of
- *     the active list, and `projectMomentum` decays from `lastActivityAt` either
- *     way — so "paused" is the honest setting for something you have stopped
- *     working on, and leaving it `active` makes the decay read as neglect.
+ * **Area is purely organisational.** There is no weekly time target and
+ * nothing about an Area feeds the scorer — see
+ * `.context/framework/resparkable/design-principles.md` on why that mechanic
+ * was removed rather than hidden. Filing a project under an area is for your
+ * own later reference, not an input to anything's ranking.
  *
  * The slug is not exposed. `resolveUniqueSlug` derives it from the name and
  * guarantees uniqueness per user; letting someone type one means a collision error
@@ -26,6 +26,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
+import { useCreateMode } from '@/components/resparkable/creation/create-mode-toggle';
+import { CreateDialog } from '@/components/resparkable/creation/create-dialog';
 import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
@@ -107,24 +109,17 @@ export function ProjectForm({
     if (open) form.reset(defaults);
   }, [open, defaults, form]);
 
-  return (
-    <ResourceDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      collection={RESPARKABLE_API.PROJECTS}
-      {...(project ? { id: project.id } : {})}
-      title={project ? 'Edit project' : 'New project'}
-      description="A body of work with tasks under it. Tasks inherit its goal alignment and momentum."
-      form={form}
-      toBody={(values) => ({
-        name: values.name,
-        // `null` rather than omitted: clearing the description has to actually
-        // clear it, and the API schema distinguishes the two.
-        description: values.description.trim() ? values.description.trim() : null,
-        status: values.status,
-        areaId: values.areaId === NO_AREA ? null : values.areaId,
-      })}
-    >
+  const toBody = (values: ProjectFormValues): Record<string, unknown> => ({
+    name: values.name,
+    // `null` rather than omitted: clearing the description has to actually
+    // clear it, and the API schema distinguishes the two.
+    description: values.description.trim() ? values.description.trim() : null,
+    status: values.status,
+    areaId: values.areaId === NO_AREA ? null : values.areaId,
+  });
+
+  const fields = (
+    <>
       <div className="space-y-1.5">
         <Label htmlFor="project-name">Name</Label>
         <Input id="project-name" {...form.register('name')} />
@@ -180,14 +175,8 @@ export function ProjectForm({
         <Label htmlFor="project-area" className="flex items-center gap-1.5">
           Part of my life
           <FieldHelp title="Area">
-            <p>
-              Which domain of your life this belongs to — Career, Health, Family. Time you block
-              against this project counts toward that area&rsquo;s weekly target.
-            </p>
-            <p>
-              That target is 15% of every task&rsquo;s score, and a neglected area floats its work
-              upward. Filing a project under the wrong area distorts the ranking in both.
-            </p>
+            Which domain of your life this belongs to — Career, Health, Family. Purely
+            organisational: it does not affect how this project&rsquo;s tasks are ranked.
           </FieldHelp>
         </Label>
         <Select
@@ -207,6 +196,41 @@ export function ProjectForm({
           </SelectContent>
         </Select>
       </div>
+    </>
+  );
+
+  // Only create offers the chat/form choice — an existing project already has
+  // "Tell me more" for chat-based elaboration.
+  const [createMode, setCreateMode] = useCreateMode();
+  if (!project) {
+    return (
+      <CreateDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        entityType="project"
+        mode={createMode}
+        onModeChange={setCreateMode}
+        collection={RESPARKABLE_API.PROJECTS}
+        form={form}
+        toBody={toBody}
+      >
+        {fields}
+      </CreateDialog>
+    );
+  }
+
+  return (
+    <ResourceDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      collection={RESPARKABLE_API.PROJECTS}
+      id={project.id}
+      title="Edit project"
+      description="A body of work with tasks under it. Tasks inherit its goal alignment and momentum."
+      form={form}
+      toBody={toBody}
+    >
+      {fields}
     </ResourceDialog>
   );
 }

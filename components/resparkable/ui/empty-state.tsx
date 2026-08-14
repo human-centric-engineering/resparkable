@@ -21,6 +21,12 @@ import { cn } from '@/lib/utils';
 export interface EmptyStateProps {
   /** Lucide icon component, rendered decoratively. */
   icon?: React.ComponentType<{ className?: string }>;
+  /**
+   * Overrides the icon's size classes. Default `h-8 w-8` assumes a square
+   * Lucide glyph; a non-square mark (the `SparkGlyph` brand mark is 64:34)
+   * needs its own ratio or it gets squashed.
+   */
+  iconClassName?: string;
   title: string;
   /** One or two sentences. Say what would fill this, and why it is worth it. */
   description?: React.ReactNode;
@@ -31,6 +37,7 @@ export interface EmptyStateProps {
 
 export function EmptyState({
   icon: Icon,
+  iconClassName,
   title,
   description,
   action,
@@ -43,7 +50,12 @@ export function EmptyState({
         className
       )}
     >
-      {Icon && <Icon className="text-muted-foreground/60 mb-3 h-8 w-8" aria-hidden="true" />}
+      {Icon && (
+        <Icon
+          className={cn('text-muted-foreground/60 mb-3', iconClassName ?? 'h-8 w-8')}
+          aria-hidden="true"
+        />
+      )}
       <p className="font-medium">{title}</p>
       {description && (
         <p className="text-muted-foreground mt-1 max-w-md text-sm leading-relaxed">{description}</p>

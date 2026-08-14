@@ -66,6 +66,7 @@ vi.mock('@/lib/framework/resparkable/services/resources', () => {
   return {
     taskResource: resource,
     projectResource: resource,
+    areaResource: resource,
     goalResource: resource,
     entityResource: resource,
   };
@@ -117,6 +118,7 @@ const VALID_ARGS: Record<string, unknown> = {
   resparkable_promote_thought: { thoughtId: 'clh0000000000000000000005', target: 'task' },
   resparkable_upsert_task: { title: 'do the thing' },
   resparkable_upsert_project: { name: 'a project' },
+  resparkable_upsert_area: { name: 'an area' },
   resparkable_upsert_goal: { title: 'a goal', horizon: 'quarter' },
   resparkable_upsert_entity: { name: 'a person' },
   resparkable_link_entities: {

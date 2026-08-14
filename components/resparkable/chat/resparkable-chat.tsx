@@ -38,9 +38,10 @@
  */
 
 import * as React from 'react';
-import { Brain, Loader2, Send, Wrench } from 'lucide-react';
+import { Loader2, Send, Wrench } from 'lucide-react';
 
 import { parseChatStreamEvent } from '@/components/admin/orchestration/chat/chat-events';
+import { SparkGlyph } from '@/components/brand/spark-glyph';
 import { ThinkingIndicator } from '@/components/resparkable/chat/thinking-indicator';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { AutoGrowTextarea } from '@/components/resparkable/ui/auto-grow-textarea';
@@ -67,6 +68,7 @@ const TOOL_LABELS: Record<string, string> = {
   resparkable_promote_thought: 'turned a note into something',
   resparkable_upsert_task: 'created or changed a task',
   resparkable_upsert_project: 'created or changed a project',
+  resparkable_upsert_area: 'created or changed a life area',
   resparkable_upsert_goal: 'created or changed a goal',
   resparkable_upsert_entity: 'created or changed a person',
   resparkable_link_entities: 'linked two things',
@@ -99,11 +101,18 @@ export interface ResparkableChatProps {
   entityContext?: { entityType: 'area' | 'goal' | 'project'; entityId: string };
   /**
    * Overrides the root panel's height classes. The default fills the page
-   * below the nav (`/resparkable/chat`, `/resparkable/context`); a caller
-   * embedding this inside a dialog of its own fixed height (`ContextChatDrawer`)
+   * below the nav (`/resparkable/chat`); a caller embedding this inside a
+   * dialog of its own fixed height (`ContextChatDrawer`, `CreateDialog`)
    * passes `h-full` so the panel fills its parent instead of racing it.
    */
   heightClassName?: string;
+  /**
+   * Overrides the composer's placeholder text. Lets a caller hint at what to
+   * type — e.g. the create flow's "What do you want to call this project?" —
+   * without putting words in the person's mouth by pre-filling and sending
+   * them. Falls back to the freeform default.
+   */
+  placeholder?: string;
 }
 
 export function ResparkableChat({
@@ -111,6 +120,7 @@ export function ResparkableChat({
   starterPrompts = [],
   entityContext,
   heightClassName = 'h-[calc(100vh-14rem)] min-h-[28rem]',
+  placeholder = 'Ask, or just think out loud…',
 }: ResparkableChatProps): React.ReactElement {
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [input, setInput] = React.useState('');
@@ -383,9 +393,10 @@ export function ResparkableChat({
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <EmptyState
-              icon={Brain}
-              title="Ask your brain something"
-              description="It has read everything you have written down and you have not. Ask what you decided, what has gone quiet, or what to do next — and say anything worth keeping and it will be captured as you talk."
+              icon={SparkGlyph}
+              iconClassName="h-8 w-[60px]"
+              title="Ask Sparky"
+              description="Sparky has a record of everything you've shared and can find meaning and connections based on what matters to you. Talk with the mic or write down your thoughts."
               className="border-0"
               action={
                 starterPrompts.length > 0 ? (
@@ -507,7 +518,7 @@ export function ResparkableChat({
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Ask, or just think out loud…"
+              placeholder={placeholder}
               minRows={1}
               maxRows={10}
               disabled={streaming}

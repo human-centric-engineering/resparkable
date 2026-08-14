@@ -49,6 +49,7 @@ import {
   agentSearchSchema,
   agentUpsertEntitySchema,
   agentUpsertGoalSchema,
+  agentUpsertAreaSchema,
   agentUpsertProjectSchema,
   agentUpsertTaskSchema,
   createLinkSchema,
@@ -105,6 +106,7 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
   [RESPARKABLE_CAPABILITY_SLUGS.promoteThought]: agentPromoteThoughtSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertTask]: agentUpsertTaskSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertProject]: agentUpsertProjectSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.upsertArea]: agentUpsertAreaSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertGoal]: agentUpsertGoalSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertEntity]: agentUpsertEntitySchema,
   [RESPARKABLE_CAPABILITY_SLUGS.linkEntities]: createLinkSchema,
@@ -131,10 +133,12 @@ describe('Resparkable capability catalogue', () => {
     // dormant work without being able to act on the answer. Phase 9 adds the
     // email-to-inbox intake, the one capability that resolves its owner from a
     // bearer token instead of context.userId (see capture-for-token.ts).
-    // Release 8 adds two: the "tell me more" capture door and the
-    // description-summariser's deterministic gather step.
-    expect(RESPARKABLE_CAPABILITIES).toHaveLength(21);
-    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(21);
+    // Release 8 adds three: the "tell me more" capture door, the
+    // description-summariser's deterministic gather step, and the life-area
+    // upsert (the one resource type that had no chat-reachable create/update
+    // path until the create-via-chat flow needed one).
+    expect(RESPARKABLE_CAPABILITIES).toHaveLength(22);
+    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(22);
   });
 
   it('uses unique, namespaced slugs', () => {

@@ -29,6 +29,15 @@
  *
  * `mode: 'onTouched'` per `CLAUDE.md` — callers set it; validating on every
  * keystroke shouts at someone halfway through their first word.
+ *
+ * ## `ResourceFormBody` is split out, not inlined
+ *
+ * The Area/Goal/Project create flow (`<CreateDialog>`) needs the exact same
+ * fields-to-request submit machinery, but inside a dialog it already owns
+ * (one shared with a chat pane, sliding between the two) rather than one this
+ * component draws itself. Splitting the `<form>` and its save/error/submit
+ * plumbing out of the `<Dialog>`/`<DialogContent>` chrome is what lets both
+ * callers share the former without either dragging the latter along.
  */
 
 import * as React from 'react';
@@ -48,6 +57,68 @@ import {
 } from '@/components/ui/dialog';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+
+export interface ResourceFormBodyProps<TValues extends FieldValues> {
+  /** One of the `RESPARKABLE_API` collection constants. */
+  collection: string;
+  /** Present for an edit, absent for a create. */
+  id?: string;
+  form: UseFormReturn<TValues>;
+  /** Form values → request body. Per-form; see the header note. */
+  toBody: (values: TValues) => Record<string, unknown>;
+  children: React.ReactNode;
+  submitLabel?: string;
+  /** Called after a successful POST/PATCH. Closing and refreshing is the caller's call. */
+  onSaved: () => void;
+}
+
+/** The `<form>` itself: fields, the API-error surface, save status, submit. No dialog chrome. */
+export function ResourceFormBody<TValues extends FieldValues>({
+  collection,
+  id,
+  form,
+  toBody,
+  children,
+  submitLabel,
+  onSaved,
+}: ResourceFormBodyProps<TValues>): React.ReactElement {
+  const { state, message, run } = useSaveStatus();
+
+  const onSubmit = form.handleSubmit(async (values) => {
+    const body = toBody(values);
+
+    const ok = await run(() =>
+      id
+        ? apiClient.patch(RESPARKABLE_API.itemPath(collection, id), { body })
+        : apiClient.post(collection, { body })
+    );
+
+    if (ok) onSaved();
+  });
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(event) => void onSubmit(event)}
+      // Native validation would fire before Zod and show browser-styled
+      // bubbles that say less than our own messages.
+      noValidate
+    >
+      {children}
+
+      {/* The API's own message, for what Zod cannot predict — a slug collision,
+          or a row archived while the dialog was open. */}
+      {state === 'error' && message && <FormError message={message} />}
+
+      <DialogFooter className="items-center gap-2 sm:justify-between">
+        <SaveStatus state={state} message={state === 'error' ? null : message} />
+        <Button type="submit" disabled={state === 'saving'}>
+          {submitLabel ?? (id ? 'Save changes' : 'Create')}
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
 
 export interface ResourceDialogProps<TValues extends FieldValues> {
   open: boolean;
@@ -78,22 +149,6 @@ export function ResourceDialog<TValues extends FieldValues>({
   submitLabel,
 }: ResourceDialogProps<TValues>): React.ReactElement {
   const router = useRouter();
-  const { state, message, run } = useSaveStatus();
-
-  const onSubmit = form.handleSubmit(async (values) => {
-    const body = toBody(values);
-
-    const ok = await run(() =>
-      id
-        ? apiClient.patch(RESPARKABLE_API.itemPath(collection, id), { body })
-        : apiClient.post(collection, { body })
-    );
-
-    if (ok) {
-      onOpenChange(false);
-      router.refresh();
-    }
-  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -103,26 +158,19 @@ export function ResourceDialog<TValues extends FieldValues>({
           {description && <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
 
-        <form
-          className="space-y-4"
-          onSubmit={(event) => void onSubmit(event)}
-          // Native validation would fire before Zod and show browser-styled
-          // bubbles that say less than our own messages.
-          noValidate
+        <ResourceFormBody
+          collection={collection}
+          {...(id ? { id } : {})}
+          form={form}
+          toBody={toBody}
+          {...(submitLabel ? { submitLabel } : {})}
+          onSaved={() => {
+            onOpenChange(false);
+            router.refresh();
+          }}
         >
           {children}
-
-          {/* The API's own message, for what Zod cannot predict — a slug collision,
-              or a row archived while the dialog was open. */}
-          {state === 'error' && message && <FormError message={message} />}
-
-          <DialogFooter className="items-center gap-2 sm:justify-between">
-            <SaveStatus state={state} message={state === 'error' ? null : message} />
-            <Button type="submit" disabled={state === 'saving'}>
-              {submitLabel ?? (id ? 'Save changes' : 'Create')}
-            </Button>
-          </DialogFooter>
-        </form>
+        </ResourceFormBody>
       </DialogContent>
     </Dialog>
   );

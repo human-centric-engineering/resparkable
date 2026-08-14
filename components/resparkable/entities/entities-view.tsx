@@ -52,7 +52,7 @@ export function EntitiesView({ entities }: { entities: EntityWire[] }): React.Re
         <EmptyState
           icon={Users}
           title="Nobody here yet"
-          description="Clients, colleagues, suppliers, markets. Notes and projects get connected to them, so you can open one and see everything that involves them — without them competing for a share of your week the way an area does."
+          description="Add a person, company or group you deal with, like a client, colleague or supplier. Link notes and projects to them so everything about them is in one place, and Sparky can pull it up when you ask."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Add the first

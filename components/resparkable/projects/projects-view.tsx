@@ -98,7 +98,7 @@ export function ProjectsView({ projects, areas, status }: ProjectsViewProps): Re
         <EmptyState
           icon={FolderKanban}
           title={status ? `No ${status} projects` : 'No projects yet'}
-          description="A project groups tasks and connects them to a goal. Tasks inside one inherit its goal alignment and momentum, which is most of what makes the ranking sensible."
+          description="Create a project to group the tasks that belong together, and link it to a goal. Sparky uses your projects as context for what you're working on and how your tasks fit together."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Create one

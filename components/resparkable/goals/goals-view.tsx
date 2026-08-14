@@ -79,7 +79,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
         <EmptyState
           icon={Target}
           title="No goals yet"
-          description="Goals are what make the ranking more than a to-do list: a task that serves one outranks a task that serves nothing. Near horizons count for more, so “this quarter” beats “someday”."
+          description="Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparky uses your goals as context when it helps you."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Set one

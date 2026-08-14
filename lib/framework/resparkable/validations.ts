@@ -1053,6 +1053,11 @@ export const agentUpsertProjectSchema = upsertSchema(createProjectSchema.omit({ 
 
 export type AgentUpsertProjectInput = z.infer<typeof agentUpsertProjectSchema>;
 
+/** `resparkable_upsert_area`. `slug` is omitted — the service derives it from the name. */
+export const agentUpsertAreaSchema = upsertSchema(createAreaSchema.omit({ slug: true }), ['name']);
+
+export type AgentUpsertAreaInput = z.infer<typeof agentUpsertAreaSchema>;
+
 /**
  * `resparkable_upsert_goal`. `horizon` has no default, so creating without one is
  * an error, and `slug` is omitted — the service derives it from the title, as for

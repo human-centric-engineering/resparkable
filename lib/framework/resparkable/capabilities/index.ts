@@ -12,7 +12,7 @@
  * [resparkable#462](https://github.com/human-centric-engineering/sunrise/issues/462),
  * where boot-registered capabilities were silently lost at request time under
  * Turbopack because the two realms hold separate module graphs. So this function
- * must stay cheap and synchronous: it constructs twenty-one objects and pushes
+ * must stay cheap and synchronous: it constructs twenty-two objects and pushes
  * them into a map, and does not touch the database.
  *
  * **Registration is not availability.** A registered capability still needs an
@@ -39,6 +39,7 @@ import {
   ResparkableLinkEntitiesCapability,
 } from '@/lib/framework/resparkable/capabilities/links';
 import {
+  ResparkableUpsertAreaCapability,
   ResparkableUpsertEntityCapability,
   ResparkableUpsertGoalCapability,
   ResparkableUpsertProjectCapability,
@@ -72,6 +73,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
     new ResparkablePromoteThoughtCapability(),
     new ResparkableUpsertTaskCapability(),
     new ResparkableUpsertProjectCapability(),
+    new ResparkableUpsertAreaCapability(),
     new ResparkableUpsertGoalCapability(),
     new ResparkableUpsertEntityCapability(),
     new ResparkableLinkEntitiesCapability(),
@@ -89,7 +91,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
   ];
 }
 
-/** Register the twenty-one. Idempotent — the registry keys on slug. */
+/** Register the twenty-two. Idempotent — the registry keys on slug. */
 export function registerResparkableCapabilities(): void {
   for (const capability of resparkableCapabilityHandlers()) {
     registerAppCapability(capability);

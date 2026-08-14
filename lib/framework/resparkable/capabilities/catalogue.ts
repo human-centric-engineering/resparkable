@@ -1,5 +1,5 @@
 /**
- * The twenty-one capability rows, as data.
+ * The twenty-two capability rows, as data.
  *
  * **One source of truth for a capability's identity, and it is not the class.**
  * A capability exists in three places at once — a TypeScript handler, an
@@ -44,7 +44,7 @@ import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilit
  *
  * Namespaced rather than reusing core's `internal` / `knowledge` so an operator
  * looking at a capability list with a host project's own tools in it can tell at
- * a glance which twenty-one reach into someone's brain.
+ * a glance which twenty-two reach into someone's brain.
  */
 export const RESPARKABLE_CAPABILITY_CATEGORY = 'resparkable';
 
@@ -58,6 +58,7 @@ export const RESPARKABLE_CAPABILITY_SLUGS = {
   promoteThought: 'resparkable_promote_thought',
   upsertTask: 'resparkable_upsert_task',
   upsertProject: 'resparkable_upsert_project',
+  upsertArea: 'resparkable_upsert_area',
   upsertGoal: 'resparkable_upsert_goal',
   upsertEntity: 'resparkable_upsert_entity',
   linkEntities: 'resparkable_link_entities',
@@ -154,6 +155,18 @@ const upsertProjectParameters: Record<string, unknown> = {
     status: { ...stringEnum(PROJECT_STATUSES), description: 'Defaults to `active` on create.' },
     areaId: { type: ['string', 'null'], description: 'The life area this project sits in.' },
     snoozedUntil: nullableDate('Hide the project until this instant.'),
+  },
+  required: [],
+};
+
+const upsertAreaParameters: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    id: upsertId('area'),
+    name: { type: 'string', maxLength: 500, description: 'Required on create.' },
+    description: { type: 'string', maxLength: 100_000 },
+    colour: { type: ['string', 'null'], maxLength: 16 },
+    sortOrder: { type: 'integer', minimum: 0, maximum: 1000 },
   },
   required: [],
 };
@@ -401,6 +414,21 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         'Create a new project, or update an existing one by passing its `id`. A project is a piece of work with an end — "redesign the website", not "marketing", which is a life area. Only send the fields you are changing.',
       parameters: upsertProjectParameters,
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.upsertArea,
+    name: 'Resparkable — Create or update a life area',
+    description:
+      'Create a standing life domain (Health, Career, Family…), or patch an existing one by id.',
+    executionHandler: 'ResparkableUpsertAreaCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.upsertArea,
+      description:
+        'Create a new life area, or update an existing one by passing its `id`. An area is a standing part of someone\'s life — "Health", "Career", "Family" — not something with an end, which is a project. Only create one when the user has clearly asked for a new part of their life to be tracked; do not invent areas to file other things under.',
+      parameters: upsertAreaParameters,
     },
   },
   {

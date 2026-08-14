@@ -17,7 +17,7 @@
  * @see components/resparkable/areas/areas-view.tsx
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -28,6 +28,12 @@ vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   APIClientError: class APIClientError extends Error {},
 }));
+
+beforeEach(() => {
+  // The create dialog's chat/form toggle (create-mode-toggle.tsx) defaults to
+  // chat; these tests are about the form, so pin the stored preference.
+  localStorage.setItem('resparkable.create-mode.v1', JSON.stringify('form'));
+});
 
 function area(overrides: Partial<AreaWire> = {}): AreaWire {
   return {
@@ -73,7 +79,7 @@ describe('AreasView', () => {
     render(<AreasView areas={[]} />);
 
     expect(screen.getByText("What's going on in your life right now?")).toBeInTheDocument();
-    expect(screen.getByText(/career, health, family, whatever it is/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparky uses this to understand your life/i)).toBeInTheDocument();
   });
 
   it('opens the create dialog from the header "Add what matters" button', async () => {
@@ -85,9 +91,7 @@ describe('AreasView', () => {
     await user.click(screen.getByRole('button', { name: /add what matters/i }));
 
     const dialog = screen.getByRole('dialog');
-    expect(
-      within(dialog).getByRole('heading', { name: 'What matters right now?' })
-    ).toBeInTheDocument();
+    expect(within(dialog).getByRole('heading', { name: 'New life area' })).toBeInTheDocument();
     // A create form, not an edit — the name field starts blank.
     expect(within(dialog).getByLabelText('Name')).toHaveValue('');
   });
@@ -99,9 +103,7 @@ describe('AreasView', () => {
     await user.click(screen.getByRole('button', { name: 'Add the first' }));
 
     const dialog = screen.getByRole('dialog');
-    expect(
-      within(dialog).getByRole('heading', { name: 'What matters right now?' })
-    ).toBeInTheDocument();
+    expect(within(dialog).getByRole('heading', { name: 'New life area' })).toBeInTheDocument();
   });
 
   it('opens the edit dialog pre-filled with the clicked area, then closes on escape', async () => {

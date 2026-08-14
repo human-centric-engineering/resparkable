@@ -83,6 +83,10 @@ const AREAS = [area()];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // These tests exercise the form itself — the create flow's chat/form toggle
+  // (create-mode-toggle.tsx) defaults to chat, so pin the stored preference to
+  // 'form' rather than adding a 'switch to form' step to every test below.
+  localStorage.setItem('resparkable.create-mode.v1', JSON.stringify('form'));
   mockedPost.mockResolvedValue({});
   mockedPatch.mockResolvedValue({});
   mockedRouter.mockReturnValue({

@@ -50,7 +50,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
         <EmptyState
           icon={Compass}
           title="What's going on in your life right now?"
-          description="Career, health, family, whatever it is: add the standing parts of your life you want to keep in view, and say a bit about why each one matters at the moment."
+          description="Add a part of your life you want to keep in view, like career, health or family, and say why it matters right now. Sparky uses this to understand your life when you search or ask it something."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Add the first
