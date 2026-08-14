@@ -12,7 +12,7 @@
  * [resparkable#462](https://github.com/human-centric-engineering/sunrise/issues/462),
  * where boot-registered capabilities were silently lost at request time under
  * Turbopack because the two realms hold separate module graphs. So this function
- * must stay cheap and synchronous: it constructs nineteen objects and pushes
+ * must stay cheap and synchronous: it constructs twenty-one objects and pushes
  * them into a map, and does not touch the database.
  *
  * **Registration is not availability.** A registered capability still needs an
@@ -28,7 +28,9 @@ import {
   ResparkableGetBriefingInputsCapability,
 } from '@/lib/framework/resparkable/capabilities/briefing';
 import { ResparkableCaptureCapability } from '@/lib/framework/resparkable/capabilities/capture';
+import { ResparkableCaptureContextCapability } from '@/lib/framework/resparkable/capabilities/capture-context';
 import { ResparkableCaptureForTokenCapability } from '@/lib/framework/resparkable/capabilities/capture-for-token';
+import { ResparkableGetContextDigestCapability } from '@/lib/framework/resparkable/capabilities/context-digest';
 import { ResparkableGetSnapshotCapability } from '@/lib/framework/resparkable/capabilities/snapshot';
 import { ResparkableIdeateCapability } from '@/lib/framework/resparkable/capabilities/ideate';
 import { ResparkableNotifyCapability } from '@/lib/framework/resparkable/capabilities/notify';
@@ -64,6 +66,7 @@ import type { BaseCapability } from '@/lib/orchestration/capabilities';
 export function resparkableCapabilityHandlers(): BaseCapability[] {
   return [
     new ResparkableCaptureCapability(),
+    new ResparkableCaptureContextCapability(),
     new ResparkableSearchCapability(),
     new ResparkableListTasksCapability(),
     new ResparkablePromoteThoughtCapability(),
@@ -74,6 +77,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
     new ResparkableLinkEntitiesCapability(),
     new ResparkableFindConnectionsCapability(),
     new ResparkableGetSnapshotCapability(),
+    new ResparkableGetContextDigestCapability(),
     new ResparkableWriteReviewCapability(),
     new ResparkableReprioritiseCapability(),
     new ResparkableIdeateCapability(),
@@ -85,7 +89,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
   ];
 }
 
-/** Register the nineteen. Idempotent — the registry keys on slug. */
+/** Register the twenty-one. Idempotent — the registry keys on slug. */
 export function registerResparkableCapabilities(): void {
   for (const capability of resparkableCapabilityHandlers()) {
     registerAppCapability(capability);

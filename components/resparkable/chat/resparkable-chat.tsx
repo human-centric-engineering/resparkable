@@ -61,6 +61,7 @@ import { getUserFacingError } from '@/lib/orchestration/chat/error-messages';
  */
 const TOOL_LABELS: Record<string, string> = {
   resparkable_capture: 'captured a thought',
+  resparkable_capture_context: 'noted that down',
   resparkable_search: 'searched your brain',
   resparkable_list_tasks: 'read your task list',
   resparkable_promote_thought: 'turned a note into something',
@@ -90,11 +91,26 @@ export interface ResparkableChatProps {
   agentSlug: string;
   /** Shown on the empty state — one-tap ways in. */
   starterPrompts?: readonly string[];
+  /**
+   * Anchors the conversation to an Area, Goal or Project — sent on every turn
+   * so `resparkable_capture_context` can link what gets captured back to it.
+   * Omit for a freeform conversation with no anchor.
+   */
+  entityContext?: { entityType: 'area' | 'goal' | 'project'; entityId: string };
+  /**
+   * Overrides the root panel's height classes. The default fills the page
+   * below the nav (`/resparkable/chat`, `/resparkable/context`); a caller
+   * embedding this inside a dialog of its own fixed height (`ContextChatDrawer`)
+   * passes `h-full` so the panel fills its parent instead of racing it.
+   */
+  heightClassName?: string;
 }
 
 export function ResparkableChat({
   agentSlug,
   starterPrompts = [],
+  entityContext,
+  heightClassName = 'h-[calc(100vh-14rem)] min-h-[28rem]',
 }: ResparkableChatProps): React.ReactElement {
   const [messages, setMessages] = React.useState<ChatMessage[]>([]);
   const [input, setInput] = React.useState('');
@@ -203,6 +219,7 @@ export function ResparkableChat({
             message,
             agentSlug,
             ...(conversationId.current ? { conversationId: conversationId.current } : {}),
+            ...(entityContext ? { entityContext } : {}),
           }),
           signal: controller.signal,
         });
@@ -334,7 +351,7 @@ export function ResparkableChat({
         // the settled message with no visible change.
       }
     },
-    [agentSlug, streaming, typing]
+    [agentSlug, streaming, typing, entityContext]
   );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -352,7 +369,7 @@ export function ResparkableChat({
        not a document, and the empty state is the only part of it a person wrote.
        The composer inherits without a class of its own; Tailwind's preflight sets
        `font: inherit` on textareas. */
-    <div className="terminal-surface flex h-[calc(100vh-14rem)] min-h-[28rem] flex-col">
+    <div className={`terminal-surface flex flex-col ${heightClassName}`}>
       {/* The transcript and the composer are two regions of ONE panel — one
           border around both, a divider between them — rather than two floating
           boxes with the page showing through the gap. The exchange is a single

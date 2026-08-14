@@ -35,6 +35,7 @@ import {
   recordResparkableEvent,
   statusChangeMetadata,
 } from '@/lib/framework/resparkable/services/events';
+import { classifyThoughtSensitivity } from '@/lib/framework/resparkable/services/sensitivity';
 import { resolveSlugOnUpdate, resolveUniqueSlug } from '@/lib/framework/resparkable/services/slug';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import {
@@ -512,7 +513,10 @@ const thoughtResourceOps: ResparkableResource<
   async create(scope, input) {
     // Capture is idempotent on `externalId` so a replayed webhook or a
     // double-tapped Shortcut returns the original row instead of duplicating.
-    const { thought, deduped } = await thoughts.captureThought(scope, definedOnly(input));
+    const { thought, deduped } = await thoughts.captureThought(scope, {
+      ...definedOnly(input),
+      sensitivity: classifyThoughtSensitivity(input.content),
+    });
     if (!deduped) {
       await recordResparkableEvent(scope, {
         kind: 'captured',

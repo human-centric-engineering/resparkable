@@ -28,6 +28,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // implementation, so any capability that got past the guard would reject on
 // `undefined` rather than quietly returning a plausible-looking success.
 vi.mock('@/lib/framework/resparkable/services/capture', () => ({ captureThought: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/services/context-digest', () => ({
+  buildContextDigest: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/search/hybrid-search', () => ({ searchResparkable: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/links', () => ({ linkEntities: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/neighbours', () => ({ findNeighbours: vi.fn() }));
@@ -75,6 +78,7 @@ import {
 import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
 import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
+import { buildContextDigest } from '@/lib/framework/resparkable/services/context-digest';
 import { searchResparkable } from '@/lib/framework/resparkable/search/hybrid-search';
 import { linkEntities } from '@/lib/framework/resparkable/services/links';
 import { findNeighbours } from '@/lib/framework/resparkable/services/neighbours';
@@ -103,6 +107,11 @@ const ownerlessContext: CapabilityContext = { userId: null, agentId: 'agent-1' }
  */
 const VALID_ARGS: Record<string, unknown> = {
   resparkable_capture: { content: 'a thought' },
+  resparkable_capture_context: { content: 'a thought from a reflective conversation' },
+  resparkable_get_context_digest: {
+    entityType: 'area',
+    entityId: 'clh0000000000000000000006',
+  },
   resparkable_search: { query: 'pricing' },
   resparkable_list_tasks: {},
   resparkable_promote_thought: { thoughtId: 'clh0000000000000000000005', target: 'task' },
@@ -129,6 +138,7 @@ const VALID_ARGS: Record<string, unknown> = {
 
 const ALL_SERVICES = [
   captureThought,
+  buildContextDigest,
   searchResparkable,
   linkEntities,
   findNeighbours,

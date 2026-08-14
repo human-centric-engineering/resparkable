@@ -70,11 +70,17 @@ function isSummarisable(type: string): type is SummarisableType {
  * and deliberate: a link to an archived project should render as "Q4 launch
  * (archived)", not as "(deleted)". Those are different facts, and conflating them
  * would make archiving look like data loss.
+ *
+ * `excludeSensitive` defaults to false — a person viewing their own connections
+ * queue or a detail page's "related" panel sees everything. Pass `true` only
+ * for scheduled/background output the person didn't ask for right now (the
+ * daily briefing's `topConnections`, see services/briefing.ts).
  */
 export async function hydrateLinks<T extends HydratableLink>(
   scope: OwnerScope,
   links: T[],
-  includeArchived = true
+  includeArchived = true,
+  excludeSensitive = false
 ): Promise<Array<HydratedLink<T>>> {
   if (links.length === 0) return [];
 
@@ -97,7 +103,7 @@ export async function hydrateLinks<T extends HydratableLink>(
   const results = await Promise.all(
     [...idsByType.entries()].map(async ([type, ids]) => ({
       type,
-      summaries: await findSummaries(scope, type, [...ids], includeArchived),
+      summaries: await findSummaries(scope, type, [...ids], includeArchived, excludeSensitive),
     }))
   );
 

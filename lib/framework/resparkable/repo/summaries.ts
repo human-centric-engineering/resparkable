@@ -61,7 +61,14 @@ export async function findSummaries(
   scope: OwnerScope,
   entityType: EmbeddedType | 'task',
   ids: string[],
-  includeArchived: ArchiveVisibility = false
+  includeArchived: ArchiveVisibility = false,
+  /**
+   * Drop `sensitivity: 'sensitive'` thoughts from the result — only `thought`
+   * rows carry the column, so this is a no-op for every other type. A filtered
+   * thought resolves to `null` at the caller (`link-hydration.ts`'s "dangling
+   * endpoint" path), the same degradation an already-deleted row gets.
+   */
+  excludeSensitive = false
 ): Promise<EntitySummary[]> {
   if (ids.length === 0) return [];
 
@@ -70,7 +77,7 @@ export async function findSummaries(
   switch (entityType) {
     case 'thought': {
       const rows = await prisma.resparkableThought.findMany({
-        where,
+        where: excludeSensitive ? { ...where, sensitivity: { not: 'sensitive' } } : where,
         select: { id: true, content: true, archivedAt: true, updatedAt: true },
       });
       return rows.map((row) => ({

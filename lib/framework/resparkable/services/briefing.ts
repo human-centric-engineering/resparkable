@@ -203,7 +203,7 @@ async function topConnections(
   const links = await listUnreviewedLinks(scope, limit, now);
   if (links.length === 0) return [];
 
-  const hydrated = await hydrateLinks(scope, links);
+  const hydrated = await hydrateLinks(scope, links, true, true);
 
   return hydrated.map(({ link, source, target }) => ({
     id: link.id,
@@ -233,7 +233,7 @@ async function resurfacedThought(
 
   const [thought] = await listThoughts(
     scope,
-    { status: 'inbox', hideSnoozed: true, capturedBefore: cutoff },
+    { status: 'inbox', hideSnoozed: true, capturedBefore: cutoff, excludeSensitive: true },
     { take: 1 }
   );
 

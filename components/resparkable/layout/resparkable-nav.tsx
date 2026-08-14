@@ -4,7 +4,7 @@
  * ResparkableNav — the second-level nav inside `/resparkable`.
  *
  * Sunrise's `ProtectedNav` is the top-level app nav and Resparkable contributes one
- * entry to it. Everything below that is this component's job, because fourteen
+ * entry to it. Everything below that is this component's job, because fifteen
  * Resparkable sections in the global header would drown the host application's own
  * navigation — a framework tier is a guest in someone else's app.
  *
@@ -12,7 +12,7 @@
  *
  * Fourteen equal-weight pills wrapped onto two rows, which is the shape a list
  * takes when nobody has said what the list *means*. Every item looked equally
- * likely, so finding one was a linear scan of fourteen words, and the second row
+ * likely, so finding one was a linear scan of fifteen words, and the second row
  * pushed the page's own heading below the fold on a laptop.
  *
  * The four groups are the product's own model, not a tidying exercise: things you
@@ -26,7 +26,7 @@
  * icons for the surfaces that genuinely want the width (Graph, Boards), and the
  * choice is remembered.
  *
- * Below `lg` the rail is replaced by a section switcher — a fourteen-item
+ * Below `lg` the rail is replaced by a section switcher — a fifteen-item
  * vertical list is most of a phone screen before the page has said anything.
  * Both are rendered and one is hidden by CSS, so there is no JS branch on
  * viewport and no layout shift on hydration.
@@ -62,6 +62,7 @@ import {
   Inbox,
   LayoutGrid,
   Link2,
+  MessageCircle,
   MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
@@ -112,6 +113,7 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       { href: RESPARKABLE_ROUTES.INBOX, label: 'Inbox', icon: Inbox },
       { href: RESPARKABLE_ROUTES.PLAN, label: 'Plan', icon: CalendarRange },
       { href: RESPARKABLE_ROUTES.CHAT, label: 'Chat', icon: MessageSquare },
+      { href: RESPARKABLE_ROUTES.CONTEXT, label: 'Talk', icon: MessageCircle },
     ],
   },
   {
@@ -214,7 +216,7 @@ export function ResparkableNav({
 
   return (
     <>
-      {/* Below `lg`: a switcher, because fourteen stacked rows is most of a phone. */}
+      {/* Below `lg`: a switcher, because fifteen stacked rows is most of a phone. */}
       <div className="lg:hidden">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -277,7 +279,7 @@ export function ResparkableNav({
                 href={RESPARKABLE_ROUTES.TODAY}
                 // The rail head is the way home, and `.term-label` makes it read
                 // as the name of this region rather than as a fifteenth
-                // destination competing with the fourteen below it.
+                // destination competing with the fifteen below it.
                 className="term-label hover:text-primary px-2 transition-colors"
               >
                 Resparkable

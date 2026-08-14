@@ -33,6 +33,15 @@
  * what lets `resparkable-companion` stay `internal`, and is also why the check has
  * to happen here.
  *
+ * ## `entityContext`
+ *
+ * Forwarded verbatim into `CapabilityContext` when a "tell me more" chat is
+ * opened from an Area/Goal/Project page — this route does not trust the id it
+ * carries, only bounds its shape (`resparkableEntityContextSchema`). The
+ * capability that reads it (`resparkable_capture_context`) re-verifies
+ * ownership before acting, the same way `resparkable_link_entities` already
+ * does for a hand-made link.
+ *
  * ## Rate limiting
  *
  * `resparkable-chat`, 20/min keyed on the session user, registered in
@@ -85,6 +94,7 @@ export const POST = withAuth(async (request, session) => {
     // Both pinned. See the header — `contextId` is the field that would leak.
     contextType: RESPARKABLE_CONTEXT_TYPE,
     contextId: session.user.id,
+    ...(body.entityContext ? { entityContext: body.entityContext } : {}),
     requestId,
     ...(visitorId ? { visitorId } : {}),
     // No `includeTrace`: the trace strip carries raw tool arguments, which for

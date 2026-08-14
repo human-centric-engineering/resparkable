@@ -22,8 +22,9 @@
  */
 
 import * as React from 'react';
-import { Pencil, Plus, Target } from 'lucide-react';
+import { MessageCircle, Pencil, Plus, Target } from 'lucide-react';
 
+import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { GoalForm } from '@/components/resparkable/goals/goal-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
@@ -45,6 +46,7 @@ export interface GoalsViewProps {
 export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<GoalWire | null>(null);
+  const [talkingTo, setTalkingTo] = React.useState<GoalWire | null>(null);
 
   const present = new Set(goals.map((goal) => goal.id));
 
@@ -93,6 +95,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
               childrenOf={childrenOf}
               depth={0}
               onEdit={setEditing}
+              onTalk={setTalkingTo}
             />
           ))}
         </ul>
@@ -108,6 +111,18 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
         areas={areas}
         {...(editing ? { goal: editing } : {})}
       />
+      {talkingTo && (
+        <ContextChatDrawer
+          open
+          onOpenChange={(open) => {
+            if (!open) setTalkingTo(null);
+          }}
+          entityType="goal"
+          entityId={talkingTo.id}
+          entityName={talkingTo.title}
+          currentDescription={talkingTo.description}
+        />
+      )}
     </div>
   );
 }
@@ -117,11 +132,13 @@ function GoalNode({
   childrenOf,
   depth,
   onEdit,
+  onTalk,
 }: {
   goal: GoalWire;
   childrenOf: Map<string, GoalWire[]>;
   depth: number;
   onEdit: (goal: GoalWire) => void;
+  onTalk: (goal: GoalWire) => void;
 }): React.ReactElement {
   const children = childrenOf.get(goal.id) ?? [];
   // `null` until mounted — reading the clock during render is impure and would
@@ -177,6 +194,14 @@ function GoalNode({
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Tell me more about ${goal.title}`}
+            onClick={() => onTalk(goal)}
+          >
+            <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             aria-label={`Edit ${goal.title}`}
             onClick={() => onEdit(goal)}
           >
@@ -202,6 +227,7 @@ function GoalNode({
               childrenOf={childrenOf}
               depth={depth + 1}
               onEdit={onEdit}
+              onTalk={onTalk}
             />
           ))}
         </ul>

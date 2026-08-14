@@ -29,16 +29,19 @@ vi.mock('@/lib/framework/resparkable/repo/reviews', () => ({
   listReviews: vi.fn(),
   countReviews: vi.fn(),
   findReview: vi.fn(),
+  archiveReview: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/services/events', () => ({ recordResparkableEvent: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
 
 import {
+  dismissReview,
   getResparkableReview,
   listResparkableReviews,
   writeReview,
 } from '@/lib/framework/resparkable/services/reviews';
 import {
+  archiveReview,
   countReviews,
   createReview,
   findReview,
@@ -54,6 +57,7 @@ const mockedCreate = vi.mocked(createReview);
 const mockedList = vi.mocked(listReviews);
 const mockedCount = vi.mocked(countReviews);
 const mockedFind = vi.mocked(findReview);
+const mockedArchive = vi.mocked(archiveReview);
 const mockedEvent = vi.mocked(recordResparkableEvent);
 const mockedSpace = vi.mocked(ensureResparkableSpace);
 
@@ -172,5 +176,28 @@ describe('getResparkableReview', () => {
     mockedFind.mockResolvedValue(null);
 
     await expect(getResparkableReview(SCOPE, 'review_of_user_b')).resolves.toBeNull();
+  });
+});
+
+describe('dismissReview', () => {
+  it('archives with the default reason and records an archived event', async () => {
+    mockedArchive.mockResolvedValue(REVIEW);
+
+    await expect(dismissReview(SCOPE, 'review_1')).resolves.toBe(REVIEW);
+
+    expect(mockedArchive).toHaveBeenCalledWith(SCOPE, 'review_1', 'dismissed');
+    expect(mockedEvent).toHaveBeenCalledWith(SCOPE, {
+      kind: 'archived',
+      entityType: 'review',
+      entityId: 'review_1',
+      metadata: { horizon: 'weekly' },
+    });
+  });
+
+  it('returns null for a missing or foreign review, and records no event', async () => {
+    mockedArchive.mockResolvedValue(null);
+
+    await expect(dismissReview(SCOPE, 'not_mine')).resolves.toBeNull();
+    expect(mockedEvent).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,8 @@ export const RESPARKABLE_ROUTES = {
   INBOX: `${BASE}/inbox`,
   SEARCH: `${BASE}/search`,
   CHAT: `${BASE}/chat`,
+  /** The freeform "tell me more" conversation — no Area/Goal/Project anchor. */
+  CONTEXT: `${BASE}/context`,
   SETTINGS: `${BASE}/settings`,
   PLAN: `${BASE}/plan`,
 

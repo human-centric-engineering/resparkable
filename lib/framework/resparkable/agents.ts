@@ -20,10 +20,20 @@
  * which resolves the system default model when the ideation agent is absent).
  */
 
-/** The seven agents — five from phase 6, the briefer from phase 7, the intake from phase 9. */
+/**
+ * The nine agents — five from phase 6, the briefer from phase 7, the intake
+ * from phase 9, the context and summariser agents from Release 8.
+ */
 export const RESPARKABLE_AGENT_SLUGS = {
   /** The conversational face — the agent a person talks to at `/resparkable/chat`. */
   companion: 'resparkable-companion',
+  /**
+   * The listener for a "tell me more" conversation — anchored to an
+   * Area/Goal/Project or freeform. Bound to exactly one capability,
+   * `resparkable_capture_context`, so a reflective conversation cannot wander
+   * into creating tasks or projects (Release 8).
+   */
+  context: 'resparkable-context',
   /** Nightly inbox processor. Low temperature; classifies rather than invents. */
   triage: 'resparkable-triage',
   /** Writes connection rationales. The one agent tuned for divergence. */
@@ -45,6 +55,13 @@ export const RESPARKABLE_AGENT_SLUGS = {
    * `004-agent-capabilities.ts`. See `capture-for-token.ts`.
    */
   intake: 'resparkable-intake',
+  /**
+   * On-request description-summariser (Release 8). Bound to exactly one
+   * capability, `resparkable_write_review` — proposes, never writes an
+   * Area/Goal/Project's `description` directly. Not chat-addressable: it runs
+   * from `POST .../[id]/summarize`, not from a turn a browser drives.
+   */
+  summariser: 'resparkable-summariser',
 } as const;
 
 export type ResparkableAgentSlug =
@@ -71,5 +88,15 @@ export const RESPARKABLE_IDEATION_AGENT_SLUG = RESPARKABLE_AGENT_SLUGS.connector
  * browser drive them directly would hand a prompt-injected page a write path
  * with a different guard profile than the one the companion was tuned with.
  * The chat route validates against this list.
+ *
+ * `resparkable-context` joins the companion here: it holds one narrow,
+ * additive-write capability (`resparkable_capture_context`) rather than the
+ * companion's broad set, so the risk it carries browser-driven is the same
+ * shape as the companion's own capture tool, not the write-heavy risk that
+ * keeps triage/strategist off this list. `resparkable-summariser` is
+ * deliberately absent — it runs from `[id]/summarize`, never from a chat turn.
  */
-export const RESPARKABLE_CHAT_AGENT_SLUGS: readonly string[] = [RESPARKABLE_AGENT_SLUGS.companion];
+export const RESPARKABLE_CHAT_AGENT_SLUGS: readonly string[] = [
+  RESPARKABLE_AGENT_SLUGS.companion,
+  RESPARKABLE_AGENT_SLUGS.context,
+];

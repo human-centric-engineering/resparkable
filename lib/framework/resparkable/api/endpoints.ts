@@ -49,6 +49,8 @@ export const RESPARKABLE_API = {
   /** Generated artefacts — reviews, briefings, digests. Append-only. */
   REVIEWS: '/api/v1/resparkable/reviews',
   reviewById: (id: string): string => `/api/v1/resparkable/reviews/${id}`,
+  /** Dismiss a proposal (e.g. a `context_summary`) so it stops appearing. */
+  dismissReviewPath: (id: string): string => `/api/v1/resparkable/reviews/${id}/dismiss`,
 
   TASKS: '/api/v1/resparkable/tasks',
   PROJECTS: '/api/v1/resparkable/projects',
@@ -74,6 +76,8 @@ export const RESPARKABLE_API = {
   snoozePath: (collection: string, id: string): string => `${collection}/${id}/snooze`,
   unsnoozePath: (collection: string, id: string): string => `${collection}/${id}/unsnooze`,
   restorePath: (collection: string, id: string): string => `${collection}/${id}/restore`,
+  /** Queue the description-summariser workflow for an Area/Goal/Project (Release 8). */
+  summarizePath: (collection: string, id: string): string => `${collection}/${id}/summarize`,
 
   /** Triage: one thought becomes a task, a project or a goal. */
   promotePath: (id: string): string => `/api/v1/resparkable/thoughts/${id}/promote`,

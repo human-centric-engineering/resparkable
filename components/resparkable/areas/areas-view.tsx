@@ -11,9 +11,10 @@
  */
 
 import * as React from 'react';
-import { Compass, Pencil, Plus } from 'lucide-react';
+import { Compass, MessageCircle, Pencil, Plus } from 'lucide-react';
 
 import { AreaForm } from '@/components/resparkable/areas/area-form';
+import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +29,7 @@ export interface AreasViewProps {
 export function AreasView({ areas }: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<AreaWire | null>(null);
+  const [talkingTo, setTalkingTo] = React.useState<AreaWire | null>(null);
 
   return (
     <div className="space-y-4">
@@ -84,6 +86,14 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
                 <Button
                   variant="ghost"
                   size="sm"
+                  aria-label={`Tell me more about ${area.name}`}
+                  onClick={() => setTalkingTo(area)}
+                >
+                  <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   aria-label={`Edit ${area.name}`}
                   onClick={() => setEditing(area)}
                 >
@@ -111,6 +121,18 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
         }}
         {...(editing ? { area: editing } : {})}
       />
+      {talkingTo && (
+        <ContextChatDrawer
+          open
+          onOpenChange={(open) => {
+            if (!open) setTalkingTo(null);
+          }}
+          entityType="area"
+          entityId={talkingTo.id}
+          entityName={talkingTo.name}
+          currentDescription={talkingTo.description}
+        />
+      )}
     </div>
   );
 }

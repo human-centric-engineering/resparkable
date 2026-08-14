@@ -22,8 +22,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Link2, ListTodo, Pencil } from 'lucide-react';
+import { Link2, ListTodo, MessageCircle, Pencil } from 'lucide-react';
 
+import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ProjectForm } from '@/components/resparkable/projects/project-form';
 import { SnoozeMenu } from '@/components/resparkable/controls/snooze-menu';
 import { TaskRow } from '@/components/resparkable/today/task-row';
@@ -50,6 +51,7 @@ export interface ProjectDetailProps {
 
 export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactElement {
   const [editOpen, setEditOpen] = React.useState(false);
+  const [talkOpen, setTalkOpen] = React.useState(false);
   const { project, area, tasks, openTaskCount, totalTaskCount, related } = view;
 
   return (
@@ -88,6 +90,10 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
           </div>
 
           <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setTalkOpen(true)}>
+              <MessageCircle className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Tell me more
+            </Button>
             <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
               <Pencil className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
               Edit
@@ -157,6 +163,14 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
       />
 
       <ProjectForm open={editOpen} onOpenChange={setEditOpen} areas={areas} project={project} />
+      <ContextChatDrawer
+        open={talkOpen}
+        onOpenChange={setTalkOpen}
+        entityType="project"
+        entityId={project.id}
+        entityName={project.name}
+        currentDescription={project.description}
+      />
     </div>
   );
 }

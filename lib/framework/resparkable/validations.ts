@@ -36,6 +36,12 @@ export const PROJECT_STATUSES = ['idea', 'active', 'paused', 'done', 'abandoned'
 export const GOAL_HORIZONS = ['life', 'year', 'quarter', 'month', 'week'] as const;
 export const GOAL_STATUSES = ['active', 'achieved', 'dropped'] as const;
 export const THOUGHT_STATUSES = ['inbox', 'promoted', 'dropped'] as const;
+/**
+ * `public` is never auto-assigned by `classifyThoughtSensitivity` — it exists
+ * so a person can explicitly downgrade a thought later. `private` is the safe
+ * default, matching every other privacy-adjacent field in this schema.
+ */
+export const THOUGHT_SENSITIVITY_LEVELS = ['public', 'private', 'sensitive'] as const;
 export const THOUGHT_SOURCES = [
   'web',
   'pwa',
@@ -230,6 +236,8 @@ export const updateThoughtSchema = z
   .object({
     content: noteBodySchema.min(1).optional(),
     status: z.enum(THOUGHT_STATUSES).optional(),
+    /** A person correcting the auto-classification (services/sensitivity.ts). */
+    sensitivity: z.enum(THOUGHT_SENSITIVITY_LEVELS).optional(),
     snoozedUntil: z.coerce.date().nullish(),
   })
   .strict();
@@ -823,6 +831,7 @@ export const REVIEW_HORIZONS = [
   'quarter',
   'briefing',
   'connections',
+  'context_summary',
 ] as const;
 
 /**
@@ -923,6 +932,37 @@ export const agentCaptureSchema = z
   .strict();
 
 export type AgentCaptureInput = z.infer<typeof agentCaptureSchema>;
+
+/**
+ * The anchor for a "tell me more" conversation — set by the page the user
+ * opened (an Area, Goal or Project), never typed by the model. Shared between
+ * the chat route's request body and `resparkable_capture_context`'s reading of
+ * `context.entityContext`, so the two cannot drift on which shape is trusted.
+ */
+export const resparkableEntityContextSchema = z
+  .object({
+    entityType: z.enum(['area', 'goal', 'project']),
+    entityId: cuidSchema,
+  })
+  .strict();
+
+export type ResparkableEntityContext = z.infer<typeof resparkableEntityContextSchema>;
+
+/**
+ * `resparkable_capture_context` — the capture door for the two "tell me more"
+ * chat surfaces (resparkable-context agent). No `source`, pinned to `'chat'`
+ * for the same reason `resparkable_capture` pins `'agent'` — see the file
+ * header above `agentCaptureSchema`. No entity id either: the anchor arrives
+ * via `context.entityContext`, which the model cannot set — see
+ * capabilities/capture-context.ts.
+ */
+export const agentCaptureContextSchema = z
+  .object({
+    content: z.string().trim().min(1, 'Required').max(100_000),
+  })
+  .strict();
+
+export type AgentCaptureContextInput = z.infer<typeof agentCaptureContextSchema>;
 
 /** `resparkable_search` — the same hybrid pass the `/search` endpoint runs. */
 export const agentSearchSchema = z
@@ -1194,7 +1234,7 @@ export type AgentCaptureForTokenInput = z.infer<typeof agentCaptureForTokenSchem
 /**
  * `POST /resparkable/chat/stream`.
  *
- * Four fields, and the absences are the design:
+ * Five fields, and the absences are the design:
  *
  *   - **No `contextType` / `contextId`.** The route pins both server-side to the
  *     signed-in user. A client-supplied `contextId` is the one field that would
@@ -1210,6 +1250,12 @@ export type AgentCaptureForTokenInput = z.infer<typeof agentCaptureForTokenSchem
  * `agentSlug` is validated against `RESPARKABLE_CHAT_AGENT_SLUGS` in the route rather
  * than here, because that list is a security boundary that belongs next to the
  * reasoning for it (`lib/framework/resparkable/agents.ts`), not in a schema file.
+ *
+ * `entityContext` is the one field that names an id and is still safe to accept
+ * from the client: it is not trusted here or in the route, only forwarded
+ * verbatim into `CapabilityContext` (the same field the admin chat route already
+ * threads). `resparkable_capture_context` re-verifies ownership before acting on
+ * it (`entityExists`, via `linkEntities`) — this schema only bounds its shape.
  */
 export const resparkableChatRequestSchema = z
   .object({
@@ -1217,6 +1263,8 @@ export const resparkableChatRequestSchema = z
     agentSlug: z.string().trim().min(1).max(100),
     /** Continues an existing conversation; omitted starts a new one. */
     conversationId: cuidSchema.optional(),
+    /** Anchors a "tell me more" turn to the Area/Goal/Project page it was opened from. */
+    entityContext: resparkableEntityContextSchema.optional(),
   })
   .strict();
 

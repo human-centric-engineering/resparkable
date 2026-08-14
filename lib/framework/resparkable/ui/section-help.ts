@@ -143,6 +143,26 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
+    href: RESPARKABLE_ROUTES.CONTEXT,
+    title: 'Talk',
+    blurb: 'A reflective conversation, kept as notes rather than a form.',
+    blocks: [
+      {
+        heading: 'What this is for',
+        body: 'A place to think out loud about your life, your work, or one specific Area, Goal or Project — opened here freeform, or with "Tell me more" from an item’s own page. It asks open questions and does not search, create tasks, or file anything.',
+      },
+      {
+        heading: 'What it keeps',
+        body: 'What you share is captured as a note, in your own words distilled to the substance rather than a transcript. Opened from an item, the note is linked to it. Sensitive content is classified automatically and kept out of background summaries — never out of your own export.',
+      },
+      {
+        heading: 'It does not rewrite what you typed',
+        body: 'An Area, Goal or Project’s description stays exactly what you wrote until you ask for a summary and accept it. Nothing here overwrites it on its own.',
+      },
+    ],
+  },
+
+  {
     href: RESPARKABLE_ROUTES.BOARDS,
     title: 'Boards',
     blurb: 'A kanban view of tasks that already exist.',

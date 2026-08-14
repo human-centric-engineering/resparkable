@@ -25,10 +25,12 @@ import type { NextRequest } from 'next/server';
 
 import { getRouteLogger } from '@/lib/api/context';
 import { NotFoundError } from '@/lib/api/errors';
-import { successResponse } from '@/lib/api/responses';
+import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
+import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {
   snoozeItem,
@@ -36,6 +38,7 @@ import {
   type SnoozableType,
 } from '@/lib/framework/resparkable/services/snooze';
 import { archiveSchema, snoozeSchema } from '@/lib/framework/resparkable/validations';
+import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
 
 /** A handler on a collection route — no dynamic segment to await. */
 type CollectionHandler = (request: NextRequest) => Promise<Response>;
@@ -214,6 +217,53 @@ export function createUnsnoozeHandlers(type: SnoozableType): { POST: ItemHandler
     log.info('Resparkable unsnoozed', { type, id });
 
     return successResponse(result);
+  });
+
+  return { POST };
+}
+
+/** The three entity types the description-summariser can be pointed at (Release 8). */
+export type SummarizableType = 'area' | 'goal' | 'project';
+
+/**
+ * `POST .../[id]/summarize` — queue the description-summary workflow.
+ *
+ * Same shape as `createSnoozeHandlers` above and the same reasoning as
+ * `POST /resparkable/briefing/regenerate`: this **queues** rather than runs.
+ * `queueResparkableWorkflowRun` writes a `PENDING` execution and the
+ * maintenance tick picks it up — reimplementing version resolution and budget
+ * handling in a route handler would drift from the real scheduler.
+ *
+ * The existence check happens here, before queuing, rather than inside the
+ * workflow's own gather step — a request for an id that isn't the caller's
+ * gets a 404 immediately instead of a queued execution that fails a minute
+ * later with nothing to show for it.
+ */
+export function createSummarizeHandlers(type: SummarizableType): { POST: ItemHandler } {
+  const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
+    const log = await getRouteLogger(request);
+    const scope = ownerScope(session.user.id);
+    const { id } = await params;
+
+    if (!(await entityExists(scope, type, id))) throw new NotFoundError(`${type} not found`);
+
+    const executionId = await queueResparkableWorkflowRun(
+      RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
+      session.user.id,
+      { entityType: type, entityId: id }
+    );
+
+    if (!executionId) {
+      log.warn('Resparkable description summary: workflow unavailable', { type, id });
+      return errorResponse(
+        'The description-summary workflow is not available. Run the Resparkable seeds.',
+        { code: 'WORKFLOW_UNAVAILABLE', status: 503 }
+      );
+    }
+
+    log.info('Resparkable description summary queued', { type, id, executionId });
+
+    return successResponse({ executionId, status: 'queued' });
   });
 
   return { POST };

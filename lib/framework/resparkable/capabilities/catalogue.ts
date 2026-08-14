@@ -1,5 +1,5 @@
 /**
- * The nineteen capability rows, as data.
+ * The twenty-one capability rows, as data.
  *
  * **One source of truth for a capability's identity, and it is not the class.**
  * A capability exists in three places at once — a TypeScript handler, an
@@ -44,13 +44,15 @@ import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilit
  *
  * Namespaced rather than reusing core's `internal` / `knowledge` so an operator
  * looking at a capability list with a host project's own tools in it can tell at
- * a glance which nineteen reach into someone's brain.
+ * a glance which twenty-one reach into someone's brain.
  */
 export const RESPARKABLE_CAPABILITY_CATEGORY = 'resparkable';
 
 /** Every slug, as a const map so a typo in a seed or a binding is a build error. */
 export const RESPARKABLE_CAPABILITY_SLUGS = {
   capture: 'resparkable_capture',
+  /** Capture door for a "tell me more" conversation (resparkable-context agent). */
+  captureContext: 'resparkable_capture_context',
   search: 'resparkable_search',
   listTasks: 'resparkable_list_tasks',
   promoteThought: 'resparkable_promote_thought',
@@ -61,6 +63,8 @@ export const RESPARKABLE_CAPABILITY_SLUGS = {
   linkEntities: 'resparkable_link_entities',
   findConnections: 'resparkable_find_connections',
   getSnapshot: 'resparkable_get_snapshot',
+  /** Deterministic gather for the description-summariser workflow. */
+  getContextDigest: 'resparkable_get_context_digest',
   writeReview: 'resparkable_write_review',
   reprioritise: 'resparkable_reprioritise',
   ideate: 'resparkable_ideate',
@@ -223,6 +227,32 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
             maxLength: 200,
             description:
               'Optional id from the system this thought arrived through (an email message id, a shortcut run id). Sending the same one twice returns the original thought instead of duplicating it.',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.captureContext,
+    name: 'Resparkable — Capture from a context conversation',
+    description:
+      "Write a first-person distillation of a reflective conversation into the owner's inbox, linked to whichever Area, Goal or Project the conversation was anchored to.",
+    executionHandler: 'ResparkableCaptureContextCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.captureContext,
+      description:
+        'Save what the user just shared as a thought, after a meaningful exchange in a reflective conversation. Write a first-person distillation in your own words — not a verbatim transcript dump, and not your own conclusions about it. Call this after each exchange that added something real (a fact about their life, work, relationships, constraints), not after small talk or a question you asked that went unanswered.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 100_000,
+            description: 'A first-person distillation of what was just shared.',
           },
         },
         required: ['content'],
@@ -474,6 +504,28 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         "Get the current state of the user's whole system in one call: their goals at every horizon, active projects with days-since-activity, their top-ranked tasks, the standing life areas they've named, and today's date in their own timezone. Use it once at the start of anything that needs the big picture: a review, a plan, a 'how am I doing' question. Do not call it for a single fact you could search for.",
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
+    name: 'Resparkable — Get an item’s context digest',
+    description:
+      'Deterministic gather for the description-summariser workflow: an Area/Goal/Project plus the notes linked to it. Not bound to any chat-reachable agent.',
+    executionHandler: 'ResparkableGetContextDigestCapability',
+    rateLimit: 10,
+    isIdempotent: true,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
+      description:
+        'Read one Area, Goal or Project plus every note linked to it, for rewriting its description. Read-only.',
+      parameters: {
+        type: 'object',
+        properties: {
+          entityType: stringEnum(['area', 'goal', 'project']),
+          entityId: { type: 'string' },
+        },
+        required: ['entityType', 'entityId'],
+      },
     },
   },
   {
