@@ -1,5 +1,5 @@
 /**
- * The twenty-two capability rows, as data.
+ * The twenty-three capability rows, as data.
  *
  * **One source of truth for a capability's identity, and it is not the class.**
  * A capability exists in three places at once — a TypeScript handler, an
@@ -35,6 +35,7 @@ import {
   REVIEW_HORIZONS,
   SEARCHABLE_ENTITY_TYPES,
   TASK_STATUSES,
+  TIME_BLOCK_SOURCES,
   WORK_STYLES,
 } from '@/lib/framework/resparkable/validations';
 import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilities/types';
@@ -44,7 +45,7 @@ import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilit
  *
  * Namespaced rather than reusing core's `internal` / `knowledge` so an operator
  * looking at a capability list with a host project's own tools in it can tell at
- * a glance which twenty-two reach into someone's brain.
+ * a glance which twenty-three reach into someone's brain.
  */
 export const RESPARKABLE_CAPABILITY_CATEGORY = 'resparkable';
 
@@ -61,6 +62,7 @@ export const RESPARKABLE_CAPABILITY_SLUGS = {
   upsertArea: 'resparkable_upsert_area',
   upsertGoal: 'resparkable_upsert_goal',
   upsertEntity: 'resparkable_upsert_entity',
+  upsertTimeBlock: 'resparkable_upsert_time_block',
   linkEntities: 'resparkable_link_entities',
   findConnections: 'resparkable_find_connections',
   getSnapshot: 'resparkable_get_snapshot',
@@ -201,6 +203,30 @@ const upsertEntityParameters: Record<string, unknown> = {
     description: { type: 'string', maxLength: 100_000 },
     website: { type: ['string', 'null'], maxLength: 2000 },
     status: { ...stringEnum(ENTITY_STATUSES), description: 'Defaults to `active` on create.' },
+  },
+  required: [],
+};
+
+const upsertTimeBlockParameters: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    id: upsertId('time block'),
+    title: { type: 'string', maxLength: 500, description: 'What the block is for. Optional.' },
+    taskId: { type: ['string', 'null'], description: 'The task this block is time for.' },
+    projectId: { type: ['string', 'null'], description: 'The project this block is time for.' },
+    areaId: { type: ['string', 'null'], description: 'The life area this block is time for.' },
+    startAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'When the block starts, ISO 8601. Required on create.',
+    },
+    endAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'When the block ends, ISO 8601. Must be after `startAt`. Required on create.',
+    },
+    source: { ...stringEnum(TIME_BLOCK_SOURCES), description: 'Defaults to `plan` on create.' },
+    notes: { type: 'string', maxLength: 100_000 },
   },
   required: [],
 };
@@ -457,6 +483,21 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         'Create or update a person, a company, or an audience segment. Use it when the user mentions someone or some organisation that recurs in their work, so later notes can be linked to it. It is not a contact book: store what matters to the work, not phone numbers and addresses.',
       parameters: upsertEntityParameters,
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock,
+    name: 'Resparkable — Create or update a time block',
+    description:
+      'Block out time on the owner’s day, or patch an existing block by id. Not a calendar — a person’s own account of what a stretch of their day is for.',
+    executionHandler: 'ResparkableUpsertTimeBlockCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock,
+      description:
+        "Create a new time block on the user's day, or update an existing one by passing its `id`. This feeds the effort-fit factor in task ranking — blocking real time is what lets the scorer tell whether a task fits the gap the user actually has. Only send the fields you are changing. `startAt` and `endAt` are both required on create and `endAt` must be after `startAt`.",
+      parameters: upsertTimeBlockParameters,
     },
   },
   {

@@ -69,6 +69,7 @@ vi.mock('@/lib/framework/resparkable/services/resources', () => {
     areaResource: resource,
     goalResource: resource,
     entityResource: resource,
+    timeBlockResource: resource,
   };
 });
 
@@ -121,6 +122,10 @@ const VALID_ARGS: Record<string, unknown> = {
   resparkable_upsert_area: { name: 'an area' },
   resparkable_upsert_goal: { title: 'a goal', horizon: 'quarter' },
   resparkable_upsert_entity: { name: 'a person' },
+  resparkable_upsert_time_block: {
+    startAt: '2026-01-01T09:00:00.000Z',
+    endAt: '2026-01-01T10:00:00.000Z',
+  },
   resparkable_link_entities: {
     sourceType: 'project',
     sourceId: 'clh0000000000000000000001',

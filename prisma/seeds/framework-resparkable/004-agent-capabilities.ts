@@ -51,6 +51,7 @@ const BINDINGS: readonly AgentBindings[] = [
       C.upsertArea,
       C.upsertGoal,
       C.upsertEntity,
+      C.upsertTimeBlock,
       C.linkEntities,
       C.findConnections,
       C.getSnapshot,

@@ -12,8 +12,8 @@
  * [resparkable#462](https://github.com/human-centric-engineering/sunrise/issues/462),
  * where boot-registered capabilities were silently lost at request time under
  * Turbopack because the two realms hold separate module graphs. So this function
- * must stay cheap and synchronous: it constructs twenty-two objects and pushes
- * them into a map, and does not touch the database.
+ * must stay cheap and synchronous: it constructs twenty-three objects and
+ * pushes them into a map, and does not touch the database.
  *
  * **Registration is not availability.** A registered capability still needs an
  * active `AiCapability` row (seed `001-capabilities`) and an `AiAgentCapability`
@@ -43,6 +43,7 @@ import {
   ResparkableUpsertEntityCapability,
   ResparkableUpsertGoalCapability,
   ResparkableUpsertProjectCapability,
+  ResparkableUpsertTimeBlockCapability,
 } from '@/lib/framework/resparkable/capabilities/records';
 import { ResparkablePromoteThoughtCapability } from '@/lib/framework/resparkable/capabilities/promote';
 import { ResparkableReprioritiseCapability } from '@/lib/framework/resparkable/capabilities/reprioritise';
@@ -76,6 +77,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
     new ResparkableUpsertAreaCapability(),
     new ResparkableUpsertGoalCapability(),
     new ResparkableUpsertEntityCapability(),
+    new ResparkableUpsertTimeBlockCapability(),
     new ResparkableLinkEntitiesCapability(),
     new ResparkableFindConnectionsCapability(),
     new ResparkableGetSnapshotCapability(),
@@ -91,7 +93,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
   ];
 }
 
-/** Register the twenty-two. Idempotent — the registry keys on slug. */
+/** Register the twenty-three. Idempotent — the registry keys on slug. */
 export function registerResparkableCapabilities(): void {
   for (const capability of resparkableCapabilityHandlers()) {
     registerAppCapability(capability);

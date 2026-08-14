@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * CreateDialog — the chat/form choice for a new Area, Goal or Project.
+ * CreateDialog — the chat/form choice for a new Area, Goal, Project or time block.
  *
  * One `<Dialog>`, not two. An earlier version swapped between a chat-only
  * dialog and the plain `<ResourceDialog>` form when the toggle changed —
@@ -49,24 +49,27 @@ import {
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { cn } from '@/lib/utils';
 
-export type CreatableEntityType = 'area' | 'goal' | 'project';
+export type CreatableEntityType = 'area' | 'goal' | 'project' | 'time-block';
 
 const NOUN: Record<CreatableEntityType, string> = {
   area: 'life area',
   goal: 'goal',
   project: 'project',
+  'time-block': 'block of time',
 };
 
 const DIALOG_TITLE: Record<CreatableEntityType, string> = {
   area: 'New life area',
   goal: 'New goal',
   project: 'New project',
+  'time-block': 'New time block',
 };
 
 const DIALOG_DESCRIPTION: Record<CreatableEntityType, string> = {
   area: 'Share your life area details.',
   goal: 'Share your goal details.',
   project: 'Share your project details.',
+  'time-block': 'Block out some time.',
 };
 
 export interface CreateDialogProps<TValues extends FieldValues> {

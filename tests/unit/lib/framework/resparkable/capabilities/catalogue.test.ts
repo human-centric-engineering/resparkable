@@ -52,6 +52,7 @@ import {
   agentUpsertAreaSchema,
   agentUpsertProjectSchema,
   agentUpsertTaskSchema,
+  agentUpsertTimeBlockSchema,
   createLinkSchema,
   createReviewSchema,
   ideateSchema,
@@ -109,6 +110,7 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
   [RESPARKABLE_CAPABILITY_SLUGS.upsertArea]: agentUpsertAreaSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertGoal]: agentUpsertGoalSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertEntity]: agentUpsertEntitySchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock]: agentUpsertTimeBlockSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.linkEntities]: createLinkSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.findConnections]: agentFindConnectionsSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.getSnapshot]: z.object({}),
@@ -123,7 +125,7 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
 };
 
 describe('Resparkable capability catalogue', () => {
-  it('holds exactly the twenty-one capabilities the agent layer promises', () => {
+  it('holds exactly the twenty-three capabilities the agent layer promises', () => {
     // Thirteen in plan.md §5, plus `resparkable_promote_thought`: none of the
     // thirteen could mark a thought as processed, so a nightly triage run left
     // every note looking un-triaged and re-processed the lot the next night.
@@ -136,9 +138,10 @@ describe('Resparkable capability catalogue', () => {
     // Release 8 adds three: the "tell me more" capture door, the
     // description-summariser's deterministic gather step, and the life-area
     // upsert (the one resource type that had no chat-reachable create/update
-    // path until the create-via-chat flow needed one).
-    expect(RESPARKABLE_CAPABILITIES).toHaveLength(22);
-    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(22);
+    // path until the create-via-chat flow needed one). The chat/form create
+    // flow's extension to the Plan page adds one more: the time-block upsert.
+    expect(RESPARKABLE_CAPABILITIES).toHaveLength(23);
+    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(23);
   });
 
   it('uses unique, namespaced slugs', () => {

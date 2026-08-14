@@ -337,7 +337,11 @@ export type UpdateEntityInput = z.infer<typeof updateEntitySchema>;
 
 // ─── Time blocks ─────────────────────────────────────────────────────────────
 
-export const createTimeBlockSchema = z
+// Factored out from `createTimeBlockSchema` so `agentUpsertTimeBlockSchema`
+// below has a plain `ZodObject` to build on — `upsertSchema()` calls
+// `.partial()` on its base, which a refined schema (a `ZodEffects`) doesn't
+// support.
+const timeBlockShape = z
   .object({
     title: titleSchema.nullish(),
     taskId: cuidSchema.nullish(),
@@ -348,7 +352,9 @@ export const createTimeBlockSchema = z
     source: z.enum(TIME_BLOCK_SOURCES).default('plan'),
     notes: noteBodySchema.nullish(),
   })
-  .strict()
+  .strict();
+
+export const createTimeBlockSchema = timeBlockShape
   // A zero- or negative-length block would silently contribute nothing to
   // `areaBalance` while looking like logged time on the calendar.
   .refine((block) => block.endAt > block.startAt, {
@@ -1076,6 +1082,17 @@ export const agentUpsertEntitySchema = upsertSchema(createEntitySchema.omit({ sl
 ]);
 
 export type AgentUpsertEntityInput = z.infer<typeof agentUpsertEntitySchema>;
+
+/** `resparkable_upsert_time_block`. No slug to omit — time blocks don't have one. */
+export const agentUpsertTimeBlockSchema = upsertSchema(timeBlockShape, ['startAt', 'endAt']).refine(
+  (block) => !block.startAt || !block.endAt || block.endAt > block.startAt,
+  {
+    message: 'endAt must be after startAt',
+    path: ['endAt'],
+  }
+);
+
+export type AgentUpsertTimeBlockInput = z.infer<typeof agentUpsertTimeBlockSchema>;
 
 /**
  * `resparkable_find_connections`.

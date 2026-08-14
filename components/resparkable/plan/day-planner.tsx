@@ -25,8 +25,9 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { CalendarRange, Trash2 } from 'lucide-react';
+import { CalendarRange, Plus, Trash2 } from 'lucide-react';
 
+import { TimeBlockForm } from '@/components/resparkable/plan/time-block-form';
 import { formatMinutes } from '@/components/resparkable/today/task-row';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
@@ -35,19 +36,10 @@ import { ClientDate } from '@/components/ui/client-date';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { AreaWire, ProjectWire, TimeBlockWire } from '@/lib/framework/resparkable/ui/payloads';
-
-const NONE = '__none__';
 
 export interface DayPlannerProps {
   blocks: TimeBlockWire[];
@@ -61,11 +53,7 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
   const router = useRouter();
   const { state, message, run } = useSaveStatus();
 
-  const [title, setTitle] = React.useState('');
-  const [startAt, setStartAt] = React.useState(`${day}T09:00`);
-  const [endAt, setEndAt] = React.useState(`${day}T10:00`);
-  const [areaId, setAreaId] = React.useState(NONE);
-  const [projectId, setProjectId] = React.useState(NONE);
+  const [createOpen, setCreateOpen] = React.useState(false);
 
   const areaNames = new Map(areas.map((area) => [area.id, area.name]));
   const projectNames = new Map(projects.map((project) => [project.id, project.name]));
@@ -74,30 +62,6 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
     (total, block) => total + minutesBetween(block.startAt, block.endAt),
     0
   );
-
-  async function create(): Promise<void> {
-    // `datetime-local` gives no zone; `new Date()` reads it as local time, which is
-    // what "block 2pm" means to the person typing it.
-    const start = new Date(startAt);
-    const end = new Date(endAt);
-
-    const ok = await run(() =>
-      apiClient.post(RESPARKABLE_API.TIME_BLOCKS, {
-        body: {
-          ...(title.trim() ? { title: title.trim() } : {}),
-          startAt: start.toISOString(),
-          endAt: end.toISOString(),
-          ...(areaId !== NONE ? { areaId } : {}),
-          ...(projectId !== NONE ? { projectId } : {}),
-        },
-      })
-    );
-
-    if (ok) {
-      setTitle('');
-      router.refresh();
-    }
-  }
 
   async function remove(id: string): Promise<void> {
     const ok = await run(() =>
@@ -131,7 +95,7 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
         </p>
       </div>
 
-      <section className="bg-card space-y-3 rounded-lg border p-4">
+      <section className="bg-card flex items-center justify-between gap-3 rounded-lg border p-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           Block out some time
           <FieldHelp title="Why block time">
@@ -146,91 +110,22 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
           </FieldHelp>
         </h2>
 
-        <form
-          className="grid gap-3 sm:grid-cols-2"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void create();
-          }}
-        >
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="block-title">What are you doing?</Label>
-            <Input
-              id="block-title"
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-              placeholder="Deep work on the Q4 launch"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="block-start">From</Label>
-            <Input
-              id="block-start"
-              type="datetime-local"
-              value={startAt}
-              onChange={(event) => setStartAt(event.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="block-end">Until</Label>
-            <Input
-              id="block-end"
-              type="datetime-local"
-              value={endAt}
-              onChange={(event) => setEndAt(event.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="block-area" className="flex items-center gap-1.5">
-              Part of your life
-              <FieldHelp title="Part of your life">
-                Optional. Tag a block with what it was for, so your day makes sense when you look
-                back at it. A block with no area still shows on your day.
-              </FieldHelp>
-            </Label>
-            <Select value={areaId} onValueChange={setAreaId}>
-              <SelectTrigger id="block-area">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>Nothing in particular</SelectItem>
-                {areas.map((area) => (
-                  <SelectItem key={area.id} value={area.id}>
-                    {area.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="block-project">On</Label>
-            <Select value={projectId} onValueChange={setProjectId}>
-              <SelectTrigger id="block-project">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE}>No particular project</SelectItem>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="flex items-center justify-between gap-2 sm:col-span-2">
-            <SaveStatus state={state} message={message} />
-            <Button type="submit" size="sm" disabled={state === 'saving'}>
-              Block it out
-            </Button>
-          </div>
-        </form>
+        <div className="flex items-center gap-2">
+          <SaveStatus state={state} message={message} />
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+            Block out some time
+          </Button>
+        </div>
       </section>
+
+      <TimeBlockForm
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        day={day}
+        areas={areas}
+        projects={projects}
+      />
 
       {blocks.length === 0 ? (
         <EmptyState
