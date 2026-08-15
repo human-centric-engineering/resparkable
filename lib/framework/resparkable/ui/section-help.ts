@@ -351,7 +351,7 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
     blocks: [
       {
         heading: 'What the export is',
-        body: 'A zip of plain markdown files with YAML frontmatter — one file per area, goal, project, task, thought and person, plus a README that describes the format. Nothing in it needs Resparkable to be readable. Open the folder in Obsidian and it is a working vault; an export of an empty brain is a starter vault, because it is the same code path.',
+        body: 'A zip of plain markdown files with YAML frontmatter: one file per area, goal, project, task, thought and person, plus a README that describes the format. Nothing in it needs Resparkable to be readable, and an export of an empty brain is a starter vault for the same reason: it is the same code path either way. Obsidian is one app that opens a folder like this with no conversion step, but the format is not built for any single app.',
       },
       {
         heading: 'Two folders go out and never come back',
