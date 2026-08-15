@@ -35,7 +35,7 @@ export default function AuthLayout({
      * to anything) and the field itself, so the grid and the ember bloom are the
      * first things established.
      */
-    <div className="obsidian-field min-h-screen">
+    <div className="lattice-field min-h-screen">
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>

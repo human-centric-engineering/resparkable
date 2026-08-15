@@ -21,7 +21,8 @@ export const MARK_VIEWBOX = { width: 64, height: 34 } as const;
 /**
  * The faceted lemniscate. Both diagonals pass straight through 32,17, so the
  * ribbon crosses over itself the way a real one does rather than two shapes
- * touching. Twelve straight facets, no arc anywhere — obsidian fractures.
+ * touching. Twelve straight facets, no arc anywhere — the same faceted
+ * geometry as the hex lattice behind it.
  */
 export const LOOP_PATH =
   'M32,17 L23,6 L12,6 L4,17 L12,28 L23,28 L32,17 L41,6 L52,6 L60,17 L52,28 L41,28 Z';

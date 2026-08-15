@@ -22,10 +22,10 @@ import { cn } from '@/lib/utils';
  *
  * The middle syllable is the only one carrying `--color-primary`, which keeps
  * the mark inside the one-accent rule: `re` and `able` are the quiet field the
- * ember sits in. It follows the surface swap for free — amber on glass, indigo
- * on paper, teal in `/admin` — with no variant logic here.
+ * ember sits in. It follows the surface swap for free — amber in dark mode,
+ * indigo on paper, teal in `/admin` — with no variant logic here.
  *
- * `.spark-lit` (brand-theme.css) adds the bloom. It draws in `--obs-bloom`
+ * `.spark-lit` (brand-theme.css) adds the bloom. It draws in `--lattice-bloom`
  * rather than a literal amber, so light mode gets a 4.5%-opacity indigo halo
  * that reads as nothing at all — which is correct. A glow on paper looks like a
  * printing fault.

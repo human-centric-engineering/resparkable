@@ -265,8 +265,8 @@ export function SparkMesh({
       </defs>
 
       {/* The field. Was 10% opacity — the same "present, unnameable" contract
-          `.obsidian-field`'s own grid runs on — but that contract assumes a
-          plain surface behind it. Sat over `.obsidian-field-hex`'s honeycomb
+          `.lattice-field`'s own grid runs on — but that contract assumes a
+          plain surface behind it. Sat over `.lattice-field-hex`'s honeycomb
           it read as translucent rather than dim: the grid showed straight
           through it instead of the field reading as its own layer. Solid
           enough now to hold its own line over a textured background, still

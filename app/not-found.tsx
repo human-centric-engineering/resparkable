@@ -28,8 +28,8 @@ export const metadata: Metadata = {
  */
 export default function NotFound() {
   return (
-    <div className="obsidian-field flex min-h-screen flex-col">
-      <header className="border-border/60 obsidian-chrome border-b">
+    <div className="lattice-field flex min-h-screen flex-col">
+      <header className="border-border/60 lattice-chrome border-b">
         <div className="container mx-auto flex items-center px-4 py-3.5">
           <Link href="/" className="text-lg transition-opacity hover:opacity-75">
             <BrandMark />
@@ -39,21 +39,21 @@ export default function NotFound() {
 
       <main className="flex flex-1 items-center justify-center px-4 py-20">
         <div className="max-w-md text-center">
-          <SparkGlyph className="obsidian-reveal mx-auto h-7 w-[52px] opacity-50" />
+          <SparkGlyph className="lattice-reveal mx-auto h-7 w-[52px] opacity-50" />
 
-          <p className="term-label obsidian-reveal mt-8" style={{ animationDelay: '70ms' }}>
+          <p className="term-label lattice-reveal mt-8" style={{ animationDelay: '70ms' }}>
             404
           </p>
 
           <h1
-            className="obsidian-reveal mt-4 text-3xl sm:text-4xl"
+            className="lattice-reveal mt-4 text-3xl sm:text-4xl"
             style={{ animationDelay: '140ms' }}
           >
             Nothing here.
           </h1>
 
           <p
-            className="text-muted-foreground obsidian-reveal mt-5 leading-relaxed"
+            className="text-muted-foreground lattice-reveal mt-5 leading-relaxed"
             style={{ animationDelay: '210ms' }}
           >
             This address does not lead anywhere. It may have moved, or it may never have existed.
@@ -61,7 +61,7 @@ export default function NotFound() {
           </p>
 
           <div
-            className="obsidian-reveal mt-8 flex flex-wrap justify-center gap-3"
+            className="lattice-reveal mt-8 flex flex-wrap justify-center gap-3"
             style={{ animationDelay: '280ms' }}
           >
             <Button asChild>

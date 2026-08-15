@@ -48,7 +48,7 @@ import { SparkMesh } from '@/components/brand/spark-mesh';
  *
  * ## Motion
  *
- * One orchestrated arrival: five elements on `.obsidian-reveal` with inline
+ * One orchestrated arrival: five elements on `.lattice-reveal` with inline
  * delays climbing in 70ms steps, and `prefers-reduced-motion` handled by the
  * class. The mesh's own animation is continuous, which is the single exception
  * to the app's stillness rule and is fenced to the public pages. See
@@ -69,17 +69,17 @@ export function LandingHero(): React.ReactNode {
 
       <div className="relative container mx-auto px-4 pt-16 pb-16 md:pt-28 md:pb-28">
         <div className="max-w-3xl lg:max-w-xl">
-          <p className="term-label obsidian-reveal">catch · kindle · ignite</p>
+          <p className="term-label lattice-reveal">catch · kindle · ignite</p>
 
           <h1
-            className="obsidian-reveal mt-5 text-3xl sm:text-4xl md:text-5xl"
+            className="lattice-reveal mt-5 text-3xl sm:text-4xl md:text-5xl"
             style={{ animationDelay: '70ms' }}
           >
             Is your idea resparkable?
           </h1>
 
           <p
-            className="text-muted-foreground obsidian-reveal mt-6 text-lg leading-relaxed"
+            className="text-muted-foreground lattice-reveal mt-6 text-lg leading-relaxed"
             style={{ animationDelay: '140ms' }}
           >
             <SparkWordmark className="text-foreground text-[0.95em]" /> catches the thought that
@@ -89,7 +89,7 @@ export function LandingHero(): React.ReactNode {
           </p>
 
           <div
-            className="obsidian-reveal mt-8 flex flex-wrap items-center gap-3"
+            className="lattice-reveal mt-8 flex flex-wrap items-center gap-3"
             style={{ animationDelay: '210ms' }}
           >
             <Button asChild size="lg">
@@ -100,7 +100,7 @@ export function LandingHero(): React.ReactNode {
             </Button>
           </div>
 
-          <p className="term-meta obsidian-reveal mt-8" style={{ animationDelay: '280ms' }}>
+          <p className="term-meta lattice-reveal mt-8" style={{ animationDelay: '280ms' }}>
             Private by default · Never used to train anything · Take everything with you
           </p>
         </div>

@@ -22,9 +22,9 @@ import { cn } from '@/lib/utils';
  *
  * An infinity loop built only from straight facets, with a four-point spark on
  * the crossing: a spark captured, carried round, and lit again, which is what
- * the name claims. Obsidian fractures into edges rather than curves, so there is
- * no arc anywhere in the loop; the two lobes are hexagons and every edge is a
- * facet.
+ * the name claims. The two lobes are hexagons, so there is no arc anywhere in
+ * the loop; every edge is a facet, the same geometry as the hex lattice
+ * behind it.
  *
  * The crossing is real. Both diagonals run straight through the centre vertex,
  * so the ribbon passes over itself the way a lemniscate does. That detail is

@@ -30,11 +30,12 @@ export default function ProtectedLayout({
 }>) {
   return (
     <MaintenanceWrapperWithAdminNotice>
-      {/* `.obsidian-field` (brand-theme.css) replaces the flat `bg-background`:
-          the same base colour plus the 48px alignment grid and a single warm
-          bloom in the top-left. It sets its own background-color, so the utility
-          would only fight it. */}
-      <div className="obsidian-field flex min-h-screen flex-col">
+      {/* `.lattice-field-hex` (brand-theme.css) replaces the flat `bg-background`:
+          the same base colour and warm top-left bloom as `.lattice-field`, but
+          with the honeycomb grid used on the public marketing pages instead of
+          the square one — same ground across authenticated and public surfaces.
+          It sets its own background-color, so the utility would only fight it. */}
+      <div className="lattice-field-hex flex min-h-screen flex-col">
         {/* Full-bleed: this is an application, not a document. `container`
             capped it at the largest breakpoint and centred the remainder, which
             on a wide display spent ~450px on empty margins while the app's own

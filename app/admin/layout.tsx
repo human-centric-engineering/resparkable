@@ -40,7 +40,7 @@ export default async function AdminLayout({
   }
 
   return (
-    <div className="obsidian-field flex h-screen overflow-hidden">
+    <div className="lattice-field flex h-screen overflow-hidden">
       <AdminSidebar />
       <div className="flex flex-1 flex-col overflow-hidden">
         <AdminHeader />

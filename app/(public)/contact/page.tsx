@@ -44,15 +44,15 @@ export default function ContactPage() {
       <div className="relative container mx-auto px-4 pt-14 pb-16 md:pt-20 md:pb-24">
         <div className="mx-auto max-w-5xl">
           <div className="max-w-2xl">
-            <p className="term-label obsidian-reveal">contact</p>
+            <p className="term-label lattice-reveal">contact</p>
             <h1
-              className="obsidian-reveal mt-5 text-4xl sm:text-5xl"
+              className="lattice-reveal mt-5 text-4xl sm:text-5xl"
               style={{ animationDelay: '70ms' }}
             >
               Tell us what you need.
             </h1>
             <p
-              className="text-muted-foreground obsidian-reveal mt-6 text-lg leading-relaxed"
+              className="text-muted-foreground lattice-reveal mt-6 text-lg leading-relaxed"
               style={{ animationDelay: '140ms' }}
             >
               Ask a question, tell us something went wrong, or say what would make this worth using

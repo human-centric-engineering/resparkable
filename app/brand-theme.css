@@ -1,7 +1,7 @@
 /* app/brand-theme.css
  *
  * ═══════════════════════════════════════════════════════════════════════════
- *  RESPARKABLE — "amber phosphor on volcanic glass"
+ *  RESPARKABLE — "amber phosphor on a hex lattice"
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * This is the fork-owned per-surface theming seam. In vanilla Resparkable it ships
@@ -12,16 +12,18 @@
  *
  * ── THE IDEA ───────────────────────────────────────────────────────────────
  *
- * The name is the brief. Obsidian is volcanic glass: black, cold, and *sharp* —
- * it fractures into edges rather than curves, which is why it made the first
- * blades. But it was lava an hour ago, and the good specimens still catch light
- * along a fracture.
+ * The name is the brief. A spark does not do anything on its own — it has to
+ * land somewhere it can travel, cell to cell, the way a thought catches and
+ * moves through a room instead of staying put. A hexagon is the shape that
+ * tiles a plane with no wasted space and every cell touching six neighbours:
+ * the geometry of a hive, and the geometry of an idea that gets passed on
+ * rather than kept.
  *
- * So: a near-black base with a blue-violet cast (glass, not soot), geometry that
- * fractures rather than rounds — every radius pulled in hard, 4px where the
- * platform had 6, because a second brain full of pill-shaped cards reads as a
- * consumer app rather than an instrument — and one hot colour, an ember amber,
- * used only where something is live, selected, or asking for you.
+ * So: a near-black base with a blue-violet cast, geometry that keeps its
+ * facets rather than rounding them off — every radius pulled in hard, 4px
+ * where the platform had 6, because a second brain full of pill-shaped cards
+ * reads as a consumer app rather than an instrument — and one hot colour, an
+ * ember amber, used only where something is live, selected, or asking for you.
  *
  * Amber also happens to be the other phosphor. Everyone reaches for green when
  * they want "terminal"; amber CRTs were the ones people chose when they had to
@@ -58,11 +60,11 @@
  */
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   1. PALETTE — LIGHT ("polished glass on paper")
+   1. PALETTE — LIGHT ("the same lattice, drawn on paper")
    ═══════════════════════════════════════════════════════════════════════════
    Light mode is not an afterthought — half of thinking work happens in a bright
-   room. Geometry and typography are identical to dark; only the material
-   changes: the same instrument, milled from paper instead of glass.
+   room. Geometry and typography are identical to dark; only the surface
+   changes: the same instrument, drawn on paper instead of on a dark cell.
 
    ## Why the accent is vermilion here and ember there
 
@@ -173,9 +175,9 @@
      Not Tailwind tokens — inputs to the composed classes in §4. Kept as
      variables so the two modes share one set of rules and differ only here.
 
-     `--obs-bloom` is the wash in the corner of `.obsidian-field`. It is named
+     `--lattice-bloom` is the wash in the corner of `.lattice-field`. It is named
      for its job rather than its colour precisely because its colour is
-     mode-dependent — it was `--obs-ember`, which stopped being true the moment
+     mode-dependent — it was `--lattice-ember`, which stopped being true the moment
      light mode stopped being amber.
 
      Both values here are deliberately low. On paper a tint has nowhere to hide:
@@ -184,24 +186,32 @@
      a shape. 0.045 is roughly the point where it stops being a thing you can
      point at and starts being a room the page is lit in. If you can name its
      colour, it is too strong. */
-  --obs-grid-line: rgb(27 21 17 / 0.04);
-  --obs-grid-size: 48px;
-  --obs-bloom: rgb(194 65 12 / 0.045);
-  --obs-hairline: rgb(27 21 17 / 0.1);
-  /* `.obsidian-field-hex`'s own line — see that rule for why it can't just
-     reuse `--obs-hairline`. A touch lighter than that token on purpose: a
+  --lattice-grid-line: rgb(27 21 17 / 0.04);
+  --lattice-grid-size: 48px;
+  --lattice-bloom: rgb(194 65 12 / 0.045);
+  --lattice-hairline: rgb(27 21 17 / 0.1);
+  /* `.lattice-field-hex`'s own line — see that rule for why it can't just
+     reuse `--lattice-hairline`. A touch lighter than that token on purpose: a
      hairline covering the whole page reads differently from one marking a
      single divider, and paired with the brand artwork that now sits on top
-     of it (`SparkMesh`), the honeycomb at full `--obs-hairline` strength was
+     of it (`SparkMesh`), the honeycomb at full `--lattice-hairline` strength was
      landing louder than either was tuned against. Pull this much lower,
      though, and the enlarged tile (r=40 below) drops so much total line
      length that the page reads as empty rather than quiet — the two knobs
-     compound, so this one only needed to move partway. */
-  --obs-hex-line: rgb(27 21 17 / 0.075);
-  --obs-panel: rgb(255 255 255 / 0.72);
-  --obs-inset-highlight: rgb(255 255 255 / 0.9);
+     compound, so this one only needed to move partway.
+
+     0.075 was the first cut and still read as the loudest thing on the
+     page once it shipped under real hero copy — the long uninterrupted
+     diagonal edges of a hexagon draw the eye more than a crosshatch of
+     short segments does, so matching the square grid's line-for-line
+     opacity wasn't enough. 0.05 plus the 1px stroke below (was 1.5px)
+     lands total ink close to parity with `--lattice-grid-line` rather than
+     ~3× it. */
+  --lattice-hex-line: rgb(27 21 17 / 0.05);
+  --lattice-panel: rgb(255 255 255 / 0.72);
+  --lattice-inset-highlight: rgb(255 255 255 / 0.9);
   /* The public pages' section rule (`SparkRule`) — deliberately not built
-     from `--obs-hairline`. A neutral hairline at any opacity this file's
+     from `--lattice-hairline`. A neutral hairline at any opacity this file's
      other tokens use lands within a couple of `rgb()` steps of the hex
      grid's own rendered colour: both are the same low-alpha neutral over the
      same background, so a "divider" drawn that way is not visually a
@@ -212,7 +222,7 @@
   --brand-rule: rgb(194 65 12 / 0.4);
 
   /* ═════════════════════════════════════════════════════════════════════
-     2. GEOMETRY — the fracture
+     2. GEOMETRY — the facets
      ═════════════════════════════════════════════════════════════════════
      Mode-independent, declared once. Every radius roughly halved against
      Tailwind's defaults. The components never asked for a radius by name —
@@ -234,12 +244,13 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   3. PALETTE — DARK ("volcanic glass") — the mode this app was designed in
+   3. PALETTE — DARK ("a hex cell, lights down") — the mode this app was designed in
    ═══════════════════════════════════════════════════════════════════════════
    The base is #0a0b0f rather than #000: pure black on an OLED panel makes every
    border float and every card edge disappear, and there is nothing left to build
-   depth out of. This is black with about a degree of blue-violet in it, which is
-   what obsidian actually looks like when it is thin enough to pass light.
+   depth out of. This is black with about a degree of blue-violet in it — dark
+   enough to disappear, not so dark that the one warm colour in the room stops
+   reading as light.
 
    The surfaces climb in ~2% steps — background → card → popover → input — so
    elevation is legible without a single shadow. Shadows are dishonest in the
@@ -290,22 +301,22 @@
   --color-warn: #fbbf24;
   --color-sheen: #c084fc;
 
-  --obs-grid-line: rgb(233 235 242 / 0.035);
-  --obs-grid-size: 48px;
-  --obs-bloom: rgb(245 165 36 / 0.09);
-  --obs-hairline: rgb(233 235 242 / 0.09);
+  --lattice-grid-line: rgb(233 235 242 / 0.035);
+  --lattice-grid-size: 48px;
+  --lattice-bloom: rgb(245 165 36 / 0.09);
+  --lattice-hairline: rgb(233 235 242 / 0.09);
   /* See the light-mode block above — same reasoning, darker being the dark-mode
      direction of "quieter against its own background". */
-  --obs-hex-line: rgb(233 235 242 / 0.07);
-  --obs-panel: rgb(16 18 26 / 0.72);
-  --obs-inset-highlight: rgb(255 255 255 / 0.05);
+  --lattice-hex-line: rgb(233 235 242 / 0.055);
+  --lattice-panel: rgb(16 18 26 / 0.72);
+  --lattice-inset-highlight: rgb(255 255 255 / 0.05);
   /* See the light-mode block above. Same amber `--color-primary` carries here
      too, since the ember is the constant across modes. */
   --brand-rule: rgb(245 165 36 / 0.4);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   3b. THE /admin SURFACE — same glass, colder fracture
+   3b. THE /admin SURFACE — same lattice, colder facet
    ═══════════════════════════════════════════════════════════════════════════
    `proxy.ts` classifies each request through `classifySurface()` and the root
    layout puts the answer on `<html data-surface>`. Resparkable uses that for one
@@ -328,7 +339,7 @@
 
    Teal is ~70° off the indigo and on the far side of the wheel from the dark
    ember, so it holds in both modes — and unlike consumer, admin keeps ONE hue
-   across them (teal-700 for contrast on paper, teal-400 on glass). The back
+   across them (teal-700 for contrast on paper, teal-400 in dark mode). The back
    office has no brand story to tell; it needs to be unmistakably not-your-notes
    in whichever mode you happen to be in, and nothing more.
 
@@ -340,7 +351,7 @@
   --color-primary: #0f766e;
   --color-primary-foreground: #f0fdfa;
   --color-ring: #0f766e;
-  --obs-bloom: rgb(15 118 110 / 0.045);
+  --lattice-bloom: rgb(15 118 110 / 0.045);
 
   /* Admin has no brand story of its own (see the block comment above): the
      mark collapses to flat teal here instead of carrying the consumer ramp. */
@@ -355,7 +366,7 @@
   --color-primary: #2dd4bf;
   --color-primary-foreground: #04211d;
   --color-ring: #2dd4bf;
-  --obs-bloom: rgb(45 212 191 / 0.07);
+  --lattice-bloom: rgb(45 212 191 / 0.07);
 
   --brand-loop-0: #2dd4bf;
   --brand-loop-1: #2dd4bf;
@@ -457,7 +468,7 @@
      real border would imply a nesting that isn't there. */
   .term-rule {
     border: 0;
-    border-top: 1px dashed var(--obs-hairline);
+    border-top: 1px dashed var(--lattice-hairline);
   }
 
   /* ── `.terminal-surface` — where the machine talks ───────────────────
@@ -510,7 +521,7 @@
     line-height: 1.7;
   }
 
-  /* ── `.obsidian-field` — the ground the app stands on ─────────────────
+  /* ── `.lattice-field` — the ground the app stands on ─────────────────
      A 48px grid at ~4% opacity with a single warm bloom in the top-left, sized
      to the viewport so it never tiles visibly.
 
@@ -524,7 +535,7 @@
      over it, which is what sells it as a surface rather than a texture painted
      on the page. Dropped on touch devices, where fixed attachment is both
      expensive and unsupported. */
-  .obsidian-field {
+  .lattice-field {
     background-color: var(--color-background);
     background-image:
       /* Wide and shallow, anchored above the top edge so only its falloff is on
@@ -532,25 +543,25 @@
          one that arrives already fading reads as light. `transparent 78%` rather
          than 70% pushes the terminus off the viewport, which is what stops the
          eye finding an edge and treating the wash as a shape. */
-      radial-gradient(ellipse 90% 45% at 8% -14%, var(--obs-bloom), transparent 78%),
-      linear-gradient(to right, var(--obs-grid-line) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--obs-grid-line) 1px, transparent 1px);
+      radial-gradient(ellipse 90% 45% at 8% -14%, var(--lattice-bloom), transparent 78%),
+      linear-gradient(to right, var(--lattice-grid-line) 1px, transparent 1px),
+      linear-gradient(to bottom, var(--lattice-grid-line) 1px, transparent 1px);
     background-size:
       100% 100%,
-      var(--obs-grid-size) var(--obs-grid-size),
-      var(--obs-grid-size) var(--obs-grid-size);
+      var(--lattice-grid-size) var(--lattice-grid-size),
+      var(--lattice-grid-size) var(--lattice-grid-size);
   }
 
   @media (hover: hover) and (pointer: fine) {
-    .obsidian-field {
+    .lattice-field {
       background-attachment: fixed, fixed, fixed;
     }
   }
 
-  /* ── `.obsidian-field-hex` — the same ground, hexagonal ────────────────
-     A trial alternate to `.obsidian-field` above: same bloom, a honeycomb
+  /* ── `.lattice-field-hex` — the same ground, hexagonal ────────────────
+     A trial alternate to `.lattice-field` above: same bloom, a honeycomb
      instead of a square grid. Left as a separate class rather than
-     replacing `.obsidian-field` — swap the class name on a layout to try
+     replacing `.lattice-field` — swap the class name on a layout to try
      it, swap back to revert. Nothing here touches the square grid's rule.
 
      A hex *line* grid can't be built from `linear-gradient` stripes the way
@@ -566,7 +577,7 @@
 
      r=40, not the r=32 this shipped with. At r=32 — chosen only for parity
      with the square grid's r=16 (cell width 48px, matching
-     `--obs-grid-size`) — the honeycomb sat under `SparkMesh` (the animated
+     `--lattice-grid-size`) — the honeycomb sat under `SparkMesh` (the animated
      mark on the hero and `/about`) for the first time and the two grids
      visibly competed: similar line weight, similar spacing, so the eye
      couldn't tell the mark's own hairlines from the texture behind them.
@@ -575,64 +586,91 @@
      rather than a fog while giving the artwork more room to read as the
      foreground.
 
-     Colour is `--obs-hex-line`, not `--obs-grid-line`: the square grid's
+     Colour is `--lattice-hex-line`, not `--lattice-grid-line`: the square grid's
      lines are axis-aligned, so a browser paints a 1px `linear-gradient`
      hard stop with no anti-aliasing at all. A hexagon's edges are mostly
      diagonal, and a diagonal line at the same nominal width anti-aliases
      across a wider footprint at lower peak coverage, so the identical
      opacity read visibly fainter — worse in dark mode, where the line
-     colour is already the lower-contrast one of the two palettes.
-     `--obs-hex-line` plus a 1.5px stroke instead of 1px compensates for
-     that loss without making the honeycomb louder than the square grid
-     actually is — it is its own token rather than `--obs-hairline` (the
-     "this needs to actually register" divider colour, ~2.5× `--obs-grid-line`)
-     precisely so it can be tuned quieter than a divider without weakening
-     any divider that reads from the same variable. */
-  .obsidian-field-hex {
+     colour is already the lower-contrast one of the two palettes. It is
+     its own token rather than `--lattice-hairline` (the "this needs to
+     actually register" divider colour, ~2.5× `--lattice-grid-line`) precisely
+     so it can be tuned quieter than a divider without weakening any
+     divider that reads from the same variable.
+
+     Stroke is 1px, not 1.5px — 1.5px was the first attempt at
+     compensating for that anti-aliasing loss and overshot badly: paired
+     with `--lattice-hex-line`'s own alpha boost it roughly tripled the total
+     ink over `--lattice-grid-line`, and unlike the square grid's dense
+     crosshatch, a honeycomb's lines are long and uninterrupted, so the
+     eye follows them rather than reading them as texture. The two
+     tokens now aim for near-parity with the square grid's ink instead of
+     a deliberate boost — quiet is the point, not "visibly a hexagon". */
+  .lattice-field-hex {
     position: relative;
+    /* Establishes a local stacking context so `::before`'s negative z-index
+       (below) stays scoped to this element instead of escaping to compete
+       with unrelated stacking contexts elsewhere on the page. */
+    isolation: isolate;
     background-color: var(--color-background);
     background-image: radial-gradient(
       ellipse 90% 45% at 8% -14%,
-      var(--obs-bloom),
+      var(--lattice-bloom),
       transparent 78%
     );
     background-size: 100% 100%;
   }
 
-  .obsidian-field-hex::before {
+  /* `z-index: -1`, not the paint-order-free default: `.lattice-field`'s grid
+     is a `background-image` on the element itself, which CSS always paints
+     before any of that element's content, positioned or not — free ordering.
+     This honeycomb is a `::before` overlay instead (masks can't apply to an
+     element without also masking its children, so it has to live on a
+     separate box — see the rule's header comment for why). A positioned
+     element with `z-index: auto` doesn't get that free ordering: per the CSS
+     painting-order rules it paints *after* in-flow non-positioned
+     descendants, i.e. on top of every plain white card in normal flow — the
+     app's dashboard cards and empty-state boxes were rendering under the
+     honeycomb rather than over it. `z-index: -1` moves it into the
+     negative-z-index paint step, below all of `.lattice-field-hex`'s normal
+     children, while `isolation: isolate` above keeps that negative index
+     from being read as "put this behind the whole page". */
+  .lattice-field-hex::before {
     content: '';
     position: absolute;
     inset: 0;
+    z-index: -1;
     pointer-events: none;
-    background-color: var(--obs-hex-line);
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-color: var(--lattice-hex-line);
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1'/%3E%3C/svg%3E");
     mask-repeat: repeat;
     mask-size: 120px 69.282px;
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1.5'/%3E%3C/svg%3E");
+    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='69.2820' viewBox='0 0 120 69.2820'%3E%3Cpath d='M40 0L20 34.64L-20 34.64L-40 0L-20 -34.64L20 -34.64ZM40 69.28L20 103.92L-20 103.92L-40 69.28L-20 34.64L20 34.64ZM100 -34.64L80 0L40 0L20 -34.64L40 -69.28L80 -69.28ZM100 34.64L80 69.28L40 69.28L20 34.64L40 0L80 0ZM160 0L140 34.64L100 34.64L80 0L100 -34.64L140 -34.64ZM160 69.28L140 103.92L100 103.92L80 69.28L100 34.64L140 34.64Z' fill='none' stroke='%23fff' stroke-width='1'/%3E%3C/svg%3E");
     -webkit-mask-repeat: repeat;
     -webkit-mask-size: 120px 69.282px;
   }
 
   @media (hover: hover) and (pointer: fine) {
-    .obsidian-field-hex {
+    .lattice-field-hex {
       background-attachment: fixed;
     }
 
-    .obsidian-field-hex::before {
+    .lattice-field-hex::before {
       position: fixed;
     }
   }
 
-  /* ── `.obsidian-chrome` — sticky header / rail glass ──────────────────
-     Translucent panel plus a 1px top highlight, which is how real glass shows
-     an edge. The `saturate` in the backdrop filter is the detail that matters:
+  /* ── `.lattice-chrome` — sticky header / rail panel ───────────────────
+     Translucent panel plus a 1px top highlight, which is how a lit edge
+     reads against a blurred backdrop. The `saturate` in the backdrop filter
+     is the detail that matters:
      blur alone greys out whatever passes beneath, and pushing saturation back
      up keeps the ember and the signal colours alive through it. */
-  .obsidian-chrome {
-    background-color: var(--obs-panel);
+  .lattice-chrome {
+    background-color: var(--lattice-panel);
     backdrop-filter: blur(14px) saturate(160%);
     -webkit-backdrop-filter: blur(14px) saturate(160%);
-    box-shadow: inset 0 1px 0 0 var(--obs-inset-highlight);
+    box-shadow: inset 0 1px 0 0 var(--lattice-inset-highlight);
   }
 
   /* ── `.live-edge` — "this one is live" ───────────────────────────────
@@ -664,9 +702,9 @@
      the accent. Colour plus a two-stop halo, so the syllable reads as a source
      of light rather than as coloured text.
 
-     The halo draws in `--obs-bloom` — the same wash `.obsidian-field` puts in
+     The halo draws in `--lattice-bloom` — the same wash `.lattice-field` puts in
      the corner of the page — rather than a literal amber, which is what makes
-     it mode-correct without a `.dark` variant. On glass that token is the ember
+     it mode-correct without a `.dark` variant. In dark mode that token is the ember
      at 9% and the glow is visible; on paper it is indigo at 4.5% and the glow is
      effectively absent. That asymmetry is deliberate: a halo on a white page
      does not read as light, it reads as a printing fault.
@@ -676,11 +714,11 @@
   .spark-lit {
     color: var(--color-primary);
     text-shadow:
-      0 0 14px var(--obs-bloom),
-      0 0 34px var(--obs-bloom);
+      0 0 14px var(--lattice-bloom),
+      0 0 34px var(--lattice-bloom);
   }
 
-  /* ── Focus: a fracture, not a halo ────────────────────────────────────
+  /* ── Focus: an edge, not a halo ────────────────────────────────────
      Square-cornered, offset, in the ring colour. The platform default was a
      soft 1px inset that vanishes on a dark background against a bright border.
      `:focus-visible` only, so a mouse click never draws it. */
@@ -782,11 +820,11 @@
      app assembled itself, then gets out of the way. Anything that re-renders
      often must not use it — a card that fades in every time a count changes is
      a bug wearing a costume. */
-  .obsidian-reveal {
-    animation: obsidian-reveal 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  .lattice-reveal {
+    animation: lattice-reveal 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }
 
-  @keyframes obsidian-reveal {
+  @keyframes lattice-reveal {
     from {
       opacity: 0;
       transform: translateY(12px);
@@ -953,7 +991,7 @@
      rests at a legible state, so with motion off the graphic is a still
      diagram of a graph with a lit crossing, which is the picture anyway. */
   @media (prefers-reduced-motion: reduce) {
-    .obsidian-reveal,
+    .lattice-reveal,
     .spark-trace,
     .spark-node,
     .spark-mote,
