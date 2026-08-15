@@ -100,14 +100,18 @@ export function CreateDialog<TValues extends FieldValues>({
 }: CreateDialogProps<TValues>): React.ReactElement {
   const router = useRouter();
 
+  // Shared by the Dialog's own close triggers (Escape, overlay click) AND
+  // ResourceFormBody's onSaved below — calling the raw `onOpenChange` prop
+  // from onSaved would close the dialog without ever running the refresh,
+  // since Radix only invokes its own onOpenChange for its own close
+  // triggers, not for a controlled `open` prop flipping externally.
+  const handleOpenChange = (next: boolean): void => {
+    onOpenChange(next);
+    if (!next) router.refresh();
+  };
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        onOpenChange(next);
-        if (!next) router.refresh();
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="flex h-[75vh] max-h-[42rem] flex-col sm:max-w-xl">
         <DialogHeader>
           {/* `pr-8` keeps the toggle clear of the dialog's own close button,
@@ -145,7 +149,7 @@ export function CreateDialog<TValues extends FieldValues>({
                 collection={collection}
                 form={form}
                 toBody={toBody}
-                onSaved={() => onOpenChange(false)}
+                onSaved={() => handleOpenChange(false)}
               >
                 {children}
               </ResourceFormBody>

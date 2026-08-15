@@ -32,9 +32,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
-import { useCreateMode } from '@/components/resparkable/creation/create-mode-toggle';
-import { CreateDialog } from '@/components/resparkable/creation/create-dialog';
-import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import { EntityFormDialog } from '@/components/resparkable/creation/entity-form-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -270,39 +268,19 @@ export function GoalForm({
     </>
   );
 
-  // The chat/form choice only applies to create — an existing goal already has
-  // "Tell me more" for chat-based elaboration, and re-offering chat here would
-  // be a second, more confusing way to reach the same thing.
-  const [createMode, setCreateMode] = useCreateMode();
-  if (!goal) {
-    return (
-      <CreateDialog
-        open={open}
-        onOpenChange={onOpenChange}
-        entityType="goal"
-        mode={createMode}
-        onModeChange={setCreateMode}
-        collection={RESPARKABLE_API.GOALS}
-        form={form}
-        toBody={toBody}
-      >
-        {fields}
-      </CreateDialog>
-    );
-  }
-
   return (
-    <ResourceDialog
+    <EntityFormDialog
       open={open}
       onOpenChange={onOpenChange}
+      entityType="goal"
       collection={RESPARKABLE_API.GOALS}
-      id={goal.id}
-      title="Edit goal"
-      description="Projects and tasks that serve it get ranked higher."
+      existingId={goal?.id}
+      editTitle="Edit goal"
+      editDescription="Projects and tasks that serve it get ranked higher."
       form={form}
       toBody={toBody}
     >
       {fields}
-    </ResourceDialog>
+    </EntityFormDialog>
   );
 }

@@ -203,7 +203,12 @@ async function topConnections(
   const links = await listUnreviewedLinks(scope, limit, now);
   if (links.length === 0) return [];
 
-  const hydrated = await hydrateLinks(scope, links, true, true);
+  const hydrated = await hydrateLinks(
+    scope,
+    links,
+    /* includeArchived */ true,
+    /* excludeSensitive */ true
+  );
 
   return hydrated.map(({ link, source, target }) => ({
     id: link.id,

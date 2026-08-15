@@ -454,7 +454,7 @@ const contextDigest: ResparkableWorkflowSpec = {
         config: {
           agentSlug: A.summariser,
           message:
-            'Propose a rewritten description for this item from the notes linked to it. Finish by calling resparkable_write_review with horizon "context_summary".\n\n{{gather_digest.output}}',
+            'Propose a rewritten description for this item from the notes linked to it. Finish by calling resparkable_write_review with horizon "context_summary" and a `payload` carrying the exact `entityType` and `entityId` from the digest below — the review surface matches a proposal to its item by those two fields alone.\n\n{{gather_digest.output}}',
           maxToolIterations: 4,
         },
         nextSteps: [],

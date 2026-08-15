@@ -21,9 +21,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
-import { useCreateMode } from '@/components/resparkable/creation/create-mode-toggle';
-import { CreateDialog } from '@/components/resparkable/creation/create-dialog';
-import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import { EntityFormDialog } from '@/components/resparkable/creation/entity-form-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -110,38 +108,19 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
     </>
   );
 
-  // Only create offers the chat/form choice — an existing area already has
-  // "Tell me more" for chat-based elaboration.
-  const [createMode, setCreateMode] = useCreateMode();
-  if (!area) {
-    return (
-      <CreateDialog
-        open={open}
-        onOpenChange={onOpenChange}
-        entityType="area"
-        mode={createMode}
-        onModeChange={setCreateMode}
-        collection={RESPARKABLE_API.AREAS}
-        form={form}
-        toBody={toBody}
-      >
-        {fields}
-      </CreateDialog>
-    );
-  }
-
   return (
-    <ResourceDialog
+    <EntityFormDialog
       open={open}
       onOpenChange={onOpenChange}
+      entityType="area"
       collection={RESPARKABLE_API.AREAS}
-      id={area.id}
-      title="Edit this part of your life"
-      description="A standing part of your life — Career, Health, Family. Not a project and not a client."
+      existingId={area?.id}
+      editTitle="Edit this part of your life"
+      editDescription="A standing part of your life — Career, Health, Family. Not a project and not a client."
       form={form}
       toBody={toBody}
     >
       {fields}
-    </ResourceDialog>
+    </EntityFormDialog>
   );
 }

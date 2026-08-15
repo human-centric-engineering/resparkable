@@ -34,6 +34,7 @@ import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, GoalWire } from '@/lib/framework/resparkable/ui/payloads';
+import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
 
 /** Near horizons first — the order they become actionable in. */
 const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
@@ -45,8 +46,8 @@ export interface GoalsViewProps {
 
 export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState<GoalWire | null>(null);
-  const [talkingTo, setTalkingTo] = React.useState<GoalWire | null>(null);
+  const editing = useDialogEntity<GoalWire>();
+  const talkingTo = useDialogEntity<GoalWire>();
 
   const present = new Set(goals.map((goal) => goal.id));
 
@@ -94,8 +95,8 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
               goal={goal}
               childrenOf={childrenOf}
               depth={0}
-              onEdit={setEditing}
-              onTalk={setTalkingTo}
+              onEdit={editing.open}
+              onTalk={talkingTo.open}
             />
           ))}
         </ul>
@@ -103,24 +104,20 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
 
       <GoalForm open={createOpen} onOpenChange={setCreateOpen} goals={goals} areas={areas} />
       <GoalForm
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) setEditing(null);
-        }}
+        open={editing.entity !== null}
+        onOpenChange={editing.onOpenChange}
         goals={goals}
         areas={areas}
-        {...(editing ? { goal: editing } : {})}
+        {...(editing.entity ? { goal: editing.entity } : {})}
       />
-      {talkingTo && (
+      {talkingTo.entity && (
         <ContextChatDrawer
           open
-          onOpenChange={(open) => {
-            if (!open) setTalkingTo(null);
-          }}
+          onOpenChange={talkingTo.onOpenChange}
           entityType="goal"
-          entityId={talkingTo.id}
-          entityName={talkingTo.title}
-          currentDescription={talkingTo.description}
+          entityId={talkingTo.entity.id}
+          entityName={talkingTo.entity.title}
+          currentDescription={talkingTo.entity.description}
         />
       )}
     </div>

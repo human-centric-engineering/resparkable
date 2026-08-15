@@ -36,14 +36,25 @@ vi.mock('@/lib/framework/resparkable/services/snooze', () => ({
   unsnoozeItem: vi.fn(),
 }));
 
+vi.mock('@/lib/framework/resparkable/repo/summaries', () => ({
+  entityExists: vi.fn(),
+}));
+
+vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
+  queueResparkableWorkflowRun: vi.fn(),
+}));
+
 import {
   createCollectionHandlers,
   createItemHandlers,
   createRestoreHandler,
   createSnoozeHandlers,
+  createSummarizeHandlers,
   createUnsnoozeHandlers,
 } from '@/lib/framework/resparkable/api/handlers';
 import { snoozeItem, unsnoozeItem } from '@/lib/framework/resparkable/services/snooze';
+import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
+import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {
   createTaskSchema,
@@ -468,5 +479,74 @@ describe('unsnooze handlers (phase 3)', () => {
     );
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe('summarize handlers (Release 8 phase 39)', () => {
+  it("404s when the entity isn't the caller's and never queues a run", async () => {
+    // Arrange: same not-found convention as every other item handler — a
+    // missing or foreign row is a 404, and nothing gets queued for it.
+    vi.mocked(entityExists).mockResolvedValue(false);
+    const { POST } = createSummarizeHandlers('area');
+
+    // Act
+    const response = await invoke(
+      POST,
+      req('http://x/api/v1/resparkable/areas/area_b/summarize'),
+      SESSION_A,
+      params('area_b')
+    );
+    const payload = await response.json();
+
+    // Assert
+    expect(response.status).toBe(404);
+    expect(payload.error.code).toBe('NOT_FOUND');
+    expect(queueResparkableWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it('queues the workflow run and returns its execution id', async () => {
+    // Arrange
+    vi.mocked(entityExists).mockResolvedValue(true);
+    vi.mocked(queueResparkableWorkflowRun).mockResolvedValue('exec_1');
+    const { POST } = createSummarizeHandlers('area');
+
+    // Act
+    const response = await invoke(
+      POST,
+      req('http://x/api/v1/resparkable/areas/area_1/summarize'),
+      SESSION_A,
+      params('area_1')
+    );
+    const payload = await response.json();
+
+    // Assert
+    expect(response.status).toBe(200);
+    expect(payload.data).toEqual({ executionId: 'exec_1', status: 'queued' });
+    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toBe('user_a');
+    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[2]).toEqual({
+      entityType: 'area',
+      entityId: 'area_1',
+    });
+  });
+
+  it('returns a 503 WORKFLOW_UNAVAILABLE when the workflow has no published version', async () => {
+    // Arrange: queueResparkableWorkflowRun returns null when the workflow row
+    // is missing, inactive, or unpublished — a queued execution can't happen.
+    vi.mocked(entityExists).mockResolvedValue(true);
+    vi.mocked(queueResparkableWorkflowRun).mockResolvedValue(null);
+    const { POST } = createSummarizeHandlers('area');
+
+    // Act
+    const response = await invoke(
+      POST,
+      req('http://x/api/v1/resparkable/areas/area_1/summarize'),
+      SESSION_A,
+      params('area_1')
+    );
+    const payload = await response.json();
+
+    // Assert
+    expect(response.status).toBe(503);
+    expect(payload.error.code).toBe('WORKFLOW_UNAVAILABLE');
   });
 });

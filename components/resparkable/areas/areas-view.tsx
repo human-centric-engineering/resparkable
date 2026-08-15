@@ -21,6 +21,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire } from '@/lib/framework/resparkable/ui/payloads';
+import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
 
 export interface AreasViewProps {
   areas: AreaWire[];
@@ -28,8 +29,8 @@ export interface AreasViewProps {
 
 export function AreasView({ areas }: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState<AreaWire | null>(null);
-  const [talkingTo, setTalkingTo] = React.useState<AreaWire | null>(null);
+  const editing = useDialogEntity<AreaWire>();
+  const talkingTo = useDialogEntity<AreaWire>();
 
   return (
     <div className="space-y-4">
@@ -87,7 +88,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
                   variant="ghost"
                   size="sm"
                   aria-label={`Tell me more about ${area.name}`}
-                  onClick={() => setTalkingTo(area)}
+                  onClick={() => talkingTo.open(area)}
                 >
                   <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
@@ -95,7 +96,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
                   variant="ghost"
                   size="sm"
                   aria-label={`Edit ${area.name}`}
-                  onClick={() => setEditing(area)}
+                  onClick={() => editing.open(area)}
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
@@ -115,22 +116,18 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
 
       <AreaForm open={createOpen} onOpenChange={setCreateOpen} />
       <AreaForm
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) setEditing(null);
-        }}
-        {...(editing ? { area: editing } : {})}
+        open={editing.entity !== null}
+        onOpenChange={editing.onOpenChange}
+        {...(editing.entity ? { area: editing.entity } : {})}
       />
-      {talkingTo && (
+      {talkingTo.entity && (
         <ContextChatDrawer
           open
-          onOpenChange={(open) => {
-            if (!open) setTalkingTo(null);
-          }}
+          onOpenChange={talkingTo.onOpenChange}
           entityType="area"
-          entityId={talkingTo.id}
-          entityName={talkingTo.name}
-          currentDescription={talkingTo.description}
+          entityId={talkingTo.entity.id}
+          entityName={talkingTo.entity.name}
+          currentDescription={talkingTo.entity.description}
         />
       )}
     </div>

@@ -36,7 +36,8 @@ const SENSITIVE_PATTERNS: RegExp[] = [
   /\b(divorc(e|ing)|affair|cheating|separation|custody battle|domestic (violence|abuse)|restraining order|estranged)\b/i,
   // Legal
   /\b(lawsuit|being sued|criminal (charge|record)|arrest(ed)?|probation|parole|immigration status|deportation)\b/i,
-  // Shape-based PII (mirrors lib/security/redact.ts's targets)
+  // Shape-based PII (mirrors the pii_ssn/pii_credit_card patterns in
+  // lib/orchestration/chat/output-guard.ts)
   /\b\d{3}-\d{2}-\d{4}\b/, // SSN-shaped
   /\b(?:\d[ -]*?){13,19}\b/, // credit-card-shaped run of digits
 ];

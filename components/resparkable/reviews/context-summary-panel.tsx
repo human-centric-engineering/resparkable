@@ -101,9 +101,13 @@ export function ContextSummaryPanel({
   );
 
   const findProposal = React.useCallback(async (): Promise<Proposal | null> => {
+    // The API has no per-entity filter on `payload` — this scans the most
+    // recent `context_summary` reviews client-side, so the limit needs to be
+    // generous enough that an unresolved proposal for an older entity can't
+    // fall off the page. 200 is the collection's own max page size.
     const rows = reviewListSchema.parse(
       await apiClient.get<unknown>(RESPARKABLE_API.REVIEWS, {
-        params: { horizon: 'context_summary', limit: 50 },
+        params: { horizon: 'context_summary', limit: 200 },
       })
     );
     return (

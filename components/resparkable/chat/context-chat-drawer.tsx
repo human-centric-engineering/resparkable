@@ -60,7 +60,8 @@ export function ContextChatDrawer({
           <DialogTitle>Tell me more about {entityName}</DialogTitle>
           <DialogDescription>
             A conversation, not a form. Anything you share here is kept as a note linked to this{' '}
-            {entityType} — nothing here changes what you typed into its description.
+            {entityType} — the conversation itself never changes what you typed into its
+            description. Accepting a proposed summary below does, and that&rsquo;s always your call.
           </DialogDescription>
         </DialogHeader>
         <ContextSummaryPanel

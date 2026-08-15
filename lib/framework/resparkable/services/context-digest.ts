@@ -126,7 +126,10 @@ export async function buildContextDigest(
       thought.content.length <= MAX_NOTE_CHARS
         ? thought.content
         : `${thought.content.slice(0, MAX_NOTE_CHARS - 1)}…`;
-    if (content.length > budget) break;
+    // Skip, don't stop — links aren't ordered by note size, so one long note
+    // ahead of several short ones must not cut the gather short for all of
+    // them.
+    if (content.length > budget) continue;
 
     notes.push({ id: thought.id, content, capturedAt: thought.createdAt.toISOString() });
     sourceThoughtIds.push(thought.id);

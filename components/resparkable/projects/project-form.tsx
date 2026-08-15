@@ -26,9 +26,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
-import { useCreateMode } from '@/components/resparkable/creation/create-mode-toggle';
-import { CreateDialog } from '@/components/resparkable/creation/create-dialog';
-import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import { EntityFormDialog } from '@/components/resparkable/creation/entity-form-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -199,38 +197,19 @@ export function ProjectForm({
     </>
   );
 
-  // Only create offers the chat/form choice — an existing project already has
-  // "Tell me more" for chat-based elaboration.
-  const [createMode, setCreateMode] = useCreateMode();
-  if (!project) {
-    return (
-      <CreateDialog
-        open={open}
-        onOpenChange={onOpenChange}
-        entityType="project"
-        mode={createMode}
-        onModeChange={setCreateMode}
-        collection={RESPARKABLE_API.PROJECTS}
-        form={form}
-        toBody={toBody}
-      >
-        {fields}
-      </CreateDialog>
-    );
-  }
-
   return (
-    <ResourceDialog
+    <EntityFormDialog
       open={open}
       onOpenChange={onOpenChange}
+      entityType="project"
       collection={RESPARKABLE_API.PROJECTS}
-      id={project.id}
-      title="Edit project"
-      description="A body of work with tasks under it. Tasks inherit its goal alignment and momentum."
+      existingId={project?.id}
+      editTitle="Edit project"
+      editDescription="A body of work with tasks under it. Tasks inherit its goal alignment and momentum."
       form={form}
       toBody={toBody}
     >
       {fields}
-    </ResourceDialog>
+    </EntityFormDialog>
   );
 }
