@@ -25,9 +25,10 @@ release process.
   `UserPreferences` type and `userPreferencesSchema`/`updatePreferencesSchema`
   gain the corresponding `sparkey` field. `/resparkable/settings` now opens with
   an "About Sparkey" card that states plainly that Sparkey is a tool, not a
-  person, and hosts the pronoun selector; a new `SparkeyPronounProvider`
-  (mounted in the protected layout) makes the preference available to any
-  client component via `useSparkeyPronoun()`/`useSparkeyPronounValue()`.
+  person, and hosts the pronoun selector. `goals`/`areas` (the two surfaces
+  whose copy has a pronoun referring to Sparkey today) read the preference
+  server-side via `lib/resparkable/get-sparkey-pronoun.ts` and pass it down as
+  a prop, rather than a global fetch on every protected page.
 
 - **Release 8 phase 39: chat-driven context capture, sensitivity tagging, and
   description sync.** Two new API routes —

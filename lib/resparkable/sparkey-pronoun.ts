@@ -3,6 +3,14 @@
  *
  * Sparkey is the assistant's name. The user decides how the app refers to it
  * in copy that needs a pronoun (default: "It", since Sparkey is a tool, not a person).
+ *
+ * Only two surfaces use this today — the Goals and Areas empty states are the
+ * only copy that currently has a pronoun referring to Sparkey rather than to
+ * something else in the sentence (a document, a person). If new copy about
+ * Sparkey needs a pronoun, call `getSparkeyPronounForms(pronoun)` with a
+ * `pronoun` prop threaded down from the page (see `goals-view.tsx`/
+ * `areas-view.tsx` and their `page.tsx`s, which read it via
+ * `lib/resparkable/get-sparkey-pronoun.ts`) rather than hardcoding "it".
  */
 
 export const SPARKEY_PRONOUNS = ['it', 'he', 'she'] as const;

@@ -251,6 +251,41 @@ describe('PATCH /api/v1/users/me/preferences', () => {
     );
   });
 
+  it('preserves an existing preference that differs from its schema default when a sibling field is patched', async () => {
+    // Regression test: `marketing`'s schema default is `false`. The prior test's
+    // fixture also happened to store `marketing: false`, so a bug that silently
+    // backfilled omitted fields with their schema defaults during the merge
+    // would have gone undetected — the "overwritten" value and the "preserved"
+    // value were identical by coincidence. Storing `true` here (the opposite of
+    // the default) means only a genuinely preserved value can pass.
+    const existingPreferences = {
+      email: { marketing: true, productUpdates: true, securityAlerts: true },
+      sparkey: { pronoun: 'she' },
+    };
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAuthenticatedUser());
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      preferences: existingPreferences,
+    } as never);
+    vi.mocked(prisma.user.update).mockResolvedValue({} as never);
+
+    const { PATCH } = await import('@/app/api/v1/users/me/preferences/route');
+
+    // Act: patch only productUpdates — marketing and sparkey are untouched
+    const response = await PATCH(makePatchRequest({ email: { productUpdates: false } }));
+    const body = await parseJson<{
+      success: boolean;
+      data: {
+        email: { marketing: boolean; productUpdates: boolean; securityAlerts: boolean };
+        sparkey: { pronoun: string };
+      };
+    }>(response);
+
+    expect(response.status).toBe(200);
+    expect(body.data.email.marketing).toBe(true);
+    expect(body.data.email.productUpdates).toBe(false);
+    expect(body.data.sparkey.pronoun).toBe('she');
+  });
+
   it('forces securityAlerts to true even when client sends false', async () => {
     // Arrange
     const existingPreferences = {

@@ -17,22 +17,31 @@ import { AreaForm } from '@/components/resparkable/areas/area-form';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
-import { useSparkeyPronoun } from '@/components/resparkable/sparkey-pronoun-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire } from '@/lib/framework/resparkable/ui/payloads';
 import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
+import {
+  DEFAULT_SPARKEY_PRONOUN,
+  getSparkeyPronounForms,
+  type SparkeyPronoun,
+} from '@/lib/resparkable/sparkey-pronoun';
 
 export interface AreasViewProps {
   areas: AreaWire[];
+  /** How the app refers to Sparkey in this view's copy. Set by the server page. */
+  pronoun?: SparkeyPronoun;
 }
 
-export function AreasView({ areas }: AreasViewProps): React.ReactElement {
+export function AreasView({
+  areas,
+  pronoun = DEFAULT_SPARKEY_PRONOUN,
+}: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const editing = useDialogEntity<AreaWire>();
   const talkingTo = useDialogEntity<AreaWire>();
-  const sparkey = useSparkeyPronoun();
+  const sparkey = getSparkeyPronounForms(pronoun);
 
   return (
     <div className="space-y-4">

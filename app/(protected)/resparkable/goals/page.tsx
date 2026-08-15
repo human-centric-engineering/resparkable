@@ -6,6 +6,7 @@ import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { areaSchema, goalSchema } from '@/lib/framework/resparkable/ui/payloads';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { getSparkeyPronoun } from '@/lib/resparkable/get-sparkey-pronoun';
 
 export const metadata: Metadata = {
   title: 'Goals',
@@ -21,14 +22,15 @@ export const metadata: Metadata = {
  * nothing.
  */
 export default async function ResparkableGoalsPage() {
-  const [goals, areas] = await Promise.all([
+  const [goals, areas, pronoun] = await Promise.all([
     readResparkable(`${RESPARKABLE_API.GOALS}?limit=200`, z.array(goalSchema)),
     readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema)),
+    getSparkeyPronoun(),
   ]);
 
   if (!goals.ok) {
     return <LoadError what="your goals" message={goals.message} />;
   }
 
-  return <GoalsView goals={goals.data} areas={areas.ok ? areas.data : []} />;
+  return <GoalsView goals={goals.data} areas={areas.ok ? areas.data : []} pronoun={pronoun} />;
 }

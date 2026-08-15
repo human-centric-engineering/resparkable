@@ -34,6 +34,10 @@ vi.mock('@/lib/framework/resparkable/ui/server-read', () => ({
   readResparkable: vi.fn(),
 }));
 
+vi.mock('@/lib/resparkable/get-sparkey-pronoun', () => ({
+  getSparkeyPronoun: vi.fn(),
+}));
+
 vi.mock('@/components/resparkable/inbox/inbox-view', () => ({
   InboxView: (props: { payload: unknown; projects: unknown[] }) => (
     <div data-testid="inbox-view" data-props={JSON.stringify(props)} />
@@ -47,13 +51,13 @@ vi.mock('@/components/resparkable/projects/projects-view', () => ({
 }));
 
 vi.mock('@/components/resparkable/goals/goals-view', () => ({
-  GoalsView: (props: { goals: unknown[]; areas: unknown[] }) => (
+  GoalsView: (props: { goals: unknown[]; areas: unknown[]; pronoun?: string }) => (
     <div data-testid="goals-view" data-props={JSON.stringify(props)} />
   ),
 }));
 
 vi.mock('@/components/resparkable/areas/areas-view', () => ({
-  AreasView: (props: { areas: unknown[] }) => (
+  AreasView: (props: { areas: unknown[]; pronoun?: string }) => (
     <div data-testid="areas-view" data-props={JSON.stringify(props)} />
   ),
 }));
@@ -79,6 +83,7 @@ vi.mock('@/components/resparkable/board/boards-list', () => ({
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { getSparkeyPronoun } from '@/lib/resparkable/get-sparkey-pronoun';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -106,6 +111,9 @@ function callPaths(): string[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Only Goals and Areas consume this; default it everywhere so pages that
+  // don't care about the pronoun don't need to know it exists.
+  vi.mocked(getSparkeyPronoun).mockResolvedValue('it');
 });
 
 // ─── Inbox ────────────────────────────────────────────────────────────────────
@@ -316,6 +324,19 @@ describe('ResparkableGoalsPage', () => {
     expect(props.goals).toEqual(goals);
     expect(props.areas).toEqual(areas);
   });
+
+  it('forwards the resolved Sparkey pronoun to GoalsView', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(ok([]));
+    vi.mocked(getSparkeyPronoun).mockResolvedValue('he');
+    const { default: ResparkableGoalsPage } =
+      await import('@/app/(protected)/resparkable/goals/page');
+
+    render(await ResparkableGoalsPage());
+
+    const view = screen.getByTestId('goals-view');
+    const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { pronoun: string };
+    expect(props.pronoun).toBe('he');
+  });
 });
 
 // ─── Areas ────────────────────────────────────────────────────────────────────
@@ -354,6 +375,19 @@ describe('ResparkableAreasPage', () => {
     const view = screen.getByTestId('areas-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { areas: unknown[] };
     expect(props.areas).toEqual(areas);
+  });
+
+  it('forwards the resolved Sparkey pronoun to AreasView', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(ok([]));
+    vi.mocked(getSparkeyPronoun).mockResolvedValue('she');
+    const { default: ResparkableAreasPage } =
+      await import('@/app/(protected)/resparkable/areas/page');
+
+    render(await ResparkableAreasPage());
+
+    const view = screen.getByTestId('areas-view');
+    const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { pronoun: string };
+    expect(props.pronoun).toBe('she');
   });
 });
 

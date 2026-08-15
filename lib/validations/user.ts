@@ -74,7 +74,7 @@ export const emailPreferencesSchema = z.object({
 /**
  * Sparkey preferences schema
  *
- * Validates how the app refers to Sparkey (the AI assistant) — a pronoun
+ * Validates how the app refers to Sparkey (the AI assistant): a pronoun
  * chosen by the user, defaulting to "it" since Sparkey is a tool, not a person.
  */
 export const sparkeyPreferencesSchema = z.object({
@@ -130,10 +130,31 @@ export function parseUserPreferences(
  *
  * For PATCH operations where only some preferences are updated.
  * Allows partial updates to be merged with existing preferences.
+ *
+ * Built from fresh field definitions rather than `emailPreferencesSchema.partial()` /
+ * `sparkeyPreferencesSchema.partial()` deliberately: `.partial()` only makes a field
+ * optional, it does not strip the `.default()` already attached to it, so an omitted
+ * field is filled with its schema default rather than left `undefined`. That turns
+ * every partial update into a full overwrite — `{ email: { marketing: true } }` would
+ * silently reset `productUpdates`/`securityAlerts` to their defaults instead of leaving
+ * the caller's existing values alone, once merged in the route handler. Fields defined
+ * without `.default()` don't have this problem: omitted really does mean omitted.
  */
 export const updatePreferencesSchema = z.object({
-  email: emailPreferencesSchema.partial().optional(),
-  sparkey: sparkeyPreferencesSchema.partial().optional(),
+  email: z
+    .object({
+      marketing: z.boolean(),
+      productUpdates: z.boolean(),
+      securityAlerts: z.literal(true),
+    })
+    .partial()
+    .optional(),
+  sparkey: z
+    .object({
+      pronoun: z.enum(SPARKEY_PRONOUNS),
+    })
+    .partial()
+    .optional(),
 });
 
 /**

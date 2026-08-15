@@ -29,13 +29,17 @@ import { GoalForm } from '@/components/resparkable/goals/goal-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { useNow } from '@/components/resparkable/ui/use-now';
-import { useSparkeyPronoun } from '@/components/resparkable/sparkey-pronoun-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, GoalWire } from '@/lib/framework/resparkable/ui/payloads';
 import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
+import {
+  DEFAULT_SPARKEY_PRONOUN,
+  getSparkeyPronounForms,
+  type SparkeyPronoun,
+} from '@/lib/resparkable/sparkey-pronoun';
 
 /** Near horizons first — the order they become actionable in. */
 const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
@@ -43,13 +47,19 @@ const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
 export interface GoalsViewProps {
   goals: GoalWire[];
   areas: AreaWire[];
+  /** How the app refers to Sparkey in this view's copy. Set by the server page. */
+  pronoun?: SparkeyPronoun;
 }
 
-export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement {
+export function GoalsView({
+  goals,
+  areas,
+  pronoun = DEFAULT_SPARKEY_PRONOUN,
+}: GoalsViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const editing = useDialogEntity<GoalWire>();
   const talkingTo = useDialogEntity<GoalWire>();
-  const sparkey = useSparkeyPronoun();
+  const sparkey = getSparkeyPronounForms(pronoun);
 
   const present = new Set(goals.map((goal) => goal.id));
 

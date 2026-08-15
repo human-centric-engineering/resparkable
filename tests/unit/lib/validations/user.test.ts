@@ -962,6 +962,31 @@ describe('updatePreferencesSchema', () => {
         expect(result.data.sparkey?.pronoun).toBe('she');
       }
     });
+
+    it('should leave omitted email fields undefined rather than backfilling schema defaults', () => {
+      // A partial update naming only `marketing` must not silently reintroduce
+      // `productUpdates`/`securityAlerts` — the route merges whatever this schema
+      // returns onto the stored preferences, so a defaulted value here would
+      // overwrite the user's existing settings for fields they never touched.
+      const result = updatePreferencesSchema.safeParse({
+        email: { marketing: true },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.email).toEqual({ marketing: true });
+        expect(result.data.email).not.toHaveProperty('productUpdates');
+        expect(result.data.email).not.toHaveProperty('securityAlerts');
+      }
+    });
+
+    it('should leave an empty sparkey object empty rather than backfilling the pronoun default', () => {
+      const result = updatePreferencesSchema.safeParse({ sparkey: {} });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sparkey).toEqual({});
+        expect(result.data.sparkey).not.toHaveProperty('pronoun');
+      }
+    });
   });
 
   describe('invalid partial updates', () => {

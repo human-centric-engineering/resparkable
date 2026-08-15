@@ -7,12 +7,11 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2, CheckCircle2 } from 'lucide-react';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { API } from '@/lib/api/endpoints';
 import { useAnalytics, EVENTS } from '@/lib/analytics';
 import { SparkGlyph } from '@/components/brand/spark-glyph';
-import { useSparkeyPronounValue } from '@/components/resparkable/sparkey-pronoun-provider';
+import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Label } from '@/components/ui/label';
@@ -30,39 +29,34 @@ import {
 } from '@/lib/resparkable/sparkey-pronoun';
 import type { UserPreferences } from '@/types';
 
-export function AboutSparkey() {
+export interface AboutSparkeyProps {
+  pronoun: SparkeyPronoun;
+}
+
+export function AboutSparkey({ pronoun: initialPronoun }: AboutSparkeyProps) {
   const router = useRouter();
   const { track } = useAnalytics();
-  const initialPronoun = useSparkeyPronounValue();
+  const { state, message, run } = useSaveStatus();
   const [pronoun, setPronoun] = useState(initialPronoun);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
 
   const handleChange = async (value: string) => {
     const next = value as SparkeyPronoun;
     const previous = pronoun;
     setPronoun(next);
 
-    try {
-      setIsLoading(true);
-      setError(null);
-      setSuccess(false);
+    const ok = await run(
+      () =>
+        apiClient.patch<UserPreferences>(API.USERS.ME_PREFERENCES, {
+          body: { sparkey: { pronoun: next } },
+        }),
+      (error) => (error instanceof APIClientError ? error.message : 'Failed to update preference')
+    );
 
-      await apiClient.patch<UserPreferences>(API.USERS.ME_PREFERENCES, {
-        body: { sparkey: { pronoun: next } },
-      });
-
+    if (ok) {
       void track(EVENTS.SPARKEY_PRONOUN_UPDATED, { pronoun: next });
-
-      setSuccess(true);
       router.refresh();
-      setTimeout(() => setSuccess(false), 3000);
-    } catch (err) {
+    } else {
       setPronoun(previous);
-      setError(err instanceof APIClientError ? err.message : 'Failed to update preference');
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -92,7 +86,7 @@ export function AboutSparkey() {
             <p className="text-muted-foreground text-sm">Used wherever the app mentions Sparkey.</p>
           </div>
           <Select value={pronoun} onValueChange={(value) => void handleChange(value)}>
-            <SelectTrigger id="sparkey-pronoun" className="w-32" disabled={isLoading}>
+            <SelectTrigger id="sparkey-pronoun" className="w-32" disabled={state === 'saving'}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -105,19 +99,7 @@ export function AboutSparkey() {
           </Select>
         </div>
 
-        {isLoading && (
-          <div className="text-muted-foreground mt-2 flex items-center gap-2 text-sm">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Saving...
-          </div>
-        )}
-        {success && (
-          <div className="mt-2 flex items-center gap-2 text-sm text-green-700 dark:text-green-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            Saved
-          </div>
-        )}
-        {error && <div className="text-destructive mt-2 text-sm">{error}</div>}
+        <SaveStatus state={state} message={state === 'error' ? message : null} className="mt-2" />
       </CardContent>
     </Card>
   );
