@@ -111,7 +111,7 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       { href: RESPARKABLE_ROUTES.TODAY, label: 'Today', icon: Sun, exact: true },
       { href: RESPARKABLE_ROUTES.INBOX, label: 'Inbox', icon: Inbox },
       { href: RESPARKABLE_ROUTES.PLAN, label: 'Plan', icon: CalendarRange },
-      { href: RESPARKABLE_ROUTES.CHAT, label: 'Chat', icon: MessageSquare },
+      { href: RESPARKABLE_ROUTES.CHAT, label: 'Ask Sparkey', icon: MessageSquare },
     ],
   },
   {

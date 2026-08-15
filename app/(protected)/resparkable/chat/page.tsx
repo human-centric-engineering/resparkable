@@ -4,7 +4,7 @@ import { ResparkableChat } from '@/components/resparkable/chat/resparkable-chat'
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 
 export const metadata: Metadata = {
-  title: 'Chat',
+  title: 'Ask Sparkey',
   description: 'Talk to the agent that has read everything you have written down.',
 };
 
@@ -26,28 +26,14 @@ export const metadata: Metadata = {
  * write capabilities and are meant to be driven by scheduled workflows; the
  * route enforces that against `RESPARKABLE_CHAT_AGENT_SLUGS`, and a page that
  * offered them would be offering something the API refuses.
- *
- * ## Starters
- *
- * Four, fixed, and each one demonstrates a different capability — recall,
- * ranking, connections, capture. A person's first question to a second brain is
- * usually "what can you actually do", and answering that by example beats a
- * paragraph of help text.
  */
-const STARTERS = [
-  'What did I decide about this?',
-  'What should I work on today?',
-  'What have I written that connects?',
-  'Remember this for me…',
-] as const;
-
 export default function ResparkableChatPage() {
   return (
     <div className="space-y-4">
       {/* No heading here: the shell's `<SectionHeader>` names the section and its
           ⓘ carries what this page used to say in prose — that the agent already
           knows the date, the goals and the week, and that it says when it writes. */}
-      <ResparkableChat agentSlug={RESPARKABLE_AGENT_SLUGS.companion} starterPrompts={STARTERS} />
+      <ResparkableChat agentSlug={RESPARKABLE_AGENT_SLUGS.companion} />
     </div>
   );
 }

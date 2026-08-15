@@ -130,15 +130,15 @@ describe('ResparkableNav', () => {
     }
   });
 
-  it('links to Chat, and keeps it current on that surface', () => {
+  it('links to Ask Sparkey, and keeps it current on that surface', () => {
     mockedPathname.mockReturnValue('/resparkable/chat');
     render(<ResparkableNav />);
 
-    expect(within(rail()).getByRole('link', { name: 'Chat' })).toHaveAttribute(
+    expect(within(rail()).getByRole('link', { name: 'Ask Sparkey' })).toHaveAttribute(
       'href',
       '/resparkable/chat'
     );
-    expect(within(rail()).getByRole('link', { name: 'Chat' })).toHaveAttribute(
+    expect(within(rail()).getByRole('link', { name: 'Ask Sparkey' })).toHaveAttribute(
       'aria-current',
       'page'
     );

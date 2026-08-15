@@ -124,7 +124,7 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
 
   {
     href: RESPARKABLE_ROUTES.CHAT,
-    title: 'Chat',
+    title: 'Ask Sparkey',
     blurb: 'Ask questions about your own material.',
     blocks: [
       {
