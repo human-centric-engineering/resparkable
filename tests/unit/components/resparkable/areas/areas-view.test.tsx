@@ -79,7 +79,7 @@ describe('AreasView', () => {
     render(<AreasView areas={[]} />);
 
     expect(screen.getByText("What's going on in your life right now?")).toBeInTheDocument();
-    expect(screen.getByText(/Sparky uses this to understand your life/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparkey uses this to understand your life/i)).toBeInTheDocument();
   });
 
   it('opens the create dialog from the header "Add what matters" button', async () => {

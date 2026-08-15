@@ -35,6 +35,11 @@ import { ClientDate } from '@/components/ui/client-date';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, GoalWire } from '@/lib/framework/resparkable/ui/payloads';
 import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
+import {
+  DEFAULT_SPARKEY_PRONOUN,
+  getSparkeyPronounForms,
+  type SparkeyPronoun,
+} from '@/lib/resparkable/sparkey-pronoun';
 
 /** Near horizons first — the order they become actionable in. */
 const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
@@ -42,12 +47,19 @@ const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
 export interface GoalsViewProps {
   goals: GoalWire[];
   areas: AreaWire[];
+  /** How the app refers to Sparkey in this view's copy. Set by the server page. */
+  pronoun?: SparkeyPronoun;
 }
 
-export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement {
+export function GoalsView({
+  goals,
+  areas,
+  pronoun = DEFAULT_SPARKEY_PRONOUN,
+}: GoalsViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const editing = useDialogEntity<GoalWire>();
   const talkingTo = useDialogEntity<GoalWire>();
+  const sparkey = getSparkeyPronounForms(pronoun);
 
   const present = new Set(goals.map((goal) => goal.id));
 
@@ -80,7 +92,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
         <EmptyState
           icon={Target}
           title="No goals yet"
-          description="Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparky uses your goals as context when it helps you."
+          description={`Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparkey uses your goals as context when ${sparkey.subject} helps you.`}
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Set one

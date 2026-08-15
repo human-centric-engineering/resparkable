@@ -31,6 +31,16 @@ vi.mock('@/lib/framework/resparkable/ui/server-read', () => ({
   readResparkable: vi.fn(),
 }));
 
+vi.mock('@/lib/resparkable/get-sparkey-pronoun', () => ({
+  getSparkeyPronoun: vi.fn(),
+}));
+
+vi.mock('@/components/settings/about-sparkey', () => ({
+  AboutSparkey: (props: { pronoun: string }) => (
+    <div data-testid="about-sparkey" data-props={JSON.stringify(props)} />
+  ),
+}));
+
 vi.mock('@/components/resparkable/chat/resparkable-chat', () => ({
   ResparkableChat: (props: { agentSlug: string; starterPrompts?: readonly string[] }) => (
     <div data-testid="resparkable-chat" data-props={JSON.stringify(props)} />
@@ -112,6 +122,7 @@ vi.mock('@/components/resparkable/lifecycle/archived-list', () => ({
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { getSparkeyPronoun } from '@/lib/resparkable/get-sparkey-pronoun';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -154,6 +165,9 @@ function localIso(date: Date): string {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Only the Settings page consumes this; default it everywhere so every
+  // other page in this file doesn't need to know it exists.
+  vi.mocked(getSparkeyPronoun).mockResolvedValue('it');
 });
 
 // ─── Today ────────────────────────────────────────────────────────────────────
@@ -329,6 +343,32 @@ describe('ResparkableSettingsPage', () => {
 
     const form = screen.getByTestId('space-settings-form');
     expect(form.getAttribute('data-props')).toBe(JSON.stringify({ initial: settings }));
+  });
+
+  it('forwards the resolved Sparkey pronoun to AboutSparkey', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(ok({}));
+    vi.mocked(getSparkeyPronoun).mockResolvedValue('he');
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(protected)/resparkable/settings/page');
+
+    render(await ResparkableSettingsPage());
+
+    const card = screen.getByTestId('about-sparkey');
+    expect(card.getAttribute('data-props')).toBe(JSON.stringify({ pronoun: 'he' }));
+  });
+
+  it('still renders AboutSparkey when the space settings read fails', async () => {
+    // AboutSparkey has nothing to do with timezone/priority/retention data —
+    // a failure fetching that must not take this card down with it.
+    vi.mocked(readResparkable).mockResolvedValue(fail(500, 'settings down'));
+
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(protected)/resparkable/settings/page');
+
+    render(await ResparkableSettingsPage());
+
+    expect(screen.getByTestId('about-sparkey')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('settings down');
   });
 });
 
@@ -829,9 +869,24 @@ describe('Chat page', () => {
 
     const props = JSON.parse(
       screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
-    ) as { agentSlug: string; starterPrompts: string[] };
+    ) as { agentSlug: string; starterPrompts?: string[] };
 
     expect(props.agentSlug).toBe(RESPARKABLE_AGENT_SLUGS.companion);
-    expect(props.starterPrompts.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * No fixed starter-prompt buttons on this surface — the empty state's own
+   * "Ask Sparkey" heading and description carry that job instead.
+   */
+  it('renders with no starter prompts', async () => {
+    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
+
+    render(await Promise.resolve(ChatPage()));
+
+    const props = JSON.parse(
+      screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
+    ) as { starterPrompts?: string[] };
+
+    expect(props.starterPrompts).toBeUndefined();
   });
 });

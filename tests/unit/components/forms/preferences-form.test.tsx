@@ -67,6 +67,9 @@ describe('components/forms/preferences-form', () => {
       productUpdates: true,
       securityAlerts: true,
     },
+    sparkey: {
+      pronoun: 'it',
+    },
   };
 
   beforeEach(async () => {
@@ -615,6 +618,9 @@ describe('components/forms/preferences-form', () => {
           productUpdates: false,
           securityAlerts: true,
         },
+        sparkey: {
+          pronoun: 'it',
+        },
       };
 
       render(<PreferencesForm preferences={allDisabledPreferences} />);
@@ -634,6 +640,9 @@ describe('components/forms/preferences-form', () => {
           marketing: true,
           productUpdates: true,
           securityAlerts: true,
+        },
+        sparkey: {
+          pronoun: 'it',
         },
       };
 

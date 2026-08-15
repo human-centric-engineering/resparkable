@@ -317,7 +317,7 @@ describe('ResparkableChat', () => {
     // answer under it — the transcript returns to its empty state. (Asserted on
     // the empty state rather than the absence of the text, because the text is
     // now back in the textarea and a bare `queryByText` would match that.)
-    expect(screen.getByText('Ask Sparky')).toBeInTheDocument();
+    expect(screen.getByText('Ask Sparkey')).toBeInTheDocument();
   });
 
   it('keeps a partial answer rather than pushing the question back into the box', async () => {

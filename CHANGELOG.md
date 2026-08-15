@@ -18,6 +18,18 @@ release process.
 
 ### Added
 
+- **Sparkey pronoun preference.** The assistant, formerly referred to in UI copy
+  as "Sparky", is now consistently "Sparkey". A new `sparkey` object on
+  `GET`/`PATCH /api/v1/users/me/preferences` (`{ pronoun: 'it' | 'he' | 'she' }`,
+  default `'it'`) lets a user choose how the app refers to Sparkey; the
+  `UserPreferences` type and `userPreferencesSchema`/`updatePreferencesSchema`
+  gain the corresponding `sparkey` field. `/resparkable/settings` now opens with
+  an "About Sparkey" card that states plainly that Sparkey is a tool, not a
+  person, and hosts the pronoun selector. `goals`/`areas` (the two surfaces
+  whose copy has a pronoun referring to Sparkey today) read the preference
+  server-side via `lib/resparkable/get-sparkey-pronoun.ts` and pass it down as
+  a prop, rather than a global fetch on every protected page.
+
 - **Release 8 phase 39: chat-driven context capture, sensitivity tagging, and
   description sync.** Two new API routes —
   `POST /api/v1/resparkable/{areas,goals,projects}/[id]/summarize` (queues a

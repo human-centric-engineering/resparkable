@@ -35,6 +35,9 @@ GET /api/v1/users/me
         "marketing": false,
         "productUpdates": true,
         "securityAlerts": true
+      },
+      "sparkey": {
+        "pronoun": "it"
       }
     },
     "createdAt": "2025-01-01T08:00:00.000Z",
@@ -401,7 +404,7 @@ account on the 3rd" reaches the person it happened to.
 
 ✅ **Implemented in:** `app/api/v1/users/me/preferences/route.ts` (GET handler)
 
-**Purpose**: Get current user's email notification preferences
+**Purpose**: Get current user's email notification and Sparkey preferences
 
 ```
 GET /api/v1/users/me/preferences
@@ -419,6 +422,9 @@ GET /api/v1/users/me/preferences
       "marketing": false,
       "productUpdates": true,
       "securityAlerts": true
+    },
+    "sparkey": {
+      "pronoun": "it"
     }
   }
 }
@@ -428,7 +434,7 @@ GET /api/v1/users/me/preferences
 
 ✅ **Implemented in:** `app/api/v1/users/me/preferences/route.ts` (PATCH handler)
 
-**Purpose**: Update current user's email notification preferences
+**Purpose**: Update current user's email notification and Sparkey preferences
 
 ```
 PATCH /api/v1/users/me/preferences
@@ -443,6 +449,9 @@ PATCH /api/v1/users/me/preferences
   "email": {
     "marketing": true,
     "productUpdates": false
+  },
+  "sparkey": {
+    "pronoun": "he"
   }
 }
 ```
@@ -452,6 +461,7 @@ PATCH /api/v1/users/me/preferences
 - `marketing`: Boolean (opt-in for marketing emails)
 - `productUpdates`: Boolean (receive product update emails)
 - `securityAlerts`: Always `true` (cannot be disabled)
+- `pronoun`: One of `'it' | 'he' | 'she'` (how the app refers to Sparkey; defaults to `'it'`)
 
 **Response** (200 OK):
 
@@ -463,6 +473,9 @@ PATCH /api/v1/users/me/preferences
       "marketing": true,
       "productUpdates": false,
       "securityAlerts": true
+    },
+    "sparkey": {
+      "pronoun": "he"
     }
   }
 }

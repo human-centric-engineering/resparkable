@@ -85,8 +85,8 @@ export function VaultExportCard(): React.ReactElement {
         <h2 className="text-base font-semibold">Export</h2>
         <p className="text-muted-foreground text-sm">
           Every area, goal, project, task, thought and person as a markdown file with YAML
-          frontmatter, plus a README describing the format. Open the folder in Obsidian and it is a
-          working vault — nothing in it needs Resparkable to be readable.
+          frontmatter, plus a README describing the format. Nothing in it needs Resparkable to be
+          readable.
         </p>
       </div>
 

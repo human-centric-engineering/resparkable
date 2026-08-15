@@ -99,6 +99,9 @@ const mockPreferencesData: UserPreferences = {
     productUpdates: false,
     securityAlerts: true,
   },
+  sparkey: {
+    pronoun: 'it',
+  },
 };
 
 describe('GET /api/v1/users/me/preferences', () => {

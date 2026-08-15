@@ -50,6 +50,9 @@ export const EVENTS = {
   /** User updated notification/marketing preferences */
   PREFERENCES_UPDATED: 'preferences_updated',
 
+  /** User changed how the app refers to Sparkey (it/he/she) */
+  SPARKEY_PRONOUN_UPDATED: 'sparkey_pronoun_updated',
+
   /** User uploaded a new avatar */
   AVATAR_UPLOADED: 'avatar_uploaded',
 

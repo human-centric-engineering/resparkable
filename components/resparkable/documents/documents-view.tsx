@@ -48,7 +48,7 @@ export function DocumentsView({ documents }: { documents: DocumentWire[] }): Rea
         <EmptyState
           icon={FileText}
           title="No documents yet"
-          description="Upload a file you want Sparky to know about, like a contract, a spec or a book. The text is pulled out and indexed, so it comes up in search and Sparky can use it when answering you."
+          description="Upload a file you want Sparkey to know about, like a contract, a spec or a book. The text is pulled out and indexed, so it comes up in search and Sparkey can use it when answering you."
         />
       ) : (
         <ul className="space-y-2">

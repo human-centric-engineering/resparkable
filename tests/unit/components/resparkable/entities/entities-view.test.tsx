@@ -107,7 +107,7 @@ describe('EntitiesView', () => {
     render(<EntitiesView entities={[]} />);
 
     expect(screen.getByText('Nobody here yet')).toBeInTheDocument();
-    expect(screen.getByText(/Sparky can pull it up when you ask/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparkey can pull it up when you ask/i)).toBeInTheDocument();
   });
 
   it('archives the row that was clicked', async () => {

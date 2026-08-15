@@ -1,8 +1,8 @@
 /**
  * User Preferences Endpoint
  *
- * GET /api/v1/users/me/preferences - Get current user's email preferences
- * PATCH /api/v1/users/me/preferences - Update current user's email preferences
+ * GET /api/v1/users/me/preferences - Get current user's email and Sparkey preferences
+ * PATCH /api/v1/users/me/preferences - Update current user's email and Sparkey preferences
  *
  * Authentication: Required (session-based via better-auth)
  *
@@ -55,11 +55,11 @@ export const GET = withAuth(async (request, session) => {
 /**
  * PATCH /api/v1/users/me/preferences
  *
- * Updates the current user's email preferences.
+ * Updates the current user's email and Sparkey preferences.
  * Supports partial updates - only provided fields will be updated.
  * Security alerts cannot be disabled (always true).
  *
- * @param request - Request with JSON body { email?: { marketing?, productUpdates?, securityAlerts? } }
+ * @param request - Request with JSON body { email?: { marketing?, productUpdates?, securityAlerts? }, sparkey?: { pronoun? } }
  * @returns Updated preferences object
  * @throws UnauthorizedError if not authenticated
  * @throws ValidationError if invalid data
@@ -93,6 +93,10 @@ export const PATCH = withAuth(async (request, session) => {
       ...currentPreferences.email,
       ...(body.email || {}),
       securityAlerts: true, // Cannot be disabled
+    },
+    sparkey: {
+      ...currentPreferences.sparkey,
+      ...(body.sparkey || {}),
     },
   };
 
