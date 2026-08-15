@@ -86,6 +86,10 @@ const AREAS = [area()];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // These tests exercise the form itself — the create flow's chat/form toggle
+  // (create-mode-toggle.tsx) defaults to chat, so pin the stored preference to
+  // 'form' rather than adding a 'switch to form' step to every test below.
+  localStorage.setItem('resparkable.create-mode.v1', JSON.stringify('form'));
   mockedPost.mockResolvedValue({});
   mockedPatch.mockResolvedValue({});
   mockedRouter.mockReturnValue({
@@ -115,7 +119,7 @@ describe('GoalForm', () => {
   it('renders in create mode with empty defaults', () => {
     render(<GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} />);
 
-    expect(screen.getByRole('textbox', { name: /what do you want to be true/i })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: /^goal$/i })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: /horizon/i })).toHaveTextContent('This quarter');
     expect(screen.getByRole('combobox', { name: /part of a bigger goal/i })).toHaveTextContent(
       'Stands on its own'
@@ -128,9 +132,7 @@ describe('GoalForm', () => {
   it('renders in edit mode seeded from the record, including horizon and status', () => {
     render(<GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} goal={goal()} />);
 
-    expect(screen.getByRole('textbox', { name: /what do you want to be true/i })).toHaveValue(
-      'Ship the beta'
-    );
+    expect(screen.getByRole('textbox', { name: /^goal$/i })).toHaveValue('Ship the beta');
     // Must show the record's actual horizon — not the "quarter" fallback.
     expect(screen.getByRole('combobox', { name: /horizon/i })).toHaveTextContent('This week');
     expect(screen.getByRole('combobox', { name: /^status$/i })).toHaveTextContent('Achieved');
@@ -162,18 +164,14 @@ describe('GoalForm', () => {
     const { rerender } = render(
       <GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} goal={goalA} />
     );
-    expect(screen.getByRole('textbox', { name: /what do you want to be true/i })).toHaveValue(
-      'Goal A'
-    );
+    expect(screen.getByRole('textbox', { name: /^goal$/i })).toHaveValue('Goal A');
 
     rerender(
       <GoalForm open={false} onOpenChange={vi.fn()} goals={[]} areas={AREAS} goal={goalB} />
     );
     rerender(<GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} goal={goalB} />);
 
-    expect(screen.getByRole('textbox', { name: /what do you want to be true/i })).toHaveValue(
-      'Goal B'
-    );
+    expect(screen.getByRole('textbox', { name: /^goal$/i })).toHaveValue('Goal B');
     expect(screen.getByRole('combobox', { name: /horizon/i })).toHaveTextContent('This month');
   });
 
@@ -181,7 +179,7 @@ describe('GoalForm', () => {
     const user = userEvent.setup();
     render(<GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} />);
 
-    await user.click(screen.getByRole('textbox', { name: /what do you want to be true/i }));
+    await user.click(screen.getByRole('textbox', { name: /^goal$/i }));
     await user.click(screen.getByRole('button', { name: /^create$/i }));
 
     await waitFor(() => expect(screen.getByText('Give it a title')).toBeInTheDocument());
@@ -192,10 +190,7 @@ describe('GoalForm', () => {
     const user = userEvent.setup();
     render(<GoalForm open onOpenChange={vi.fn()} goals={[]} areas={AREAS} />);
 
-    await user.type(
-      screen.getByRole('textbox', { name: /what do you want to be true/i }),
-      'Run a marathon'
-    );
+    await user.type(screen.getByRole('textbox', { name: /^goal$/i }), 'Run a marathon');
     await user.click(screen.getByRole('button', { name: /^create$/i }));
 
     await waitFor(() => expect(mockedPost).toHaveBeenCalled());
@@ -218,10 +213,7 @@ describe('GoalForm', () => {
 
     render(<GoalForm open onOpenChange={vi.fn()} goals={[parent]} areas={AREAS} />);
 
-    await user.type(
-      screen.getByRole('textbox', { name: /what do you want to be true/i }),
-      'Learn Spanish'
-    );
+    await user.type(screen.getByRole('textbox', { name: /^goal$/i }), 'Learn Spanish');
     await selectOption(user, /horizon/i, 'This year');
 
     const targetInput = document.getElementById('goal-target') as HTMLInputElement;

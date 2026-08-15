@@ -58,6 +58,7 @@
 import * as React from 'react';
 import { ChevronsLeft, ChevronsRight, PenLine, X } from 'lucide-react';
 
+import { SparkGlyph } from '@/components/brand/spark-glyph';
 import { QuickCapture } from '@/components/resparkable/layout/quick-capture';
 import { Button } from '@/components/ui/button';
 import { useLocalStorage } from '@/lib/hooks/use-local-storage';
@@ -203,15 +204,19 @@ export function ResparkableSidekick(): React.ReactElement {
           // that slides out, not as a separate button that happens to be nearby.
           className={cn(
             'bg-background hover:bg-accent text-foreground fixed top-1/3 right-0 z-40',
-            'flex items-center gap-2 rounded-l-lg border border-r-0 py-4 pr-1.5 pl-2 shadow-md',
+            'flex flex-col items-center gap-2 rounded-l-lg border border-r-0 px-2 py-3.5 shadow-md',
             'focus-visible:ring-ring transition-colors focus-visible:ring-2 focus-visible:outline-none'
           )}
-          aria-label="Open the capture panel (⌘K)"
+          aria-label="Open the quick capture panel (⌘K)"
           data-testid="resparkable-sidekick-handle"
         >
-          <PenLine className="h-4 w-4" aria-hidden="true" />
+          {/* Dimmed to a quiet mark rather than the full-strength brand ramp — this
+              is a small utility tab, not the header's brand slot, and the loop's
+              hot colours read as a random sticker at full opacity beside 11px
+              text. `SparkRule`'s inline glyph sets the same precedent. */}
+          <SparkGlyph className="h-3.5 w-[26px] shrink-0 opacity-60" />
           <span className="text-xs font-medium tracking-wide [writing-mode:vertical-rl]">
-            Capture
+            Quick capture
           </span>
         </button>
       )}

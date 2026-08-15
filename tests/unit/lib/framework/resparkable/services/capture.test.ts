@@ -16,6 +16,7 @@
  * - `deduped` is reported to the caller, not swallowed
  * - `externalId` is omitted rather than passed as undefined when absent
  * - The scope is threaded to the repo — the isolation contract (D5)
+ * - `sensitivity` is classified and threaded to the repo on every capture
  *
  * @see lib/framework/resparkable/services/capture.ts
  */
@@ -70,6 +71,20 @@ describe('captureThought', () => {
     expect(mockedCapture).toHaveBeenCalledWith(SCOPE, {
       content: 'Ring the accountant',
       source: 'voice',
+      sensitivity: 'private',
+    });
+  });
+
+  it('classifies sensitivity from the content on every capture', async () => {
+    await captureThought(SCOPE, {
+      content: 'Started therapy for anxiety this week',
+      source: 'chat',
+    });
+
+    expect(mockedCapture).toHaveBeenCalledWith(SCOPE, {
+      content: 'Started therapy for anxiety this week',
+      source: 'chat',
+      sensitivity: 'sensitive',
     });
   });
 
@@ -88,6 +103,7 @@ describe('captureThought', () => {
       content: 'x',
       source: 'email',
       externalId: 'msg-42',
+      sensitivity: 'private',
     });
   });
 

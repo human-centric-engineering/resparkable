@@ -30,6 +30,7 @@ import { describe, it, expect } from 'vitest';
 
 import {
   RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG,
+  RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
   RESPARKABLE_WORKFLOWS,
 } from '@/lib/framework/resparkable/workflows/definitions';
 import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabilities/catalogue';
@@ -42,17 +43,20 @@ const CAPABILITY_SLUGS = new Set<string>(Object.values(RESPARKABLE_CAPABILITY_SL
 const AGENT_SLUGS = new Set<string>(Object.values(RESPARKABLE_AGENT_SLUGS));
 
 describe('the workflow set', () => {
-  it('covers exactly the scheduled workflows, plus the one that is triggered instead', () => {
+  it('covers exactly the scheduled workflows, plus the ones that are triggered instead', () => {
     // A schedule with no workflow silently never runs; a workflow with no
     // schedule and no trigger silently never fires. `resparkable-capture-intake`
-    // is the one deliberate exception — phase 9's own workflow, fired by the
+    // is one deliberate exception — phase 9's own workflow, fired by the
     // Postmark inbound-trigger route (`008-capture-intake-trigger.ts`) rather
-    // than a cron row, so it is named here explicitly rather than folded into
-    // `RESPARKABLE_SCHEDULED_WORKFLOWS`.
+    // than a cron row. `resparkable-context-digest` is the other (Release 8) —
+    // fired by `POST .../[id]/summarize` via `queueResparkableWorkflowRun`,
+    // not a trigger row or a schedule. Neither belongs in
+    // `RESPARKABLE_SCHEDULED_WORKFLOWS`, so both are named here explicitly.
     expect(RESPARKABLE_WORKFLOWS.map((w) => w.slug).sort()).toEqual(
       [
         ...Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS),
         RESPARKABLE_CAPTURE_INTAKE_WORKFLOW_SLUG,
+        RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
       ].sort()
     );
   });

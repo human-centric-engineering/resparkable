@@ -43,6 +43,13 @@ export interface ThoughtFilters {
    * a `createdAt desc` list can never reach.
    */
   capturedBefore?: Date;
+  /**
+   * Drop `sensitivity: 'sensitive'` rows. For scheduled/background reads whose
+   * output the person did not directly ask for right now (the daily briefing's
+   * resurfaced thought, the description-summariser) — never for GDPR export,
+   * which reads every row regardless of classification.
+   */
+  excludeSensitive?: boolean;
 }
 
 export type ThoughtCreateData = WithoutOwner<Prisma.ResparkableThoughtUncheckedCreateInput>;
@@ -61,6 +68,7 @@ function thoughtWhere(
       ? { OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: new Date() } }] }
       : {}),
     ...(filters.capturedBefore ? { createdAt: { lt: filters.capturedBefore } } : {}),
+    ...(filters.excludeSensitive ? { sensitivity: { not: 'sensitive' } } : {}),
   };
 }
 
@@ -96,6 +104,23 @@ export async function createThought(
   data: ThoughtCreateData
 ): Promise<ResparkableThought> {
   return prisma.resparkableThought.create({ data: { ...data, ...ownerWhere(scope) } });
+}
+
+/** Batch lookup, for hydrating a set of thought ids from a link walk (context-digest.ts). */
+export async function findThoughtsByIds(
+  scope: OwnerScope,
+  ids: string[],
+  options: { excludeSensitive?: boolean } = {}
+): Promise<ResparkableThought[]> {
+  if (ids.length === 0) return [];
+
+  return prisma.resparkableThought.findMany({
+    where: {
+      ...ownerWhere(scope),
+      id: { in: ids },
+      ...(options.excludeSensitive ? { sensitivity: { not: 'sensitive' } } : {}),
+    },
+  });
 }
 
 /**

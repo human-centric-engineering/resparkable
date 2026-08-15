@@ -131,3 +131,29 @@ export async function getResparkableReview(
 ): Promise<ResparkableReview | null> {
   return reviews.findReview(scope, id);
 }
+
+/**
+ * Dismiss a proposal — the Release 8 `context_summary` reject path, and
+ * generically useful for any review someone wants gone from the list.
+ *
+ * Archives rather than deletes, same as every other archive action in this
+ * tier: the row survives for `?includeArchived=true` and for GDPR export, it
+ * just stops appearing by default.
+ */
+export async function dismissReview(
+  scope: OwnerScope,
+  id: string,
+  reason = 'dismissed'
+): Promise<ResparkableReview | null> {
+  const review = await reviews.archiveReview(scope, id, reason);
+  if (!review) return null;
+
+  await recordResparkableEvent(scope, {
+    kind: 'archived',
+    entityType: 'review',
+    entityId: review.id,
+    metadata: { horizon: review.horizon },
+  });
+
+  return review;
+}

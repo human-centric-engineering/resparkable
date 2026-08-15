@@ -26,6 +26,7 @@
 
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
+import { classifyThoughtSensitivity } from '@/lib/framework/resparkable/services/sensitivity';
 import { captureThought as captureThoughtRow } from '@/lib/framework/resparkable/repo/thoughts';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import type { CaptureInput } from '@/lib/framework/resparkable/validations';
@@ -53,6 +54,7 @@ export async function captureThought(
   const { thought, deduped } = await captureThoughtRow(scope, {
     content: input.content,
     source: input.source,
+    sensitivity: classifyThoughtSensitivity(input.content),
     ...(input.externalId ? { externalId: input.externalId } : {}),
   });
 

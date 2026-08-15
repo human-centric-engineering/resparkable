@@ -22,8 +22,9 @@
  */
 
 import * as React from 'react';
-import { Pencil, Plus, Target } from 'lucide-react';
+import { MessageCircle, Pencil, Plus, Target } from 'lucide-react';
 
+import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { GoalForm } from '@/components/resparkable/goals/goal-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
@@ -33,6 +34,7 @@ import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, GoalWire } from '@/lib/framework/resparkable/ui/payloads';
+import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
 
 /** Near horizons first — the order they become actionable in. */
 const HORIZON_ORDER = ['week', 'month', 'quarter', 'year', 'life'];
@@ -44,7 +46,8 @@ export interface GoalsViewProps {
 
 export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState<GoalWire | null>(null);
+  const editing = useDialogEntity<GoalWire>();
+  const talkingTo = useDialogEntity<GoalWire>();
 
   const present = new Set(goals.map((goal) => goal.id));
 
@@ -77,7 +80,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
         <EmptyState
           icon={Target}
           title="No goals yet"
-          description="Goals are what make the ranking more than a to-do list: a task that serves one outranks a task that serves nothing. Near horizons count for more, so “this quarter” beats “someday”."
+          description="Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparky uses your goals as context when it helps you."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Set one
@@ -92,7 +95,8 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
               goal={goal}
               childrenOf={childrenOf}
               depth={0}
-              onEdit={setEditing}
+              onEdit={editing.open}
+              onTalk={talkingTo.open}
             />
           ))}
         </ul>
@@ -100,14 +104,22 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
 
       <GoalForm open={createOpen} onOpenChange={setCreateOpen} goals={goals} areas={areas} />
       <GoalForm
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) setEditing(null);
-        }}
+        open={editing.entity !== null}
+        onOpenChange={editing.onOpenChange}
         goals={goals}
         areas={areas}
-        {...(editing ? { goal: editing } : {})}
+        {...(editing.entity ? { goal: editing.entity } : {})}
       />
+      {talkingTo.entity && (
+        <ContextChatDrawer
+          open
+          onOpenChange={talkingTo.onOpenChange}
+          entityType="goal"
+          entityId={talkingTo.entity.id}
+          entityName={talkingTo.entity.title}
+          currentDescription={talkingTo.entity.description}
+        />
+      )}
     </div>
   );
 }
@@ -117,11 +129,13 @@ function GoalNode({
   childrenOf,
   depth,
   onEdit,
+  onTalk,
 }: {
   goal: GoalWire;
   childrenOf: Map<string, GoalWire[]>;
   depth: number;
   onEdit: (goal: GoalWire) => void;
+  onTalk: (goal: GoalWire) => void;
 }): React.ReactElement {
   const children = childrenOf.get(goal.id) ?? [];
   // `null` until mounted — reading the clock during render is impure and would
@@ -177,6 +191,14 @@ function GoalNode({
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Tell me more about ${goal.title}`}
+            onClick={() => onTalk(goal)}
+          >
+            <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             aria-label={`Edit ${goal.title}`}
             onClick={() => onEdit(goal)}
           >
@@ -202,6 +224,7 @@ function GoalNode({
               childrenOf={childrenOf}
               depth={depth + 1}
               onEdit={onEdit}
+              onTalk={onTalk}
             />
           ))}
         </ul>

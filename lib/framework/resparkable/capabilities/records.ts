@@ -1,17 +1,17 @@
 /**
- * The other three upserts: projects, goals and people.
+ * The other five upserts: projects, life areas, goals, people and time blocks.
  *
- * Three near-identical classes rather than one parameterised by resource, for
+ * Five near-identical classes rather than one parameterised by resource, for
  * one reason that outweighs the duplication: the dispatcher's PII check is
  * `Object.getPrototypeOf(instance).hasOwnProperty('redactProvenance')`, an
  * own-property test on the *immediate* prototype. A shared parent that
- * implemented redaction for all three would fail it at registration — and
+ * implemented redaction for all five would fail it at registration — and
  * rightly, because a goal's `description` and a person's `website` are not the
  * same decision. Each class states its own.
  *
- * All three drop `slug` from the arguments where the type has one: the service
- * derives it from the name and resolves collisions, so an LLM-supplied slug
- * could only ever disagree with the one that gets stored.
+ * The four that have one drop `slug` from the arguments: the service derives
+ * it from the name and resolves collisions, so an LLM-supplied slug could only
+ * ever disagree with the one that gets stored. Time blocks have no slug.
  */
 
 import { ResparkableCapability, maskFreeText } from '@/lib/framework/resparkable/capabilities/base';
@@ -22,17 +22,23 @@ import {
 import { runUpsert, type UpsertData } from '@/lib/framework/resparkable/capabilities/upsert';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
+  areaResource,
   entityResource,
   goalResource,
   projectResource,
+  timeBlockResource,
 } from '@/lib/framework/resparkable/services/resources';
 import {
+  agentUpsertAreaSchema,
   agentUpsertEntitySchema,
   agentUpsertGoalSchema,
   agentUpsertProjectSchema,
+  agentUpsertTimeBlockSchema,
+  type AgentUpsertAreaInput,
   type AgentUpsertEntityInput,
   type AgentUpsertGoalInput,
   type AgentUpsertProjectInput,
+  type AgentUpsertTimeBlockInput,
 } from '@/lib/framework/resparkable/validations';
 import type { ProvenanceRedaction } from '@/lib/orchestration/capabilities/base-capability';
 import type {
@@ -79,6 +85,38 @@ export class ResparkableUpsertProjectCapability extends ResparkableCapability<
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(projectResource, scope, args, 'name');
     if (!outcome) return this.error('No project with that id.', 'not_found');
+    return this.success(outcome);
+  }
+}
+
+// ─── Life areas ──────────────────────────────────────────────────────────────
+
+const areaSpec = resparkableCapabilitySpec(RESPARKABLE_CAPABILITY_SLUGS.upsertArea);
+
+export class ResparkableUpsertAreaCapability extends ResparkableCapability<
+  AgentUpsertAreaInput,
+  UpsertData
+> {
+  readonly slug = areaSpec.slug;
+  readonly functionDefinition: CapabilityFunctionDefinition = areaSpec.functionDefinition;
+  protected readonly schema = agentUpsertAreaSchema;
+
+  redactProvenance(
+    args: AgentUpsertAreaInput,
+    result: CapabilityResult<UpsertData>
+  ): ProvenanceRedaction {
+    return {
+      args: maskFreeText(args, ['name', 'description']),
+      resultPreview: upsertResultPreview(result, 'area'),
+    };
+  }
+
+  protected async run(
+    args: AgentUpsertAreaInput,
+    scope: OwnerScope
+  ): Promise<CapabilityResult<UpsertData>> {
+    const outcome = await runUpsert(areaResource, scope, args, 'name');
+    if (!outcome) return this.error('No life area with that id.', 'not_found');
     return this.success(outcome);
   }
 }
@@ -154,6 +192,38 @@ export class ResparkableUpsertEntityCapability extends ResparkableCapability<
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(entityResource, scope, args, 'name');
     if (!outcome) return this.error('No person, company or segment with that id.', 'not_found');
+    return this.success(outcome);
+  }
+}
+
+// ─── Time blocks ─────────────────────────────────────────────────────────────
+
+const timeBlockSpec = resparkableCapabilitySpec(RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock);
+
+export class ResparkableUpsertTimeBlockCapability extends ResparkableCapability<
+  AgentUpsertTimeBlockInput,
+  UpsertData
+> {
+  readonly slug = timeBlockSpec.slug;
+  readonly functionDefinition: CapabilityFunctionDefinition = timeBlockSpec.functionDefinition;
+  protected readonly schema = agentUpsertTimeBlockSchema;
+
+  redactProvenance(
+    args: AgentUpsertTimeBlockInput,
+    result: CapabilityResult<UpsertData>
+  ): ProvenanceRedaction {
+    return {
+      args: maskFreeText(args, ['title', 'notes']),
+      resultPreview: upsertResultPreview(result, 'time block'),
+    };
+  }
+
+  protected async run(
+    args: AgentUpsertTimeBlockInput,
+    scope: OwnerScope
+  ): Promise<CapabilityResult<UpsertData>> {
+    const outcome = await runUpsert(timeBlockResource, scope, args, 'title');
+    if (!outcome) return this.error('No time block with that id.', 'not_found');
     return this.success(outcome);
   }
 }

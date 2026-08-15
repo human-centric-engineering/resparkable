@@ -18,6 +18,24 @@ release process.
 
 ### Added
 
+- **Release 8 phase 39: chat-driven context capture, sensitivity tagging, and
+  description sync.** Two new API routes —
+  `POST /api/v1/resparkable/{areas,goals,projects}/[id]/summarize` (queues a
+  description-rewrite proposal) and `POST /api/v1/resparkable/reviews/[id]/dismiss`
+  (archives a proposal) — plus a widened
+  `POST /api/v1/resparkable/chat/stream` request body (`entityContext`). New
+  `ResparkableThought.sensitivity` column (`public|private|sensitive`),
+  classified automatically at capture time and included in GDPR export like
+  every other field. New capability `resparkable_capture_context` and agent
+  `resparkable-context` (chat-reachable, bound to it alone) power two new UI
+  surfaces: a "Tell me more" conversation anchored to an Area/Goal/Project, and
+  a freeform one at `/resparkable/context`. A new capability
+  `resparkable_get_context_digest` and agent `resparkable-summariser` (not
+  chat-reachable) back an on-request workflow that proposes a rewritten
+  description from linked notes — accepting it writes through the same
+  resource route the form already uses; nothing overwrites `description`
+  directly. See [`phase-39-plan.md`](./.context/framework/resparkable/phase-39-plan.md).
+
 - **Phase 9 closes Release 1: PWA install, image capture, and email-to-inbox.**
   `app/manifest.ts` (content in `lib/framework/resparkable/pwa/manifest.ts`)
   makes `/resparkable` installable, with an Android share target (`GET

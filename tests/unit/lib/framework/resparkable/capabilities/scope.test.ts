@@ -28,6 +28,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // implementation, so any capability that got past the guard would reject on
 // `undefined` rather than quietly returning a plausible-looking success.
 vi.mock('@/lib/framework/resparkable/services/capture', () => ({ captureThought: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/services/context-digest', () => ({
+  buildContextDigest: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/search/hybrid-search', () => ({ searchResparkable: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/links', () => ({ linkEntities: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/neighbours', () => ({ findNeighbours: vi.fn() }));
@@ -63,8 +66,10 @@ vi.mock('@/lib/framework/resparkable/services/resources', () => {
   return {
     taskResource: resource,
     projectResource: resource,
+    areaResource: resource,
     goalResource: resource,
     entityResource: resource,
+    timeBlockResource: resource,
   };
 });
 
@@ -75,6 +80,7 @@ import {
 import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
 import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
+import { buildContextDigest } from '@/lib/framework/resparkable/services/context-digest';
 import { searchResparkable } from '@/lib/framework/resparkable/search/hybrid-search';
 import { linkEntities } from '@/lib/framework/resparkable/services/links';
 import { findNeighbours } from '@/lib/framework/resparkable/services/neighbours';
@@ -103,13 +109,23 @@ const ownerlessContext: CapabilityContext = { userId: null, agentId: 'agent-1' }
  */
 const VALID_ARGS: Record<string, unknown> = {
   resparkable_capture: { content: 'a thought' },
+  resparkable_capture_context: { content: 'a thought from a reflective conversation' },
+  resparkable_get_context_digest: {
+    entityType: 'area',
+    entityId: 'clh0000000000000000000006',
+  },
   resparkable_search: { query: 'pricing' },
   resparkable_list_tasks: {},
   resparkable_promote_thought: { thoughtId: 'clh0000000000000000000005', target: 'task' },
   resparkable_upsert_task: { title: 'do the thing' },
   resparkable_upsert_project: { name: 'a project' },
+  resparkable_upsert_area: { name: 'an area' },
   resparkable_upsert_goal: { title: 'a goal', horizon: 'quarter' },
   resparkable_upsert_entity: { name: 'a person' },
+  resparkable_upsert_time_block: {
+    startAt: '2026-01-01T09:00:00.000Z',
+    endAt: '2026-01-01T10:00:00.000Z',
+  },
   resparkable_link_entities: {
     sourceType: 'project',
     sourceId: 'clh0000000000000000000001',
@@ -129,6 +145,7 @@ const VALID_ARGS: Record<string, unknown> = {
 
 const ALL_SERVICES = [
   captureThought,
+  buildContextDigest,
   searchResparkable,
   linkEntities,
   findNeighbours,

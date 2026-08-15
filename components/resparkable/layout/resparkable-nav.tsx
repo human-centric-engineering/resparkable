@@ -276,7 +276,7 @@ export function ResparkableNav({
               <Link
                 href={RESPARKABLE_ROUTES.TODAY}
                 // The rail head is the way home, and `.term-label` makes it read
-                // as the name of this region rather than as a fifteenth
+                // as the name of this region rather than as a fourteenth
                 // destination competing with the fourteen below it.
                 className="term-label hover:text-primary px-2 transition-colors"
               >

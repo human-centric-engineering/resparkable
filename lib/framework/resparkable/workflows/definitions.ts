@@ -408,10 +408,66 @@ const captureIntake: ResparkableWorkflowSpec = {
   },
 };
 
+/**
+ * The description-summariser (Release 8). Triggered, not scheduled — same
+ * shape as `captureIntake` above, except the trigger is
+ * `POST /resparkable/{areas|goals|projects}/[id]/summarize` queuing a run via
+ * `queueResparkableWorkflowRun`, not an inbound webhook.
+ *
+ * Two steps and exactly one LLM call, same reasoning as `morningBriefing`:
+ * `gather_digest` is deterministic — it reads the item and its linked notes,
+ * already excluding anything `sensitivity: 'sensitive'` — so the model spends
+ * its one call composing the rewrite rather than fetching its own inputs.
+ */
+export const RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG = 'resparkable-context-digest';
+
+const contextDigest: ResparkableWorkflowSpec = {
+  slug: RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
+  name: 'Resparkable — description summary',
+  description:
+    'Proposes a rewritten description for one Area, Goal or Project from the notes linked to it. Triggered from that item’s own page, not on a schedule.',
+  patternsUsed: [1],
+  maxCostPerExecutionUsd: 0.15,
+  definition: {
+    entryStepId: 'gather_digest',
+    errorStrategy: 'fail',
+    steps: [
+      {
+        id: 'gather_digest',
+        name: 'Gather the linked notes',
+        description:
+          'Deterministic. Reads the item and every accepted-linked note, excluding anything sensitivity-classified as sensitive.',
+        type: 'tool_call',
+        // No `args` key — same reason `gather_inputs` in `morningBriefing` has
+        // none: the route queues this run with
+        // `inputData: { entityType, entityId }`, and omitting the key is what
+        // lets the step see it instead of an empty `{}` pinning the args.
+        config: { capabilitySlug: C.getContextDigest },
+        nextSteps: [{ targetStepId: 'write_summary' }],
+      },
+      {
+        id: 'write_summary',
+        name: 'Propose the rewrite',
+        description:
+          'The one LLM call. Proposes a rewritten description from the gathered digest; never writes the item’s own description field.',
+        type: 'agent_call',
+        config: {
+          agentSlug: A.summariser,
+          message:
+            'Propose a rewritten description for this item from the notes linked to it. Finish by calling resparkable_write_review with horizon "context_summary" and a `payload` carrying the exact `entityType` and `entityId` from the digest below — the review surface matches a proposal to its item by those two fields alone.\n\n{{gather_digest.output}}',
+          maxToolIterations: 4,
+        },
+        nextSteps: [],
+      },
+    ],
+  },
+};
+
 export const RESPARKABLE_WORKFLOWS: readonly ResparkableWorkflowSpec[] = [
   nightlyTriage,
   morningBriefing,
   weeklyReview,
   horizonCheck,
   captureIntake,
+  contextDigest,
 ];

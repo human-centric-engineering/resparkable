@@ -21,7 +21,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
-import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import { EntityFormDialog } from '@/components/resparkable/creation/entity-form-dialog';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -63,21 +63,14 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
     if (open) form.reset(defaults);
   }, [open, defaults, form]);
 
-  return (
-    <ResourceDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      collection={RESPARKABLE_API.AREAS}
-      {...(area ? { id: area.id } : {})}
-      title={area ? 'Edit this part of your life' : 'What matters right now?'}
-      description="A standing part of your life — Career, Health, Family. Not a project and not a client."
-      form={form}
-      toBody={(values) => ({
-        name: values.name,
-        description: values.description.trim() ? values.description.trim() : null,
-        colour: values.colour.trim() ? values.colour.trim() : null,
-      })}
-    >
+  const toBody = (values: AreaFormValues): Record<string, unknown> => ({
+    name: values.name,
+    description: values.description.trim() ? values.description.trim() : null,
+    colour: values.colour.trim() ? values.colour.trim() : null,
+  });
+
+  const fields = (
+    <>
       <div className="space-y-1.5">
         <Label htmlFor="area-name">Name</Label>
         <Input id="area-name" placeholder="Health" {...form.register('name')} />
@@ -112,6 +105,22 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
         </Label>
         <Input id="area-colour" placeholder="#0d9488" {...form.register('colour')} />
       </div>
-    </ResourceDialog>
+    </>
+  );
+
+  return (
+    <EntityFormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      entityType="area"
+      collection={RESPARKABLE_API.AREAS}
+      existingId={area?.id}
+      editTitle="Edit this part of your life"
+      editDescription="A standing part of your life — Career, Health, Family. Not a project and not a client."
+      form={form}
+      toBody={toBody}
+    >
+      {fields}
+    </EntityFormDialog>
   );
 }

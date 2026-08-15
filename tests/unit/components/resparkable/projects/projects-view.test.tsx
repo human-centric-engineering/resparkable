@@ -132,7 +132,7 @@ describe('ProjectsView', () => {
     render(<ProjectsView projects={[]} areas={[]} status={null} />);
 
     expect(screen.getByText('No projects yet')).toBeInTheDocument();
-    expect(screen.getByText(/inherit its goal alignment and momentum/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparky uses your projects as context/i)).toBeInTheDocument();
   });
 
   it('names the active filter in the empty state, rather than a generic message', () => {

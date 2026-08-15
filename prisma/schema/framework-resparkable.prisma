@@ -403,6 +403,13 @@ model ResparkableThought {
   /// inbox | promoted | dropped
   status String @default("inbox") @db.VarChar(16)
 
+  /// public | private | sensitive. Classified at capture time by a
+  /// deterministic heuristic (never an LLM call — see services/sensitivity.ts),
+  /// user-correctable after. Governs which background agents' reads and the
+  /// description-summariser see this row. Not a restriction on which provider
+  /// a chat turn is sent to, and never applied to the GDPR export path.
+  sensitivity String @default("private") @db.VarChar(16)
+
   /// Set when triage promotes this into a task/project/goal, so the thought
   /// keeps its provenance rather than being consumed.
   promotedToType String? @db.VarChar(16)
@@ -839,7 +846,7 @@ model ResparkableReview {
   id     String @id @default(cuid())
   userId String
 
-  /// daily | weekly | month | quarter | briefing | connections
+  /// daily | weekly | month | quarter | briefing | connections | context_summary
   horizon String @db.VarChar(16)
 
   title String

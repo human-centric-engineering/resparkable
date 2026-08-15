@@ -65,8 +65,10 @@ vi.mock('@/lib/framework/resparkable/services/resources', async (importOriginal)
     ...actual,
     taskResource: stub(actual.taskResource),
     projectResource: stub(actual.projectResource),
+    areaResource: stub(actual.areaResource),
     goalResource: stub(actual.goalResource),
     entityResource: stub(actual.entityResource),
+    timeBlockResource: stub(actual.timeBlockResource),
   };
 });
 
@@ -77,9 +79,11 @@ import {
   ResparkableUpsertTaskCapability,
 } from '@/lib/framework/resparkable/capabilities/tasks';
 import {
+  ResparkableUpsertAreaCapability,
   ResparkableUpsertEntityCapability,
   ResparkableUpsertGoalCapability,
   ResparkableUpsertProjectCapability,
+  ResparkableUpsertTimeBlockCapability,
 } from '@/lib/framework/resparkable/capabilities/records';
 import {
   ResparkableFindConnectionsCapability,
@@ -101,10 +105,12 @@ import { writeReview } from '@/lib/framework/resparkable/services/reviews';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
 import {
+  areaResource,
   entityResource,
   goalResource,
   projectResource,
   taskResource,
+  timeBlockResource,
 } from '@/lib/framework/resparkable/services/resources';
 import { ValidationError, NotFoundError } from '@/lib/api/errors';
 import type { CapabilityContext } from '@/lib/orchestration/capabilities/types';
@@ -455,6 +461,32 @@ describe('resparkable_promote_thought', () => {
   });
 });
 
+describe('resparkable_upsert_area', () => {
+  const capability = new ResparkableUpsertAreaCapability();
+
+  it('creates with the schema default sort order and derives the slug itself', async () => {
+    mocked(areaResource.create).mockResolvedValue({ id: ID(6), name: 'Health' });
+
+    const result = await call(capability, { name: 'Health' });
+
+    expect(areaResource.create).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ name: 'Health' })
+    );
+    expect(mocked(areaResource.create).mock.calls[0]?.[1]).not.toHaveProperty('slug');
+    expect(result).toMatchObject({ success: true, data: { action: 'created', id: ID(6) } });
+  });
+
+  it('404s on an unknown id', async () => {
+    mocked(areaResource.update).mockResolvedValue(null);
+
+    expect(await call(capability, { id: ID(9), name: 'Renamed' })).toMatchObject({
+      success: false,
+      error: { code: 'not_found' },
+    });
+  });
+});
+
 describe('resparkable_upsert_goal', () => {
   const capability = new ResparkableUpsertGoalCapability();
 
@@ -529,6 +561,41 @@ describe('resparkable_upsert_entity', () => {
       success: false,
       error: { code: 'not_found' },
     });
+  });
+});
+
+describe('resparkable_upsert_time_block', () => {
+  const capability = new ResparkableUpsertTimeBlockCapability();
+
+  it('creates when no id is supplied, given both endpoints of the block', async () => {
+    mocked(timeBlockResource.create).mockResolvedValue({ id: ID(5), title: 'Deep work' });
+
+    const result = await call(capability, {
+      title: 'Deep work',
+      startAt: '2026-08-14T09:00:00.000Z',
+      endAt: '2026-08-14T11:00:00.000Z',
+    });
+
+    expect(timeBlockResource.create).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ title: 'Deep work', source: 'plan' })
+    );
+    expect(result).toMatchObject({
+      success: true,
+      data: { action: 'created', id: ID(5), label: 'Deep work' },
+    });
+  });
+
+  it('404s on an unknown id rather than silently creating a duplicate', async () => {
+    mocked(timeBlockResource.update).mockResolvedValue(null);
+
+    const result = await call(capability, { id: ID(9), title: 'Deep work' });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'not_found', message: 'No time block with that id.' },
+    });
+    expect(timeBlockResource.create).not.toHaveBeenCalled();
   });
 });
 

@@ -317,7 +317,7 @@ describe('ResparkableChat', () => {
     // answer under it — the transcript returns to its empty state. (Asserted on
     // the empty state rather than the absence of the text, because the text is
     // now back in the textarea and a bare `queryByText` would match that.)
-    expect(screen.getByText('Ask your brain something')).toBeInTheDocument();
+    expect(screen.getByText('Ask Sparky')).toBeInTheDocument();
   });
 
   it('keeps a partial answer rather than pushing the question back into the box', async () => {
@@ -359,5 +359,33 @@ describe('ResparkableChat', () => {
     await waitFor(() => expect(screen.getByText(/captured a thought/)).toBeInTheDocument());
     expect(screen.getByText('remember the clinic called')).toBeInTheDocument();
     expect(screen.getByLabelText('Message')).toHaveValue('');
+  });
+
+  /**
+   * `placeholder` is the create-flow's way of hinting what to type — "What do
+   * you want to call this project?" — without speaking for the person by
+   * pre-filling and sending it on their behalf.
+   */
+  describe('placeholder', () => {
+    it('shows a custom placeholder without sending anything', () => {
+      render(
+        <ResparkableChat
+          agentSlug="resparkable-companion"
+          placeholder="What do you want to call this goal?"
+        />
+      );
+
+      expect(screen.getByLabelText('Message')).toHaveValue('');
+      expect(
+        screen.getByPlaceholderText('What do you want to call this goal?')
+      ).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the freeform default when omitted', () => {
+      render(<ResparkableChat agentSlug="resparkable-companion" />);
+
+      expect(screen.getByPlaceholderText('Ask, or just think out loud…')).toBeInTheDocument();
+    });
   });
 });

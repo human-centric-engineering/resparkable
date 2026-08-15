@@ -2,12 +2,17 @@
  * DayPlanner Component Tests
  *
  * The scorer's `effortFit` factor is computed from time blocks (see the
- * component's own header), so this screen has one job: turn two
+ * component's own header), so creating one has one job: turn two
  * `datetime-local` fields into an exact `startAt`/`endAt` pair and POST it. A
  * `datetime-local` input carries no timezone: the browser's local zone
  * decides the instant. So the test pins the POST body to what `new
  * Date(value).toISOString()` produces for the values actually typed, not a
  * hardcoded literal that would only be correct in one timezone.
+ *
+ * Creation itself lives in `<TimeBlockForm>`, opened from this component via
+ * the "Block out some time" button — the same chat/form `<CreateDialog>`
+ * shell Goals/Projects/Areas use, so these tests pin the stored mode
+ * preference to 'form' exactly as `goal-form.test.tsx` does.
  *
  * Test Coverage:
  * - The POST body carries the exact startAt/endAt built from the two
@@ -23,6 +28,7 @@
  *   (area/project names, duration) when there are
  *
  * @see components/resparkable/plan/day-planner.tsx
+ * @see components/resparkable/plan/time-block-form.tsx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -152,6 +158,10 @@ function block(id: string, overrides: Partial<TimeBlockWire> = {}): TimeBlockWir
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The create flow's chat/form toggle (create-mode-toggle.tsx) defaults to
+  // chat; pin the stored preference to 'form' rather than adding a 'switch to
+  // form' step to every test below — same approach as goal-form.test.tsx.
+  localStorage.setItem('resparkable.create-mode.v1', JSON.stringify('form'));
   mockedPost.mockResolvedValue({ id: 'block_new' });
   mockedDelete.mockResolvedValue({});
   mockedRouter.mockReturnValue({
@@ -164,10 +174,15 @@ beforeEach(() => {
   });
 });
 
+async function openCreateDialog(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole('button', { name: /block out some time/i }));
+}
+
 describe('DayPlanner', () => {
   it('posts the exact startAt/endAt built from the two datetime-local fields', async () => {
     const user = userEvent.setup();
     render(<DayPlanner blocks={[]} projects={[]} areas={[]} day={DAY} />);
+    await openCreateDialog(user);
 
     await user.type(screen.getByLabelText('What are you doing?'), '  Deep work  ');
 
@@ -178,7 +193,7 @@ describe('DayPlanner', () => {
       target: { value: '2026-07-30T16:00' },
     });
 
-    await user.click(screen.getByRole('button', { name: /block it out/i }));
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
 
     // `datetime-local` carries no timezone; the browser's local zone decides
     // the instant, so pin the expectation to the same conversion the
@@ -205,8 +220,16 @@ describe('DayPlanner', () => {
   it('omits the title entirely when left blank, rather than sending an empty string', async () => {
     const user = userEvent.setup();
     render(<DayPlanner blocks={[]} projects={[]} areas={[]} day={DAY} />);
+    await openCreateDialog(user);
 
-    await user.click(screen.getByRole('button', { name: /block it out/i }));
+    fireEvent.change(screen.getByLabelText('From'), {
+      target: { value: '2026-07-30T09:00' },
+    });
+    fireEvent.change(screen.getByLabelText('Until'), {
+      target: { value: '2026-07-30T10:00' },
+    });
+
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
 
     await waitFor(() => expect(mockedPost).toHaveBeenCalled());
     const body = mockedPost.mock.calls[0]?.[1]?.body as Record<string, unknown>;
@@ -223,6 +246,14 @@ describe('DayPlanner', () => {
         day={DAY}
       />
     );
+    await openCreateDialog(user);
+
+    fireEvent.change(screen.getByLabelText('From'), {
+      target: { value: '2026-07-30T09:00' },
+    });
+    fireEvent.change(screen.getByLabelText('Until'), {
+      target: { value: '2026-07-30T10:00' },
+    });
 
     // `getByLabelText` would also match the FieldHelp "More information"
     // button nested inside the "Part of your life" <Label> (it wraps both),
@@ -232,7 +263,7 @@ describe('DayPlanner', () => {
       'area_9'
     );
     await user.selectOptions(screen.getByRole('combobox', { name: /^on$/i }), 'project_7');
-    await user.click(screen.getByRole('button', { name: /block it out/i }));
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
 
     await waitFor(() => {
       const body = mockedPost.mock.calls[0]?.[1]?.body as Record<string, unknown>;

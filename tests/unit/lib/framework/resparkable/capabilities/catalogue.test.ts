@@ -36,6 +36,7 @@ import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capab
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import {
   agentBriefingInputsSchema,
+  agentCaptureContextSchema,
   agentCaptureForTokenSchema,
   agentCaptureSchema,
   agentFindConnectionsSchema,
@@ -48,11 +49,14 @@ import {
   agentSearchSchema,
   agentUpsertEntitySchema,
   agentUpsertGoalSchema,
+  agentUpsertAreaSchema,
   agentUpsertProjectSchema,
   agentUpsertTaskSchema,
+  agentUpsertTimeBlockSchema,
   createLinkSchema,
   createReviewSchema,
   ideateSchema,
+  resparkableEntityContextSchema,
 } from '@/lib/framework/resparkable/validations';
 
 /** The advertised parameter names, read off the JSON Schema `properties` object. */
@@ -96,13 +100,17 @@ function schemaKeys(schema: z.ZodType): string[] {
 
 const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
   [RESPARKABLE_CAPABILITY_SLUGS.capture]: agentCaptureSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.captureContext]: agentCaptureContextSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.getContextDigest]: resparkableEntityContextSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.search]: agentSearchSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.listTasks]: agentListTasksSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.promoteThought]: agentPromoteThoughtSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertTask]: agentUpsertTaskSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertProject]: agentUpsertProjectSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.upsertArea]: agentUpsertAreaSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertGoal]: agentUpsertGoalSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.upsertEntity]: agentUpsertEntitySchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock]: agentUpsertTimeBlockSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.linkEntities]: createLinkSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.findConnections]: agentFindConnectionsSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.getSnapshot]: z.object({}),
@@ -117,7 +125,7 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
 };
 
 describe('Resparkable capability catalogue', () => {
-  it('holds exactly the nineteen capabilities the agent layer promises', () => {
+  it('holds exactly the twenty-three capabilities the agent layer promises', () => {
     // Thirteen in plan.md §5, plus `resparkable_promote_thought`: none of the
     // thirteen could mark a thought as processed, so a nightly triage run left
     // every note looking un-triaged and re-processed the lot the next night.
@@ -127,8 +135,13 @@ describe('Resparkable capability catalogue', () => {
     // dormant work without being able to act on the answer. Phase 9 adds the
     // email-to-inbox intake, the one capability that resolves its owner from a
     // bearer token instead of context.userId (see capture-for-token.ts).
-    expect(RESPARKABLE_CAPABILITIES).toHaveLength(19);
-    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(19);
+    // Release 8 adds three: the "tell me more" capture door, the
+    // description-summariser's deterministic gather step, and the life-area
+    // upsert (the one resource type that had no chat-reachable create/update
+    // path until the create-via-chat flow needed one). The chat/form create
+    // flow's extension to the Plan page adds one more: the time-block upsert.
+    expect(RESPARKABLE_CAPABILITIES).toHaveLength(23);
+    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(23);
   });
 
   it('uses unique, namespaced slugs', () => {
@@ -210,6 +223,7 @@ describe('Resparkable capability catalogue', () => {
         RESPARKABLE_CAPABILITY_SLUGS.getBriefing,
         RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs,
         RESPARKABLE_CAPABILITY_SLUGS.getStaleDigest,
+        RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
       ].sort()
     );
   });

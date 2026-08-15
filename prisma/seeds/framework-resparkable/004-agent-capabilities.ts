@@ -48,8 +48,10 @@ const BINDINGS: readonly AgentBindings[] = [
       C.promoteThought,
       C.upsertTask,
       C.upsertProject,
+      C.upsertArea,
       C.upsertGoal,
       C.upsertEntity,
+      C.upsertTimeBlock,
       C.linkEntities,
       C.findConnections,
       C.getSnapshot,
@@ -59,6 +61,12 @@ const BINDINGS: readonly AgentBindings[] = [
       // the row is already written.
       C.getBriefing,
     ],
+  },
+  {
+    agentSlug: RESPARKABLE_AGENT_SLUGS.context,
+    rationale:
+      'One row, and it is the only agent bound to it — a reflective conversation cannot wander into creating tasks, projects or links beyond the one it was anchored to. No search, no snapshot: the agent has nothing to look up, only something to listen to and write down.',
+    capabilities: [C.captureContext],
   },
   {
     agentSlug: RESPARKABLE_AGENT_SLUGS.triage,
@@ -98,6 +106,12 @@ const BINDINGS: readonly AgentBindings[] = [
     rationale:
       'Two rows: gather the inputs, write the artefact. Deliberately not resparkable_get_snapshot or resparkable_search — the briefing’s facts are counted deterministically before the model sees them, and an agent that could go and look up its own numbers is one that will eventually report a different total than the block above it. Not resparkable_notify either: telling someone the briefing is ready is the workflow’s decision, not the writer’s.',
     capabilities: [C.getBriefingInputs, C.writeReview],
+  },
+  {
+    agentSlug: RESPARKABLE_AGENT_SLUGS.summariser,
+    rationale:
+      'Two rows, same shape as the briefer: read exactly what the workflow gathered, write exactly one artefact. No search, no snapshot — the digest is already selected for it, and an agent that could go looking for more notes on its own is one whose rewritten description depends on what it happened to find rather than what the workflow handed it.',
+    capabilities: [C.getContextDigest, C.writeReview],
   },
   {
     agentSlug: RESPARKABLE_AGENT_SLUGS.intake,

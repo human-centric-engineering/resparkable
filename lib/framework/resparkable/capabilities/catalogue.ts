@@ -1,5 +1,5 @@
 /**
- * The nineteen capability rows, as data.
+ * The twenty-three capability rows, as data.
  *
  * **One source of truth for a capability's identity, and it is not the class.**
  * A capability exists in three places at once — a TypeScript handler, an
@@ -35,6 +35,7 @@ import {
   REVIEW_HORIZONS,
   SEARCHABLE_ENTITY_TYPES,
   TASK_STATUSES,
+  TIME_BLOCK_SOURCES,
   WORK_STYLES,
 } from '@/lib/framework/resparkable/validations';
 import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilities/types';
@@ -44,23 +45,29 @@ import type { CapabilityFunctionDefinition } from '@/lib/orchestration/capabilit
  *
  * Namespaced rather than reusing core's `internal` / `knowledge` so an operator
  * looking at a capability list with a host project's own tools in it can tell at
- * a glance which nineteen reach into someone's brain.
+ * a glance which twenty-three reach into someone's brain.
  */
 export const RESPARKABLE_CAPABILITY_CATEGORY = 'resparkable';
 
 /** Every slug, as a const map so a typo in a seed or a binding is a build error. */
 export const RESPARKABLE_CAPABILITY_SLUGS = {
   capture: 'resparkable_capture',
+  /** Capture door for a "tell me more" conversation (resparkable-context agent). */
+  captureContext: 'resparkable_capture_context',
   search: 'resparkable_search',
   listTasks: 'resparkable_list_tasks',
   promoteThought: 'resparkable_promote_thought',
   upsertTask: 'resparkable_upsert_task',
   upsertProject: 'resparkable_upsert_project',
+  upsertArea: 'resparkable_upsert_area',
   upsertGoal: 'resparkable_upsert_goal',
   upsertEntity: 'resparkable_upsert_entity',
+  upsertTimeBlock: 'resparkable_upsert_time_block',
   linkEntities: 'resparkable_link_entities',
   findConnections: 'resparkable_find_connections',
   getSnapshot: 'resparkable_get_snapshot',
+  /** Deterministic gather for the description-summariser workflow. */
+  getContextDigest: 'resparkable_get_context_digest',
   writeReview: 'resparkable_write_review',
   reprioritise: 'resparkable_reprioritise',
   ideate: 'resparkable_ideate',
@@ -154,6 +161,18 @@ const upsertProjectParameters: Record<string, unknown> = {
   required: [],
 };
 
+const upsertAreaParameters: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    id: upsertId('area'),
+    name: { type: 'string', maxLength: 500, description: 'Required on create.' },
+    description: { type: 'string', maxLength: 100_000 },
+    colour: { type: ['string', 'null'], maxLength: 16 },
+    sortOrder: { type: 'integer', minimum: 0, maximum: 1000 },
+  },
+  required: [],
+};
+
 const upsertGoalParameters: Record<string, unknown> = {
   type: 'object',
   properties: {
@@ -184,6 +203,30 @@ const upsertEntityParameters: Record<string, unknown> = {
     description: { type: 'string', maxLength: 100_000 },
     website: { type: ['string', 'null'], maxLength: 2000 },
     status: { ...stringEnum(ENTITY_STATUSES), description: 'Defaults to `active` on create.' },
+  },
+  required: [],
+};
+
+const upsertTimeBlockParameters: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    id: upsertId('time block'),
+    title: { type: 'string', maxLength: 500, description: 'What the block is for. Optional.' },
+    taskId: { type: ['string', 'null'], description: 'The task this block is time for.' },
+    projectId: { type: ['string', 'null'], description: 'The project this block is time for.' },
+    areaId: { type: ['string', 'null'], description: 'The life area this block is time for.' },
+    startAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'When the block starts, ISO 8601. Required on create.',
+    },
+    endAt: {
+      type: 'string',
+      format: 'date-time',
+      description: 'When the block ends, ISO 8601. Must be after `startAt`. Required on create.',
+    },
+    source: { ...stringEnum(TIME_BLOCK_SOURCES), description: 'Defaults to `plan` on create.' },
+    notes: { type: 'string', maxLength: 100_000 },
   },
   required: [],
 };
@@ -223,6 +266,32 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
             maxLength: 200,
             description:
               'Optional id from the system this thought arrived through (an email message id, a shortcut run id). Sending the same one twice returns the original thought instead of duplicating it.',
+          },
+        },
+        required: ['content'],
+      },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.captureContext,
+    name: 'Resparkable — Capture from a context conversation',
+    description:
+      "Write a first-person distillation of a reflective conversation into the owner's inbox, linked to whichever Area, Goal or Project the conversation was anchored to.",
+    executionHandler: 'ResparkableCaptureContextCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.captureContext,
+      description:
+        'Save what the user just shared as a thought, after a meaningful exchange in a reflective conversation. Write a first-person distillation in your own words — not a verbatim transcript dump, and not your own conclusions about it. Call this after each exchange that added something real (a fact about their life, work, relationships, constraints), not after small talk or a question you asked that went unanswered.',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 100_000,
+            description: 'A first-person distillation of what was just shared.',
           },
         },
         required: ['content'],
@@ -374,6 +443,21 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
     },
   },
   {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.upsertArea,
+    name: 'Resparkable — Create or update a life area',
+    description:
+      'Create a standing life domain (Health, Career, Family…), or patch an existing one by id.',
+    executionHandler: 'ResparkableUpsertAreaCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.upsertArea,
+      description:
+        'Create a new life area, or update an existing one by passing its `id`. An area is a standing part of someone\'s life — "Health", "Career", "Family" — not something with an end, which is a project. Only create one when the user has clearly asked for a new part of their life to be tracked; do not invent areas to file other things under.',
+      parameters: upsertAreaParameters,
+    },
+  },
+  {
     slug: RESPARKABLE_CAPABILITY_SLUGS.upsertGoal,
     name: 'Resparkable — Create or update a goal',
     description: 'Create a goal at one of the five horizons, or patch an existing one by id.',
@@ -399,6 +483,21 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         'Create or update a person, a company, or an audience segment. Use it when the user mentions someone or some organisation that recurs in their work, so later notes can be linked to it. It is not a contact book: store what matters to the work, not phone numbers and addresses.',
       parameters: upsertEntityParameters,
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock,
+    name: 'Resparkable — Create or update a time block',
+    description:
+      'Block out time on the owner’s day, or patch an existing block by id. Not a calendar — a person’s own account of what a stretch of their day is for.',
+    executionHandler: 'ResparkableUpsertTimeBlockCapability',
+    rateLimit: 60,
+    isIdempotent: false,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.upsertTimeBlock,
+      description:
+        "Create a new time block on the user's day, or update an existing one by passing its `id`. This feeds the effort-fit factor in task ranking — blocking real time is what lets the scorer tell whether a task fits the gap the user actually has. Only send the fields you are changing. `startAt` and `endAt` are both required on create and `endAt` must be after `startAt`.",
+      parameters: upsertTimeBlockParameters,
     },
   },
   {
@@ -474,6 +573,28 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
       description:
         "Get the current state of the user's whole system in one call: their goals at every horizon, active projects with days-since-activity, their top-ranked tasks, the standing life areas they've named, and today's date in their own timezone. Use it once at the start of anything that needs the big picture: a review, a plan, a 'how am I doing' question. Do not call it for a single fact you could search for.",
       parameters: { type: 'object', properties: {}, required: [] },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
+    name: 'Resparkable — Get an item’s context digest',
+    description:
+      'Deterministic gather for the description-summariser workflow: an Area/Goal/Project plus the notes linked to it. Not bound to any chat-reachable agent.',
+    executionHandler: 'ResparkableGetContextDigestCapability',
+    rateLimit: 10,
+    isIdempotent: true,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
+      description:
+        'Read one Area, Goal or Project plus every note linked to it, for rewriting its description. Read-only.',
+      parameters: {
+        type: 'object',
+        properties: {
+          entityType: stringEnum(['area', 'goal', 'project']),
+          entityId: { type: 'string' },
+        },
+        required: ['entityType', 'entityId'],
+      },
     },
   },
   {

@@ -11,15 +11,17 @@
  */
 
 import * as React from 'react';
-import { Compass, Pencil, Plus } from 'lucide-react';
+import { Compass, MessageCircle, Pencil, Plus } from 'lucide-react';
 
 import { AreaForm } from '@/components/resparkable/areas/area-form';
+import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire } from '@/lib/framework/resparkable/ui/payloads';
+import { useDialogEntity } from '@/lib/hooks/use-dialog-entity';
 
 export interface AreasViewProps {
   areas: AreaWire[];
@@ -27,7 +29,8 @@ export interface AreasViewProps {
 
 export function AreasView({ areas }: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [editing, setEditing] = React.useState<AreaWire | null>(null);
+  const editing = useDialogEntity<AreaWire>();
+  const talkingTo = useDialogEntity<AreaWire>();
 
   return (
     <div className="space-y-4">
@@ -48,7 +51,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
         <EmptyState
           icon={Compass}
           title="What's going on in your life right now?"
-          description="Career, health, family, whatever it is: add the standing parts of your life you want to keep in view, and say a bit about why each one matters at the moment."
+          description="Add a part of your life you want to keep in view, like career, health or family, and say why it matters right now. Sparky uses this to understand your life when you search or ask it something."
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Add the first
@@ -84,8 +87,16 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
                 <Button
                   variant="ghost"
                   size="sm"
+                  aria-label={`Tell me more about ${area.name}`}
+                  onClick={() => talkingTo.open(area)}
+                >
+                  <MessageCircle className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   aria-label={`Edit ${area.name}`}
-                  onClick={() => setEditing(area)}
+                  onClick={() => editing.open(area)}
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
@@ -105,12 +116,20 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
 
       <AreaForm open={createOpen} onOpenChange={setCreateOpen} />
       <AreaForm
-        open={editing !== null}
-        onOpenChange={(open) => {
-          if (!open) setEditing(null);
-        }}
-        {...(editing ? { area: editing } : {})}
+        open={editing.entity !== null}
+        onOpenChange={editing.onOpenChange}
+        {...(editing.entity ? { area: editing.entity } : {})}
       />
+      {talkingTo.entity && (
+        <ContextChatDrawer
+          open
+          onOpenChange={talkingTo.onOpenChange}
+          entityType="area"
+          entityId={talkingTo.entity.id}
+          entityName={talkingTo.entity.name}
+          currentDescription={talkingTo.entity.description}
+        />
+      )}
     </div>
   );
 }
