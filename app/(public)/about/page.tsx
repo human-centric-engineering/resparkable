@@ -103,15 +103,15 @@ export default function AboutPage() {
 
         <div className="relative container mx-auto px-4 pt-14 pb-12 md:pt-20 md:pb-16">
           <div className="max-w-2xl">
-            <p className="term-label obsidian-reveal">about</p>
+            <p className="term-label lattice-reveal">about</p>
             <h1
-              className="obsidian-reveal mt-5 text-4xl sm:text-5xl"
+              className="lattice-reveal mt-5 text-4xl sm:text-5xl"
               style={{ animationDelay: '70ms' }}
             >
               Nobody owns an idea.
             </h1>
             <p
-              className="text-muted-foreground obsidian-reveal mt-6 text-lg leading-relaxed"
+              className="text-muted-foreground lattice-reveal mt-6 text-lg leading-relaxed"
               style={{ animationDelay: '140ms' }}
             >
               <SparkWordmark className="text-foreground text-[0.95em]" /> exists for the thought

@@ -55,10 +55,9 @@
   --color-signal: #34d399;
   --color-info: #38bdf8;
   --color-warn: #fbbf24;
-  /* The one violet in the system, reserved for the AI sidekick. Rainbow
-     obsidian shows a violet sheen when the light catches a fracture; this is
-     the app's equivalent — you should only ever see it where the machine is
-     thinking on your behalf. */
+  /* The one violet in the system, reserved for the AI sidekick — it marks a
+     spark that did not come from you, a second colour for a second source.
+     You should only ever see it where the machine is thinking on your behalf. */
   --color-sheen: #c084fc;
 }
 

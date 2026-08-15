@@ -28,12 +28,12 @@ export default function PrivacyPage() {
   return (
     <div className="container mx-auto px-4 pt-14 pb-16 md:pt-20 md:pb-24">
       <div className="mx-auto max-w-3xl">
-        <SparkGlyph className="obsidian-reveal mb-5 h-5 w-[38px] opacity-40" />
-        <p className="term-label obsidian-reveal" style={{ animationDelay: '70ms' }}>
+        <SparkGlyph className="lattice-reveal mb-5 h-5 w-[38px] opacity-40" />
+        <p className="term-label lattice-reveal" style={{ animationDelay: '70ms' }}>
           privacy
         </p>
         <h1
-          className="obsidian-reveal mt-5 text-4xl sm:text-5xl"
+          className="lattice-reveal mt-5 text-4xl sm:text-5xl"
           style={{ animationDelay: '140ms' }}
         >
           What is stored.

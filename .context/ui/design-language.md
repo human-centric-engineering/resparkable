@@ -1,4 +1,4 @@
-# Design language — "amber phosphor on volcanic glass"
+# Design language — "amber phosphor on a hex lattice"
 
 Resparkable's visual system: what it is, where each part lives, and the rules that
 keep it coherent when someone adds a screen next month.
@@ -15,18 +15,20 @@ primitives · [`contextual-help.md`](./contextual-help.md) for `<FieldHelp>`.
 
 ## The idea
 
-The name is the brief. Obsidian is volcanic glass: black, cold, and _sharp_ — it
-fractures conchoidally, into edges rather than curves, which is why it made the
-first blades. But it was lava an hour ago, and a good specimen still catches
-light along a fracture.
+The name is the brief. A spark does not do anything on its own — it has to
+land somewhere it can travel, cell to cell, the way a thought catches and
+moves through a room instead of staying put. A hexagon is the shape that
+tiles a plane with no wasted space and every cell touching six neighbours:
+the geometry of a hive, and the geometry of an idea that gets passed on
+rather than kept.
 
 That gives three commitments the whole system follows from:
 
-| Commitment                      | What it means in the UI                                                       |
-| ------------------------------- | ----------------------------------------------------------------------------- |
-| **The base is glass, not soot** | Near-black with a blue-violet cast (`#0a0b0f`), never `#000`                  |
-| **Geometry fractures**          | Every radius roughly halved against Tailwind's defaults — 4px where it was 6  |
-| **One accent, used sparingly**  | Ember amber (dark) / indigo (light), only where something is live or selected |
+| Commitment                            | What it means in the UI                                                       |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| **The base is a dark cell, not soot** | Near-black with a blue-violet cast (`#0a0b0f`), never `#000`                  |
+| **Geometry keeps its facets**         | Every radius roughly halved against Tailwind's defaults — 4px where it was 6  |
+| **One accent, used sparingly**        | Ember amber (dark) / indigo (light), only where something is live or selected |
 
 And one product commitment underneath them: **the chrome is an instrument, the
 content is a page.** The shell around your notes reads like a terminal. The notes
@@ -185,7 +187,7 @@ Two lessons worth keeping:
   them to move. It is worth keeping `background` and `card` visibly distinct for
   that reason alone.
 - **A page background with texture is a correctness constraint, not decoration.**
-  `.obsidian-field` means anything without a surface leaks the grid. That is a
+  `.lattice-field` means anything without a surface leaks the grid. That is a
   feature — it makes the omission obvious instead of invisible — but it means new
   containers must say `bg-card` from the start.
 
@@ -200,9 +202,9 @@ be a lie.
 
 `--color-sheen` (violet) is the one exception to "one accent", and it is
 reserved: **only ever where the machine is thinking on your behalf** — the
-sidekick, streaming responses, AI suggestions. Rainbow obsidian shows a violet
-sheen when light catches a fracture; this is the app's equivalent. Use it
-anywhere else and it stops meaning anything.
+sidekick, streaming responses, AI suggestions. It marks a spark that did not
+come from you — a second colour for a second source. Use it anywhere else
+and it stops meaning anything.
 
 **`--color-sheen` is the one to watch when the primary moves.** In light mode it
 is pushed most of the way to fuchsia (`#a21caf`) rather than the violet it uses
@@ -237,10 +239,10 @@ separation is the floor.** A surface-distinguishing colour that no longer
 distinguishes is worse than none, because it is still claiming to.
 
 Unlike consumer, admin keeps one hue across both modes (teal-700 on paper,
-teal-400 on glass). The back office has no brand story to tell; it needs to be
+teal-400 in dark mode). The back office has no brand story to tell; it needs to be
 unmistakably not-your-notes in whichever mode you are in, and nothing more.
 
-The admin block declares **deltas only** (`primary`, `ring`, `--obs-bloom`).
+The admin block declares **deltas only** (`primary`, `ring`, `--lattice-bloom`).
 Everything else is inherited, so a palette edit reaches admin too and the two
 surfaces can never drift into being two products.
 
@@ -267,17 +269,18 @@ room.
 
 All in `@layer components`, so a Tailwind utility on the same element still wins.
 
-| Class               | Use for                                                                            |
-| ------------------- | ---------------------------------------------------------------------------------- |
-| `.term-label`       | Naming a region without spending a heading on it — nav groups, column heads        |
-| `.term-meta`        | The same job in a quieter voice, for labels that repeat once per row               |
-| `.term-rule`        | A dashed divider _within_ a panel, where a solid border would imply false nesting  |
-| `.obsidian-field`   | The page background. Replaces `bg-background` on layout roots                      |
-| `.obsidian-chrome`  | Sticky header / rail glass — blur + saturation + a 1px top highlight               |
-| `.live-edge`        | **"This one is live."** A 2px lit bar hard against the left edge                   |
-| `.obsidian-reveal`  | One 12px rise-and-fade, on first paint only                                        |
-| `.terminal-surface` | **Where the machine talks** — chat, capture box, briefing. Mono for the subtree    |
-| `.spark-lit`        | The lit syllable of the wordmark — the accent plus a halo that only shows on glass |
+| Class                | Use for                                                                                |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| `.term-label`        | Naming a region without spending a heading on it — nav groups, column heads            |
+| `.term-meta`         | The same job in a quieter voice, for labels that repeat once per row                   |
+| `.term-rule`         | A dashed divider _within_ a panel, where a solid border would imply false nesting      |
+| `.lattice-field`     | The page background: a square alignment grid. Replaces `bg-background` on layout roots |
+| `.lattice-field-hex` | Same ground, a hex lattice instead of the square grid — the app's default background   |
+| `.lattice-chrome`    | Sticky header / rail panel — blur + saturation + a 1px top highlight                   |
+| `.live-edge`         | **"This one is live."** A 2px lit bar hard against the left edge                       |
+| `.lattice-reveal`    | One 12px rise-and-fade, on first paint only                                            |
+| `.terminal-surface`  | **Where the machine talks** — chat, capture box, briefing. Mono for the subtree        |
+| `.spark-lit`         | The lit syllable of the wordmark — the accent plus a halo that only shows in dark mode |
 
 ### `.terminal-surface`
 
@@ -299,7 +302,7 @@ needs more leading to land. It deliberately does **not** set a max-width —
 callers own their measure, and a monospace column wants a narrower one than sans.
 If you apply this to something full-bleed, cap the line length yourself.
 
-### `.obsidian-field`
+### `.lattice-field`
 
 A 48px grid at ~4% opacity with a single warm bloom top-left. The grid does real
 work rather than being texture: it gives the eye a reference for the alignment
@@ -310,6 +313,26 @@ removed, not when it is there.
 `background-attachment: fixed` keeps it still while content scrolls over it, which
 is what sells it as a surface. Dropped on touch devices, where fixed attachment is
 both expensive and unsupported.
+
+### `.lattice-field-hex`
+
+The same ground as `.lattice-field`, drawn as a hex lattice instead of a
+square grid — the honeycomb used on the public marketing pages and, as of
+this pass, the default background for the authenticated app too. Same bloom,
+same "you notice it when it's removed" contrast target; only the cell shape
+changes.
+
+It renders the pattern as a `::before` overlay rather than a `background-image`
+on the element itself, because a `mask-image` (needed to build a hexagonal line
+grid at all — see the rule's own comment in `brand-theme.css` for why
+`linear-gradient` stripes can't do it) would mask the element's children too if
+applied directly. That has one sharp edge: an overlay is a positioned element,
+and CSS paints positioned, `z-index: auto` children _above_ plain in-flow
+content — so without `z-index: -1` plus `isolation: isolate` on the container,
+the honeycomb renders on top of every ordinary white card instead of underneath
+it. `.lattice-field`'s square grid never has this problem, since a
+`background-image` always paints below an element's own content regardless of
+positioning.
 
 ### `.live-edge` — the scarcity rule
 
@@ -329,10 +352,10 @@ The middle syllable of `re·spark·able`, and the only part of the wordmark
 carrying the accent — `re` and `able` are the quiet field it sits in, which is
 what keeps a three-colour logo inside the one-accent rule.
 
-The halo draws in **`--obs-bloom`**, the same wash `.obsidian-field` puts in the
+The halo draws in **`--lattice-bloom`**, the same wash `.lattice-field` puts in the
 corner of the page, rather than a literal amber. That is what makes it
-mode-correct without a `.dark` variant: on glass the token is the ember at 9% and
-the glow reads; on paper it is indigo at 4.5% and the glow is effectively absent.
+mode-correct without a `.dark` variant: in dark mode the token is the ember at 9%
+and the glow reads; on paper it is indigo at 4.5% and the glow is effectively absent.
 **The asymmetry is the point** — a halo on a white page does not read as light,
 it reads as a printing fault, which is the same reason light mode has no accent
 glow anywhere else.
@@ -345,7 +368,7 @@ already has a `.live-edge`, this is still not it.
 
 ## Motion
 
-One orchestrated arrival — `.obsidian-reveal`, a 12px rise and fade — and
+One orchestrated arrival — `.lattice-reveal`, a 12px rise and fade — and
 essentially nothing else. It says the app assembled itself, then gets out of the
 way. Stagger via inline `animation-delay` on the caller, so nothing has to be told
 how many siblings it has.

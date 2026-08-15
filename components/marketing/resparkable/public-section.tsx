@@ -28,7 +28,7 @@ import { SparkGlyph, SparkRule } from '@/components/brand/spark-glyph';
  *
  * ## Why sections have no background
  *
- * The page runs `.obsidian-field-hex`, and the grid is the alignment reference
+ * The page runs `.lattice-field-hex`, and the grid is the alignment reference
  * every column here is set against. Banding alternate sections would cover it
  * and put the layout back on the reader's word rather than the page's.
  * Separation is `SparkRule` instead — see that component for why a plain

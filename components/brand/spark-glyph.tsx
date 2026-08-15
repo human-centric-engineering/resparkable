@@ -134,7 +134,7 @@ export function SparkGlyph({
  * A section rule with the mark set into it.
  *
  * The public pages separate sections with a single line rather than banding
- * them, because banding would cover `.obsidian-field-hex`'s grid — the
+ * them, because banding would cover `.lattice-field-hex`'s grid — the
  * alignment reference every column is set against. That line used to be a
  * flat `--color-border` hairline, and against the honeycomb it disappeared:
  * a neutral hairline at low opacity and the hex grid's own lines are the
