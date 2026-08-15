@@ -8,6 +8,7 @@
 
 import type { User } from '@/types/prisma';
 import type { APIResponse } from '@/types/api';
+import type { SparkeyPronoun } from '@/lib/resparkable/sparkey-pronoun';
 
 // Re-export storage types
 export type {
@@ -56,13 +57,23 @@ export interface UserEmailPreferences {
 }
 
 /**
+ * Sparkey Preferences
+ *
+ * How the app refers to Sparkey (the AI assistant) in copy that needs a pronoun.
+ */
+export interface SparkeyPreferences {
+  pronoun: SparkeyPronoun;
+}
+
+/**
  * User Preferences
  *
  * Top-level preferences object stored in User.preferences JSON field.
- * Currently contains email preferences, extensible for future preference types.
+ * Contains email preferences and the Sparkey pronoun preference.
  */
 export interface UserPreferences {
   email: UserEmailPreferences;
+  sparkey: SparkeyPreferences;
 }
 
 /**

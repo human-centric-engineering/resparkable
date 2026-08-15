@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { z } from 'zod';
 
+import { AboutSparkey } from '@/components/settings/about-sparkey';
 import { SpaceSettingsForm } from '@/components/resparkable/settings/space-settings-form';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -40,6 +41,10 @@ export default async function ResparkableSettingsPage() {
 
   return (
     <div className="max-w-2xl space-y-4">
+      {/* About Sparkey, ahead of everything else on this page: who it is and
+          how to refer to it, before the settings that change how it behaves. */}
+      <AboutSparkey />
+
       <p className="text-muted-foreground text-sm">
         Yours alone. Everything scheduled — snoozes, retention, &ldquo;tomorrow morning&rdquo; —
         resolves in the timezone below rather than the server&rsquo;s.

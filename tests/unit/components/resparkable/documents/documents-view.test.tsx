@@ -122,7 +122,7 @@ describe('DocumentsView', () => {
     render(<DocumentsView documents={[]} />);
 
     expect(screen.getByText('No documents yet')).toBeInTheDocument();
-    expect(screen.getByText(/Sparky can use it when answering you/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparkey can use it when answering you/i)).toBeInTheDocument();
   });
 
   it('always offers the upload control, even with documents present', () => {

@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { emailSchema, passwordSchema } from '@/lib/validations/auth';
 import { paginationQuerySchema, sortingQuerySchema, cuidSchema } from '@/lib/validations/common';
+import { SPARKEY_PRONOUNS, DEFAULT_SPARKEY_PRONOUN } from '@/lib/resparkable/sparkey-pronoun';
 
 /**
  * Update user profile schema (PATCH /api/v1/users/me)
@@ -71,12 +72,23 @@ export const emailPreferencesSchema = z.object({
 });
 
 /**
+ * Sparkey preferences schema
+ *
+ * Validates how the app refers to Sparkey (the AI assistant) — a pronoun
+ * chosen by the user, defaulting to "it" since Sparkey is a tool, not a person.
+ */
+export const sparkeyPreferencesSchema = z.object({
+  pronoun: z.enum(SPARKEY_PRONOUNS).default(DEFAULT_SPARKEY_PRONOUN),
+});
+
+/**
  * User preferences schema (GET/PATCH /api/v1/users/me/preferences)
  *
  * Validates the full user preferences object.
  */
 export const userPreferencesSchema = z.object({
   email: emailPreferencesSchema,
+  sparkey: sparkeyPreferencesSchema.default({ pronoun: DEFAULT_SPARKEY_PRONOUN }),
 });
 
 /**
@@ -90,6 +102,9 @@ export const DEFAULT_USER_PREFERENCES: z.infer<typeof userPreferencesSchema> = {
     marketing: false,
     productUpdates: true,
     securityAlerts: true,
+  },
+  sparkey: {
+    pronoun: DEFAULT_SPARKEY_PRONOUN,
   },
 };
 
@@ -118,6 +133,7 @@ export function parseUserPreferences(
  */
 export const updatePreferencesSchema = z.object({
   email: emailPreferencesSchema.partial().optional(),
+  sparkey: sparkeyPreferencesSchema.partial().optional(),
 });
 
 /**
@@ -240,6 +256,7 @@ export type AcceptInvitationInput = z.infer<typeof acceptInvitationSchema>;
 
 // Phase 3.2 additions
 export type EmailPreferencesInput = z.infer<typeof emailPreferencesSchema>;
+export type SparkeyPreferencesInput = z.infer<typeof sparkeyPreferencesSchema>;
 export type UserPreferencesInput = z.infer<typeof userPreferencesSchema>;
 export type UpdatePreferencesInput = z.infer<typeof updatePreferencesSchema>;
 export type DeleteAccountInput = z.infer<typeof deleteAccountSchema>;

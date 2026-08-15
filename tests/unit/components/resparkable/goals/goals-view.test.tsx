@@ -161,7 +161,7 @@ describe('GoalsView', () => {
     render(<GoalsView goals={[]} areas={[]} />);
 
     expect(screen.getByText('No goals yet')).toBeInTheDocument();
-    expect(screen.getByText(/Sparky uses your goals as context/i)).toBeInTheDocument();
+    expect(screen.getByText(/Sparkey uses your goals as context/i)).toBeInTheDocument();
   });
 
   it('opens the create dialog from the header "New goal" button', async () => {

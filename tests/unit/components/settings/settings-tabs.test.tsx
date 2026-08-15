@@ -81,6 +81,9 @@ const mockPreferences: UserPreferences = {
     productUpdates: true,
     securityAlerts: true,
   },
+  sparkey: {
+    pronoun: 'it',
+  },
 };
 
 const defaultProps = {

@@ -29,6 +29,7 @@ import { GoalForm } from '@/components/resparkable/goals/goal-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { useNow } from '@/components/resparkable/ui/use-now';
+import { useSparkeyPronoun } from '@/components/resparkable/sparkey-pronoun-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
@@ -48,6 +49,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
   const [createOpen, setCreateOpen] = React.useState(false);
   const editing = useDialogEntity<GoalWire>();
   const talkingTo = useDialogEntity<GoalWire>();
+  const sparkey = useSparkeyPronoun();
 
   const present = new Set(goals.map((goal) => goal.id));
 
@@ -80,7 +82,7 @@ export function GoalsView({ goals, areas }: GoalsViewProps): React.ReactElement 
         <EmptyState
           icon={Target}
           title="No goals yet"
-          description="Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparky uses your goals as context when it helps you."
+          description={`Set a goal for something you're aiming for, with a target date if it has one. Tasks and projects linked to a goal get suggested to you sooner, and Sparkey uses your goals as context when ${sparkey.subject} helps you.`}
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Set one

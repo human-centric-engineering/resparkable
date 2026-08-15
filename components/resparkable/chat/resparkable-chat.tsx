@@ -395,8 +395,8 @@ export function ResparkableChat({
             <EmptyState
               icon={SparkGlyph}
               iconClassName="h-8 w-[60px]"
-              title="Ask Sparky"
-              description="Sparky has a record of everything you've shared and can find meaning and connections based on what matters to you. Talk with the mic or write down your thoughts."
+              title="Ask Sparkey"
+              description="Sparkey has a record of everything you've shared and can find meaning and connections based on what matters to you. Talk with the mic or write down your thoughts."
               className="border-0"
               action={
                 starterPrompts.length > 0 ? (

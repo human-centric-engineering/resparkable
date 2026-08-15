@@ -17,6 +17,7 @@ import { AreaForm } from '@/components/resparkable/areas/area-form';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
+import { useSparkeyPronoun } from '@/components/resparkable/sparkey-pronoun-provider';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -31,6 +32,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
   const [createOpen, setCreateOpen] = React.useState(false);
   const editing = useDialogEntity<AreaWire>();
   const talkingTo = useDialogEntity<AreaWire>();
+  const sparkey = useSparkeyPronoun();
 
   return (
     <div className="space-y-4">
@@ -51,7 +53,7 @@ export function AreasView({ areas }: AreasViewProps): React.ReactElement {
         <EmptyState
           icon={Compass}
           title="What's going on in your life right now?"
-          description="Add a part of your life you want to keep in view, like career, health or family, and say why it matters right now. Sparky uses this to understand your life when you search or ask it something."
+          description={`Add a part of your life you want to keep in view, like career, health or family, and say why it matters right now. Sparkey uses this to understand your life when you search or ask ${sparkey.object} something.`}
           action={
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               Add the first

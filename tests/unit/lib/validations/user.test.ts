@@ -20,6 +20,7 @@ import {
   inviteUserSchema,
   acceptInvitationSchema,
   emailPreferencesSchema,
+  sparkeyPreferencesSchema,
   userPreferencesSchema,
   updatePreferencesSchema,
   deleteAccountSchema,
@@ -829,6 +830,29 @@ describe('emailPreferencesSchema', () => {
   });
 });
 
+describe('sparkeyPreferencesSchema', () => {
+  it('should default pronoun to "it" when omitted', () => {
+    const result = sparkeyPreferencesSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.pronoun).toBe('it');
+    }
+  });
+
+  it.each(['it', 'he', 'she'])('should accept pronoun "%s"', (pronoun) => {
+    const result = sparkeyPreferencesSchema.safeParse({ pronoun });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.pronoun).toBe(pronoun);
+    }
+  });
+
+  it('should reject an unsupported pronoun', () => {
+    const result = sparkeyPreferencesSchema.safeParse({ pronoun: 'they' });
+    expect(result.success).toBe(false);
+  });
+});
+
 describe('userPreferencesSchema', () => {
   describe('valid preferences', () => {
     it('should accept complete preferences object', () => {
@@ -838,9 +862,15 @@ describe('userPreferencesSchema', () => {
           productUpdates: true,
           securityAlerts: true,
         },
+        sparkey: {
+          pronoun: 'he',
+        },
       });
       // test-review:accept tobe_true — structural assertion on Zod safeParse success field; valid-input contract check
       expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sparkey.pronoun).toBe('he');
+      }
     });
 
     it('should use email defaults when email is empty', () => {
@@ -854,6 +884,16 @@ describe('userPreferencesSchema', () => {
         // test-review:accept tobe_true — boolean schema fields; asserting parsed default values, not degenerate success checks
         expect(result.data.email.productUpdates).toBe(true);
         expect(result.data.email.securityAlerts).toBe(true);
+      }
+    });
+
+    it('should default sparkey.pronoun to "it" when sparkey is omitted', () => {
+      const result = userPreferencesSchema.safeParse({
+        email: {},
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sparkey.pronoun).toBe('it');
       }
     });
   });
@@ -911,6 +951,17 @@ describe('updatePreferencesSchema', () => {
       // test-review:accept tobe_true — structural assertion on Zod safeParse success field; valid-input contract check
       expect(result.success).toBe(true);
     });
+
+    it('should accept a sparkey pronoun update', () => {
+      const result = updatePreferencesSchema.safeParse({
+        sparkey: { pronoun: 'she' },
+      });
+      // test-review:accept tobe_true — structural assertion on Zod safeParse success field; valid-input contract check
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.sparkey?.pronoun).toBe('she');
+      }
+    });
   });
 
   describe('invalid partial updates', () => {
@@ -926,6 +977,13 @@ describe('updatePreferencesSchema', () => {
     it('should reject non-object email value', () => {
       const result = updatePreferencesSchema.safeParse({
         email: 'invalid',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject an unsupported sparkey pronoun', () => {
+      const result = updatePreferencesSchema.safeParse({
+        sparkey: { pronoun: 'they' },
       });
       expect(result.success).toBe(false);
     });
