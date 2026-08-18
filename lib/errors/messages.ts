@@ -50,6 +50,9 @@ export const ErrorMessages: Record<ErrorCode, string> = {
   [ErrorCodes.INVALID_FILE_TYPE]: 'This file type is not supported.',
   [ErrorCodes.UPLOAD_FAILED]: 'Failed to upload file. Please try again.',
   [ErrorCodes.STORAGE_NOT_CONFIGURED]: 'File uploads are not available at this time.',
+  // Billing errors
+  [ErrorCodes.INSUFFICIENT_CREDITS]:
+    'Insufficient credit balance. Please contact an admin for more credits.',
 };
 
 /**

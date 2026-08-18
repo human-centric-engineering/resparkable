@@ -188,3 +188,51 @@ export function resolveRetentionPolicy(value: unknown): RetentionPolicy {
   const parsed = retentionPolicySchema.safeParse(value);
   return parsed.success ? parsed.data : DEFAULT_RETENTION_POLICY;
 }
+
+// ─── Billing settings ─────────────────────────────────────────────────────────
+
+/**
+ * Resolved shape of `ResparkableBillingSettings`: what every billing-aware
+ * code path reads, never the raw Prisma row.
+ *
+ * Unlike `documentOriginals`/`maxDocumentBytes` above, these columns are all
+ * non-nullable with DB-level defaults, so there is no malformed-value axis to
+ * guard once a row exists. The only thing to resolve is "no admin has saved
+ * settings yet", i.e. `findResparkableBillingSettings()` returned `null`.
+ */
+export interface ResolvedBillingSettings {
+  creditsPerUsd: number;
+  serviceChargePercent: number;
+  costVisibleToUsersDefault: boolean;
+  currencyLabel: string;
+  newUserGrantCredits: number;
+}
+
+/** 1 credit per $1 spent, no service charge, credits shown by default. */
+export const DEFAULT_BILLING_SETTINGS: ResolvedBillingSettings = {
+  creditsPerUsd: 1,
+  serviceChargePercent: 0,
+  costVisibleToUsersDefault: true,
+  currencyLabel: 'credits',
+  newUserGrantCredits: 0,
+};
+
+/** Resolve the billing settings row (or its absence) to the values in force. */
+export function resolveBillingSettings(
+  row: {
+    creditsPerUsd: number;
+    serviceChargePercent: number;
+    costVisibleToUsersDefault: boolean;
+    currencyLabel: string;
+    newUserGrantCredits: number;
+  } | null
+): ResolvedBillingSettings {
+  if (!row) return DEFAULT_BILLING_SETTINGS;
+  return {
+    creditsPerUsd: row.creditsPerUsd,
+    serviceChargePercent: row.serviceChargePercent,
+    costVisibleToUsersDefault: row.costVisibleToUsersDefault,
+    currencyLabel: row.currencyLabel,
+    newUserGrantCredits: row.newUserGrantCredits,
+  };
+}

@@ -48,6 +48,8 @@ vi.mock('@/lib/db/client', () => ({
       'resparkableTimeBlock',
       'resparkableReview',
       'resparkableEvent',
+      'resparkableCreditAccount',
+      'resparkableCreditLedgerEntry',
     ].map((model) => [model, { findMany: vi.fn() }])
   ),
 }));
@@ -70,6 +72,8 @@ const MODELS = [
   'resparkableTimeBlock',
   'resparkableReview',
   'resparkableEvent',
+  'resparkableCreditAccount',
+  'resparkableCreditLedgerEntry',
 ] as const;
 
 import { prisma } from '@/lib/db/client';

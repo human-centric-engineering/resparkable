@@ -17,6 +17,9 @@
 
 import { randomBytes } from 'node:crypto';
 
+import { applyLedgerEntry, ensureCreditAccount } from '@/lib/framework/resparkable/repo/billing';
+import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
+import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
   createSpace,
   findSpaceByToken,
@@ -24,6 +27,7 @@ import {
   updateSpaceSettings,
 } from '@/lib/framework/resparkable/repo/space';
 import {
+  resolveBillingSettings,
   resolveEnergyProfile,
   resolvePriorityWeights,
   resolveRetentionPolicy,
@@ -94,6 +98,23 @@ export async function ensureResparkableSpace(userId: string): Promise<Resparkabl
     // queries there to catch a twice-a-year offset change is the wrong trade.
     await ensureResparkableSchedules(userId, created.timezone).catch((error: unknown) => {
       logger.warn('Resparkable schedules could not be created for a new space', {
+        userId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    // Phase 29: billing. Same fire-and-forget shape as the schedules call
+    // above and for the same reason: this is the read path of a brand-new
+    // brain and must not 500 because billing setup was briefly unavailable.
+    // Unlike schedules, a missed grant here is not silently corrected later:
+    // `assertPositiveBalance`'s lazy backfill creates the account at zero
+    // balance with no retroactive grant (that grant is specifically for
+    // genuinely new users, i.e. this branch). So this failing means a new
+    // user starts at zero instead of their configured grant, worse than a
+    // missed schedule correction, but still better than blocking their first
+    // page load on it.
+    await ensureNewUserCreditGrant(userId).catch((error: unknown) => {
+      logger.warn('Resparkable credit account could not be created for a new space', {
         userId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -224,4 +245,24 @@ function toSettings(space: ResparkableSpace): ResparkableSettings {
 /** Prisma's unique-constraint error code, without importing the runtime namespace. */
 function isUniqueConstraintViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
+}
+
+/**
+ * Create a new space's credit account and, if this deployment configures
+ * one, its opening `admin_grant` ledger entry, kept as a real ledger row
+ * rather than an unexplained starting balance, so every credit an account
+ * ever holds traces back to one.
+ */
+async function ensureNewUserCreditGrant(userId: string): Promise<void> {
+  const scope = ownerScope(userId);
+  await ensureCreditAccount(scope, 0);
+
+  const settings = resolveBillingSettings(await findResparkableBillingSettings());
+  if (settings.newUserGrantCredits > 0) {
+    await applyLedgerEntry(scope, {
+      kind: 'admin_grant',
+      creditsDelta: settings.newUserGrantCredits,
+      note: 'New user grant',
+    });
+  }
 }

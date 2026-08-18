@@ -18,6 +18,20 @@ release process.
 
 ### Added
 
+- **Phase 29: billing foundation.** New `ResparkableCreditAccount` (per-user
+  credit balance), `ResparkableCreditLedgerEntry` (append-only spend/grant
+  history), and `ResparkableBillingSettings` (global policy: credits-per-dollar,
+  service charge, new-user grant) models. Agent spend is now debited across
+  three sites: chat (`POST /api/v1/resparkable/chat/stream`), ideate
+  (`POST /api/v1/resparkable/ideate`), and the four calendar-scheduled
+  workflows, tracked via a new pass on the existing connection-sweep job. A
+  zero or negative balance blocks further agent-backed calls with a new 402
+  `InsufficientCreditsError`. New admin routes under
+  `/api/v1/admin/resparkable/billing/**` (settings, per-user accounts, grants)
+  and a Billing tab on `/admin/resparkable/settings`. Both new user-scoped
+  models are covered by GDPR export (`RESPARKABLE_SUBJECT_SOURCES`) and
+  erasure (cascade via `ResparkableSpace`, no new code required).
+
 - **Sparkey pronoun preference.** The assistant, formerly referred to in UI copy
   as "Sparky", is now consistently "Sparkey". A new `sparkey` object on
   `GET`/`PATCH /api/v1/users/me/preferences` (`{ pronoun: 'it' | 'he' | 'she' }`,

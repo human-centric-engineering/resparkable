@@ -65,19 +65,33 @@ vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
 vi.mock('@/lib/framework/resparkable/search/connections', () => ({ sweepConnections: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/schedules/ensure', () => ({
   ensureResparkableSchedules: vi.fn(),
+  // Real values, not mocked — jobs.ts reads this at module scope
+  // (`Object.values(...)`), and the pass under test filters on it.
+  RESPARKABLE_SCHEDULED_WORKFLOWS: {
+    nightlyTriage: 'resparkable-nightly-triage',
+    morningBriefing: 'resparkable-morning-briefing',
+    weeklyReview: 'resparkable-weekly-review',
+    horizonCheck: 'resparkable-horizon-check',
+  },
 }));
 vi.mock('@/lib/framework/resparkable/services/retention', () => ({
   enforceResparkableRetention: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
+  findRecentTerminalResparkableExecutions: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({ recordAgentSpend: vi.fn() }));
 vi.mock('@/lib/logging', () => ({
   logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import { runResparkableSweepJob } from '@/lib/framework/resparkable/jobs';
-import { listSpacesDueSweep, markSpacesSwept } from '@/lib/framework/resparkable/repo/space';
+import { findRecentTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
 import { deleteOrphanedResparkableSchedules } from '@/lib/framework/resparkable/repo/schedules';
+import { listSpacesDueSweep, markSpacesSwept } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableSchedules } from '@/lib/framework/resparkable/schedules/ensure';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
+import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
 import { logger } from '@/lib/logging';
 
@@ -87,6 +101,8 @@ const mockedOrphans = vi.mocked(deleteOrphanedResparkableSchedules);
 const mockedSweep = vi.mocked(sweepConnections);
 const mockedEnsure = vi.mocked(ensureResparkableSchedules);
 const mockedRetention = vi.mocked(enforceResparkableRetention);
+const mockedFindExecutions = vi.mocked(findRecentTerminalResparkableExecutions);
+const mockedRecordSpend = vi.mocked(recordAgentSpend);
 const mockedLoggerError = vi.mocked(logger.error);
 
 const NOW = new Date('2026-08-04T09:00:00.000Z');
@@ -122,6 +138,8 @@ beforeEach(() => {
   mockedSweep.mockResolvedValue(sweepResult(0));
   mockedEnsure.mockResolvedValue(ensureResult());
   mockedRetention.mockResolvedValue(retentionResult());
+  mockedFindExecutions.mockResolvedValue([]);
+  mockedRecordSpend.mockResolvedValue(null);
 });
 
 describe('runResparkableSweepJob', () => {
@@ -218,6 +236,8 @@ describe('runResparkableSweepJob', () => {
       retentionArchived: 0,
       retentionPruned: 0,
       retentionCapped: false,
+      executionsBilled: 0,
+      executionsSkipped: 0,
     });
     // Nothing was swept, so nothing should be stamped — and with no brain due,
     // there is nobody to run a schedule pass or a retention pass for.
@@ -411,5 +431,120 @@ describe('runResparkableSweepJob — the retention pass', () => {
 
     expect(mockedRetention).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ failed: 1, retentionPruned: 12 });
+  });
+});
+
+/**
+ * Phase 29's billing pass: `billResparkableWorkflowExecutions`, exercised
+ * through the tick it rides on. Unconditional (runs even with nothing due to
+ * sweep) and independent of the per-user rotation. See `jobs.ts`.
+ */
+describe('runResparkableSweepJob — the billing pass', () => {
+  interface FakeExecution {
+    id: string;
+    userId: string | null;
+    scope: unknown;
+    totalCostUsd: number;
+  }
+
+  function execution(overrides: Partial<FakeExecution> = {}): FakeExecution {
+    return {
+      id: 'exec_1',
+      userId: 'user_a',
+      scope: null,
+      totalCostUsd: 0.5,
+      ...overrides,
+    };
+  }
+
+  it('runs even on a tick with nothing due to sweep', async () => {
+    mockedList.mockResolvedValue([]);
+    mockedFindExecutions.mockResolvedValue([execution()]);
+    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
+
+    const result = await runResparkableSweepJob(NOW);
+
+    expect(mockedFindExecutions).toHaveBeenCalledTimes(1);
+    expect(result.executionsBilled).toBe(1);
+  });
+
+  it('bills a queued execution using its own userId', async () => {
+    mockedFindExecutions.mockResolvedValue([execution({ userId: 'user_a', totalCostUsd: 1.2 })]);
+    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
+
+    await runResparkableSweepJob(NOW);
+
+    expect(mockedRecordSpend).toHaveBeenCalledTimes(1);
+    expect(mockedRecordSpend.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(mockedRecordSpend.mock.calls[0]?.[1]).toMatchObject({
+      tokenCostUsd: 1.2,
+      relatedWorkflowExecutionId: 'exec_1',
+    });
+  });
+
+  it('bills a cron-fired execution (userId: null) using scope[resparkableUserId]', async () => {
+    mockedFindExecutions.mockResolvedValue([
+      execution({ userId: null, scope: { resparkableUserId: 'user_scoped' } }),
+    ]);
+    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
+
+    await runResparkableSweepJob(NOW);
+
+    expect(mockedRecordSpend.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_scoped' });
+  });
+
+  it('skips (does not bill) an execution with neither userId nor a scoped owner', async () => {
+    mockedFindExecutions.mockResolvedValue([execution({ userId: null, scope: null })]);
+
+    const result = await runResparkableSweepJob(NOW);
+
+    expect(mockedRecordSpend).not.toHaveBeenCalled();
+    expect(result.executionsSkipped).toBe(1);
+    expect(result.executionsBilled).toBe(0);
+  });
+
+  it('skips a zero-cost execution without writing a ledger row', async () => {
+    mockedFindExecutions.mockResolvedValue([execution({ totalCostUsd: 0 })]);
+
+    await runResparkableSweepJob(NOW);
+
+    expect(mockedRecordSpend).not.toHaveBeenCalled();
+  });
+
+  /**
+   * REGRESSION: idempotency. A repeat pass over an already-billed execution
+   * must be a silent no-op, not an error: the ledger's own
+   * `@@unique([kind, relatedWorkflowExecutionId])` constraint is what makes a
+   * second tick over the same completed execution safe.
+   */
+  it('treats a P2002 from an already-billed execution as a silent skip, not an error', async () => {
+    mockedFindExecutions.mockResolvedValue([execution()]);
+    mockedRecordSpend.mockRejectedValueOnce({ code: 'P2002' });
+
+    const result = await runResparkableSweepJob(NOW);
+
+    expect(result.executionsBilled).toBe(0);
+    expect(mockedLoggerError).not.toHaveBeenCalledWith(
+      'Resparkable workflow-execution billing failed for one run',
+      expect.anything()
+    );
+  });
+
+  it('logs and continues past a genuine billing failure, without stopping the batch', async () => {
+    mockedFindExecutions.mockResolvedValue([
+      execution({ id: 'exec_bad' }),
+      execution({ id: 'exec_good' }),
+    ]);
+    mockedRecordSpend
+      .mockRejectedValueOnce(new Error('ledger write failed'))
+      .mockResolvedValueOnce({ id: 'ledger_1' } as never);
+
+    const result = await runResparkableSweepJob(NOW);
+
+    expect(result.executionsBilled).toBe(1);
+    expect(mockedLoggerError).toHaveBeenCalledWith(
+      'Resparkable workflow-execution billing failed for one run',
+      expect.objectContaining({ executionId: 'exec_bad', error: 'ledger write failed' })
+    );
   });
 });

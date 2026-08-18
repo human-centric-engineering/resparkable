@@ -41,6 +41,9 @@ vi.mock('@/lib/framework/resparkable/services/briefing', () => ({
   getStoredBriefing: vi.fn(),
   buildBriefingInputs: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
+  findRecentTerminalResparkableExecutions: vi.fn().mockResolvedValue([]),
+}));
 
 import {
   registerResparkableErasure,

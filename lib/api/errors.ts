@@ -36,6 +36,8 @@ export const ErrorCodes = {
   INVALID_FILE_TYPE: 'INVALID_FILE_TYPE',
   UPLOAD_FAILED: 'UPLOAD_FAILED',
   STORAGE_NOT_CONFIGURED: 'STORAGE_NOT_CONFIGURED',
+  // Billing errors
+  INSUFFICIENT_CREDITS: 'INSUFFICIENT_CREDITS',
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -159,6 +161,26 @@ export class ConflictError extends APIError {
   constructor(message: string = 'Resource already exists', details?: Record<string, unknown>) {
     super(message, ErrorCodes.CONFLICT, 409, details);
     this.name = 'ConflictError';
+  }
+}
+
+/**
+ * Insufficient credits error (402 Payment Required)
+ *
+ * Used when a billing-gated action is refused because the caller's credit
+ * balance is zero or below.
+ *
+ * @example
+ * ```typescript
+ * if (account.balanceCredits <= 0) {
+ *   throw new InsufficientCreditsError()
+ * }
+ * ```
+ */
+export class InsufficientCreditsError extends APIError {
+  constructor(message: string = 'Insufficient credit balance') {
+    super(message, ErrorCodes.INSUFFICIENT_CREDITS, 402);
+    this.name = 'InsufficientCreditsError';
   }
 }
 

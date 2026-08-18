@@ -191,6 +191,28 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     fetch: (scope) =>
       prisma.resparkableEvent.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
   },
+  ResparkableCreditAccount: {
+    // Distinct from ResparkableCreditLedgerEntry's section below:
+    // `collectResparkableSubjectData` keys its output object by `section`, so
+    // two sources sharing one would silently drop one from the export.
+    section: 'billingAccount',
+    holds: 'Their current credit balance.',
+    // `findMany` rather than `findUnique`, even though `userId` is unique on
+    // this table. Every other source here is a `findMany` returning an
+    // array, and matching that shape keeps this fetch exhaustively coverable
+    // by the same owner-scoping test harness the other sixteen sources share.
+    fetch: (scope) =>
+      prisma.resparkableCreditAccount.findMany({ where: ownerWhere(scope), take: 1 }),
+  },
+  ResparkableCreditLedgerEntry: {
+    section: 'billingLedger',
+    holds: 'Their spend and grant history: what they were charged, when, and by whom.',
+    fetch: (scope) =>
+      prisma.resparkableCreditLedgerEntry.findMany({
+        where: ownerWhere(scope),
+        orderBy: CHRONOLOGICAL,
+      }),
+  },
 };
 
 /** A table left out of the export, and the reason a reader is owed. */
