@@ -23,6 +23,7 @@ import {
   openTabInLeaf,
   reorderTab,
   resizeSplit,
+  setRouteTab,
   showLauncher,
   splitLeaf,
   type LeafNode,
@@ -277,5 +278,93 @@ describe('resizeSplit', () => {
   it('is a no-op for a leaf id (only splits have sizes)', () => {
     const leaf = createLeaf('a');
     expect(resizeSplit(leaf, 'a', [100])).toEqual(leaf);
+  });
+});
+
+describe('setRouteTab', () => {
+  it('opens the tab in the fallback leaf when no route tab exists yet', () => {
+    const root = createLeaf('a');
+    const newTab = tab('today-1', { kind: 'today', source: 'route' });
+
+    const result = setRouteTab(root, newTab, 'a');
+
+    expect(result.leafId).toBe('a');
+    const leaf = findLeaf(result.root, 'a') as LeafNode;
+    expect(leaf.tabs).toEqual([newTab]);
+    expect(leaf.activeTabId).toBe('today-1');
+  });
+
+  it('replaces the existing route tab in place — same id, new kind/params', () => {
+    const withRoute = openTabInLeaf(
+      createLeaf('a'),
+      'a',
+      tab('route-tab', { kind: 'today', source: 'route' })
+    );
+
+    const result = setRouteTab(
+      withRoute,
+      tab('irrelevant-fresh-id', { kind: 'inbox', source: 'route' }),
+      'a'
+    );
+
+    const leaf = findLeaf(result.root, 'a') as LeafNode;
+    // Same id as the tab it replaced — not the fresh id `newTab` carried in.
+    expect(leaf.tabs).toEqual([tab('route-tab', { kind: 'inbox', source: 'route' })]);
+    expect(leaf.activeTabId).toBe('route-tab');
+  });
+
+  it('finds the route tab wherever it sits in the tree, not just the target leaf', () => {
+    const split = splitLeaf(createLeaf('a'), 'a', 'split-1', 'b', 'horizontal');
+    const withRoute = openTabInLeaf(
+      split,
+      'a',
+      tab('route-tab', { kind: 'today', source: 'route' })
+    );
+
+    // Fallback leaf is 'b', but the route tab actually lives in 'a' — it must
+    // be replaced there, not opened fresh in 'b'.
+    const result = setRouteTab(withRoute, tab('x', { kind: 'inbox', source: 'route' }), 'b');
+
+    expect(result.leafId).toBe('a');
+    const leafA = findLeaf(result.root, 'a') as LeafNode;
+    const leafB = findLeaf(result.root, 'b') as LeafNode;
+    expect(leafA.tabs).toEqual([tab('route-tab', { kind: 'inbox', source: 'route' })]);
+    expect(leafB.tabs).toEqual([]);
+  });
+
+  it('reactivates the route tab if some other tab in its leaf was active', () => {
+    const withRoute = openTabInLeaf(
+      createLeaf('a'),
+      'a',
+      tab('route-tab', { kind: 'today', source: 'route' })
+    );
+    const withLauncherTab = openTabInLeaf(
+      withRoute,
+      'a',
+      tab('launcher-tab', { kind: 'boards', source: 'launcher' })
+    );
+    expect((findLeaf(withLauncherTab, 'a') as LeafNode).activeTabId).toBe('launcher-tab');
+
+    const result = setRouteTab(withLauncherTab, tab('x', { kind: 'inbox', source: 'route' }), 'a');
+
+    expect((findLeaf(result.root, 'a') as LeafNode).activeTabId).toBe('route-tab');
+  });
+
+  it('leaves every other tab in the leaf untouched', () => {
+    const withRoute = openTabInLeaf(
+      createLeaf('a'),
+      'a',
+      tab('route-tab', { kind: 'today', source: 'route' })
+    );
+    const withLauncherTab = openTabInLeaf(
+      withRoute,
+      'a',
+      tab('launcher-tab', { kind: 'boards', source: 'launcher' })
+    );
+
+    const result = setRouteTab(withLauncherTab, tab('x', { kind: 'inbox', source: 'route' }), 'a');
+
+    const leaf = findLeaf(result.root, 'a') as LeafNode;
+    expect(leaf.tabs).toContainEqual(tab('launcher-tab', { kind: 'boards', source: 'launcher' }));
   });
 });

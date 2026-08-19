@@ -31,7 +31,7 @@ vi.mock('@/lib/api/client', async () => {
   return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn(() => new Promise(() => {})) } };
 });
 
-function Harness(): React.ReactElement {
+function Harness({ routeContent }: { routeContent?: React.ReactNode }): React.ReactElement {
   const workspace = useWorkspace();
   return (
     <div>
@@ -39,15 +39,16 @@ function Harness(): React.ReactElement {
       <button onClick={() => workspace.openTab('inbox', {}, { newSplit: 'horizontal' })}>
         split with inbox
       </button>
-      <WorkspacePaneTree node={workspace.root} />
+      <button onClick={() => workspace.syncRouteTab('today')}>sync route to today</button>
+      <WorkspacePaneTree node={workspace.root} routeContent={routeContent} />
     </div>
   );
 }
 
-function renderTree() {
+function renderTree(routeContent?: React.ReactNode) {
   return render(
     <WorkspaceProvider>
-      <Harness />
+      <Harness routeContent={routeContent} />
     </WorkspaceProvider>
   );
 }
@@ -76,8 +77,11 @@ describe('WorkspacePaneTree — a leaf pane', () => {
     // gone and its skeleton's sr-only label is present. `role="status"`
     // doesn't compute its accessible name from content (only from
     // aria-label/aria-labelledby), so this queries the text directly.
+    // "Manage" (not "Daily") is the launcher-only marker here — Today's own
+    // `SectionHeader` eyebrow also reads "Daily", since Today belongs to
+    // that same nav group.
     expect(screen.getByText('Loading today')).toBeInTheDocument();
-    expect(screen.queryByText('Daily')).not.toBeInTheDocument();
+    expect(screen.queryByText('Manage')).not.toBeInTheDocument();
   });
 });
 
@@ -103,5 +107,29 @@ describe('WorkspacePaneTree — a split pane', () => {
     const calledPaths = vi.mocked(apiClient.get).mock.calls.map((call) => String(call[0]));
     expect(calledPaths.some((path) => path.includes('/today'))).toBe(true);
     expect(calledPaths.some((path) => path.includes('/inbox'))).toBe(true);
+  });
+});
+
+describe('WorkspacePaneTree — the route-backed tab', () => {
+  it('renders routeContent instead of TabContent for the tab tagged source: route', async () => {
+    const user = userEvent.setup();
+    renderTree(<div>real server-rendered Today page</div>);
+
+    await user.click(screen.getByText('sync route to today'));
+
+    expect(screen.getByText('real server-rendered Today page')).toBeInTheDocument();
+    // TabContent's own client fetch never fires for the route tab.
+    expect(apiClient.get).not.toHaveBeenCalled();
+  });
+
+  it('falls back to TabContent for a launcher-opened tab even when routeContent is set', async () => {
+    const user = userEvent.setup();
+    renderTree(<div>real server-rendered Today page</div>);
+
+    // "open today" opens a launcher tab (source: 'launcher'), not the route tab.
+    await user.click(screen.getByText('open today'));
+
+    expect(screen.queryByText('real server-rendered Today page')).not.toBeInTheDocument();
+    expect(screen.getByText('Loading today')).toBeInTheDocument();
   });
 });

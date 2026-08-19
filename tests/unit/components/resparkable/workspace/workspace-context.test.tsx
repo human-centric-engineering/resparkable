@@ -206,6 +206,51 @@ describe('focusLeaf', () => {
   });
 });
 
+describe('syncRouteTab', () => {
+  it('opens a route-sourced tab in the focused leaf on first sync', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.syncRouteTab('today');
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs).toMatchObject([{ kind: 'today', params: {}, source: 'route' }]);
+    expect(leaf.activeTabId).toBe(leaf.tabs[0].id);
+  });
+
+  it('replaces the existing route tab rather than opening a second one', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.syncRouteTab('today');
+    });
+    const routeTabId = (findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode)
+      .tabs[0].id;
+
+    act(() => {
+      result.current.syncRouteTab('inbox');
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs).toHaveLength(1);
+    expect(leaf.tabs[0]).toMatchObject({ id: routeTabId, kind: 'inbox', source: 'route' });
+  });
+
+  it('leaves launcher-opened tabs in the same leaf alone', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('boards');
+      result.current.syncRouteTab('today');
+      result.current.syncRouteTab('inbox');
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs.map((tab) => tab.kind).sort()).toEqual(['boards', 'inbox']);
+  });
+});
+
 describe('showLauncher', () => {
   it('clears the active tab without closing it, so the launcher shows over open tabs', () => {
     const { result } = renderWorkspace();

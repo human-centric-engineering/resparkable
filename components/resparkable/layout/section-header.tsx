@@ -24,6 +24,17 @@
  * A route with no entry gets no header at all — no placeholder, no "no help
  * available". Half a header is worse than none: it makes the absence look like a
  * loading state rather than a gap someone should fill.
+ *
+ * ## `href`
+ *
+ * Defaults to `usePathname()` — the single-page layout this component was
+ * built for has exactly one route on screen, so the browser's own URL is
+ * the right lookup key. The workspace shell (Phase 8) can show several tabs
+ * at once, each wanting its *own* header regardless of which one happens to
+ * match the current URL — `WorkspacePane` passes each tab's own route
+ * (`buildRouteForTab(tab.kind, tab.params)`) explicitly rather than relying
+ * on the browser's address bar, which only ever agrees with one tab in the
+ * whole tree.
  */
 
 import * as React from 'react';
@@ -59,10 +70,16 @@ function findGroupLabel(pathname: string): string | null {
   return best?.label ?? null;
 }
 
-export function SectionHeader(): React.ReactElement | null {
+export interface SectionHeaderProps {
+  /** Overrides the lookup key; defaults to the browser's own `usePathname()`. */
+  href?: string;
+}
+
+export function SectionHeader({ href }: SectionHeaderProps = {}): React.ReactElement | null {
   const pathname = usePathname();
-  const section = findSectionHelp(pathname);
-  const group = findGroupLabel(pathname);
+  const lookup = href ?? pathname;
+  const section = findSectionHelp(lookup);
+  const group = findGroupLabel(lookup);
 
   if (!section) return null;
 

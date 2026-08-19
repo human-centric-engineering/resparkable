@@ -250,6 +250,54 @@ function removeNode(node: PaneNode, targetId: string): PaneNode | null {
   return { ...node, children, sizes: normalizeSizes(sizes) };
 }
 
+/**
+ * Finds the tree's one `source: 'route'` tab, wherever it sits. There is
+ * ever at most one — see `setRouteTab`'s own header comment.
+ */
+function findRouteTab(root: PaneNode): { leafId: string; tabId: string } | null {
+  for (const leaf of listLeaves(root)) {
+    const tab = leaf.tabs.find((candidate) => candidate.source === 'route');
+    if (tab) return { leafId: leaf.id, tabId: tab.id };
+  }
+  return null;
+}
+
+/**
+ * Syncs the tree's single route-backed tab to `newTab` — the pure half of
+ * `route-tab-bridge.tsx` (Phase 8). "Only one route-sourced tab exists at a
+ * time" (the build plan's own words) means a fresh navigation must *replace*
+ * whichever tab currently carries `source: 'route'`, not open a second one
+ * next to it the way a plain `openTabInLeaf` dedupe-by-kind-and-params would
+ * on a route whose kind/params changed. Replacing keeps that tab's id and
+ * position in its leaf's strip, and makes it that leaf's active tab.
+ *
+ * When no route tab exists yet — the very first load, or after the user
+ * closed it and it hasn't reappeared — `newTab` opens in `fallbackLeafId`
+ * instead, via the normal `openTabInLeaf` (so a launcher tab of the same
+ * kind/params there is still deduped against rather than doubled).
+ */
+export function setRouteTab(
+  root: PaneNode,
+  newTab: TabState,
+  fallbackLeafId: string
+): { root: PaneNode; leafId: string } {
+  const existing = findRouteTab(root);
+  if (!existing) {
+    return { root: openTabInLeaf(root, fallbackLeafId, newTab), leafId: fallbackLeafId };
+  }
+
+  const { leafId, tabId } = existing;
+  const updated = mapNode(root, leafId, (node) => {
+    if (node.kind !== 'leaf') return node;
+    return {
+      ...node,
+      tabs: node.tabs.map((tab) => (tab.id === tabId ? { ...newTab, id: tab.id } : tab)),
+      activeTabId: tabId,
+    };
+  });
+  return { root: updated, leafId };
+}
+
 /** Sets the sizes of split `splitId`'s children. Ignored (returns the tree unchanged) if the count doesn't match. */
 export function resizeSplit(root: PaneNode, splitId: string, sizes: number[]): PaneNode {
   return mapNode(root, splitId, (node) => {

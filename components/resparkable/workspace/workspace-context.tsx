@@ -32,6 +32,7 @@ import {
   openTabInLeaf,
   reorderTab as reorderTabInTree,
   resizeSplit as resizeSplitInTree,
+  setRouteTab as setRouteTabInTree,
   showLauncher as showLauncherInTree,
   splitLeaf as splitLeafInTree,
   type PaneNode,
@@ -82,6 +83,13 @@ export interface WorkspaceContextValue {
   focusLeaf: (leafId: string) => void;
   /** The "+" affordance — shows the launcher in `leafId` without closing its tabs. */
   showLauncher: (leafId: string) => void;
+  /**
+   * `route-tab-bridge.tsx`'s (Phase 8) only write — syncs the tree's one
+   * `source: 'route'` tab to whatever route just matched, replacing it in
+   * place rather than opening a second one. See `setRouteTab` in
+   * `split-tree.ts` for the invariant this maintains.
+   */
+  syncRouteTab: (kind: TabKind, params?: TabParams) => void;
 }
 
 const WorkspaceContext = React.createContext<WorkspaceContextValue | undefined>(undefined);
@@ -195,6 +203,17 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     [setState]
   );
 
+  const syncRouteTab = React.useCallback<WorkspaceContextValue['syncRouteTab']>(
+    (kind, params = {}) => {
+      setState((prev) => {
+        const tab: TabState = { id: createId(), kind, params, source: 'route' };
+        const { root, leafId } = setRouteTabInTree(prev.root, tab, prev.focusedLeafId);
+        return { root, focusedLeafId: leafId };
+      });
+    },
+    [setState]
+  );
+
   const value = React.useMemo<WorkspaceContextValue>(
     () => ({
       root: state.root,
@@ -208,6 +227,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       resizeSplit,
       focusLeaf,
       showLauncher,
+      syncRouteTab,
     }),
     [
       state,
@@ -220,6 +240,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       resizeSplit,
       focusLeaf,
       showLauncher,
+      syncRouteTab,
     ]
   );
 

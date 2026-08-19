@@ -22,8 +22,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { redirect } from 'next/navigation';
 
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -842,51 +844,21 @@ describe('ResparkableArchivePage', () => {
 
 describe('Chat page', () => {
   /**
-   * The one Resparkable surface with no server read. The transcript lives in the
-   * stream, and the orientation an agent needs is injected server-side as the
-   * context block on every turn — fetching a snapshot here to render around the
-   * chat would show a second, staler copy of what the agent is already reading.
+   * Retired at the Phase 8 cutover — Sparkey's own pane absorbs chat, so
+   * this route is now a redirect rather than a page, kept alive so every
+   * existing link to it still resolves to something instead of a 404.
    */
-  it('renders without reading anything from the API', async () => {
+  beforeEach(() => {
+    vi.mocked(redirect).mockClear();
+  });
+
+  it('redirects to Today rather than rendering chat', async () => {
     const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
 
-    render(await Promise.resolve(ChatPage()));
+    ChatPage();
 
-    expect(screen.getByTestId('resparkable-chat')).toBeInTheDocument();
+    expect(redirect).toHaveBeenCalledTimes(1);
+    expect(redirect).toHaveBeenCalledWith(RESPARKABLE_ROUTES.TODAY);
     expect(readResparkable).not.toHaveBeenCalled();
-  });
-
-  /**
-   * A constant, not a picker. The other four agents hold write capabilities and
-   * the route refuses them, so a page offering one would be offering something
-   * the API rejects.
-   */
-  it('addresses the companion and nothing else', async () => {
-    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
-    const { RESPARKABLE_AGENT_SLUGS } = await import('@/lib/framework/resparkable/agents');
-
-    render(await Promise.resolve(ChatPage()));
-
-    const props = JSON.parse(
-      screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
-    ) as { agentSlug: string; starterPrompts?: string[] };
-
-    expect(props.agentSlug).toBe(RESPARKABLE_AGENT_SLUGS.companion);
-  });
-
-  /**
-   * No fixed starter-prompt buttons on this surface — the empty state's own
-   * "Ask Sparkey" heading and description carry that job instead.
-   */
-  it('renders with no starter prompts', async () => {
-    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
-
-    render(await Promise.resolve(ChatPage()));
-
-    const props = JSON.parse(
-      screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
-    ) as { starterPrompts?: string[] };
-
-    expect(props.starterPrompts).toBeUndefined();
   });
 });
