@@ -28,6 +28,7 @@ import { useRouter } from 'next/navigation';
 
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -46,14 +47,12 @@ describe('ArchiveControls', () => {
     vi.clearAllMocks();
     mockDelete.mockResolvedValue(undefined);
     mockPost.mockResolvedValue(undefined);
-    vi.mocked(useRouter).mockReturnValue({
-      refresh: mockRefresh,
-      push: mockPush,
-      replace: vi.fn(),
-      back: vi.fn(),
-      forward: vi.fn(),
-      prefetch: vi.fn(),
-    });
+    vi.mocked(useRouter).mockReturnValue(
+      createMockRouter({
+        refresh: mockRefresh,
+        push: mockPush,
+      })
+    );
   });
 
   describe('archiving (not archived)', () => {

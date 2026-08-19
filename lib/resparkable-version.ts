@@ -21,4 +21,4 @@
  *   it as the `resparkable` field), not by importing this constant in a
  *   `'use client'` component.
  */
-export const RESPARKABLE_VERSION = '0.8.0';
+export const RESPARKABLE_VERSION = '0.9.0';

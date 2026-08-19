@@ -106,6 +106,7 @@ function completionReturning(raw: string): void {
       value,
       tokenUsage: { input: 100, output: 50 },
       costUsd: 0.002,
+      finishReason: 'stop',
     };
   });
 }
