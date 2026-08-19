@@ -8,13 +8,15 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 
 **Resparkable is a framework-tier module**, not a leaf-fork feature — it must be installable into other Sunrise-based projects. That constraint shapes every path in this plan and is set out before the architecture, below.
 
-**Requirements captured in conversation:** full system (not a thin slice); multi-user-safe from day one but no team UI; capture from web, phone/PWA, email and chat; **two-way Obsidian vault sync** across zip / git / cloud-drive transports plus a "start a new vault" mode; per-item privacy with **both** named grants and public read-only links; the owner's own agent sees all of the owner's items regardless of visibility; task pinning and snoozing; archival of aged and obsolete data; clients and market segments as first-class nodes; upload of reference documents for embedding; a force-directed graph view; on-demand idea generation.
+**Requirements captured in conversation:** full system (not a thin slice); multi-user-safe from day one but no team UI; capture from web, phone/PWA, email and chat; **two-way Obsidian vault sync** across zip / git / cloud-drive transports plus a "start a new vault" mode; per-item privacy with **both** named grants and public read-only links; the owner's own agent sees all of the owner's items regardless of visibility; task pinning and snoozing; archival of aged and obsolete data; clients and market segments as first-class nodes; upload of reference documents for embedding; a force-directed graph view; on-demand idea generation; **(2026-08-19)** a persistent three-pane authenticated layout — an always-visible Sparkey pane (chat, capture and instruct), a fluid tabbed/splittable Workspace pane, and a right-hand activity/status thread; and a live **Present** mode for articulating ideas to an audience, configurable from a single ad hoc idea through a pre-planned sequence to on-the-fly slide generation from a mic prompt.
 
 **Delivery:** four releases (§15). **Release 1 is a complete no-Obsidian build** — the whole second brain, no vault, no new dependencies, no credential storage. Obsidian arrives in Releases 3 and 4. Sections 12 and 13 below therefore describe work that is designed now but built later; read them for the constraints they place on Release 1's schema, not as immediate scope.
 
 > **On hold, 2026-08-08: ongoing vault sync.** The one-time zip export/import (phase 15 + the zip half of 17, at `/resparkable/vault`) shipped and stays. Everything that makes it a standing _sync_ rather than a download/upload — the reconciler (phase 16), the Managed transport and tick sweep (rest of 17), and all of Release 4's live folder transports (git, Dropbox, Google Drive) — is paused. Not dropped: still fully specified below, just not being built right now. See §15 for the exact boundary.
 
 > **Added 2026-08-08: Situations (§21).** A fourth thing sits alongside the second brain, sharing and Obsidian: **Situations** — describe or upload a life question, problem or piece of raw material (a transcript, a thread), and work it through four deliberate stages — framing → perspectives → tensions → resolution — that draw on your own brain, on collaborators who've shared with you, and on the model's own read of what hasn't been considered yet. The name **Resparkable** is literally about this: old captured sparks (`ResparkableThought`), reignited against fresh references. Full spec at §21; phased as Release 7 in §15.
+
+> **Scoped, 2026-08-19: UI/UX redesign experiment.** A new three-pane authenticated layout is under active design exploration — an always-visible **Sparkey** pane (chat + capture + instruct) on the left, a fluid tabbed/splittable **Workspace** pane in the centre, and a new **activity/status thread** on the right. It retires today's left-nav-rail-plus-capture-drawer shape in favour of Workspace-owned navigation; full detail in the new subsection at the top of §9. Alongside it, **The Honeycomb** is adopted as the product-facing name for the ideas/vector store this plan otherwise calls "the brain" — the two names coexist deliberately, see §9 for why. A new, unrelated-to-Cross-Pollination **Present mode** (§22) is also scoped: presenting ideas from The Honeycomb to a live audience. **Nothing here is built** — this is a plan/documentation update only, not phased into a Release, and none of §9's existing implementation detail below has changed. UI/UX experiments (mockups, prototypes) are the next step.
 
 ### The Obsidian question, answered
 
@@ -568,6 +570,32 @@ Also: **`lib/orchestration/review-schema/`** defines a declarative schema for re
 ---
 
 ## 9. UI
+
+### UI/UX redesign experiment — Sparkey / Workspace / Activity (scoped 2026-08-19, design-stage, not built)
+
+Everything below this subsection documents **today's shipped UI** — the left `ResparkableNav` rail, the `/resparkable/chat` destination page, and the right-edge `ResparkableSidekick` capture drawer — and stays accurate until this redesign actually lands. This subsection captures the target shape from a UI/UX design conversation; no code has changed yet.
+
+**Three persistent panes replace the current rail/drawer:**
+
+- **Sparkey (left).** Always visible, not a destination page. Three integrated modes, not three surfaces: **Chat** (proactive and reactive — Sparkey prompts off what it knows about the user's projects, goals and areas, not just replies to what's typed), **Capture** (absorbs today's Sidekick drawer — ad-hoc inbox capture and developed-idea capture into The Honeycomb, both from one place), and **Instruct** (Sparkey can perform any action a human could through the UI — add a goal, edit a project, add to an Area, move a kanban card — except core account/settings/config actions, which stay human-only).
+- **Workspace (centre).** Fluid, tabbed and splittable. Renders Today, Inbox, a Project, Goals, Areas, Boards, the Honeycomb view, the morning briefing, proposed connections, and editable text views into Honeycomb content. Multiple open tabs (reorder, close, like browser tabs), side-by-side split panes, and the ability to lock a view's arrangement so it persists. Reachable two ways with neither treated as primary: ask Sparkey to open something, or open it directly in the Workspace.
+- **Activity (right).** New scope with no existing implementation to point to — a notifications/status thread for background discovery results, briefing-ready notices and async process completions. Unlike the other two panes, this doesn't repurpose an existing surface.
+
+**Navigation moves into the Workspace.** Today's left nav rail (14 destinations across Daily/Organise/Knowledge/Manage) is retired as persistent chrome. In its place, the Workspace owns a launcher — a new-tab picker, browser-new-tab-page-style — that opens any of those destinations as a Workspace tab. The Sparkey pane carries no nav chrome at all.
+
+**Structured data: chat or form, both ways, for create and edit alike.** Adding or editing a Plan/Life-Area/Goal/Project must offer both paths — natural language via Sparkey Instruct, or a form — and the choice is the user's, partly for convenience and partly because a form field is cheaper than a conversational turn. This already exists for **creation**: `CreateDialog` mounts a chat pane and a `ResourceDialog` form side by side in one dialog, toggled by `CreateModeToggle`, with state preserved on both sides regardless of which is showing (`components/resparkable/creation/create-dialog.tsx`). **It does not exist for edit today** — `EntityFormDialog` deliberately routes edit to the form only, on the stated reasoning that an existing resource already has "Tell me more" (`ContextChatDrawer`, Release 8 phase 39) for chat-based elaboration. That solves a different problem — enriching a description — than this one — changing a field via chat instead of a form. The redesign should close that gap: give edit the same chat/form symmetry create already has (`resparkable-instruct`, §19, already holds the `resparkable_upsert_*` capabilities this needs), rather than leaving "Tell me more" to stand in as edit's only chat path.
+
+Open design question, not yet decided: whether Sparkey's chat pane should ever render a form **inline**, mid-conversation — Sparkey partially fills a structured form from what's already been said and hands the remaining fields to the user, rather than only offering a separate form surface reached by toggling. `CreateDialog`'s toggle is a user-chosen switch between two full panes; an inline form is a different, un-built idea (the assistant choosing to interrupt a chat turn with structured fields) and needs its own design pass before committing to it.
+
+**Manual editing of Honeycomb content.** Beyond structured entity fields (a goal's title, a project's status), the user must be able to directly edit the free text that lives in The Honeycomb — a thought, a note, a description — without going through Sparkey at all. This is distinct from phase 39's chat-driven description-summariser, which proposes a rewrite the user accepts or dismisses (AI-mediated); this is the user's own hand on the text, the same as `card-detail-sheet.tsx`'s markdown notes editor already offers for a board card (§9's "Current implementation" below). The Workspace's editable text views (above) are where this lives.
+
+**Naming: The Honeycomb.** The ideas/vector-store ecosystem — what the rest of this plan calls "the brain" (D5, D6, the `.brain/` Obsidian sync directory, the `brain+<inboxToken>@` capture address) — gets a product-facing name: **The Honeycomb**. The two names are deliberately not unified: "the brain" is this plan's internal architecture shorthand and touches on-disk sync formats (§14) that are out of scope for a UI naming decision; "The Honeycomb" is what a user sees. The existing graph view (below) becomes, in product copy, the **Honeycomb view** — ideas rendered as interconnected hexagonal cells rather than generic nodes/edges, extending the existing "hex lattice" visual language (`.context/ui/design-language.md`) rather than introducing a new rendering engine.
+
+**Status.** Design exploration only — no Release, phase or schema work is attached yet (§15). The next step is UI/UX experimentation (mockups, prototypes), not implementation.
+
+---
+
+### Current implementation (shipped)
 
 Routes under `app/(protected)/resparkable/`: `layout.tsx` (sub-nav + persistent quick capture), `page.tsx` (Today), `inbox/`, `projects/[id]`, `goals/`, `entities/[id]`, `documents/`, `boards/` + `boards/[slug]`, `connections/`, `graph/`, `chat/`, `capture/`, `reviews/[id]`. Each gets a `loading.tsx`. Register `'/resparkable'` in `lib/app/protected-routes.ts`.
 
@@ -1767,3 +1795,27 @@ No new schema for any of these — they're existing pieces of §21 used for a di
 - **Multi-source synthesis.** Framing already accepts uploaded material (§21.2) — a situation seeded from several documents (three articles on the same topic, a lecture transcript plus your notes) doesn't have to be a _decision_ at all. Perspectives become "what each source argues," tensions become where they disagree, and resolution is a synthesized explainer. Nothing here is decision-shaped, and nothing needs to be — the pipeline doesn't know or care whether what it's reconciling is your own conflicting instincts or three authors who disagree with each other.
 
 Phasing is Release 7, §15.
+
+---
+
+## 22. Present mode — presenting ideas to a live audience
+
+**Scoped 2026-08-19, design-stage — not yet phased into a Release.** Distinct from **Cross-Pollination (§18)**, and deliberately not merged with it: Cross-Pollination is asynchronous idea-matching between users with no live audience — a facet cast out, matched, double-opted-in. Present is synchronous — a person talking, in real time, to people in front of them or on a call, pulling from their own Honeycomb as material. Both involve "sharing an idea with someone else," which is exactly why this section says so explicitly — they are two separate features, not two phases of one.
+
+### 22.1 Three modes
+
+1. **Lightweight.** The user articulates one or two ideas ad hoc, with minimal structure — no deck, no sequencing, closest to just talking with a prompt in hand.
+2. **Pre-planned deck.** Ideas are pulled from The Honeycomb in advance and sequenced like a slide deck, worked through in order during the presentation.
+3. **On-the-fly generation.** During a live presentation, the presenter pushes a mic button and tells Sparkey what they want presented; Sparkey generates one, two, three — however many are needed — slides in real time, and the presenter talks through them as they're produced.
+
+### 22.2 Pre-presentation scoping
+
+Before presenting, the user circles or highlights the area(s) of The Honeycomb — and any associated image files — that are in bounds for that presentation. This scoped material is what on-the-fly generation (22.1.3) draws from: Sparkey does not search the whole Honeycomb mid-presentation, it works from what was pre-approved as presentable.
+
+### 22.3 Governance
+
+Sparkey's approach to content selection, its decision-making within a presentation, and what it will or won't include are user-configurable — both preferences ("lead with this kind of material") and hard exclusion rules ("never include this"). This is the same "the model can act, but a human sets the boundary" posture the plan already takes with Instruct mode (§19) and Cross-Pollination's review screen (§18.9) — Present needs its own version of that governance surface rather than a shared one, since the audience and the stakes are different: a live human in the room, not an async match.
+
+### 22.4 Open questions
+
+Not designed yet, flagged rather than guessed at: how a generated slide is rendered (a Workspace view? a distinct full-screen mode?), what "a slide" is as a data shape, whether a presentation is a first-class persisted entity or an ephemeral session, and how this intersects with the Workspace's split/tab/lock model (§9) if at all. A follow-up technical design pass is needed before this gets a Release slot in §15.
