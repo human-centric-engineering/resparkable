@@ -23,6 +23,7 @@ import {
   openTabInLeaf,
   reorderTab,
   resizeSplit,
+  showLauncher,
   splitLeaf,
   type LeafNode,
   type PaneNode,
@@ -126,6 +127,20 @@ describe('activateTab', () => {
   it('is a no-op for a tab that is not in the leaf', () => {
     const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
     expect(activateTab(root, 'a', 'missing')).toEqual(root);
+  });
+});
+
+describe('showLauncher', () => {
+  it('clears activeTabId without touching the tabs array', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
+    const next = showLauncher(root, 'a') as LeafNode;
+    expect(next.activeTabId).toBeNull();
+    expect(next.tabs).toEqual([tab('t1')]);
+  });
+
+  it('is a no-op for an already-empty leaf', () => {
+    const root = createLeaf('a');
+    expect(showLauncher(root, 'a')).toEqual(root);
   });
 });
 

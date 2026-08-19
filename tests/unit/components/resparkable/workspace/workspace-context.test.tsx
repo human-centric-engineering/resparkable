@@ -205,3 +205,22 @@ describe('focusLeaf', () => {
     expect(result.current.focusedLeafId).toBe(before);
   });
 });
+
+describe('showLauncher', () => {
+  it('clears the active tab without closing it, so the launcher shows over open tabs', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('today');
+    });
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.showLauncher(leafId);
+    });
+
+    const leaf = findLeaf(result.current.root, leafId) as LeafNode;
+    expect(leaf.activeTabId).toBeNull();
+    expect(leaf.tabs).toHaveLength(1);
+  });
+});

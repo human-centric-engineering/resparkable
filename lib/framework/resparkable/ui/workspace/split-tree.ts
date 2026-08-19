@@ -124,6 +124,19 @@ export function activateTab(root: PaneNode, leafId: string, tabId: string): Pane
 }
 
 /**
+ * Shows the launcher in leaf `leafId` without closing any of its tabs — the
+ * "+" affordance for opening something new in a pane that already has tabs.
+ * Leaves `tabs` untouched; a pane renders its launcher exactly when
+ * `activeTabId` is `null`, whether that's because it has no tabs at all or
+ * because this was called.
+ */
+export function showLauncher(root: PaneNode, leafId: string): PaneNode {
+  return mapNode(root, leafId, (node) =>
+    node.kind === 'leaf' ? { ...node, activeTabId: null } : node
+  );
+}
+
+/**
  * Closes `tabId` out of leaf `leafId`. If it was the active tab, the tab to
  * its right becomes active, or its left if it was the last one — so closing
  * never jumps focus across the strip. An empty leaf is left in place (it

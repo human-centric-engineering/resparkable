@@ -32,6 +32,7 @@ import {
   openTabInLeaf,
   reorderTab as reorderTabInTree,
   resizeSplit as resizeSplitInTree,
+  showLauncher as showLauncherInTree,
   splitLeaf as splitLeafInTree,
   type PaneNode,
   type SplitDirection,
@@ -79,6 +80,8 @@ export interface WorkspaceContextValue {
   closeLeaf: (leafId: string) => void;
   resizeSplit: (splitId: string, sizes: number[]) => void;
   focusLeaf: (leafId: string) => void;
+  /** The "+" affordance — shows the launcher in `leafId` without closing its tabs. */
+  showLauncher: (leafId: string) => void;
 }
 
 const WorkspaceContext = React.createContext<WorkspaceContextValue | undefined>(undefined);
@@ -185,6 +188,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     [setState]
   );
 
+  const showLauncher = React.useCallback<WorkspaceContextValue['showLauncher']>(
+    (leafId) => {
+      setState((prev) => ({ ...prev, root: showLauncherInTree(prev.root, leafId) }));
+    },
+    [setState]
+  );
+
   const value = React.useMemo<WorkspaceContextValue>(
     () => ({
       root: state.root,
@@ -197,6 +207,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       closeLeaf,
       resizeSplit,
       focusLeaf,
+      showLauncher,
     }),
     [
       state,
@@ -208,6 +219,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       closeLeaf,
       resizeSplit,
       focusLeaf,
+      showLauncher,
     ]
   );
 
