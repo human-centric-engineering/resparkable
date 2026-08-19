@@ -463,9 +463,63 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'email address (see the schema comment on this table).',
       },
     },
+
+    {
+      owner: 'framework:resparkable',
+      group: 'account',
+      model: 'ResparkableCreditAccount',
+      disposition: 'export-only',
+      note:
+        'Your current credit balance. Included so the record is yours, but not ' +
+        'written back: a balance is a live financial fact tied to what this ' +
+        'account was actually granted and actually spent, and writing an ' +
+        'exported number into a different account would let a self-export/' +
+        'import round trip mint credits nobody granted.',
+      ownerColumn: 'userId',
+    },
+    {
+      owner: 'framework:resparkable',
+      group: 'account',
+      model: 'ResparkableCreditLedgerEntry',
+      disposition: 'export-only',
+      note:
+        'Your spend and grant history. Included so the record is yours, but ' +
+        'not written back — the same reasoning as the activity log: replaying ' +
+        'it into a new account would describe charges and grants that never ' +
+        'happened there.',
+      ownerColumn: 'userId',
+      softRefsIgnored: {
+        relatedConversationId:
+          'Soft reference to the chat turn this entry billed, kept verbatim ' +
+          'because the entry is never replayed — it is read against the ' +
+          'installation that wrote it, same as ResparkableEvent.entityId.',
+        relatedWorkflowExecutionId:
+          'Points into the orchestration tables (AiWorkflowExecution), which ' +
+          'are export-only for the same reason a run’s raw trigger payload ' +
+          'is. Kept verbatim, not rewritten.',
+        relatedCostLogId:
+          'Points into AiCostLog (orchestration), export-only for the same ' +
+          'reason. Kept verbatim, not rewritten.',
+        createdByAdminId:
+          'The admin who made an admin_grant entry, kept as an audit trail ' +
+          'of the installation that granted it. Not the entry owner — that is ' +
+          'userId — so it is never rewritten to the importer’s own id.',
+      },
+    },
   ],
 
   excluded: [
+    {
+      model: 'ResparkableBillingSettings',
+      owner: 'framework:resparkable',
+      reason:
+        'A single operator-owned row keyed by slug, holding this ' +
+        'installation’s billing policy (credits per dollar, service charge, ' +
+        'the new-user grant). It describes the installation rather than any ' +
+        'person — there is no user id on it — so importing it would overwrite ' +
+        'another operator’s pricing with this one’s. Same reasoning as ' +
+        'ResparkableSettings below.',
+    },
     {
       model: 'ResparkableEmbedding',
       owner: 'framework:resparkable',

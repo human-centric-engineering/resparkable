@@ -11,12 +11,16 @@
  */
 
 import { successResponse } from '@/lib/api/responses';
+import { validateQueryParams } from '@/lib/api/validation';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { listCreditAccountsForAdmin } from '@/lib/framework/resparkable/repo/billing';
+import { resparkableBillingAccountsQuerySchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAdminAuth(async (request) => {
-  const url = new URL(request.url);
-  const cursor = url.searchParams.get('cursor') ?? undefined;
+  const { cursor } = validateQueryParams(
+    new URL(request.url).searchParams,
+    resparkableBillingAccountsQuerySchema
+  );
 
   const accounts = await listCreditAccountsForAdmin({ cursor });
 

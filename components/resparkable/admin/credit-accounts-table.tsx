@@ -25,6 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -143,7 +144,15 @@ function GrantCreditsDialog({
 
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="grant-amount">Amount</Label>
+            <Label htmlFor="grant-amount" className="flex items-center gap-2">
+              Amount
+              <FieldHelp title="Amount" contentClassName="w-80">
+                <p>
+                  In credits, not dollars. Positive grants credits; negative is a correction (e.g.
+                  reversing a grant made in error). Cannot be zero.
+                </p>
+              </FieldHelp>
+            </Label>
             <Input
               id="grant-amount"
               type="number"
@@ -154,7 +163,15 @@ function GrantCreditsDialog({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="grant-note">Note (optional)</Label>
+            <Label htmlFor="grant-note" className="flex items-center gap-2">
+              Note (optional)
+              <FieldHelp title="Note" contentClassName="w-80">
+                <p>
+                  Free text explaining why this grant was made. Stored on the ledger entry itself,
+                  visible to anyone who can see this user&rsquo;s billing history.
+                </p>
+              </FieldHelp>
+            </Label>
             <Textarea
               id="grant-note"
               value={note}

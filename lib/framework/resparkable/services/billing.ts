@@ -58,7 +58,12 @@ export async function recordAgentSpend(
   scope: OwnerScope,
   input: RecordAgentSpendInput
 ): Promise<ResparkableCreditLedgerEntry | null> {
-  if (input.tokenCostUsd <= 0) return null;
+  // `!Number.isFinite`, not just `<= 0`: `NaN <= 0` is false, so a NaN cost
+  // (an unmapped model in the provider's cost table, say) would otherwise
+  // fall through into the ledger math and corrupt `balanceCredits` via a
+  // `NaN` increment — silently breaking every future balance check for the
+  // account, not just this one write.
+  if (!Number.isFinite(input.tokenCostUsd) || input.tokenCostUsd <= 0) return null;
 
   const settings = resolveBillingSettings(await findResparkableBillingSettings());
   const serviceChargeUsd = input.tokenCostUsd * (settings.serviceChargePercent / 100);

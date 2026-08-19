@@ -265,3 +265,138 @@ all, which is why every existing Resparkable model is hand-listed as
   before Release 5.
 - **Per-user `costVisibleToUsersDefault` override.** §20 ships one global
   on/off switch; a per-user override is out of scope for this phase.
+
+## 8. Known issues, found during implementation review, deferred to a later phase
+
+Unlike §7 (scope decisions made before the phase was built), everything below
+was found by running `/pr-gates` against the finished branch (a security
+review plus two independent `/code-review` passes at high effort) and
+verified against the shipped code, not inferred from the design doc. None of
+it blocked merging v1. All of it should be read before starting the next
+billing-related phase, so a later change does not silently re-introduce one
+of these while fixing another.
+
+### 8a. Scheduled workflows have no pre-flight balance gate
+
+The four calendar-scheduled workflows (nightly triage, morning briefing,
+weekly review, horizon check) and `briefing/regenerate` keep being queued and
+run at zero or negative balance, forever. `services/billing.ts` already
+exports `hasPositiveBalance()` with a doc comment saying it exists for "the
+Site B tick job's queue-skip check," but nothing calls it. Site B's tick pass
+(`jobs.ts`) only records the ledger debit after a run is already terminal, so
+the spend always happens before it is ever gated.
+
+**Accepted for v1** (decision made 2026-08-18, during `/pr-gates` review):
+this is the same trade-off already documented in the phase's own commit
+message. v1 is admin-grant-only with no self-serve top-up, so there is no
+abuse vector, only an admin-visible negative balance as a backstop. Wiring a
+gate in without touching core's `scheduler.ts` would mean toggling
+`AiWorkflowSchedule.isEnabled` from Resparkable's own tick job, which needs a
+new column to distinguish "disabled because the balance ran out" from
+"disabled because the user turned it off" (see the erasure-hook and
+schedule-row precedents `repo/schedules.ts` already carries for how much a
+similar exception costs). A real design decision, not a quick patch.
+
+### 8b. `assertPositiveBalance` / `recordAgentSpend` is a check-then-act race
+
+The two functions are not wrapped in a single transaction or reservation.
+Two concurrent requests from the same user (two tabs, a double-click) can
+both read a positive balance and both pass the pre-flight check before
+either has debited anything, so both proceed and can drive the balance
+arbitrarily negative. Unlike 8a, this was not called out anywhere as a known
+v1 gap before this review found it.
+
+**Accepted for v1** (decision made 2026-08-18): same backstop reasoning as
+8a: admin-grant-only balances, bounded blast radius, a negative balance is
+visible and admin-correctable. A real fix needs a reservation/lock step
+(e.g. debit an estimate at pre-flight time and reconcile to the real cost
+after) or a DB-level constraint, which is a genuine design decision for
+whoever picks this phase up next, not a bug fix.
+
+### 8c. `resparkable_ideate`, the chat capability, has a fully unmetered spend path
+
+Distinct from Site C (the `/ideate` HTTP route, which is billed correctly).
+`lib/framework/resparkable/capabilities/ideate.ts` lets a chat agent call the
+same costed `ideate()` function as a tool mid-conversation. `CapabilityResult`
+carries no cost field, and `streaming-handler.ts`'s own doc comment (around
+line 1086) says capabilities that make their own LLM calls are not counted
+toward the per-turn cost, so that spend never reaches the `done` event's
+`costUsd` and is never debited. This is a fourth attribution site the phase
+29 plan never named, found by the second `/code-review` pass, outside this
+branch's diff (the capability file was not touched by this phase).
+
+**To do in a later phase**: bill this the same way Site C's route does,
+after `ideate()` resolves inside the capability's `run()`, record the spend
+against the calling user's `OwnerScope`. The capability layer does not
+currently carry an `OwnerScope`, only a `CapabilityContext`; resolving one
+from it (mirroring `requireResparkableUser`, see `repo/owner-scope.ts`) is
+part of the work.
+
+### 8d. Core `streaming-handler.ts` under-bills chat turns (upstream, not Resparkable-owned)
+
+Three related bugs in `lib/orchestration/chat/streaming-handler.ts`, all
+upstream of Site A's tap and all real gaps between what a turn actually costs
+and what the `done` event reports as `costUsd`, the number `tapChatSpend`
+debits:
+
+- **`buildDoneEvent` (~line 2701) only reflects the last tool-loop
+  iteration's usage.** `turnCostUsd` accumulates cost across every iteration
+  of a multi-tool-call turn (line ~1638), but `buildDoneEvent` is only ever
+  passed that iteration's own `usage`, never the accumulated total. A turn
+  that calls three tools gets billed for one of the three calls.
+- **`buildDoneEvent` excludes `sideEffectModels`' cost.** Side-effect calls
+  (knowledge-base search, the rolling conversation summariser) carry their
+  own `costUsd`, attached to the event as metadata only, never folded into
+  the event's own `costUsd`.
+- **Several exit paths skip the `done` event entirely, after cost was
+  already logged.** The mid-loop per-turn budget cap (~line 1721-1728), the
+  monthly budget cap, `tool_loop_cap`, and the catch-all `internal_error`
+  path all `return` without ever yielding `done`, even when a `logCost()`
+  call for that turn's real, already-incurred cost happened moments earlier
+  in the same function. `tapChatSpend` only debits on `done`, so that spend
+  is never billed at all, not even partially.
+
+This file is core/platform-owned, not `lib/framework/resparkable/`, so it is
+outside what this fork edits directly (see `CLAUDE.md`'s fork-tier rules).
+**To do in a later phase**: file a `sunrise-asks.md` row and an upstream
+issue per that file's own process, then decide whether Resparkable carries a
+local workaround (e.g. Site A reading a cumulative-cost field instead of
+`costUsd`, if core adds one) in the meantime.
+
+### 8e. Admin billing accounts table has no working pagination past 50 users
+
+`listCreditAccountsForAdmin` defaults to 50 rows and accepts a `cursor`, but
+`app/api/v1/admin/resparkable/billing/accounts/route.ts` never returns a
+next-cursor and the admin settings page never supplies one. On a deployment
+with 51 or more users, everyone past the 50th (ordered by email) is
+permanently unreachable for a credit grant from this screen. **To do in a
+later phase**: surface `nextCursor`/`hasMore` from the route and add a "load
+more" control to `CreditAccountsTable`, once a deployment's user count makes
+it worth building rather than a one-off admin DB query.
+
+### 8f. Site B's billing pass has no persisted cursor, only a bounded window
+
+`findRecentTerminalResparkableExecutions` always takes the newest 100
+terminal, resparkable-slug executions system-wide, ordered newest-first (see
+its own doc comment for why newest-first, not oldest-first). This is
+self-correcting under normal volume, but if more than 100 resparkable-slug
+executions go terminal within one 6-hour tick window (a maintenance outage,
+or genuinely high scale), older unbilled ones can be pushed below rank 100 by
+newer completions and never appear in a later tick's window again. There is
+no persisted cursor to prevent this, because there is no Resparkable-writable
+cursor column on the platform-owned `AiWorkflowExecution` table. Low
+likelihood at current expected scale; worth a real cursor (a small
+Resparkable-owned table mapping the last-billed `updatedAt` per tick, say) if
+volume ever approaches the 100/6h ceiling.
+
+### 8g. `tapChatSpend` awaits the ledger write before forwarding `done`
+
+`recordAgentSpend`'s transactional write happens inside the `for await` loop
+before the `done` frame is yielded onward to `sseResponse`, where the
+pre-phase-29 code forwarded every event with no side-channel I/O in between.
+Under DB contention this could delay the client's `done` frame by the
+ledger write's duration. Deliberate: the alternative (fire-and-forget the
+debit, yield `done` immediately) risks losing a debit silently if the process
+exits between yielding `done` and the write completing, and chat spend has no
+backstop reconciliation the way Site B does for workflow executions. Revisit
+only if this becomes measurable, user-visible latency.

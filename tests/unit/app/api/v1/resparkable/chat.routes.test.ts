@@ -318,5 +318,42 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
       expect(response.status).toBe(200);
       expect(body).toContain('done');
     });
+
+    it('records spend with no relatedConversationId when done arrives without a preceding start', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield {
+          type: 'done',
+          costUsd: 0.05,
+          tokenUsage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        };
+      }
+      mockedStream.mockReturnValue(events());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      await response.text();
+
+      const entry = mockedRecordSpend.mock.calls[0]?.[1];
+      expect(entry).toMatchObject({ tokenCostUsd: 0.05 });
+      expect(entry).not.toHaveProperty('relatedConversationId');
+    });
+
+    it('does not record spend when the stream never reaches a done event', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield { type: 'start', conversationId: 'conv_1' };
+        yield { type: 'error', message: 'upstream failed' };
+      }
+      mockedStream.mockReturnValue(events());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      await response.text();
+
+      expect(mockedRecordSpend).not.toHaveBeenCalled();
+    });
   });
 });

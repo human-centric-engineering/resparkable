@@ -6,6 +6,8 @@
  * form/table owns its own save state.
  */
 
+import type { ReactNode } from 'react';
+
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   DocumentSettingsForm,
@@ -22,10 +24,14 @@ import type {
 const ALLOWED_TABS = ['settings', 'billing'] as const;
 type ResparkableSettingsTab = (typeof ALLOWED_TABS)[number];
 
+/** Matches `DEFAULT_BILLING_SETTINGS.currencyLabel` (`lib/framework/resparkable/settings.ts`) — kept as a literal here rather than imported, so this client bundle doesn't pull in that module's other exports. */
+const DEFAULT_CURRENCY_LABEL = 'credits';
+
 interface Props {
   documentSettings: ResparkableDocumentSettings | null;
   billingSettings: ResparkableAdminBillingSettingsResponse | null;
-  creditAccounts: ResparkableAdminCreditAccountRow[];
+  /** `null` when the accounts fetch itself failed — distinct from a genuine empty list. */
+  creditAccounts: ResparkableAdminCreditAccountRow[] | null;
 }
 
 export function ResparkableSettingsTabs({
@@ -53,32 +59,57 @@ export function ResparkableSettingsTabs({
         {documentSettings ? (
           <DocumentSettingsForm initial={documentSettings} />
         ) : (
-          <SettingsLoadError />
+          <SettingsLoadError>
+            Resparkable is running on its defaults: originals discarded after parsing, 25 MB upload
+            ceiling. Check the server logs for the failure and reload.
+          </SettingsLoadError>
         )}
       </TabsContent>
 
       <TabsContent value="billing" className="space-y-6">
         {billingSettings ? (
-          <>
-            <BillingSettingsForm initial={billingSettings} />
-            <CreditAccountsTable
-              accounts={creditAccounts}
-              currencyLabel={billingSettings.currencyLabel}
-            />
-          </>
+          <BillingSettingsForm initial={billingSettings} />
         ) : (
-          <SettingsLoadError />
+          <SettingsLoadError>
+            Billing is running on its defaults: 1 credit per US dollar, no service charge, no
+            new-user grant. Check the server logs for the failure and reload.
+          </SettingsLoadError>
+        )}
+
+        {/*
+          Independent of the settings-form branch above: the two fetches
+          (billing policy, credit accounts) are separate requests, and one
+          failing must not hide the other's already-fetched, valid data —
+          nor should a `[]` here be read as "the accounts fetch failed" when
+          it might just mean there are no users yet (see `getCreditAccounts`'s
+          own `null`-vs-`[]` distinction).
+        */}
+        {creditAccounts ? (
+          <CreditAccountsTable
+            accounts={creditAccounts}
+            currencyLabel={billingSettings?.currencyLabel ?? DEFAULT_CURRENCY_LABEL}
+          />
+        ) : (
+          <SettingsLoadError heading="Couldn’t load account balances.">
+            Check the server logs for the failure and reload.
+          </SettingsLoadError>
         )}
       </TabsContent>
     </Tabs>
   );
 }
 
-function SettingsLoadError() {
+function SettingsLoadError({
+  heading = 'Couldn’t load settings.',
+  children,
+}: {
+  heading?: string;
+  children: ReactNode;
+}) {
   return (
     <div className="rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-      <p className="font-medium">Couldn&rsquo;t load settings.</p>
-      <p className="mt-1">Check the server logs for the failure and reload.</p>
+      <p className="font-medium">{heading}</p>
+      <p className="mt-1">{children}</p>
     </div>
   );
 }

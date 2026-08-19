@@ -28,6 +28,7 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/schedules/ensure';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { WORK_STYLES } from '@/lib/framework/resparkable/validations';
 import { z } from 'zod';
 
@@ -36,6 +37,14 @@ const regenerateSchema = z.object({ workStyleOverride: z.enum(WORK_STYLES).optio
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
   const body = await validateRequestBody(request, regenerateSchema);
+
+  // Phase 29: billing. The queued execution's later ledger debit
+  // (`jobs.ts`'s billing pass) creates a `ResparkableCreditAccount` row keyed
+  // to this space, and that row's FK targets `ResparkableSpace.userId` — so a
+  // user whose very first Resparkable interaction is this route would
+  // otherwise queue a run the tick job can never bill (FK violation on
+  // account creation, repeating every tick until the execution ages out).
+  await ensureResparkableSpace(session.user.id);
 
   const executionId = await queueResparkableWorkflowRun(
     RESPARKABLE_SCHEDULED_WORKFLOWS.morningBriefing,

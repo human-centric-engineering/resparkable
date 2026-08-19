@@ -1385,6 +1385,11 @@ export const resparkableCreditGrantSchema = z
 
 export type ResparkableCreditGrantInput = z.infer<typeof resparkableCreditGrantSchema>;
 
+/** Query params for `GET /api/v1/admin/resparkable/billing/accounts`. */
+export const resparkableBillingAccountsQuerySchema = z.object({
+  cursor: z.string().min(1).optional(),
+});
+
 /** Response shape of `GET /api/v1/admin/resparkable/billing/accounts`. */
 export const resparkableAdminCreditAccountRowSchema = z.object({
   userId: z.string(),

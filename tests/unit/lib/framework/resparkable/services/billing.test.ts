@@ -166,6 +166,19 @@ describe('recordAgentSpend', () => {
     expect(applyLedgerEntry).not.toHaveBeenCalled();
   });
 
+  /**
+   * REGRESSION. `NaN <= 0` is `false`, so a bare `tokenCostUsd <= 0` guard
+   * lets a NaN cost (an unmapped model in the provider cost table, say) fall
+   * through into the ledger math and reach `balanceCredits: { increment: NaN }` —
+   * corrupting the account's stored balance, not just this one write.
+   */
+  it('does nothing for a NaN cost either', async () => {
+    const result = await recordAgentSpend(scope, { tokenCostUsd: NaN });
+
+    expect(result).toBeNull();
+    expect(applyLedgerEntry).not.toHaveBeenCalled();
+  });
+
   it('carries the related-id fields through only when given', async () => {
     await recordAgentSpend(scope, { tokenCostUsd: 1, relatedConversationId: 'conv_1' });
 

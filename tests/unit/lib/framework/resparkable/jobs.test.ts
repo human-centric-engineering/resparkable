@@ -468,6 +468,31 @@ describe('runResparkableSweepJob — the billing pass', () => {
     expect(result.executionsBilled).toBe(1);
   });
 
+  /**
+   * REGRESSION. `queueResparkableWorkflowRun()` is the only way a
+   * resparkable-slug `AiWorkflowExecution` gets created, and it queues the
+   * context-digest workflow (`/summarize`) as well as the four calendar
+   * schedules — a slug missing from this list bills nothing for that
+   * workflow, silently, no matter how many times it runs.
+   */
+  it('includes the context-digest slug alongside the four scheduled workflows', async () => {
+    mockedFindExecutions.mockResolvedValue([]);
+
+    await runResparkableSweepJob(NOW);
+
+    const slugs = mockedFindExecutions.mock.calls[0]?.[0];
+    expect(slugs).toEqual(
+      expect.arrayContaining([
+        'resparkable-nightly-triage',
+        'resparkable-morning-briefing',
+        'resparkable-weekly-review',
+        'resparkable-horizon-check',
+        'resparkable-context-digest',
+      ])
+    );
+    expect(slugs).toHaveLength(5);
+  });
+
   it('bills a queued execution using its own userId', async () => {
     mockedFindExecutions.mockResolvedValue([execution({ userId: 'user_a', totalCostUsd: 1.2 })]);
     mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);

@@ -56,16 +56,24 @@ const billingAccountsResponseSchema = z.object({
   accounts: z.array(resparkableAdminCreditAccountRowSchema),
 });
 
+/**
+ * `null` on failure, never `[]` — the two must stay distinguishable. This
+ * fetch is independent of `getBillingSettings()`'s, and the Billing tab
+ * renders each of the two independently: collapsing "the accounts fetch
+ * failed" into the same empty array as "there are genuinely no users yet"
+ * would let a broken accounts endpoint read as a quiet, correct-looking
+ * empty table indefinitely.
+ */
 async function getCreditAccounts() {
   try {
     const response = await serverFetch(RESPARKABLE_API.ADMIN.BILLING_ACCOUNTS);
-    if (!response.ok) return [];
+    if (!response.ok) return null;
     const body = await parseApiResponse<unknown>(response);
-    if (!body.success) return [];
+    if (!body.success) return null;
     return billingAccountsResponseSchema.parse(body.data).accounts;
   } catch (error) {
     logger.error('Resparkable admin billing accounts page: fetch failed', error);
-    return [];
+    return null;
   }
 }
 

@@ -80,6 +80,7 @@ import {
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
+import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
 import { logger } from '@/lib/logging';
 import { registerAppJob } from '@/lib/orchestration/maintenance/app-jobs';
 import { WorkflowStatus } from '@/types/orchestration';
@@ -99,14 +100,20 @@ const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SWEEP_BATCH = 4;
 
 /**
- * Phase 29: billing. The four calendar-scheduled workflows are the whole
- * billable population here. The connection sweep this same job runs creates
- * no `AiWorkflowExecution` and has nothing to bill (see the module doc's "why
- * none of these is a workflow schedule").
+ * Phase 29: billing. Every workflow slug that `queueResparkableWorkflowRun()`
+ * can queue: the four calendar-scheduled workflows, plus the context-digest
+ * workflow `/summarize` queues on demand (`api/handlers.ts`). That function
+ * is the only way a resparkable-slug `AiWorkflowExecution` gets created, so
+ * this list has to track every slug ever passed to it — a slug added there
+ * without a matching entry here bills nothing for that workflow, silently.
+ * The connection sweep this same job runs creates no `AiWorkflowExecution`
+ * and has nothing to bill (see the module doc's "why none of these is a
+ * workflow schedule").
  */
-const RESPARKABLE_BILLABLE_WORKFLOW_SLUGS: string[] = Object.values(
-  RESPARKABLE_SCHEDULED_WORKFLOWS
-);
+const RESPARKABLE_BILLABLE_WORKFLOW_SLUGS: string[] = [
+  ...Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS),
+  RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
+];
 const TERMINAL_WORKFLOW_STATUSES: string[] = [
   WorkflowStatus.COMPLETED,
   WorkflowStatus.FAILED,
