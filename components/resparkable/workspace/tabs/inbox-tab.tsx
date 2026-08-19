@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * InboxTab — the launcher-opened counterpart to `app/(protected)/resparkable/inbox/page.tsx`.
+ * InboxTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/inbox/page.tsx`.
  *
  * Two independent fetches, same as the server page's `Promise.all` — a
  * failed projects fetch degrades to `[]` (the create-from-thought picker

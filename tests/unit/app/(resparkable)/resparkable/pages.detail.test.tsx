@@ -1,9 +1,9 @@
 /**
  * Unit Tests: Resparkable dynamic-route ([id]/[slug]) server-component pages
  *
- * Covers app/(protected)/resparkable/projects/[id]/page.tsx,
- * app/(protected)/resparkable/entities/[id]/page.tsx and
- * app/(protected)/resparkable/boards/[slug]/page.tsx.
+ * Covers app/(resparkable)/resparkable/projects/[id]/page.tsx,
+ * app/(resparkable)/resparkable/entities/[id]/page.tsx and
+ * app/(resparkable)/resparkable/boards/[slug]/page.tsx.
  *
  * Next 16 hands `params` over as a Promise — every test here awaits it the
  * same way the page does. All three pages share the "not yours" ==
@@ -13,9 +13,9 @@
  * than using the global no-op stub from tests/setup.ts, so a test can assert
  * both "notFound was called" and "the page stopped executing there".
  *
- * @see app/(protected)/resparkable/projects/[id]/page.tsx
- * @see app/(protected)/resparkable/entities/[id]/page.tsx
- * @see app/(protected)/resparkable/boards/[slug]/page.tsx
+ * @see app/(resparkable)/resparkable/projects/[id]/page.tsx
+ * @see app/(resparkable)/resparkable/entities/[id]/page.tsx
+ * @see app/(resparkable)/resparkable/boards/[slug]/page.tsx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -96,7 +96,7 @@ describe('ResparkableProjectPage', () => {
   it('awaits params and reads the project view + areas concurrently', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableProjectPage } =
-      await import('@/app/(protected)/resparkable/projects/[id]/page');
+      await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
     await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-123' }) });
 
@@ -113,7 +113,7 @@ describe('ResparkableProjectPage', () => {
         : ok([])
     );
     const { default: ResparkableProjectPage } =
-      await import('@/app/(protected)/resparkable/projects/[id]/page');
+      await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
     await expect(
       ResparkableProjectPage({ params: Promise.resolve({ id: 'missing' }) })
@@ -128,7 +128,7 @@ describe('ResparkableProjectPage', () => {
         : ok([])
     );
     const { default: ResparkableProjectPage } =
-      await import('@/app/(protected)/resparkable/projects/[id]/page');
+      await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
     render(await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-1' }) }));
 
@@ -144,7 +144,7 @@ describe('ResparkableProjectPage', () => {
         : fail(500, 'areas down')
     );
     const { default: ResparkableProjectPage } =
-      await import('@/app/(protected)/resparkable/projects/[id]/page');
+      await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
     render(await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-1' }) }));
 
@@ -164,7 +164,7 @@ describe('ResparkableEntityPage', () => {
   it('awaits params and reads the entity view endpoint', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableEntityPage } =
-      await import('@/app/(protected)/resparkable/entities/[id]/page');
+      await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
     await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) });
 
@@ -174,7 +174,7 @@ describe('ResparkableEntityPage', () => {
   it('calls notFound() when the entity view read 404s', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(404, 'not found'));
     const { default: ResparkableEntityPage } =
-      await import('@/app/(protected)/resparkable/entities/[id]/page');
+      await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
     await expect(
       ResparkableEntityPage({ params: Promise.resolve({ id: 'missing' }) })
@@ -185,7 +185,7 @@ describe('ResparkableEntityPage', () => {
   it('renders LoadError (not notFound) for a non-404 failure', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'server unwell'));
     const { default: ResparkableEntityPage } =
-      await import('@/app/(protected)/resparkable/entities/[id]/page');
+      await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
     render(await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) }));
 
@@ -197,7 +197,7 @@ describe('ResparkableEntityPage', () => {
     const view = { entity: { id: 'ent-1', name: 'Acme' }, related: [] };
     vi.mocked(readResparkable).mockResolvedValue(ok(view));
     const { default: ResparkableEntityPage } =
-      await import('@/app/(protected)/resparkable/entities/[id]/page');
+      await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
     render(await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) }));
 
@@ -218,7 +218,7 @@ describe('ResparkableBoardPage', () => {
       return fail(500, 'view down');
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     // The view read fails with a non-404 status here, so the page resolves to
     // a LoadError element rather than throwing — only the call order matters.
@@ -232,7 +232,7 @@ describe('ResparkableBoardPage', () => {
   it('renders LoadError when the boards list read itself fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'boards list down'));
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
 
@@ -243,7 +243,7 @@ describe('ResparkableBoardPage', () => {
   it('calls notFound() when no board matches the slug', async () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([{ id: 'board-1', slug: 'other-board' }]));
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     await expect(
       ResparkableBoardPage({ params: Promise.resolve({ slug: 'missing-board' }) })
@@ -260,7 +260,7 @@ describe('ResparkableBoardPage', () => {
       return ok([]);
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     await expect(
       ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) })
@@ -277,7 +277,7 @@ describe('ResparkableBoardPage', () => {
       return ok([]);
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
 
@@ -299,7 +299,7 @@ describe('ResparkableBoardPage', () => {
       return fail(500, 'tags down');
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
 
@@ -326,7 +326,7 @@ describe('ResparkableBoardPage', () => {
       return ok([]);
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
 
@@ -350,7 +350,7 @@ describe('ResparkableBoardPage', () => {
       return ok([]);
     });
     const { default: ResparkableBoardPage } =
-      await import('@/app/(protected)/resparkable/boards/[slug]/page');
+      await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
 

@@ -2,7 +2,7 @@
 
 /**
  * ConnectionsTab — the launcher-opened counterpart to
- * `app/(protected)/resparkable/connections/page.tsx`.
+ * `app/(resparkable)/resparkable/connections/page.tsx`.
  *
  * The server page passes `total={result.meta?.total ?? result.data.length}`
  * — `apiClient.get()` (`lib/api/client.ts`) unwraps the envelope down to

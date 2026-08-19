@@ -14,7 +14,7 @@
  * the submission — real work, and a second thing that can silently stop
  * working. `GET` needs none: the browser just navigates to
  * `/resparkable/capture?title=…&text=…&url=…`, which is a page
- * (`app/(protected)/resparkable/capture/page.tsx`) that already knows how to
+ * (`app/(resparkable)/resparkable/capture/page.tsx`) that already knows how to
  * read those three params. The cost is Android-only — iOS Safari has no
  * `share_target` equivalent at all; see `capture-channels.md` for the
  * Shortcut path that covers iOS instead.

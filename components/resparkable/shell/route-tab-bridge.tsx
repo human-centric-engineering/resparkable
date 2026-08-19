@@ -5,7 +5,7 @@
  * route-backed tab, and hands that tab the real, server-rendered page
  * output it's holding as `children`.
  *
- * `{children}` here is exactly what `app/(protected)/resparkable/layout.tsx`
+ * `{children}` here is exactly what `app/(resparkable)/resparkable/layout.tsx`
  * was passed by Next.js for whatever route just matched — the real SSR
  * output of that route's own `page.tsx`, untouched. This is what keeps
  * every existing deep link, bookmark and email link resolving through

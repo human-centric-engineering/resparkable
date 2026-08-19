@@ -33,6 +33,7 @@
  */
 
 import * as React from 'react';
+import { Sparkles } from 'lucide-react';
 
 import { useChatStream } from '@/components/resparkable/chat/use-chat-stream';
 import { Composer } from '@/components/resparkable/sparkey/composer';
@@ -150,7 +151,11 @@ export function SparkeyPane(): React.ReactElement {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="bg-background flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b px-3 py-3">
+        <Sparkles className="text-primary h-4 w-4 shrink-0" aria-hidden="true" />
+        <h2 className="font-display text-sm font-semibold tracking-wide">Ask Sparkey</h2>
+      </div>
       <Transcript entries={entries} />
       <Composer
         mode={mode}

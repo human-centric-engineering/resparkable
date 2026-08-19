@@ -170,7 +170,7 @@ goes; use `resparkable-icon.svg`, whose tile survives 16px.
 
 ## The page
 
-`app/(protected)/resparkable/brand/page.tsx` renders all of this inside the app, at
+`app/(resparkable)/resparkable/brand/page.tsx` renders all of this inside the app, at
 `/resparkable/brand`.
 
 Its swatches are filled with `var(--color-*)` and captioned with the **token name**

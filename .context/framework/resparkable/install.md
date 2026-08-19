@@ -68,7 +68,7 @@ merge cleanly on upgrade:
 | `app/api/v1/resparkable/**`                  | same path — 70 route files, most of them 2 lines                           |
 | `app/api/v1/admin/resparkable/**`            | same path — the instance-settings pair                                     |
 | `app/admin/resparkable/**`                   | same path — the settings page                                              |
-| `app/(protected)/resparkable/**`             | same path — 19 pages across fifteen surfaces                               |
+| `app/(resparkable)/resparkable/**`           | same path — 19 pages across fifteen surfaces                               |
 | `scripts/framework/resparkable/**`           | same path — plus one `package.json` script line, below                     |
 | `components/resparkable/**`                  | same path — the surfaces, the board, and the admin settings form           |
 
@@ -457,7 +457,7 @@ copies wholesale. None of them is a Resparkable file, and none needs registering
 
 | What          | Path                                                       |
 | ------------- | ---------------------------------------------------------- |
-| Pages         | `app/(protected)/resparkable/**`                           |
+| Pages         | `app/(resparkable)/resparkable/**`                         |
 | API routes    | `app/api/v1/resparkable/**`                                |
 | Admin page    | `app/admin/resparkable/**`                                 |
 | Components    | `components/resparkable/**`                                |

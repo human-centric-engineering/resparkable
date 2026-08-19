@@ -9,7 +9,7 @@
  * is exactly the kind of conditional-spread that can flip a truthy check the
  * wrong way with no type error to catch it.
  *
- * @see app/(protected)/resparkable/capture/page.tsx
+ * @see app/(resparkable)/resparkable/capture/page.tsx
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -23,7 +23,7 @@ vi.mock('@/components/resparkable/layout/quick-capture', () => ({
 
 import ResparkableCapturePage, {
   composeSharedContent,
-} from '@/app/(protected)/resparkable/capture/page';
+} from '@/app/(resparkable)/resparkable/capture/page';
 
 function searchParams(params: Record<string, string | string[] | undefined>) {
   return Promise.resolve(params);

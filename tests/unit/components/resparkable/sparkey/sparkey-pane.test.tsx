@@ -56,6 +56,13 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+describe('SparkeyPane — identity', () => {
+  it('names the pane, so it reads as Sparkey rather than a bare composer', () => {
+    render(<SparkeyPane />);
+    expect(screen.getByRole('heading', { name: 'Ask Sparkey' })).toBeInTheDocument();
+  });
+});
+
 describe('SparkeyPane — capture mode', () => {
   it('POSTs to /thoughts and shows a capture receipt', async () => {
     vi.mocked(apiClient.post).mockResolvedValue(undefined);

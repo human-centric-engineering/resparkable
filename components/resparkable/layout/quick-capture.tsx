@@ -69,7 +69,7 @@ export interface QuickCaptureProps {
   className?: string;
   /**
    * Pre-fills the box — the share-target landing page's whole reason to use
-   * this component rather than a bare textarea (`app/(protected)/resparkable/capture/page.tsx`).
+   * this component rather than a bare textarea (`app/(resparkable)/resparkable/capture/page.tsx`).
    * Still a draft: nothing is sent until Capture is pressed, same as anything
    * typed by hand.
    */

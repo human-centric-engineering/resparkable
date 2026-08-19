@@ -1,7 +1,7 @@
 /**
  * Unit Tests: Resparkable collection-page server components
  *
- * Covers the "list" pages under app/(protected)/resparkable/: inbox, projects,
+ * Covers the "list" pages under app/(resparkable)/resparkable/: inbox, projects,
  * goals, areas, entities, documents, boards. Each is an async Server
  * Component whose only real logic is (a) which endpoint(s)/query strings it
  * asks `readResparkable()` for, (b) which failure renders `<LoadError>`, and
@@ -14,13 +14,13 @@
  * Child view components are stubbed to prop-capturing divs so assertions
  * check what the page *handed down*, not how the view renders it.
  *
- * @see app/(protected)/resparkable/inbox/page.tsx
- * @see app/(protected)/resparkable/projects/page.tsx
- * @see app/(protected)/resparkable/goals/page.tsx
- * @see app/(protected)/resparkable/areas/page.tsx
- * @see app/(protected)/resparkable/entities/page.tsx
- * @see app/(protected)/resparkable/documents/page.tsx
- * @see app/(protected)/resparkable/boards/page.tsx
+ * @see app/(resparkable)/resparkable/inbox/page.tsx
+ * @see app/(resparkable)/resparkable/projects/page.tsx
+ * @see app/(resparkable)/resparkable/goals/page.tsx
+ * @see app/(resparkable)/resparkable/areas/page.tsx
+ * @see app/(resparkable)/resparkable/entities/page.tsx
+ * @see app/(resparkable)/resparkable/documents/page.tsx
+ * @see app/(resparkable)/resparkable/boards/page.tsx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -122,7 +122,7 @@ describe('ResparkableInboxPage', () => {
   it('reads the inbox and active-projects endpoints concurrently', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableInboxPage } =
-      await import('@/app/(protected)/resparkable/inbox/page');
+      await import('@/app/(resparkable)/resparkable/inbox/page');
 
     await ResparkableInboxPage();
 
@@ -137,7 +137,7 @@ describe('ResparkableInboxPage', () => {
       path === RESPARKABLE_API.INBOX ? fail(500, 'inbox down') : ok([])
     );
     const { default: ResparkableInboxPage } =
-      await import('@/app/(protected)/resparkable/inbox/page');
+      await import('@/app/(resparkable)/resparkable/inbox/page');
 
     render(await ResparkableInboxPage());
 
@@ -151,7 +151,7 @@ describe('ResparkableInboxPage', () => {
       path === RESPARKABLE_API.INBOX ? ok(inboxPayload) : fail(500, 'projects down')
     );
     const { default: ResparkableInboxPage } =
-      await import('@/app/(protected)/resparkable/inbox/page');
+      await import('@/app/(resparkable)/resparkable/inbox/page');
 
     render(await ResparkableInboxPage());
 
@@ -171,7 +171,7 @@ describe('ResparkableInboxPage', () => {
       path === RESPARKABLE_API.INBOX ? ok(inboxPayload) : ok(projects)
     );
     const { default: ResparkableInboxPage } =
-      await import('@/app/(protected)/resparkable/inbox/page');
+      await import('@/app/(resparkable)/resparkable/inbox/page');
 
     render(await ResparkableInboxPage());
 
@@ -191,7 +191,7 @@ describe('ResparkableProjectsPage', () => {
   it('reads projects with limit=200 (no status) and areas concurrently when no status is given', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableProjectsPage } =
-      await import('@/app/(protected)/resparkable/projects/page');
+      await import('@/app/(resparkable)/resparkable/projects/page');
 
     await ResparkableProjectsPage({ searchParams: Promise.resolve({}) });
 
@@ -204,7 +204,7 @@ describe('ResparkableProjectsPage', () => {
   it('includes a recognised status in the projects query', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableProjectsPage } =
-      await import('@/app/(protected)/resparkable/projects/page');
+      await import('@/app/(resparkable)/resparkable/projects/page');
 
     await ResparkableProjectsPage({ searchParams: Promise.resolve({ status: 'active' }) });
 
@@ -214,7 +214,7 @@ describe('ResparkableProjectsPage', () => {
   it('drops an unrecognised status rather than passing it through', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableProjectsPage } =
-      await import('@/app/(protected)/resparkable/projects/page');
+      await import('@/app/(resparkable)/resparkable/projects/page');
 
     await ResparkableProjectsPage({
       searchParams: Promise.resolve({ status: 'not-a-real-status' }),
@@ -228,7 +228,7 @@ describe('ResparkableProjectsPage', () => {
       path.startsWith(RESPARKABLE_API.PROJECTS) ? fail(500, 'projects down') : ok([])
     );
     const { default: ResparkableProjectsPage } =
-      await import('@/app/(protected)/resparkable/projects/page');
+      await import('@/app/(resparkable)/resparkable/projects/page');
 
     render(await ResparkableProjectsPage({ searchParams: Promise.resolve({}) }));
 
@@ -242,7 +242,7 @@ describe('ResparkableProjectsPage', () => {
       path.startsWith(RESPARKABLE_API.PROJECTS) ? ok(projects) : fail(500, 'areas down')
     );
     const { default: ResparkableProjectsPage } =
-      await import('@/app/(protected)/resparkable/projects/page');
+      await import('@/app/(resparkable)/resparkable/projects/page');
 
     render(await ResparkableProjectsPage({ searchParams: Promise.resolve({}) }));
 
@@ -264,7 +264,7 @@ describe('ResparkableGoalsPage', () => {
   it('reads goals and areas concurrently, both with limit=200', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableGoalsPage } =
-      await import('@/app/(protected)/resparkable/goals/page');
+      await import('@/app/(resparkable)/resparkable/goals/page');
 
     await ResparkableGoalsPage();
 
@@ -279,7 +279,7 @@ describe('ResparkableGoalsPage', () => {
       path.startsWith(RESPARKABLE_API.GOALS) ? fail(503, 'goals down') : ok([])
     );
     const { default: ResparkableGoalsPage } =
-      await import('@/app/(protected)/resparkable/goals/page');
+      await import('@/app/(resparkable)/resparkable/goals/page');
 
     render(await ResparkableGoalsPage());
 
@@ -292,7 +292,7 @@ describe('ResparkableGoalsPage', () => {
       path.startsWith(RESPARKABLE_API.GOALS) ? ok(goals) : fail(500, 'areas down')
     );
     const { default: ResparkableGoalsPage } =
-      await import('@/app/(protected)/resparkable/goals/page');
+      await import('@/app/(resparkable)/resparkable/goals/page');
 
     render(await ResparkableGoalsPage());
 
@@ -312,7 +312,7 @@ describe('ResparkableGoalsPage', () => {
       path.startsWith(RESPARKABLE_API.GOALS) ? ok(goals) : ok(areas)
     );
     const { default: ResparkableGoalsPage } =
-      await import('@/app/(protected)/resparkable/goals/page');
+      await import('@/app/(resparkable)/resparkable/goals/page');
 
     render(await ResparkableGoalsPage());
 
@@ -329,7 +329,7 @@ describe('ResparkableGoalsPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     vi.mocked(getSparkeyPronoun).mockResolvedValue('he');
     const { default: ResparkableGoalsPage } =
-      await import('@/app/(protected)/resparkable/goals/page');
+      await import('@/app/(resparkable)/resparkable/goals/page');
 
     render(await ResparkableGoalsPage());
 
@@ -345,7 +345,7 @@ describe('ResparkableAreasPage', () => {
   it('reads only the areas endpoint', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableAreasPage } =
-      await import('@/app/(protected)/resparkable/areas/page');
+      await import('@/app/(resparkable)/resparkable/areas/page');
 
     await ResparkableAreasPage();
 
@@ -357,7 +357,7 @@ describe('ResparkableAreasPage', () => {
       path.startsWith(RESPARKABLE_API.AREAS) ? fail(500, 'areas down') : ok({})
     );
     const { default: ResparkableAreasPage } =
-      await import('@/app/(protected)/resparkable/areas/page');
+      await import('@/app/(resparkable)/resparkable/areas/page');
 
     render(await ResparkableAreasPage());
 
@@ -368,7 +368,7 @@ describe('ResparkableAreasPage', () => {
     const areas = [{ id: 'a1' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(areas));
     const { default: ResparkableAreasPage } =
-      await import('@/app/(protected)/resparkable/areas/page');
+      await import('@/app/(resparkable)/resparkable/areas/page');
 
     render(await ResparkableAreasPage());
 
@@ -381,7 +381,7 @@ describe('ResparkableAreasPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     vi.mocked(getSparkeyPronoun).mockResolvedValue('she');
     const { default: ResparkableAreasPage } =
-      await import('@/app/(protected)/resparkable/areas/page');
+      await import('@/app/(resparkable)/resparkable/areas/page');
 
     render(await ResparkableAreasPage());
 
@@ -397,7 +397,7 @@ describe('ResparkableEntitiesPage', () => {
   it('reads the entities endpoint with limit=200', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableEntitiesPage } =
-      await import('@/app/(protected)/resparkable/entities/page');
+      await import('@/app/(resparkable)/resparkable/entities/page');
 
     await ResparkableEntitiesPage();
 
@@ -407,7 +407,7 @@ describe('ResparkableEntitiesPage', () => {
   it('renders LoadError when the read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'entities down'));
     const { default: ResparkableEntitiesPage } =
-      await import('@/app/(protected)/resparkable/entities/page');
+      await import('@/app/(resparkable)/resparkable/entities/page');
 
     render(await ResparkableEntitiesPage());
 
@@ -418,7 +418,7 @@ describe('ResparkableEntitiesPage', () => {
     const entities = [{ id: 'e1', name: 'Acme' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(entities));
     const { default: ResparkableEntitiesPage } =
-      await import('@/app/(protected)/resparkable/entities/page');
+      await import('@/app/(resparkable)/resparkable/entities/page');
 
     render(await ResparkableEntitiesPage());
 
@@ -433,7 +433,7 @@ describe('ResparkableDocumentsPage', () => {
   it('reads the documents endpoint with limit=100', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableDocumentsPage } =
-      await import('@/app/(protected)/resparkable/documents/page');
+      await import('@/app/(resparkable)/resparkable/documents/page');
 
     await ResparkableDocumentsPage();
 
@@ -443,7 +443,7 @@ describe('ResparkableDocumentsPage', () => {
   it('renders LoadError when the read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'documents down'));
     const { default: ResparkableDocumentsPage } =
-      await import('@/app/(protected)/resparkable/documents/page');
+      await import('@/app/(resparkable)/resparkable/documents/page');
 
     render(await ResparkableDocumentsPage());
 
@@ -454,7 +454,7 @@ describe('ResparkableDocumentsPage', () => {
     const documents = [{ id: 'd1', title: 'Doc' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(documents));
     const { default: ResparkableDocumentsPage } =
-      await import('@/app/(protected)/resparkable/documents/page');
+      await import('@/app/(resparkable)/resparkable/documents/page');
 
     render(await ResparkableDocumentsPage());
 
@@ -469,7 +469,7 @@ describe('ResparkableBoardsPage', () => {
   it('reads boards, active projects and tags concurrently', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableBoardsPage } =
-      await import('@/app/(protected)/resparkable/boards/page');
+      await import('@/app/(resparkable)/resparkable/boards/page');
 
     await ResparkableBoardsPage();
 
@@ -485,7 +485,7 @@ describe('ResparkableBoardsPage', () => {
       path.startsWith(RESPARKABLE_API.BOARDS) ? fail(500, 'boards down') : ok([])
     );
     const { default: ResparkableBoardsPage } =
-      await import('@/app/(protected)/resparkable/boards/page');
+      await import('@/app/(resparkable)/resparkable/boards/page');
 
     render(await ResparkableBoardsPage());
 
@@ -499,7 +499,7 @@ describe('ResparkableBoardsPage', () => {
       path.startsWith(RESPARKABLE_API.BOARDS) ? ok(boards) : fail(500, 'down')
     );
     const { default: ResparkableBoardsPage } =
-      await import('@/app/(protected)/resparkable/boards/page');
+      await import('@/app/(resparkable)/resparkable/boards/page');
 
     render(await ResparkableBoardsPage());
 
@@ -524,7 +524,7 @@ describe('ResparkableBoardsPage', () => {
       return ok(tags);
     });
     const { default: ResparkableBoardsPage } =
-      await import('@/app/(protected)/resparkable/boards/page');
+      await import('@/app/(resparkable)/resparkable/boards/page');
 
     render(await ResparkableBoardsPage());
 

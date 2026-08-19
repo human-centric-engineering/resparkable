@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * VaultTab — the launcher-opened counterpart to `app/(protected)/resparkable/vault/page.tsx`.
+ * VaultTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/vault/page.tsx`.
  *
  * Not a `useTabFetch` adapter at all: the server page does no fetch of its
  * own (documented in its own comment — "both halves are user-initiated file

@@ -54,6 +54,12 @@ beforeEach(() => {
 });
 
 describe('ActivityPane', () => {
+  it('names the pane in every state, including while loading', () => {
+    mockedGet.mockReturnValue(new Promise(() => {}));
+    render(<ActivityPane />);
+    expect(screen.getByRole('heading', { name: 'Activity' })).toBeInTheDocument();
+  });
+
   it('shows a skeleton while loading', () => {
     mockedGet.mockReturnValue(new Promise(() => {}));
     render(<ActivityPane />);

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * DocumentsTab — the launcher-opened counterpart to `app/(protected)/resparkable/documents/page.tsx`.
+ * DocumentsTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/documents/page.tsx`.
  */
 
 import * as React from 'react';

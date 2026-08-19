@@ -24,7 +24,7 @@
  */
 
 import * as React from 'react';
-import { Link2 } from 'lucide-react';
+import { Link2, Waves } from 'lucide-react';
 
 import { DiscoveryCard } from '@/components/resparkable/activity/discovery-card';
 import type { ActivityItem } from '@/components/resparkable/activity/activity-types';
@@ -61,41 +61,55 @@ export function ActivityPane(): React.ReactElement {
     }
   }
 
-  if (connections.status === 'loading') return <SkeletonList label="Loading activity" />;
-  if (connections.status === 'error') {
-    return <TabLoadError what="your activity" message={connections.message} onRetry={retry} />;
-  }
-
-  const items: ActivityItem[] = connections.data
-    .filter((row) => !reviewed.has(row.id))
-    .map((row) => ({ kind: 'discovery', connection: row }));
-
-  if (items.length === 0) {
-    return (
-      <EmptyState
-        icon={Link2}
-        title="Nothing waiting"
-        description="The sweep compares what you've already captured and turns up anything it thinks is related here."
-        className="m-3"
-      />
-    );
-  }
+  const items: ActivityItem[] =
+    connections.status === 'ready'
+      ? connections.data
+          .filter((row) => !reviewed.has(row.id))
+          .map((row) => ({ kind: 'discovery', connection: row }))
+      : [];
 
   return (
-    <div className="flex h-full flex-col">
-      <p className="text-muted-foreground p-3 pb-0 text-xs">
-        {items.length} {items.length === 1 ? 'discovery' : 'discoveries'} waiting on a decision.
-      </p>
-      <ul aria-label="Discoveries" className="flex-1 space-y-2 overflow-y-auto p-3">
-        {items.map((item) => (
-          <DiscoveryCard
-            key={item.connection.id}
-            item={item}
-            onDecide={(id, status) => void decide(id, status)}
+    <div className="bg-background flex h-full flex-col">
+      <div className="flex items-center gap-2 border-b px-3 py-3">
+        <Waves className="text-primary h-4 w-4 shrink-0" aria-hidden="true" />
+        <h2 className="font-display text-sm font-semibold tracking-wide">Activity</h2>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {connections.status === 'loading' && <SkeletonList label="Loading activity" />}
+        {connections.status === 'error' && (
+          <TabLoadError what="your activity" message={connections.message} onRetry={retry} />
+        )}
+        {connections.status === 'ready' && items.length === 0 && (
+          <EmptyState
+            icon={Link2}
+            title="Nothing waiting"
+            description="The sweep compares what you've already captured and turns up anything it thinks is related here."
+            className="m-3"
           />
-        ))}
-      </ul>
-      <SaveStatus state={review.state} message={review.message} className="px-3 pb-2" />
+        )}
+        {connections.status === 'ready' && items.length > 0 && (
+          <>
+            <p className="text-muted-foreground p-3 pb-0 text-xs">
+              {items.length} {items.length === 1 ? 'discovery' : 'discoveries'} waiting on a
+              decision.
+            </p>
+            <ul aria-label="Discoveries" className="space-y-2 p-3">
+              {items.map((item) => (
+                <DiscoveryCard
+                  key={item.connection.id}
+                  item={item}
+                  onDecide={(id, status) => void decide(id, status)}
+                />
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+
+      {connections.status === 'ready' && items.length > 0 && (
+        <SaveStatus state={review.state} message={review.message} className="px-3 pb-2" />
+      )}
     </div>
   );
 }

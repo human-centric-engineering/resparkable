@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * EntitiesTab — the launcher-opened counterpart to `app/(protected)/resparkable/entities/page.tsx`.
+ * EntitiesTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/entities/page.tsx`.
  */
 
 import * as React from 'react';

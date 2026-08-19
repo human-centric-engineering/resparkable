@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * BoardsTab — the launcher-opened counterpart to `app/(protected)/resparkable/boards/page.tsx`.
+ * BoardsTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/boards/page.tsx`.
  */
 
 import * as React from 'react';

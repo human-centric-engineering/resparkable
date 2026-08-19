@@ -2,12 +2,14 @@
  * Unit Tests: ResparkableAppHeader.
  *
  * Thin composition component — the interesting behaviour (search submit,
- * theme toggling) is already pinned down in `resparkable-search-box.test.tsx`
- * and `theme-toggle`'s own coverage. What matters here is the contract this
- * file's header comment promises: the brand mark is a real link home (not
- * text), the search box renders in its `compact` size, and there is exactly
- * one theme toggle — no `UserButton`, since Sunrise's own header still owns
- * the account menu.
+ * theme toggling, the account menu's own contents) is already pinned down
+ * in `resparkable-search-box.test.tsx`, `theme-toggle`'s own coverage, and
+ * `user-button.test.tsx`. What matters here is the contract this file's
+ * header comment promises: the brand mark is a real link home (not text),
+ * the search box renders in its `compact` size, and — since `/resparkable`
+ * moved to its own route group specifically so this is the *only* header —
+ * `UserButton` (Sunrise's own account menu) renders here now, not a second
+ * copy of it and not nothing.
  *
  * @see components/resparkable/shell/app-header.tsx
  */
@@ -31,6 +33,15 @@ vi.mock('@/hooks/use-theme', () => ({
   useTheme: () => ({ theme: 'light', setTheme: vi.fn() }),
 }));
 
+// UserButton's own state machine (loading/signed-out/signed-in) is covered
+// by its own test file — a signed-in session here just proves this header
+// actually renders it, not a second copy of Sunrise's header.
+const mockUseSession = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/auth/client', () => ({
+  authClient: { signOut: vi.fn() },
+  useSession: () => mockUseSession(),
+}));
+
 const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const mockedSearchParams = useSearchParams as unknown as ReturnType<typeof vi.fn>;
 
@@ -45,6 +56,10 @@ beforeEach(() => {
     prefetch: vi.fn(),
   });
   mockedSearchParams.mockReturnValue(new URLSearchParams());
+  mockUseSession.mockReturnValue({
+    data: { user: { name: 'Jamie Doe', email: 'jamie@example.com', role: 'USER' } },
+    isPending: false,
+  });
 });
 
 describe('ResparkableAppHeader', () => {
@@ -62,10 +77,29 @@ describe('ResparkableAppHeader', () => {
     expect(search.className).toContain('h-8');
   });
 
-  it('renders exactly one theme toggle and no account menu', () => {
+  it('renders exactly one theme toggle and the account menu', () => {
     render(<ResparkableAppHeader />);
 
     expect(screen.getByRole('button', { name: /toggle theme/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /account/i })).not.toBeInTheDocument();
+    // The avatar trigger's accessible name is the user's initials
+    // (`AvatarFallback`) — "Jamie Doe" → "JD".
+    expect(screen.getByRole('button', { name: 'JD' })).toBeInTheDocument();
+  });
+
+  it('surfaces Profile/Settings/Admin/sign-out via the avatar dropdown', async () => {
+    mockUseSession.mockReturnValue({
+      data: { user: { name: 'Jamie Doe', email: 'jamie@example.com', role: 'ADMIN' } },
+      isPending: false,
+    });
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    render(<ResparkableAppHeader />);
+
+    await user.click(screen.getByRole('button', { name: 'JD' }));
+
+    expect(screen.getByRole('menuitem', { name: /view profile/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /^settings/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /admin dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /sign out/i })).toBeInTheDocument();
   });
 });

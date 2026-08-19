@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * PlanTab — the launcher-opened counterpart to `app/(protected)/resparkable/plan/page.tsx`.
+ * PlanTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/plan/page.tsx`.
  *
  * `day` has no home in `TabParams` (`tab-registry.ts`) because the route
  * itself never carried it in the path, only as a `?day=` search param — so

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 
+import { MaintenanceWrapperWithAdminNotice } from '@/components/maintenance-wrapper';
 import { WorkspaceShell } from '@/components/resparkable/shell/workspace-shell';
 
 export const metadata: Metadata = {
@@ -24,7 +25,8 @@ export const metadata: Metadata = {
 };
 
 /**
- * The Resparkable shell — Phase 8's cutover.
+ * The Resparkable shell — Phase 8's cutover, moved to its own route group
+ * post-launch feedback.
  *
  * ## What replaced what
  *
@@ -41,7 +43,27 @@ export const metadata: Metadata = {
  * link, bookmark and email link keeps resolving exactly as it did before
  * this phase.
  *
- * The counts this layout used to fetch (`/resparkable/counts`, for the
+ * ## Why this lives in `(resparkable)`, not `(protected)`
+ *
+ * A first cut kept `/resparkable` inside `(protected)`, inheriting Sunrise's
+ * own sticky `AppHeader`+`ProtectedNav`+padded `<main>`+`ProtectedFooter` —
+ * stacked on top of this shell's own header, it read as two apps glued
+ * together rather than one immersive surface, which real usage caught
+ * immediately. A layout can't opt a subtree out of an ancestor's chrome in
+ * the App Router — the only fix is not being a descendant of it. Route
+ * groups don't affect the URL (`/resparkable` is unchanged) and protection
+ * is enforced by `proxy.ts` on the literal pathname prefix
+ * (`lib/app/protected-routes.ts`'s `appProtectedRoutes`), not on folder
+ * placement — so this move is free from an auth standpoint. It does mean
+ * this layout re-declares `MaintenanceWrapperWithAdminNotice` itself, since
+ * it no longer inherits `(protected)/layout.tsx`'s copy.
+ *
+ * `ResparkableAppHeader` now carries everything Sunrise's global header did
+ * for this surface: `UserButton` gives back Profile/Settings/Admin/sign-out
+ * via the avatar dropdown Sunrise's own header already used, rather than a
+ * second nav row.
+ *
+ * The counts this layout used to fetch (`/resparkable/counts`, for the old
  * rail's badges) have no reader left: the rail is deleted, and neither the
  * launcher nor the tab strip shows a numeric badge. Activity now surfaces
  * pending connections directly, as a live, browsable feed rather than a
@@ -54,5 +76,9 @@ export const metadata: Metadata = {
  * once nothing else could plausibly still reference them.
  */
 export default function ResparkableLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <WorkspaceShell>{children}</WorkspaceShell>;
+  return (
+    <MaintenanceWrapperWithAdminNotice>
+      <WorkspaceShell>{children}</WorkspaceShell>
+    </MaintenanceWrapperWithAdminNotice>
+  );
 }

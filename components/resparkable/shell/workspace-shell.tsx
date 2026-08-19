@@ -50,18 +50,12 @@ export function WorkspaceShell({ children }: WorkspaceShellProps): React.ReactEl
 
   return (
     <WorkspaceProvider>
-      {/* `(protected)/layout.tsx` (Sunrise's own, off-limits per the build
-          plan's "not Sunrise's global app chrome") wraps every route,
-          including this one, in a sticky `AppHeader` and a `py-8`-padded
-          `<main>` above a footer — there is no fixed-height ancestor this
-          shell can just inherit `h-full` from. `5rem` is Sunrise's header's
-          actual rendered height (`py-3.5` plus its content row) plus this
-          `<main>`'s own top padding; confirmed against the real header in
-          a browser rather than assumed. `min-h-[32rem]` is a floor so a
-          browser whose real chrome is unexpectedly tall still gets a
-          usable, if imperfectly full-bleed, three-pane workspace instead
-          of one crushed to a sliver. */}
-      <div className="flex h-[calc(100dvh-5rem)] min-h-[32rem] flex-col">
+      {/* `/resparkable` sits in its own `(resparkable)` route group (see
+          `layout.tsx`'s own header comment) specifically so nothing above
+          `<body>` — no Sunrise `AppHeader`, no padded `<main>`, no footer —
+          adds height this shell would have to subtract out. `h-dvh` is
+          exact, not a guess: this really is the whole viewport. */}
+      <div className="flex h-dvh flex-col">
         <ResparkableAppHeader />
         <div className="min-h-0 flex-1">
           {isDesktop ? (

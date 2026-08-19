@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * AreasTab — the launcher-opened counterpart to `app/(protected)/resparkable/areas/page.tsx`.
+ * AreasTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/areas/page.tsx`.
  *
  * `pronoun` omitted — see `GoalsTab`'s header comment; same reasoning
  * applies here.

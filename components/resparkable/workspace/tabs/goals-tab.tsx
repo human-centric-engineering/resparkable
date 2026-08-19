@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * GoalsTab — the launcher-opened counterpart to `app/(protected)/resparkable/goals/page.tsx`.
+ * GoalsTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/goals/page.tsx`.
  *
  * The server page also fetches `getSparkeyPronoun()` for `GoalsView`'s copy —
  * a server-only helper (reads `next/headers` transitively) with no client
