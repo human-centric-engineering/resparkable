@@ -127,7 +127,7 @@ services:
       migrator:
         condition: service_completed_successfully
     networks:
-      - sunrise-network
+      - resparkable-network
     restart: 'no'
 
   # PostgreSQL database
