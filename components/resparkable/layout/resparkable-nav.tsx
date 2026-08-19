@@ -52,26 +52,7 @@
 import * as React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import {
-  CalendarRange,
-  ChevronDown,
-  Compass,
-  FileText,
-  FolderKanban,
-  FolderSync,
-  Inbox,
-  LayoutGrid,
-  Link2,
-  MessageSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Settings,
-  Share2,
-  Sun,
-  Target,
-  Users,
-  type LucideIcon,
-} from 'lucide-react';
+import { ChevronDown, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -82,76 +63,23 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  RESPARKABLE_NAV_GROUPS,
+  RESPARKABLE_NAV_ITEMS,
+  type NavItem,
+} from '@/lib/framework/resparkable/ui/nav-groups';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { useLocalStorage } from '@/lib/hooks/use-local-storage';
 import { cn } from '@/lib/utils';
 
-interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-  /** Index route — match exactly, or it lights up everywhere. */
-  exact?: boolean;
-}
-
-interface NavGroup {
-  /** One word, plain English, and true of every item under it. */
-  label: string;
-  items: NavItem[];
-}
-
 /**
- * The four groups, in the order the product is used: what you do today, where
- * you file it, what it connects to, and the two surfaces you visit on purpose.
+ * Re-exported for callers that historically imported the registry from here
+ * (this component, `resparkable-nav.test.tsx`). The registry itself now
+ * lives in `lib/framework/resparkable/ui/nav-groups.ts` so it can be reused
+ * — by `SectionHeader`, `section-help.test.ts`, and the Phase 2 Workspace
+ * launcher — without pulling in this client component.
  */
-export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
-  {
-    label: 'Daily',
-    items: [
-      { href: RESPARKABLE_ROUTES.TODAY, label: 'Today', icon: Sun, exact: true },
-      { href: RESPARKABLE_ROUTES.INBOX, label: 'Inbox', icon: Inbox },
-      { href: RESPARKABLE_ROUTES.PLAN, label: 'Plan', icon: CalendarRange },
-      { href: RESPARKABLE_ROUTES.CHAT, label: 'Ask Sparkey', icon: MessageSquare },
-    ],
-  },
-  {
-    label: 'Organise',
-    items: [
-      { href: RESPARKABLE_ROUTES.PROJECTS, label: 'Projects', icon: FolderKanban },
-      { href: RESPARKABLE_ROUTES.GOALS, label: 'Goals', icon: Target },
-      { href: RESPARKABLE_ROUTES.AREAS, label: 'Life', icon: Compass },
-      { href: RESPARKABLE_ROUTES.BOARDS, label: 'Boards', icon: LayoutGrid },
-    ],
-  },
-  {
-    label: 'Knowledge',
-    items: [
-      { href: RESPARKABLE_ROUTES.DOCUMENTS, label: 'Documents', icon: FileText },
-      { href: RESPARKABLE_ROUTES.ENTITIES, label: 'People', icon: Users },
-      { href: RESPARKABLE_ROUTES.CONNECTIONS, label: 'Connections', icon: Link2 },
-      { href: RESPARKABLE_ROUTES.GRAPH, label: 'Graph', icon: Share2 },
-    ],
-  },
-  {
-    label: 'Manage',
-    items: [
-      { href: RESPARKABLE_ROUTES.VAULT, label: 'Vault', icon: FolderSync },
-      { href: RESPARKABLE_ROUTES.SETTINGS, label: 'Settings', icon: Settings },
-    ],
-  },
-];
-
-/**
- * Every section, flattened.
- *
- * Exported so `section-help.test.ts` can assert each one has an explanation. A
- * nav entry with no help entry loses its heading *and* its ⓘ, and nothing else
- * would catch that. Derived rather than hand-maintained, so a section added to a
- * group cannot slip past that test by being absent from a second list.
- */
-export const RESPARKABLE_NAV_ITEMS: NavItem[] = RESPARKABLE_NAV_GROUPS.flatMap(
-  (group) => group.items
-);
+export { RESPARKABLE_NAV_GROUPS, RESPARKABLE_NAV_ITEMS };
 
 /** Remembered across sessions — a per-user answer to "does this page want width". */
 const COLLAPSED_KEY = 'resparkable.nav.collapsed.v1';
