@@ -30,6 +30,7 @@ import { useRouter } from 'next/navigation';
 
 import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -78,14 +79,7 @@ describe('ResourceDialog', () => {
     vi.clearAllMocks();
     mockPost.mockResolvedValue({ id: 'new_1' });
     mockPatch.mockResolvedValue({ id: 'proj_1' });
-    vi.mocked(useRouter).mockReturnValue({
-      refresh: mockRefresh,
-      push: vi.fn(),
-      replace: vi.fn(),
-      back: vi.fn(),
-      forward: vi.fn(),
-      prefetch: vi.fn(),
-    });
+    vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh: mockRefresh }));
   });
 
   it('POSTs to the collection when there is no id (create)', async () => {

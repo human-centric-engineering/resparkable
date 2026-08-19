@@ -61,7 +61,7 @@ Use for external library docs: `resolve-library-id` → `query-docs`. Essential 
 ```bash
 # Development
 npm run dev                    # Start dev server
-npm run validate               # Type-check + lint + format
+npm run validate               # CHANGELOG + Node version + type-check + lint + format (Prettier + Prisma)
 
 # Database
 npm run db:migrate:dev         # Create and apply migration (dev only)
@@ -282,8 +282,8 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 | ------------------------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Architecture             | `.context/architecture/`                                  | System design, deployment                                                                                                                                    |
 | CI Pipeline              | `.context/architecture/ci.md`                             | GitHub Actions pipeline; public/private-fork adaptation, `CI_TEST_SCOPE` knob, GHAS-skip, sharding, the two forker gotchas                                   |
-| Multi-Tenancy            | `.context/architecture/multi-tenancy.md`                  | Opt-in RLS retrofit playbook; single-tenant by default, `TENANCY_MODE` seam                                                                                  |
-| Multi-Tenancy Research   | `.context/architecture/multi-tenancy-research.md`         | Gap analysis: five isolation planes, control/commercial planes, platform-vs-fork ownership matrix, fork merge surface                                        |
+| Multi-Tenancy            | `.context/architecture/multi-tenancy.md`                  | Opt-in RLS retrofit playbook; single-tenant by default, `TENANCY_MODE` seam, fork-tier map, upstream-sync checklist                                          |
+| Multi-Tenancy Research   | `.context/architecture/multi-tenancy-research.md`         | Gap analysis: five isolation planes, control/commercial planes, ownership matrix, fork merge surface, provisions for forks                                   |
 | Authentication           | `.context/auth/`                                          | better-auth, sessions, guards                                                                                                                                |
 | API                      | `.context/api/`                                           | Endpoints, responses, client                                                                                                                                 |
 | Database                 | `.context/database/`                                      | Prisma schema, migrations, seeding                                                                                                                           |
@@ -294,12 +294,12 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 | Email                    | `.context/email/`                                         | Templates, sending                                                                                                                                           |
 | Workflow                 | `.context/workflow.md`                                    | Git, commits, PR process                                                                                                                                     |
 | AI Orchestration         | `.claude/docs/agent-orchestration.md`                     | Architectural rules for Claude Code sessions (platform-agnostic core, file paths)                                                                            |
-| Orchestration Spec       | `.context/orchestration/meta/functional-specification.md` | **Canonical**: what the system does (every step type, capability, route, schema model)                                                                       |
+| Orchestration Spec       | `.context/orchestration/meta/functional-specification.md` | **Canonical** — what the system does (every step type, capability, route, schema model)                                                                      |
 | Orchestration Decisions  | `.context/orchestration/meta/architectural-decisions.md`  | Why each choice was made; alternatives rejected and the reasons                                                                                              |
 | Orchestration Roadmap    | `.context/orchestration/meta/improvement-priorities.md`   | Prioritised improvements against actual deployment profile                                                                                                   |
 | Orchestration Hosting    | `.context/orchestration/meta/hosting-requirements.md`     | What it takes to run in production; platform comparison                                                                                                      |
 | Orchestration Meta Index | `.context/orchestration/meta/README.md`                   | Index for the 8 meta docs (spec, decisions, roadmap, commercial, QA)                                                                                         |
-| Orchestration Overview   | `.context/admin/orchestration.md`                         | Admin operator landing: quick start and pointers to admin sub-pages                                                                                          |
+| Orchestration Overview   | `.context/admin/orchestration.md`                         | Admin operator landing — quick start and pointers to admin sub-pages                                                                                         |
 | Solution Builder         | `.context/admin/orchestration-solution-builder.md`        | Problem-to-solution guide, 5 worked examples                                                                                                                 |
 | Capabilities Guide       | `.context/admin/orchestration-capabilities-guide.md`      | How to create capabilities, BaseCapability ref                                                                                                               |
 | Workflows Guide          | `.context/admin/orchestration-workflows-guide.md`         | Step types, error strategies, templates, extending                                                                                                           |
@@ -322,7 +322,7 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 | API Keys                 | `.context/orchestration/api-keys.md`                      | Self-service API keys, scopes, key resolution                                                                                                                |
 | MCP Server               | `.context/orchestration/mcp.md`                           | MCP protocol, tools, resources, keys, audit                                                                                                                  |
 | Orchestration Admin API  | `.context/orchestration/admin-api.md`                     | Agents, capabilities, chat, knowledge, executions                                                                                                            |
-| Orchestration Endpoints  | `.context/api/orchestration-endpoints.md`                 | Admin HTTP reference: full table of every admin route                                                                                                        |
+| Orchestration Endpoints  | `.context/api/orchestration-endpoints.md`                 | Admin HTTP reference — full table of every admin route                                                                                                       |
 | Provider Selection       | `.context/orchestration/provider-selection-matrix.md`     | Tier classification, decision heuristic, model audit workflow                                                                                                |
 | Consumer Chat API        | `.context/api/consumer-chat.md`                           | End-user chat endpoints, agent visibility, rate limits                                                                                                       |
 | Document Ingestion       | `.context/orchestration/document-ingestion.md`            | Multi-format parsing, PDF preview flow, parser arch                                                                                                          |
@@ -401,3 +401,13 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 **Google sign-in fails in dev:**
 
 - Expected. `.test` is a reserved TLD and Google won't redirect to it — dev login is email/password only
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

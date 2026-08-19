@@ -21,20 +21,14 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { LoadError } from '@/components/resparkable/ui/load-error';
+import { createMockRouter } from '@/tests/types/mocks';
 
 describe('LoadError', () => {
   const mockRefresh = vi.fn();
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(useRouter).mockReturnValue({
-      refresh: mockRefresh,
-      push: vi.fn(),
-      replace: vi.fn(),
-      back: vi.fn(),
-      forward: vi.fn(),
-      prefetch: vi.fn(),
-    });
+    vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh: mockRefresh }));
   });
 
   it('renders as an alert naming what failed and why', () => {

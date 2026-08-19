@@ -35,15 +35,17 @@ function asJson(
  * `lib/framework/resparkable/capabilities/catalogue.ts` makes drift impossible
  * rather than merely unlikely.
  *
- * **Re-seed behaviour follows `011-call-external-api`, with one deliberate
- * difference.** That seed's update branch only sets `isSystem`, so an admin's
- * edits survive a redeploy. Here the update branch also rewrites
- * `functionDefinition`, `description` and `executionHandler`, because those
- * three are code artefacts: the handler class name must match a registration
- * that only this repo controls, and a stale function definition is the silent
- * failure described above. What is *not* rewritten is everything an operator
- * legitimately tunes — `isActive`, `rateLimit`, `requiresApproval`,
- * `quarantineState`. Turning a tool off in the admin UI keeps it off.
+ * **Re-seed behaviour follows the code-owned / operator-owned split #545
+ * made explicit for every capability seed.** The update branch rewrites
+ * `functionDefinition`, `executionType` and `executionHandler` — code
+ * artefacts: the handler class name must match a registration that only this
+ * repo controls, and a stale function definition is the silent failure
+ * described above. It does NOT rewrite `name`, `description` or `category` —
+ * the model reads its name and description from inside `functionDefinition`,
+ * not these columns, so they are free for an operator to retitle in the admin
+ * UI without a redeploy reverting it. Also not rewritten: `isActive`,
+ * `rateLimit`, `requiresApproval`, `quarantineState`. Turning a tool off in
+ * the admin UI keeps it off.
  *
  * Bindings live in `004-agent-capabilities`. A capability row with no binding is
  * registered and callable by nobody, which is the correct default for anything
@@ -73,12 +75,10 @@ const unit: SeedUnit = {
       await prisma.aiCapability.upsert({
         where: { slug: spec.slug },
         update: {
-          // Code-owned: these three must track the handler or the model is lied to.
-          name: spec.name,
-          description: spec.description,
+          // Code-owned (#545): these must track the handler or the model is lied to.
+          executionType: 'internal',
           executionHandler: spec.executionHandler,
           functionDefinition: asJson(spec.functionDefinition),
-          category: RESPARKABLE_CAPABILITY_CATEGORY,
           isIdempotent: spec.isIdempotent,
           isSystem: true,
         },

@@ -122,6 +122,12 @@ currently unreachable, and are filed so they stay that way.
 | 23  | **Require `functionDefinition.name === slug`** on capability create/update (`lib/validations/orchestration.ts`)                                                                                           | The chat handler's new tool-call guard keys on `functionDefinition.name`, while dispatch treats that same string as the **slug**, and no schema requires the two to match. A capability with `slug: 'estimate_workflow_cost'` and `name: 'apply_audit_changes'` bound to a low-privilege agent would pass the guard and dispatch the privileged built-in. Requires admin write to `AiCapability`, so it crosses no trust boundary — but the guard reads as stronger than it is, and a `.refine()` closes it                                                                                                                                                                                                                                                                                                                                                                                                   | Low — no trust boundary crossed, but it silently weakens a control that landed as a security fix (#476)           | [#509](https://github.com/human-centric-engineering/sunrise/issues/509) |
 | 24  | **Fold the Prisma schema format check into `npm run validate`** — it lives only in `ci.yml`, and Prettier has no `.prisma` parser                                                                         | No local command catches schema drift from the pinned Prisma's own formatter, so a fork gets a green `validate` on a branch CI rejects. Cost a red CI run here: the dependency sweep took `@prisma/client` 7.8.0 → 7.9.1, whose formatter changed field alignment and block-attribute ordering, and CI failed on `framework-resparkable.prisma` — a file the branch never touched, after a local gate run that was green on validate, 22,799 tests and 15/15 drift probes. Upstream hit the identical thing in #482 and fixed only its own file. **Lands hardest on forks**: `framework-*.prisma` and `app.prisma` are exactly the files core never reformats, because core never edits them                                                                                                                                                                                                                  | Low effort, and it removes a whole class of fork-only CI surprise                                                 | [#510](https://github.com/human-centric-engineering/sunrise/issues/510) |
 
+**All four landed in `v0.9.0`** (2026-08-19 merge) — see [Landed](#landed).
+#506's local patch in `lib/security/sanitize.ts` is removed; #507, #508 and
+#509 needed no local patch, only the ask. #510's own fold-in is confirmed:
+`npm run validate` now runs `format:prisma:check` and this merge's schema is
+clean.
+
 ### Found by phase 6b
 
 | #   | Ask                                                                                                                                                                                                            | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Priority                                                                                                                            | Issue                                                                   |
@@ -181,8 +187,10 @@ realm, and the call pulls in core's built-ins **and** Resparkable's own (via
 Covered by a regression test in `scaffold.test.ts` that asserts the registry
 _contains a known slug_ after boot rather than that a function was called — the
 failure mode is an empty registry, and only a lookup proves it isn't. Verified to
-fail without the fix and pass with it. Remove the call when #537 lands; leaving it
-would be harmless but dead weight at boot.
+fail without the fix and pass with it. **#537 landed in `v0.9.0`** — the tier's
+call and `scaffold.test.ts` regression are now redundant, harmless dead weight
+at boot rather than load-bearing. Not removed yet; safe to drop next time this
+file is touched.
 
 **The lesson, which is the reason this row is worth reading twice.** Three gates
 were green when this shipped: 23,775 unit tests, a full CI run including a
@@ -346,6 +354,85 @@ recorded in that plan's §8d for whoever picks up the next billing phase, to
 either carry a local workaround (e.g. Site A reading a cumulative-cost field
 if core adds one) or wait for the upstream fix.
 
+### Found by the Sunrise 0.9.0 merge (2026-08-19)
+
+| #   | Ask                                                                                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Priority                                                                                                                                                                                  | Issue     |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| 40  | **`check-sunrise-ancestry.sh` hardcodes `lib/sunrise-version.ts` / `SUNRISE_VERSION`, with no seam for a fork that renamed its version file** — env-var overrides (`VERSION_FILE`, `VERSION_CONST`), mirroring the existing `UPSTREAM_URL` pattern | New in 0.9.0 (#539), landed alongside `.github/workflows/fork-sync-integrity.yml`. It reads the version claim from a hardcoded path and constant name to confirm the fetched tag is genuinely Sunrise's release. Resparkable renamed that file to `lib/resparkable-version.ts` / `RESPARKABLE_VERSION` at the Obsiddy→Resparkable rebrand (`VERSIONING.md`), so on this fork the script always hits its own `skip` branch (`no SUNRISE_VERSION found`) and the squash-merge-ancestry guard never actually runs. Fails safe — a skip, not a false pass — but a guard that always skips is a guard that isn't there | Low — no trust boundary, and the failure mode is invisible rather than dangerous. Same shape as #480/#525/#533: a hardcoded assumption a fork's own rebrand breaks, with no per-fork seam | Not filed |
+
+**Downstream status (#40):** fixed in the tier, no core edit. Two env vars —
+`VERSION_FILE`, `VERSION_CONST` — added to the script with defaults matching
+Sunrise's own names, so behaviour is unchanged for Sunrise itself and for any
+fork that didn't rename the file; `fork-sync-integrity.yml` sets them to
+`lib/resparkable-version.ts` / `RESPARKABLE_VERSION` for this repo. Verified
+against `tests/unit/scripts/ci/check-sunrise-ancestry.test.ts` (13/13 still
+green — the suite exercises the unset-default path). Remove the two env-var
+lines from the workflow if #539's file/constant names ever stop being
+hand-editable per fork.
+
+`scripts/ci/check-changelog.ts` and `scripts/ci/changelog-structure.ts` (also
+new in 0.9.0) hit the same shape — a direct `@/lib/sunrise-version` import,
+not a shell-parsed path, so no env-var seam is possible there. Edited both
+directly, plus the message text `changelog-structure.ts` prints on a version
+mismatch, plus the two tests asserting that text
+(`tests/unit/scripts/ci/check-changelog.test.ts`,
+`tests/unit/scripts/ci/changelog-structure.test.ts`). Same root cause as the
+ancestry script; not filed as a separate row.
+
+**A related but distinct rename bit a new test too, unrelated to #539.**
+`lib/orchestration/capabilities/dispatcher.ts`'s `globalThis` singleton key
+is `resparkableCapabilityDispatcher` here, not upstream's
+`sunriseCapabilityDispatcher` — a pre-existing local edit to a Sunrise-owned
+file that predates this merge (not introduced by it, and not otherwise
+tracked in this file). The new
+`tests/unit/lib/orchestration/engine/executors/tool-call-cold-registry.test.ts`
+(#537's regression test) deletes the upstream key name to force a cold
+process; on this fork that delete is a silent no-op, the real singleton
+survives across the file's two tests, and the second test's own precondition
+assertion (`capabilityDispatcher.has(...)` false) catches it. Fixed by
+pointing the test's `delete` at the fork's actual key, with a comment
+explaining why. Worth a closer look before the next merge: `git grep
+"globalFor.*globalThis as unknown as"` finds at least one more renamed key
+(`lib/orchestration/chat/context-builder.ts`), and any new upstream test
+written against the un-renamed original will fail the same way.
+
+---
+
+## State at the Sunrise 0.9.0 merge (2026-08-19)
+
+Checked with the two commands §6 of [The process](#the-process) prescribes, run
+together: `git fetch upstream` (61 commits since the 0.8.0 merge point,
+`45e704d9..v0.9.0` is 45 of them — the rest are past the tag, on
+`upstream/main`, and not part of this merge) and
+`gh issue list --state all --limit 400`.
+
+**Eight asks landed in 0.9.0** — #506, #507, #508, #509, #510 (the 2026-08-02
+gate run) and #528, #534, #537 (phases 6b/7 and the running-app find) — see
+[Landed](#landed) below for what changed here. The `sanitize.ts` tab/LF/CR
+patch (#506) and the `registry.test.ts` capabilities-count stub (#525's
+workaround, unaffected) are the two local patches this file has tracked the
+longest; #506's is now removed, verbatim upstream's version.
+
+**Four more closed upstream but are NOT in this merge.** #526, #532, #535 and
+#536 are closed on GitHub, but their fixing commits (`f781858a`, `e9dc4a7d`)
+sit in the 16-commit range **after** the `v0.9.0` tag, on `upstream/main`
+un-tagged. Closed-on-GitHub is not landed-in-a-release — treat all four as
+still open until the next sync actually contains them. This is exactly the
+staleness trap §6 warns about, from the other direction: a closed issue with
+a real fix commit still reads as pending here if that commit is not an
+ancestor of what got merged.
+
+**Still open, no local workaround needed:** #525, #533 (both the
+`lib/app/*`-seam-vs-core-test family — low-friction, no fork blocked), #540,
+#541 (both deferred, not worked around — see their downstream-status notes
+above), #542 (no workaround possible from the tier).
+
+**One new ask filed by this merge:** #40 — `check-sunrise-ancestry.sh` and
+`check-changelog.ts` both hardcode `lib/sunrise-version.ts` /
+`SUNRISE_VERSION`, which this fork renamed. Fixed locally (env-var overrides
+for the shell script; a direct import-path edit for the two TypeScript
+files, which cannot take an env-var seam the same way) — see its row above.
+
 ---
 
 ## State at the Sunrise 0.8.0 merge (2026-08-05)
@@ -374,6 +461,28 @@ seam (ask #30). Both are above.
 ---
 
 ## Landed
+
+**Eight asks landed in `v0.9.0`**, merged into this fork on 2026-08-19
+(`45e704d9..v0.9.0`, 45 commits).
+
+| #   | Ask                                                                            | Landed in   | What it changed here                                                                                                                                                                                                                                                                             |
+| --- | ------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 20  | Open redirect: `isRootRelativePath` tab/LF/CR bypass (#506)                    | in `v0.9.0` | `lib/security/sanitize.ts` took upstream's `normalizeRootRelativePath()` + `isRootRelativePath()`/`safeCallbackUrl()` wholesale, replacing the local patch. The local `FORK NOTE` comment is gone with it — the fix landed exactly as filed                                                      |
+| 21  | Domain-separate storage-access and approval tokens (#507)                      | in `v0.9.0` | Both `lib/storage/access-tokens.ts` and `lib/orchestration/approval-tokens.ts` now sign a `typ` field into the payload and check it on verify. No fork edit needed — the fork carried no local patch, only the ask                                                                               |
+| 22  | `LocalProvider.deletePrefix` root-equivalent prefix (#508)                     | in `v0.9.0` | `deletePrefix` now scopes through the same guard `upload`/`delete`/`download` use; a root-equivalent prefix is refused rather than recursively deleting the storage root                                                                                                                         |
+| 23  | `functionDefinition.name === slug` on capabilities (#509)                      | in `v0.9.0` | `lib/validations/orchestration.ts` gained the cross-field `.refine()`; a capability whose advertised tool name diverges from its dispatch slug is now rejected at write time                                                                                                                     |
+| 24  | Prisma format check folded into `validate` (#510)                              | in `v0.9.0` | `npm run validate` now runs `format:prisma:check`; confirmed clean against `prisma/schema` (13 files) on this merge                                                                                                                                                                              |
+| 27  | `CAPABILITY_BINDING_MODE=strict` breaks every workflow `tool_call` step (#528) | in `v0.9.0` | Workflow-shaped `agentId`s (`workflow:<cuid>`) are handled explicitly rather than falling through to a binding lookup that can never exist for a non-`AiAgent` id                                                                                                                                |
+| 6   | `safe-url.ts` names a compensating control that doesn't compensate (#534)      | in `v0.9.0` | `checkSafeProviderUrl` no longer over-claims what it blocks; the doc correction landed alongside a wider SSRF sweep (redirect re-validation, IPv4-mapped IPv6 denylist entries) that the ask's narrower finding sat inside                                                                       |
+| 31  | `tool-call.ts` dispatches without ensuring capability registration (#537)      | in `v0.9.0` | `executors/tool-call.ts` now imports and calls `registerBuiltInCapabilities()` before dispatch, matching `agent-call.ts`. The tier's own `initResparkable()` workaround (`scaffold.test.ts` regression test) is now redundant — harmless to leave, safe to remove next time that file is touched |
+
+**Four asks are closed upstream but NOT in this merge** — their fixing
+commits are past the `v0.9.0` tag, on unreleased `upstream/main`: #526
+(`ChatInterface` `streamEndpoint` prop, `f781858a`), #532, #535, #536 (three
+doc corrections, `e9dc4a7d`). Still tracked as open above until a sync
+actually contains them.
+
+---
 
 **Eleven asks landed upstream between 2026-07-29 and 2026-07-31**, merged into
 this fork on 2026-07-31 (`upstream/main` at `5964beb3`, 90 commits). All of it
