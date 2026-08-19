@@ -19,7 +19,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { RESPARKABLE_NAV_ITEMS } from '@/components/resparkable/layout/resparkable-nav';
+import { RESPARKABLE_NAV_ITEMS } from '@/lib/framework/resparkable/ui/nav-groups';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import {
   findSectionHelp,

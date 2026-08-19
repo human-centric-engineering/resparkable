@@ -32,7 +32,7 @@ import { usePathname } from 'next/navigation';
 import { ArrowRight } from 'lucide-react';
 
 import { FieldHelp } from '@/components/ui/field-help';
-import { RESPARKABLE_NAV_GROUPS } from '@/components/resparkable/layout/resparkable-nav';
+import { RESPARKABLE_NAV_GROUPS } from '@/lib/framework/resparkable/ui/nav-groups';
 import { findSectionHelp } from '@/lib/framework/resparkable/ui/section-help';
 
 /**
