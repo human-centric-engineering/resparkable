@@ -4,15 +4,18 @@
  * Covers the render-time decision this file exists to make: a leaf shows
  * the launcher or its active tab depending on `activeTabId`, and a split
  * recurses into a nested `ResizablePanelGroup` per child, one level for
- * each level of nesting. The placeholder tab content is intentionally
- * checked against its exact "Phase 3" wording, so this test starts failing
- * the moment a Phase 3 adapter actually replaces it — which is the signal
- * to update or delete it, not evidence of a regression.
+ * each level of nesting.
+ *
+ * `apiClient.get` is mocked to a promise that never resolves, so every
+ * `TabContent` adapter sits in its loading state deterministically — this
+ * file is about which pane shows *what kind of thing* (launcher vs. tab
+ * content vs. a second independent pane), not about any one adapter's own
+ * fetch/error/data behavior, which belongs to that adapter's own test.
  *
  * @see components/resparkable/workspace/workspace-pane-tree.tsx
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -21,6 +24,12 @@ import {
   WorkspaceProvider,
 } from '@/components/resparkable/workspace/workspace-context';
 import { WorkspacePaneTree } from '@/components/resparkable/workspace/workspace-pane-tree';
+import { apiClient } from '@/lib/api/client';
+
+vi.mock('@/lib/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
+  return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn(() => new Promise(() => {})) } };
+});
 
 function Harness(): React.ReactElement {
   const workspace = useWorkspace();
@@ -45,6 +54,7 @@ function renderTree() {
 
 beforeEach(() => {
   window.localStorage.clear();
+  vi.mocked(apiClient.get).mockClear();
 });
 
 describe('WorkspacePaneTree — a leaf pane', () => {
@@ -55,27 +65,43 @@ describe('WorkspacePaneTree — a leaf pane', () => {
     expect(screen.queryByRole('list', { name: 'Open tabs' })).not.toBeInTheDocument();
   });
 
-  it('shows the tab strip and the active tab’s placeholder once a tab is open', async () => {
+  it('shows the tab strip and the active tab’s content once a tab is open', async () => {
     const user = userEvent.setup();
     renderTree();
 
     await user.click(screen.getByText('open today'));
 
     expect(screen.getByRole('list', { name: 'Open tabs' })).toBeInTheDocument();
-    expect(screen.getByText(/Today — content adapter arrives in Phase 3\./)).toBeInTheDocument();
+    // TodayTab is loading (apiClient.get never resolves) — the launcher is
+    // gone and its skeleton's sr-only label is present. `role="status"`
+    // doesn't compute its accessible name from content (only from
+    // aria-label/aria-labelledby), so this queries the text directly.
+    expect(screen.getByText('Loading today')).toBeInTheDocument();
     expect(screen.queryByText('Daily')).not.toBeInTheDocument();
   });
 });
 
 describe('WorkspacePaneTree — a split pane', () => {
-  it('renders both children independently, each with its own content', async () => {
+  it('renders both children independently, each fetching its own content', async () => {
     const user = userEvent.setup();
     renderTree();
 
     await user.click(screen.getByText('open today'));
     await user.click(screen.getByText('split with inbox'));
 
-    expect(screen.getByText(/Today — content adapter arrives in Phase 3\./)).toBeInTheDocument();
-    expect(screen.getByText(/Inbox — content adapter arrives in Phase 3\./)).toBeInTheDocument();
+    expect(screen.getByText('Loading today')).toBeInTheDocument();
+    expect(screen.getByText('Loading inbox')).toBeInTheDocument();
+  });
+
+  it('fetches each open tab’s own endpoint independently', async () => {
+    const user = userEvent.setup();
+    renderTree();
+
+    await user.click(screen.getByText('open today'));
+    await user.click(screen.getByText('split with inbox'));
+
+    const calledPaths = vi.mocked(apiClient.get).mock.calls.map((call) => String(call[0]));
+    expect(calledPaths.some((path) => path.includes('/today'))).toBe(true);
+    expect(calledPaths.some((path) => path.includes('/inbox'))).toBe(true);
   });
 });

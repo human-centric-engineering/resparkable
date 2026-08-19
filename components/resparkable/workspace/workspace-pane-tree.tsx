@@ -10,26 +10,21 @@
  * toolbar, the tab strip (if it has any tabs), and either the active tab's
  * content or the launcher.
  *
- * `renderTabContent` is a placeholder here, not a dispatcher — Phase 3 adds
- * one file per tab kind under `workspace/tabs/`, and wiring a kind → view
- * lookup table before those files exist would be dead code pointing at
- * nothing. This shows enough to smoke-test the pane mechanics (which tab is
- * active, does closing/splitting/resizing work) without depending on work
- * this phase doesn't include.
+ * Active-tab content is `TabContent` (`workspace/tabs/tab-content.tsx`,
+ * Phase 3) — one adapter per tab kind, each porting an existing page's
+ * fetch to the client and rendering that page's existing View component
+ * unmodified.
  */
 
 import * as React from 'react';
 
 import { Launcher } from '@/components/resparkable/workspace/launcher';
 import { TabStrip } from '@/components/resparkable/workspace/tab-strip';
+import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { PaneToolbar } from '@/components/resparkable/workspace/toolbar';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import type { LeafNode, PaneNode } from '@/lib/framework/resparkable/ui/workspace/split-tree';
-import {
-  defaultTitleForTab,
-  type TabState,
-} from '@/lib/framework/resparkable/ui/workspace/tab-registry';
 
 export interface WorkspacePaneTreeProps {
   node: PaneNode;
@@ -72,18 +67,9 @@ function WorkspacePane({ leaf }: { leaf: LeafNode }): React.ReactElement {
       {leaf.tabs.length > 0 && (
         <TabStrip leafId={leaf.id} tabs={leaf.tabs} activeTabId={leaf.activeTabId} />
       )}
-      <div className="min-h-0 flex-1">
-        {activeTab ? <TabContentPlaceholder tab={activeTab} /> : <Launcher leafId={leaf.id} />}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {activeTab ? <TabContent tab={activeTab} /> : <Launcher leafId={leaf.id} />}
       </div>
-    </div>
-  );
-}
-
-/** Replaced by Phase 3's per-kind adapters under `workspace/tabs/`. */
-function TabContentPlaceholder({ tab }: { tab: TabState }): React.ReactElement {
-  return (
-    <div className="text-muted-foreground flex h-full items-center justify-center p-6 text-sm">
-      {tab.title ?? defaultTitleForTab(tab.kind)} — content adapter arrives in Phase 3.
     </div>
   );
 }
