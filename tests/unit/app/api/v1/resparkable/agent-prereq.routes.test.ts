@@ -42,6 +42,11 @@ vi.mock('@/lib/framework/resparkable/services/reviews', () => ({
   listResparkableReviews: vi.fn(),
   getResparkableReview: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({
+  assertPositiveBalance: vi.fn(),
+  recordAgentSpend: vi.fn(),
+}));
 
 import { POST as CAPTURE } from '@/app/api/v1/resparkable/capture/route';
 import { GET as SNAPSHOT } from '@/app/api/v1/resparkable/snapshot/route';
@@ -50,12 +55,17 @@ import { GET as REVIEWS_GET, POST as REVIEWS_POST } from '@/app/api/v1/resparkab
 import { GET as REVIEW_GET } from '@/app/api/v1/resparkable/reviews/[id]/route';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { buildSnapshot } from '@/lib/framework/resparkable/services/snapshot';
+import {
+  assertPositiveBalance,
+  recordAgentSpend,
+} from '@/lib/framework/resparkable/services/billing';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import {
   getResparkableReview,
   listResparkableReviews,
   writeReview,
 } from '@/lib/framework/resparkable/services/reviews';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 
 const SESSION_A = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
@@ -65,6 +75,9 @@ const mockedIdeate = ideate as unknown as ReturnType<typeof vi.fn>;
 const mockedWrite = writeReview as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listResparkableReviews as unknown as ReturnType<typeof vi.fn>;
 const mockedGetReview = getResparkableReview as unknown as ReturnType<typeof vi.fn>;
+const mockedEnsureSpace = ensureResparkableSpace as unknown as ReturnType<typeof vi.fn>;
+const mockedAssertBalance = assertPositiveBalance as unknown as ReturnType<typeof vi.fn>;
+const mockedRecordSpend = recordAgentSpend as unknown as ReturnType<typeof vi.fn>;
 
 function postReq(url: string, body: unknown) {
   return {
@@ -111,6 +124,9 @@ beforeEach(() => {
   });
   mockedWrite.mockResolvedValue({ id: 'review_1', horizon: 'weekly' });
   mockedList.mockResolvedValue({ items: [], total: 0 });
+  mockedEnsureSpace.mockResolvedValue(undefined);
+  mockedAssertBalance.mockResolvedValue(undefined);
+  mockedRecordSpend.mockResolvedValue(null);
 });
 
 describe('POST /api/v1/resparkable/capture', () => {
@@ -281,6 +297,86 @@ describe('POST /api/v1/resparkable/ideate', () => {
     );
 
     expect(response.status).toBe(400);
+  });
+
+  describe('billing (Phase 29)', () => {
+    it('refuses a zero-balance caller before ideate is ever invoked', async () => {
+      const { InsufficientCreditsError } = await import('@/lib/api/errors');
+      mockedAssertBalance.mockRejectedValue(new InsufficientCreditsError());
+
+      const response = await invoke(
+        IDEATE,
+        postReq('/api/v1/resparkable/ideate', {
+          seedType: 'project',
+          seedId: 'clh1234567890abcdefghijkl',
+        }),
+        SESSION_A
+      );
+
+      expect(response.status).toBe(402);
+      expect(mockedIdeate).not.toHaveBeenCalled();
+    });
+
+    it('bootstraps the space before checking balance: the account FK needs it to exist', async () => {
+      const order: string[] = [];
+      mockedEnsureSpace.mockImplementation(() => {
+        order.push('ensureResparkableSpace');
+      });
+      mockedAssertBalance.mockImplementation(() => {
+        order.push('assertPositiveBalance');
+      });
+
+      await invoke(
+        IDEATE,
+        postReq('/api/v1/resparkable/ideate', {
+          seedType: 'project',
+          seedId: 'clh1234567890abcdefghijkl',
+        }),
+        SESSION_A
+      );
+
+      expect(order).toEqual(['ensureResparkableSpace', 'assertPositiveBalance']);
+    });
+
+    it('records agent spend from the real result cost after ideate resolves', async () => {
+      mockedIdeate.mockResolvedValue({
+        seed: { id: 'project_1' },
+        neighbours: [],
+        framings: [],
+        notIndexedYet: false,
+        costUsd: 0.03,
+        tokenUsage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      });
+
+      await invoke(
+        IDEATE,
+        postReq('/api/v1/resparkable/ideate', {
+          seedType: 'project',
+          seedId: 'clh1234567890abcdefghijkl',
+        }),
+        SESSION_A
+      );
+
+      expect(mockedRecordSpend).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user_a' }),
+        expect.objectContaining({ tokenCostUsd: 0.03 })
+      );
+    });
+
+    it('still returns the framings even when recording spend fails (compute already happened)', async () => {
+      mockedRecordSpend.mockRejectedValue(new Error('ledger unavailable'));
+
+      const response = await invoke(
+        IDEATE,
+        postReq('/api/v1/resparkable/ideate', {
+          seedType: 'project',
+          seedId: 'clh1234567890abcdefghijkl',
+        }),
+        SESSION_A
+      );
+
+      expect(response.status).toBe(200);
+    });
   });
 });
 

@@ -25,8 +25,14 @@ import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import {
+  assertPositiveBalance,
+  recordAgentSpend,
+} from '@/lib/framework/resparkable/services/billing';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { ideateSchema } from '@/lib/framework/resparkable/validations';
+import { logger } from '@/lib/logging';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
@@ -34,7 +40,23 @@ export const POST = withAuth(async (request, session) => {
 
   const body = await validateRequestBody(request, ideateSchema);
 
+  // A credit account's FK requires the space row to already exist; idempotent.
+  await ensureResparkableSpace(session.user.id);
+  // Refused before any provider call: see services/billing.ts. Throws
+  // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
+  await assertPositiveBalance(scope);
+
   const result = await ideate(scope, body);
+
+  // Best-effort: the compute already happened, so a ledger-write failure logs
+  // rather than turning an otherwise-successful response into an error.
+  try {
+    await recordAgentSpend(scope, { tokenCostUsd: result.costUsd });
+  } catch (error) {
+    logger.error('Resparkable ideate spend could not be recorded', error, {
+      userId: session.user.id,
+    });
+  }
 
   log.info('Resparkable ideate', {
     seedType: body.seedType,

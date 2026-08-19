@@ -153,5 +153,11 @@ export const RESPARKABLE_API = {
   /** Admin surface — instance settings, not user data. */
   ADMIN: {
     SETTINGS: '/api/v1/admin/resparkable/settings',
+    /** Phase 29: billing. Global policy (credits-per-dollar, service charge, new-user grant). */
+    BILLING_SETTINGS: '/api/v1/admin/resparkable/billing/settings',
+    /** The per-user balance table. */
+    BILLING_ACCOUNTS: '/api/v1/admin/resparkable/billing/accounts',
+    /** One-off admin credit grant. */
+    BILLING_GRANTS: '/api/v1/admin/resparkable/billing/grants',
   },
 } as const;

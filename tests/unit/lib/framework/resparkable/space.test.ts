@@ -28,8 +28,17 @@ vi.mock('@/lib/db/client', () => ({
     },
   },
 }));
+vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
+  ensureCreditAccount: vi.fn(),
+  applyLedgerEntry: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/repo/billing-settings', () => ({
+  findResparkableBillingSettings: vi.fn(),
+}));
 
 import { prisma } from '@/lib/db/client';
+import { applyLedgerEntry, ensureCreditAccount } from '@/lib/framework/resparkable/repo/billing';
+import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
 import { STRENGTH_FLOOR } from '@/lib/framework/resparkable/search/connections';
 import {
   DEFAULT_ENERGY_PROFILE,
@@ -47,6 +56,9 @@ import {
 const findUnique = vi.mocked(prisma.resparkableSpace.findUnique);
 const create = vi.mocked(prisma.resparkableSpace.create);
 const update = vi.mocked(prisma.resparkableSpace.update);
+const mockedEnsureCreditAccount = vi.mocked(ensureCreditAccount);
+const mockedApplyLedgerEntry = vi.mocked(applyLedgerEntry);
+const mockedFindBillingSettings = vi.mocked(findResparkableBillingSettings);
 
 /** Minimal row shape — the service only ever passes it through. */
 function spaceRow(overrides: Record<string, unknown> = {}) {
@@ -69,6 +81,9 @@ function uniqueViolation() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedFindBillingSettings.mockResolvedValue(null);
+  mockedEnsureCreditAccount.mockResolvedValue({ id: 'acct_1', balanceCredits: 0 } as never);
+  mockedApplyLedgerEntry.mockResolvedValue({ id: 'ledger_1' } as never);
 });
 
 describe('ensureResparkableSpace', () => {
@@ -83,6 +98,63 @@ describe('ensureResparkableSpace', () => {
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ userId: 'user_a' }) })
     );
+  });
+
+  it('creates a zero-balance credit account for a new space when no grant is configured', async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue(spaceRow());
+    mockedFindBillingSettings.mockResolvedValue(null); // fresh install → DEFAULT_BILLING_SETTINGS
+
+    await ensureResparkableSpace('user_a');
+
+    expect(mockedEnsureCreditAccount).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user_a' }),
+      0
+    );
+    // No ledger entry for a zero grant: an unexplained starting balance would
+    // break the invariant that every credit traces back to a ledger row, and
+    // there is nothing to explain here.
+    expect(mockedApplyLedgerEntry).not.toHaveBeenCalled();
+  });
+
+  it('writes an admin_grant ledger entry for a new space when a new-user grant is configured', async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue(spaceRow());
+    mockedFindBillingSettings.mockResolvedValue({
+      id: 'settings_1',
+      slug: 'global',
+      creditsPerUsd: 1,
+      serviceChargePercent: 0,
+      costVisibleToUsersDefault: true,
+      currencyLabel: 'credits',
+      newUserGrantCredits: 50,
+    } as never);
+
+    await ensureResparkableSpace('user_a');
+
+    expect(mockedApplyLedgerEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ kind: 'admin_grant', creditsDelta: 50 })
+    );
+  });
+
+  it('does not create a credit account on the existing-space read path', async () => {
+    // The hot path under capture, chat and every resource service: an extra
+    // write here would be a write on every request, not just first use.
+    findUnique.mockResolvedValue(spaceRow());
+
+    await ensureResparkableSpace('user_a');
+
+    expect(mockedEnsureCreditAccount).not.toHaveBeenCalled();
+    expect(mockedApplyLedgerEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not let a failed credit-account setup fail the space create (fire-and-forget)', async () => {
+    findUnique.mockResolvedValue(null);
+    create.mockResolvedValue(spaceRow());
+    mockedEnsureCreditAccount.mockRejectedValue(new Error('db unavailable'));
+
+    await expect(ensureResparkableSpace('user_a')).resolves.toMatchObject({ userId: 'user_a' });
   });
 
   it('returns the existing space without writing', async () => {

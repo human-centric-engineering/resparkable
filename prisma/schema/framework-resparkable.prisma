@@ -133,6 +133,13 @@ model ResparkableSpace {
   reviews        ResparkableReview[]
   events         ResparkableEvent[]
 
+  /// Phase 29: billing. `creditAccount` is optional at the type level only
+  /// because Prisma requires it (the row is created lazily, not inline with
+  /// the space); every space is expected to gain one the first time billing
+  /// code touches it. See `ResparkableCreditAccount`.
+  creditAccount       ResparkableCreditAccount?
+  creditLedgerEntries ResparkableCreditLedgerEntry[]
+
   /// The sweep job's rotation order. Not `[userId, …]` like every other index
   /// here, because this is the one query in the tier that is deliberately
   /// **not** owner-scoped: it picks which owner to work on next.
@@ -954,4 +961,73 @@ model ResparkableSettings {
   updatedAt DateTime @updatedAt
 
   @@map("framework_resparkable_settings")
+}
+
+/// Phase 29: billing foundation. One credit account per space, created
+/// lazily (not inline with `ensureResparkableSpace`) the first time a
+/// billing-aware code path touches it, see `services/billing.ts`.
+model ResparkableCreditAccount {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  balanceCredits Float    @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  /// D1: the cascade path. Erasing a user removes the space row, which
+  /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@map("framework_resparkable_credit_account")
+}
+
+/// Append-only spend/grant history behind `ResparkableCreditAccount.balanceCredits`.
+model ResparkableCreditLedgerEntry {
+  id     String @id @default(cuid())
+  userId String
+
+  /// admin_grant | agent_spend | refund
+  kind         String @db.VarChar(16)
+  creditsDelta Float
+
+  tokenCostUsd     Float?
+  serviceChargeUsd Float?
+  totalUsd         Float?
+
+  /// Soft references, no FK — tier-boundary pattern (transfer.md), consistent
+  /// with every other cross-table reference this tier uses.
+  relatedConversationId      String?
+  relatedWorkflowExecutionId String?
+  relatedCostLogId           String?
+
+  note             String?  @db.VarChar(500)
+  createdByAdminId String? // admin_grant only
+  createdAt        DateTime @default(now())
+
+  /// D1: the cascade path. Erasing a user removes the space row, which
+  /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  /// Idempotency guard for the Site B tick-poll (jobs.ts): a repeat pass over
+  /// an already-billed execution hits this constraint instead of double-charging.
+  /// Nullable, so admin_grant/refund/chat/ideate rows (no execution id) are
+  /// unconstrained. Postgres treats each NULL as distinct.
+  @@unique([kind, relatedWorkflowExecutionId])
+  @@index([userId, createdAt])
+  @@map("framework_resparkable_credit_ledger_entry")
+}
+
+/// Global billing configuration — the same operator-singleton exception
+/// `ResparkableSettings` documents above (no `userId`, not in the D1 cascade).
+model ResparkableBillingSettings {
+  id                        String   @id @default(cuid())
+  slug                      String   @unique @default("global")
+  creditsPerUsd             Float    @default(1)
+  serviceChargePercent      Float    @default(0)
+  costVisibleToUsersDefault Boolean  @default(true)
+  currencyLabel             String   @default("credits") @db.VarChar(32)
+  newUserGrantCredits       Float    @default(0)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@map("framework_resparkable_billing_settings")
 }

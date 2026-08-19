@@ -62,14 +62,28 @@
  * empty batch and returns zero.
  */
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import {
+  findRecentTerminalResparkableExecutions,
+  type BillableWorkflowExecution,
+} from '@/lib/framework/resparkable/repo/billing';
+import {
+  ownerScope,
+  RESPARKABLE_SCHEDULE_OWNER_KEY,
+} from '@/lib/framework/resparkable/repo/owner-scope';
 import { deleteOrphanedResparkableSchedules } from '@/lib/framework/resparkable/repo/schedules';
+import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { listSpacesDueSweep, markSpacesSwept } from '@/lib/framework/resparkable/repo/space';
-import { ensureResparkableSchedules } from '@/lib/framework/resparkable/schedules/ensure';
+import {
+  ensureResparkableSchedules,
+  RESPARKABLE_SCHEDULED_WORKFLOWS,
+} from '@/lib/framework/resparkable/schedules/ensure';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
+import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
+import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
 import { logger } from '@/lib/logging';
 import { registerAppJob } from '@/lib/orchestration/maintenance/app-jobs';
+import { WorkflowStatus } from '@/types/orchestration';
 
 export const RESPARKABLE_SWEEP_JOB_NAME = 'resparkable:connection-sweep';
 
@@ -84,6 +98,29 @@ export const RESPARKABLE_SWEEP_JOB_NAME = 'resparkable:connection-sweep';
  */
 const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const SWEEP_BATCH = 4;
+
+/**
+ * Phase 29: billing. Every workflow slug that `queueResparkableWorkflowRun()`
+ * can queue: the four calendar-scheduled workflows, plus the context-digest
+ * workflow `/summarize` queues on demand (`api/handlers.ts`). That function
+ * is the only way a resparkable-slug `AiWorkflowExecution` gets created, so
+ * this list has to track every slug ever passed to it — a slug added there
+ * without a matching entry here bills nothing for that workflow, silently.
+ * The connection sweep this same job runs creates no `AiWorkflowExecution`
+ * and has nothing to bill (see the module doc's "why none of these is a
+ * workflow schedule").
+ */
+const RESPARKABLE_BILLABLE_WORKFLOW_SLUGS: string[] = [
+  ...Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS),
+  RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
+];
+const TERMINAL_WORKFLOW_STATUSES: string[] = [
+  WorkflowStatus.COMPLETED,
+  WorkflowStatus.FAILED,
+  WorkflowStatus.CANCELLED,
+];
+/** See `findRecentTerminalResparkableExecutions`'s doc comment for why this is newest-first. */
+const BILLING_BATCH = 100;
 
 export interface SweepJobResult {
   swept: number;
@@ -111,6 +148,74 @@ export interface SweepJobResult {
    * are otherwise the same green log line.
    */
   retentionCapped: boolean;
+  /** Phase 29: agent-spend ledger rows written for newly terminal executions. */
+  executionsBilled: number;
+  /** Terminal executions this tick could not attribute to a user (skipped, not billed). */
+  executionsSkipped: number;
+}
+
+/**
+ * Resolve a workflow execution's owner: `userId` for `queueResparkableWorkflowRun`-queued
+ * rows (`briefing/regenerate`), or `scope[RESPARKABLE_SCHEDULE_OWNER_KEY]` for
+ * genuine cron-fired rows, which are system-owned (`userId: null`) by design
+ * (resparkable#502); see `repo/owner-scope.ts`'s doc comment for the full story.
+ * `null` for anything else (an org-level or non-Resparkable run), which the
+ * caller must skip rather than bill.
+ */
+function resolveExecutionOwner(execution: BillableWorkflowExecution): string | null {
+  if (execution.userId) return execution.userId;
+  const scope = execution.scope as Record<string, unknown> | null;
+  const scoped = scope?.[RESPARKABLE_SCHEDULE_OWNER_KEY];
+  return typeof scoped === 'string' && scoped.length > 0 ? scoped : null;
+}
+
+/**
+ * Phase 29's billing pass: find recently terminal, resparkable-slug executions
+ * and write their agent-spend ledger entry.
+ *
+ * Unconditional and independent of the per-user sweep rotation below: a
+ * completed workflow's bill should not wait for that user's turn in a
+ * 6-hour-x-N-users cursor. Idempotent via the ledger's own unique constraint
+ * (`repo/billing.ts`'s `applyLedgerEntry`): a repeat pass over an
+ * already-billed execution throws `P2002`, caught and skipped here, not
+ * logged as an error.
+ */
+async function billResparkableWorkflowExecutions(): Promise<{ billed: number; skipped: number }> {
+  const executions = await findRecentTerminalResparkableExecutions(
+    RESPARKABLE_BILLABLE_WORKFLOW_SLUGS,
+    TERMINAL_WORKFLOW_STATUSES,
+    BILLING_BATCH
+  );
+
+  let billed = 0;
+  let skipped = 0;
+
+  for (const execution of executions) {
+    if (execution.totalCostUsd <= 0) continue;
+
+    const ownerUserId = resolveExecutionOwner(execution);
+    if (!ownerUserId) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const entry = await recordAgentSpend(ownerScope(ownerUserId), {
+        tokenCostUsd: execution.totalCostUsd,
+        relatedWorkflowExecutionId: execution.id,
+      });
+      if (entry) billed++;
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) continue;
+      logger.error('Resparkable workflow-execution billing failed for one run', {
+        executionId: execution.id,
+        userId: ownerUserId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  return { billed, skipped };
 }
 
 /**
@@ -158,6 +263,11 @@ export async function runResparkableSweepJob(now: Date = new Date()): Promise<Sw
     });
   }
 
+  // Also unconditional, and independent of the per-user rotation below, see
+  // `billResparkableWorkflowExecutions`'s doc comment.
+  const { billed: executionsBilled, skipped: executionsSkipped } =
+    await billResparkableWorkflowExecutions();
+
   const due = await listSpacesDueSweep(SWEEP_BATCH);
   if (due.length === 0) {
     return {
@@ -170,6 +280,8 @@ export async function runResparkableSweepJob(now: Date = new Date()): Promise<Sw
       retentionArchived: 0,
       retentionPruned: 0,
       retentionCapped: false,
+      executionsBilled,
+      executionsSkipped,
     };
   }
 
@@ -242,6 +354,8 @@ export async function runResparkableSweepJob(now: Date = new Date()): Promise<Sw
     retentionArchived,
     retentionPruned,
     retentionCapped,
+    executionsBilled,
+    executionsSkipped,
   };
 }
 

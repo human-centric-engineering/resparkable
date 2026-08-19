@@ -38,6 +38,10 @@ vi.mock('@/lib/auth/guards', () => ({
 
 vi.mock('@/lib/orchestration/chat', () => ({ streamChat: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({
+  assertPositiveBalance: vi.fn(),
+  recordAgentSpend: vi.fn(),
+}));
 vi.mock('@/lib/logging/context', () => ({
   getRequestId: vi.fn().mockResolvedValue('req_1'),
   getVisitorId: vi.fn().mockResolvedValue('vis_1'),
@@ -46,6 +50,10 @@ vi.mock('@/lib/logging/context', () => ({
 import { POST } from '@/app/api/v1/resparkable/chat/stream/route';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
+import {
+  assertPositiveBalance,
+  recordAgentSpend,
+} from '@/lib/framework/resparkable/services/billing';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { streamChat } from '@/lib/orchestration/chat';
 
@@ -53,6 +61,8 @@ const SESSION_A = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
 const mockedStream = streamChat as unknown as ReturnType<typeof vi.fn>;
 const mockedSpace = ensureResparkableSpace as unknown as ReturnType<typeof vi.fn>;
+const mockedAssertBalance = assertPositiveBalance as unknown as ReturnType<typeof vi.fn>;
+const mockedRecordSpend = recordAgentSpend as unknown as ReturnType<typeof vi.fn>;
 
 /** An empty async iterable — enough for `sseResponse` to build a Response. */
 async function* noEvents(): AsyncGenerator<{ type: string }> {
@@ -76,6 +86,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedStream.mockReturnValue(noEvents());
   mockedSpace.mockResolvedValue(undefined);
+  mockedAssertBalance.mockResolvedValue(undefined);
+  mockedRecordSpend.mockResolvedValue(null);
 });
 
 describe('POST /api/v1/resparkable/chat/stream', () => {
@@ -224,5 +236,124 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
     );
 
     expect(response.headers.get('content-type')).toContain('text/event-stream');
+  });
+
+  describe('billing (Phase 29)', () => {
+    it('refuses a zero-balance caller before streamChat is ever invoked', async () => {
+      const { InsufficientCreditsError } = await import('@/lib/api/errors');
+      mockedAssertBalance.mockRejectedValue(new InsufficientCreditsError());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+
+      expect(response.status).toBe(402);
+      expect(streamChat).not.toHaveBeenCalled();
+    });
+
+    it('checks the balance after the space is bootstrapped, not before', async () => {
+      const order: string[] = [];
+      mockedSpace.mockImplementation(() => {
+        order.push('ensureResparkableSpace');
+      });
+      mockedAssertBalance.mockImplementation(() => {
+        order.push('assertPositiveBalance');
+      });
+
+      await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+
+      // A brand-new credit account's FK requires the space row to already
+      // exist. Checking balance first would throw a raw FK violation
+      // instead of a clean InsufficientCreditsError.
+      expect(order).toEqual(['ensureResparkableSpace', 'assertPositiveBalance']);
+    });
+
+    it('records agent spend from the done event, keyed to the conversation started', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield { type: 'start', conversationId: 'conv_1' };
+        yield { type: 'token', text: 'hi' };
+        yield {
+          type: 'done',
+          costUsd: 0.05,
+          tokenUsage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        };
+      }
+      mockedStream.mockReturnValue(events());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      // Drain the stream: the SSE body is lazily pulled.
+      await response.text();
+
+      expect(mockedRecordSpend).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user_a' }),
+        expect.objectContaining({ tokenCostUsd: 0.05, relatedConversationId: 'conv_1' })
+      );
+    });
+
+    it('does not let a failed spend-recording break the stream the user already saw', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield { type: 'start', conversationId: 'conv_1' };
+        yield {
+          type: 'done',
+          costUsd: 0.05,
+          tokenUsage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        };
+      }
+      mockedStream.mockReturnValue(events());
+      mockedRecordSpend.mockRejectedValue(new Error('ledger unavailable'));
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(body).toContain('done');
+    });
+
+    it('records spend with no relatedConversationId when done arrives without a preceding start', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield {
+          type: 'done',
+          costUsd: 0.05,
+          tokenUsage: { inputTokens: 1, outputTokens: 2, totalTokens: 3 },
+        };
+      }
+      mockedStream.mockReturnValue(events());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      await response.text();
+
+      const entry = mockedRecordSpend.mock.calls[0]?.[1];
+      expect(entry).toMatchObject({ tokenCostUsd: 0.05 });
+      expect(entry).not.toHaveProperty('relatedConversationId');
+    });
+
+    it('does not record spend when the stream never reaches a done event', async () => {
+      async function* events(): AsyncGenerator<{ type: string; [key: string]: unknown }> {
+        yield { type: 'start', conversationId: 'conv_1' };
+        yield { type: 'error', message: 'upstream failed' };
+      }
+      mockedStream.mockReturnValue(events());
+
+      const response = await invoke(
+        postReq({ message: 'hi', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
+        SESSION_A
+      );
+      await response.text();
+
+      expect(mockedRecordSpend).not.toHaveBeenCalled();
+    });
   });
 });

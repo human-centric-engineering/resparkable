@@ -1,14 +1,19 @@
 import type { Metadata } from 'next';
 
-import { DocumentSettingsForm } from '@/components/resparkable/admin/document-settings-form';
+import { ResparkableSettingsTabs } from '@/components/resparkable/admin/resparkable-settings-tabs';
 import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import { resparkableAdminSettingsResponseSchema } from '@/lib/framework/resparkable/validations';
+import {
+  resparkableAdminBillingSettingsResponseSchema,
+  resparkableAdminCreditAccountRowSchema,
+  resparkableAdminSettingsResponseSchema,
+} from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
+import { z } from 'zod';
 
 export const metadata: Metadata = {
   title: 'Settings · Resparkable',
-  description: 'How this deployment handles uploaded documents.',
+  description: 'Deployment-wide document handling and billing.',
 };
 
 /**
@@ -34,30 +39,66 @@ async function getSettings() {
   }
 }
 
+async function getBillingSettings() {
+  try {
+    const response = await serverFetch(RESPARKABLE_API.ADMIN.BILLING_SETTINGS);
+    if (!response.ok) return null;
+    const body = await parseApiResponse<unknown>(response);
+    if (!body.success) return null;
+    return resparkableAdminBillingSettingsResponseSchema.parse(body.data);
+  } catch (error) {
+    logger.error('Resparkable admin billing settings page: fetch failed', error);
+    return null;
+  }
+}
+
+const billingAccountsResponseSchema = z.object({
+  accounts: z.array(resparkableAdminCreditAccountRowSchema),
+});
+
+/**
+ * `null` on failure, never `[]` — the two must stay distinguishable. This
+ * fetch is independent of `getBillingSettings()`'s, and the Billing tab
+ * renders each of the two independently: collapsing "the accounts fetch
+ * failed" into the same empty array as "there are genuinely no users yet"
+ * would let a broken accounts endpoint read as a quiet, correct-looking
+ * empty table indefinitely.
+ */
+async function getCreditAccounts() {
+  try {
+    const response = await serverFetch(RESPARKABLE_API.ADMIN.BILLING_ACCOUNTS);
+    if (!response.ok) return null;
+    const body = await parseApiResponse<unknown>(response);
+    if (!body.success) return null;
+    return billingAccountsResponseSchema.parse(body.data).accounts;
+  } catch (error) {
+    logger.error('Resparkable admin billing accounts page: fetch failed', error);
+    return null;
+  }
+}
+
 export default async function ResparkableSettingsPage() {
-  const settings = await getSettings();
+  const [documentSettings, billingSettings, creditAccounts] = await Promise.all([
+    getSettings(),
+    getBillingSettings(),
+    getCreditAccounts(),
+  ]);
 
   return (
     <div className="space-y-6">
       <header className="bg-background sticky top-0 z-30 -mx-6 border-b px-6 pt-3 pb-3">
         <h1 className="text-2xl font-semibold">Resparkable Settings</h1>
         <p className="text-muted-foreground text-sm">
-          Deployment-wide handling of uploaded documents. These are operator settings — everything
+          Deployment-wide document handling and billing. These are operator settings, everything
           else in Resparkable belongs to the individual user.
         </p>
       </header>
 
-      {settings ? (
-        <DocumentSettingsForm initial={settings} />
-      ) : (
-        <div className="rounded border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          <p className="font-medium">Couldn&rsquo;t load settings.</p>
-          <p className="mt-1">
-            Resparkable is running on its defaults — originals discarded after parsing, 25 MB upload
-            ceiling. Check the server logs for the failure and reload.
-          </p>
-        </div>
-      )}
+      <ResparkableSettingsTabs
+        documentSettings={documentSettings}
+        billingSettings={billingSettings}
+        creditAccounts={creditAccounts}
+      />
     </div>
   );
 }

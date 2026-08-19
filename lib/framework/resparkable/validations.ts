@@ -1341,6 +1341,67 @@ export type ResparkableAdminSettingsResponse = z.infer<
   typeof resparkableAdminSettingsResponseSchema
 >;
 
+// ─── Billing settings (admin) ─────────────────────────────────────────────────
+
+/** `PATCH /api/v1/admin/resparkable/billing/settings`. Same shape family as above. */
+export const resparkableBillingSettingsSchema = z
+  .object({
+    creditsPerUsd: z.number().positive(),
+    serviceChargePercent: z.number().min(0).max(1000),
+    costVisibleToUsersDefault: z.boolean(),
+    currencyLabel: z.string().trim().min(1).max(32),
+    newUserGrantCredits: z.number().min(0),
+  })
+  .partial()
+  .strict();
+
+export type ResparkableBillingSettingsInput = z.infer<typeof resparkableBillingSettingsSchema>;
+
+/** Response shape of `GET /api/v1/admin/resparkable/billing/settings`. */
+export const resparkableAdminBillingSettingsResponseSchema = z.object({
+  creditsPerUsd: z.number(),
+  serviceChargePercent: z.number(),
+  costVisibleToUsersDefault: z.boolean(),
+  currencyLabel: z.string(),
+  newUserGrantCredits: z.number(),
+  isDefault: z.boolean(),
+});
+
+export type ResparkableAdminBillingSettingsResponse = z.infer<
+  typeof resparkableAdminBillingSettingsResponseSchema
+>;
+
+/** `POST /api/v1/admin/resparkable/billing/grants`. */
+export const resparkableCreditGrantSchema = z
+  .object({
+    userId: z.string().min(1),
+    amount: z
+      .number()
+      .finite()
+      .refine((value) => value !== 0, 'Amount must not be zero'),
+    note: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+export type ResparkableCreditGrantInput = z.infer<typeof resparkableCreditGrantSchema>;
+
+/** Query params for `GET /api/v1/admin/resparkable/billing/accounts`. */
+export const resparkableBillingAccountsQuerySchema = z.object({
+  cursor: z.string().min(1).optional(),
+});
+
+/** Response shape of `GET /api/v1/admin/resparkable/billing/accounts`. */
+export const resparkableAdminCreditAccountRowSchema = z.object({
+  userId: z.string(),
+  balanceCredits: z.number(),
+  userName: z.string().nullable(),
+  userEmail: z.string(),
+});
+
+export type ResparkableAdminCreditAccountRow = z.infer<
+  typeof resparkableAdminCreditAccountRowSchema
+>;
+
 // ─── Space settings ──────────────────────────────────────────────────────────
 
 /**

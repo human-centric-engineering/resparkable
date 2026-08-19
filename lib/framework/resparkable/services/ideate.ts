@@ -102,6 +102,8 @@ export interface IdeateResult {
    */
   notIndexedYet: boolean;
   costUsd: number;
+  /** Matches `streaming-handler.ts`'s `TokenUsage` shape for the billing tap. */
+  tokenUsage: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
 interface RawFramings {
@@ -204,6 +206,7 @@ export async function ideate(scope: OwnerScope, input: IdeateInput): Promise<Ide
       framings: [],
       notIndexedYet: chunks === 0,
       costUsd: 0,
+      tokenUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     };
   }
 
@@ -284,5 +287,13 @@ export async function ideate(scope: OwnerScope, input: IdeateInput): Promise<Ide
     framings: result.value.framings.slice(0, input.count),
     notIndexedYet: false,
     costUsd: result.costUsd,
+    // `runStructuredCompletion` returns `{input, output}`, not the
+    // `{inputTokens, outputTokens}` shape used elsewhere: remapped here so
+    // callers get one consistent `tokenUsage` shape across the tier.
+    tokenUsage: {
+      inputTokens: result.tokenUsage.input,
+      outputTokens: result.tokenUsage.output,
+      totalTokens: result.tokenUsage.input + result.tokenUsage.output,
+    },
   };
 }

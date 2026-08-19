@@ -46,14 +46,19 @@ vi.mock('@/lib/framework/resparkable/services/briefing', () => ({
 vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
   queueResparkableWorkflowRun: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/space', () => ({
+  ensureResparkableSpace: vi.fn(),
+}));
 
 import { GET } from '@/app/api/v1/resparkable/briefing/route';
 import { POST } from '@/app/api/v1/resparkable/briefing/regenerate/route';
 import { getStoredBriefing } from '@/lib/framework/resparkable/services/briefing';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 
 const mockedStored = vi.mocked(getStoredBriefing);
 const mockedQueue = vi.mocked(queueResparkableWorkflowRun);
+const mockedEnsureSpace = vi.mocked(ensureResparkableSpace);
 
 const SESSION_A = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
@@ -84,6 +89,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedStored.mockResolvedValue({ review: null, stale: true, ageHours: null });
   mockedQueue.mockResolvedValue('exec_1');
+  mockedEnsureSpace.mockResolvedValue(undefined as never);
 });
 
 describe('GET /resparkable/briefing', () => {
@@ -136,6 +142,19 @@ describe('POST /resparkable/briefing/regenerate', () => {
     const [slug, userId] = mockedQueue.mock.calls[0] ?? [];
     expect(slug).toBe('resparkable-morning-briefing');
     expect(userId).toBe('user_a');
+  });
+
+  /**
+   * REGRESSION. A `ResparkableCreditAccount` for the queued execution's owner
+   * gets created (and billed) by `jobs.ts`'s tick, and its FK targets
+   * `ResparkableSpace.userId` — a user whose very first Resparkable
+   * interaction is this route would otherwise queue a run the tick job can
+   * never bill (FK violation), repeating every tick until it ages out.
+   */
+  it('bootstraps the caller’s space before queuing, so a first-ever call can be billed later', async () => {
+    await postRegenerate(post({}), SESSION_A, undefined);
+
+    expect(ensureResparkableSpace).toHaveBeenCalledWith('user_a');
   });
 
   it('passes the override through as workflow input', async () => {

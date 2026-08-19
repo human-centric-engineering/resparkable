@@ -59,10 +59,17 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { RESPARKABLE_CHAT_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
+import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import {
+  assertPositiveBalance,
+  recordAgentSpend,
+} from '@/lib/framework/resparkable/services/billing';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { resparkableChatRequestSchema } from '@/lib/framework/resparkable/validations';
+import { logger } from '@/lib/logging';
 import { getRequestId, getVisitorId } from '@/lib/logging/context';
 import { streamChat } from '@/lib/orchestration/chat';
+import type { ChatEvent } from '@/types/orchestration';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
@@ -78,6 +85,11 @@ export const POST = withAuth(async (request, session) => {
   // A chat turn can be someone's very first interaction with the brain, and
   // every scoped table has an FK to the space row. Idempotent and race-safe.
   await ensureResparkableSpace(session.user.id);
+
+  const scope = ownerScope(session.user.id);
+  // Refused before any provider call: see services/billing.ts. Throws
+  // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
+  await assertPositiveBalance(scope);
 
   const [requestId, visitorId] = await Promise.all([getRequestId(), getVisitorId()]);
 
@@ -103,5 +115,41 @@ export const POST = withAuth(async (request, session) => {
     signal: request.signal,
   });
 
-  return sseResponse(events, { signal: request.signal });
+  return sseResponse(tapChatSpend(events, scope), { signal: request.signal });
 });
+
+/**
+ * Forwards every event unchanged. Captures `conversationId` off the `start`
+ * event, and on `done` (per-turn `costUsd`/`tokenUsage`, computed by
+ * `streaming-handler.ts`) writes the agent-spend ledger entry.
+ *
+ * A failed ledger write must never surface as a stream error. The chat
+ * response has already been shown to the user by the time `done` arrives, so
+ * this logs and keeps yielding rather than throwing into `sseResponse`'s
+ * iteration.
+ */
+async function* tapChatSpend(
+  events: AsyncIterable<ChatEvent>,
+  scope: ReturnType<typeof ownerScope>
+): AsyncGenerator<ChatEvent> {
+  let conversationId: string | undefined;
+
+  for await (const event of events) {
+    if (event.type === 'start') {
+      conversationId = event.conversationId;
+    } else if (event.type === 'done') {
+      try {
+        await recordAgentSpend(scope, {
+          tokenCostUsd: event.costUsd,
+          ...(conversationId ? { relatedConversationId: conversationId } : {}),
+        });
+      } catch (error) {
+        logger.error('Resparkable chat spend could not be recorded', error, {
+          userId: scope.userId,
+          conversationId,
+        });
+      }
+    }
+    yield event;
+  }
+}
