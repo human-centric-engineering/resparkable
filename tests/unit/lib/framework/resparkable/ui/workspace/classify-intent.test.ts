@@ -10,7 +10,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { classifyIntent } from '@/lib/framework/resparkable/ui/workspace/classify-intent';
+import {
+  classifyIntent,
+  isBoardInstruction,
+} from '@/lib/framework/resparkable/ui/workspace/classify-intent';
 
 describe('classifyIntent — chat', () => {
   it.each([
@@ -61,5 +64,29 @@ describe('classifyIntent — rule ordering', () => {
 
   it("an apostrophe doesn't break the leading-word check", () => {
     expect(classifyIntent("Can't remember if I archived this")).toBe('chat');
+  });
+});
+
+describe('isBoardInstruction', () => {
+  it.each([
+    'move this to Doing',
+    'Move the Acme task to Done',
+    'drag this to the backlog',
+    'put this on the board',
+    'move it to the board',
+    'put this in the Done column',
+  ])('reads %j as a board instruction', (text) => {
+    expect(isBoardInstruction(text)).toBe(true);
+  });
+
+  it.each([
+    '',
+    '   ',
+    'Create a project for the Q3 launch',
+    'archive the Acme project',
+    'close the Q3 board', // mentions "board" but isn't a move
+    'What column is this task in?', // mentions "column" but isn't a move
+  ])('does not read %j as a board instruction', (text) => {
+    expect(isBoardInstruction(text)).toBe(false);
   });
 });

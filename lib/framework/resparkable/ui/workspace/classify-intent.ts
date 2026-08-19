@@ -110,3 +110,38 @@ export function classifyIntent(text: string): IntentKind {
   if (IMPERATIVE_LEADERS.has(leader)) return 'instruct';
   return 'capture';
 }
+
+/** A verb of physical/spatial relocation — the shape a board-column move takes. */
+const MOVE_LEADERS = new Set(['move', 'drag', 'shift', 'put']);
+
+/**
+ * Whether an Instruct-mode message is shaped like a board-column move
+ * ("move X to Doing", "put this on the board") — the one instruction
+ * Sparkey can't act on, since no agent capability writes board membership
+ * or card position (`resparkable-companion`'s capability list has no
+ * `resparkable_*board*` entry). Checked client-side, before ever calling
+ * the agent, so the composer can give an honest "not available through
+ * Sparkey yet" instead of a tool call that was always going to fail —
+ * or worse, an LLM inventing one.
+ *
+ * Deliberately narrow: this only has to catch the phrasing people actually
+ * use for card moves, not board vocabulary in general — "close the Q3
+ * board" is a real, fulfillable instruct request (archiving, not moving a
+ * card) and must not trip this.
+ */
+export function isBoardInstruction(text: string): boolean {
+  const trimmed = text.trim().toLowerCase();
+  if (trimmed.length === 0) return false;
+
+  // Without a leading move verb, only "column"/"board" on their own are too
+  // generic to act on — "What column is this task in?" is a chat question,
+  // "close the Q3 board" is a real, fulfillable instruct request (archiving,
+  // not moving a card), and neither should trip this.
+  const leader = leadingWord(trimmed);
+  if (!MOVE_LEADERS.has(leader)) return false;
+
+  // The canonical shape ("move X to Doing") names a column, not the word
+  // "column" — a destination after the move verb is enough on its own.
+  // Otherwise fall back to an explicit mention of where it's moving to.
+  return / to /.test(trimmed) || /\bboard\b/.test(trimmed) || /\bcolumn\b/.test(trimmed);
+}
