@@ -77,9 +77,12 @@ export interface TabState {
   params: TabParams;
   source: TabSource;
   /**
-   * Overrides the registry's `defaultTitle` once real content is known — a
-   * `project` tab starts as "Project" and becomes "Q3 Roadmap" once its
-   * fetch resolves. Never set for kinds with a fixed title.
+   * Meant to override the registry's `defaultTitle` once real content is
+   * known — a `project` tab starting as "Project" and becoming "Q3 Roadmap"
+   * once its fetch resolves. **Nothing writes this field yet**: no context
+   * action sets it and no detail adapter (`project`/`entity`/`board`/`note`)
+   * calls one, so every detail tab shows its generic default for now — see
+   * the build plan's "Deferred follow-ups" for what wiring this up needs.
    */
   title?: string;
 }

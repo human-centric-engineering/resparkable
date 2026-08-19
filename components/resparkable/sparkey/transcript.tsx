@@ -38,12 +38,24 @@ export interface TranscriptProps {
   entries: TranscriptEntry[];
 }
 
+/** Grows as a streaming assistant reply's text grows, not just as entries are added or removed. */
+function contentSignature(entries: TranscriptEntry[]): number {
+  return entries.reduce((total, entry) => {
+    const text = entry.kind === 'chat' || entry.kind === 'instruct' ? entry.assistantText : '';
+    return total + text.length;
+  }, entries.length);
+}
+
 export function Transcript({ entries }: TranscriptProps): React.ReactElement {
   const endRef = React.useRef<HTMLDivElement | null>(null);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [entries.length]);
+    // A streamed reply grows this component's own entries array in place
+    // (same length, more text) — depending on entries.length alone would
+    // never re-scroll while a long answer is still arriving.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contentSignature(entries)]);
 
   return (
     <div

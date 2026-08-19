@@ -60,25 +60,42 @@ function NoteEditor({
   const [content, setContent] = React.useState(initialContent);
   const { state, message, run } = useSaveStatus();
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks the latest content a pending debounce would save, so unmount can
+  // flush it — a ref rather than reading `content` in the effect below,
+  // since that effect's cleanup only runs once (empty deps) and would
+  // otherwise close over the initial, stale value.
+  const pendingRef = React.useRef<string | null>(null);
 
-  // Cancels a pending debounce on unmount, so a save-in-flight for a note
-  // the user has since navigated away from doesn't fire onto stale state.
+  function save(next: string): void {
+    void run(() =>
+      apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, id), {
+        body: { content: next },
+      })
+    );
+  }
+
+  // Flushes a still-pending debounced save on unmount instead of just
+  // cancelling it — switching tabs, closing the pane, or closing the tab
+  // inside the debounce window would otherwise silently drop the last
+  // keystrokes, which this app's one rule above all others (never lose a
+  // thought) can't accept.
   React.useEffect(
     () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      if (timerRef.current === null) return;
+      clearTimeout(timerRef.current);
+      if (pendingRef.current !== null) save(pendingRef.current);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   );
 
   function onChange(next: string): void {
     setContent(next);
+    pendingRef.current = next;
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      void run(() =>
-        apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, id), {
-          body: { content: next },
-        })
-      );
+      pendingRef.current = null;
+      save(next);
     }, SAVE_DEBOUNCE_MS);
   }
 

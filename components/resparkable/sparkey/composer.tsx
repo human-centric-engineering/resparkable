@@ -72,6 +72,11 @@ export function Composer({
   function append(text: string, newSource: 'voice' | 'image'): void {
     onValueChange(value.trim() ? `${value.replace(/\s+$/, '')} ${text}` : text);
     setSource(newSource);
+    // Same re-arm as a keystroke (onChange, below) — a voice/image capture
+    // can change what the draft reads like just as much as typing can, and
+    // a prompt dismissed before the capture shouldn't suppress a genuinely
+    // new suggestion after it.
+    setMismatchDismissed(false);
     inputRef.current?.focus();
   }
 
