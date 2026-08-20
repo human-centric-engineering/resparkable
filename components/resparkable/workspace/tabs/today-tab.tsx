@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * TodayTab — the launcher-opened counterpart to `app/(protected)/resparkable/page.tsx`.
+ * TodayTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/page.tsx`.
  *
  * Same fetch, same schema, same view, ported from a server `readResparkable`
  * call to `useTabFetch` (`use-tab-fetch.ts`'s header explains why). Every

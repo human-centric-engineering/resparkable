@@ -19,6 +19,14 @@
  * solicitor" — and a stored recent-searches list is a copy of that sitting in the
  * browser of a shared laptop. The URL is unavoidable; anything beyond it is a
  * choice, and the choice here is no.
+ *
+ * ## `size`
+ *
+ * `'default'` is the box the full-width layout has always rendered — its
+ * classes are untouched, so nothing currently on screen moves. `'compact'`
+ * exists for Phase 6's slim, sticky `ResparkableAppHeader`, which has about
+ * 32px of height to work with rather than a page's worth; same submit
+ * behaviour, smaller input and icon.
  */
 
 import * as React from 'react';
@@ -29,12 +37,21 @@ import { Input } from '@/components/ui/input';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { cn } from '@/lib/utils';
 
-export function ResparkableSearchBox({ className }: { className?: string }): React.ReactElement {
+export interface ResparkableSearchBoxProps {
+  className?: string;
+  size?: 'default' | 'compact';
+}
+
+export function ResparkableSearchBox({
+  className,
+  size = 'default',
+}: ResparkableSearchBoxProps): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
   // Seeded from the URL so the box still shows the query after landing on the
   // results page, but uncontrolled thereafter — retyping must not fight the URL.
   const [value, setValue] = React.useState(params.get('q') ?? '');
+  const compact = size === 'compact';
 
   return (
     <form
@@ -50,7 +67,10 @@ export function ResparkableSearchBox({ className }: { className?: string }): Rea
         Search everything in your brain
       </label>
       <Search
-        className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2"
+        className={cn(
+          'text-muted-foreground pointer-events-none absolute top-1/2 -translate-y-1/2',
+          compact ? 'left-2 h-3.5 w-3.5' : 'left-2.5 h-4 w-4'
+        )}
         aria-hidden="true"
       />
       <Input
@@ -59,7 +79,7 @@ export function ResparkableSearchBox({ className }: { className?: string }): Rea
         value={value}
         onChange={(event) => setValue(event.target.value)}
         placeholder="Search by meaning…"
-        className="h-9 pl-8 text-sm"
+        className={compact ? 'h-8 pl-7 text-xs' : 'h-9 pl-8 text-sm'}
       />
     </form>
   );

@@ -16,6 +16,7 @@ import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import {
   buildRouteForTab,
   defaultTitleForTab,
+  iconForTab,
   resolveTabForPathname,
   TAB_KINDS,
   TAB_REGISTRY,
@@ -126,5 +127,19 @@ describe('defaultTitleForTab', () => {
     for (const kind of TAB_KINDS) {
       expect(defaultTitleForTab(kind).length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('iconForTab', () => {
+  it('gives every kind an icon component', () => {
+    for (const kind of TAB_KINDS) {
+      expect(iconForTab(kind)).toBeTruthy();
+    }
+  });
+
+  it('gives every detail kind the same icon as its index kind', () => {
+    expect(iconForTab('project')).toBe(iconForTab('projects'));
+    expect(iconForTab('board')).toBe(iconForTab('boards'));
+    expect(iconForTab('entity')).toBe(iconForTab('entities'));
   });
 });

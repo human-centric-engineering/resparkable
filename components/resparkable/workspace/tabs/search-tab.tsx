@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * SearchTab — the launcher-opened counterpart to `app/(protected)/resparkable/search/page.tsx`.
+ * SearchTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/search/page.tsx`.
  *
  * `query` comes from the tab's params, set by whoever opened it (the app
  * header's search box, Phase 6) rather than the URL — unlike

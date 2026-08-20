@@ -56,6 +56,37 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+describe('SparkeyPane — identity', () => {
+  it('names the pane, so it reads as Sparkey rather than a bare composer', () => {
+    render(<SparkeyPane />);
+    expect(screen.getByRole('heading', { name: 'Ask Sparkey' })).toBeInTheDocument();
+  });
+});
+
+describe('SparkeyPane — collapsed drawer', () => {
+  it('renders PaneRail instead of the composer when collapsed, whole strip clickable to expand', async () => {
+    const onExpand = vi.fn();
+    const user = userEvent.setup();
+    render(<SparkeyPane collapsed onExpand={onExpand} />);
+
+    expect(screen.queryByRole('heading', { name: 'Ask Sparkey' })).not.toBeInTheDocument();
+    // PaneRail is one full-strip <button>, not a small icon target — clicking
+    // it anywhere (not e.g. only its chevron) must re-expand.
+    const rail = screen.getByRole('button', { name: 'Show Sparkey' });
+    expect(rail).toBeInTheDocument();
+
+    await user.click(rail);
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no collapse control of its own when expanded — that lives on the handle now', () => {
+    render(<SparkeyPane />);
+
+    expect(screen.queryByRole('button', { name: /collapse sparkey/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show sparkey/i })).not.toBeInTheDocument();
+  });
+});
+
 describe('SparkeyPane — capture mode', () => {
   it('POSTs to /thoughts and shows a capture receipt', async () => {
     vi.mocked(apiClient.post).mockResolvedValue(undefined);

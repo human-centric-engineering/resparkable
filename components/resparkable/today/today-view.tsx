@@ -43,7 +43,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
   const ranked = payload.tasks.filter((task) => !returned.has(task.id));
 
   return (
-    <div className="space-y-6">
+    <div className="@container space-y-6">
       {/* Above the ranked list, below nothing. The briefing leads with what you
           finished, and §6 is explicit that a planner opening with what is
           outstanding is a machine for feeling behind — putting it under the task
@@ -174,7 +174,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
         </Card>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 @lg:grid-cols-2">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm">

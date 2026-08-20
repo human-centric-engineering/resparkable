@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * GraphTab — the launcher-opened counterpart to `app/(protected)/resparkable/graph/page.tsx`.
+ * GraphTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/graph/page.tsx`.
  *
  * The build plan names this one explicitly as needing real work, and names
  * only `GraphView` as the component it reuses — not `GraphControls`, the

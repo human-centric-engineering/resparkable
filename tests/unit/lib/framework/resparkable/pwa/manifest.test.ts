@@ -3,7 +3,7 @@
  *
  * Pure data, and exactly the kind that fails silently: a typo in `start_url`
  * or a `share_target.params` key that doesn't match what
- * `app/(protected)/resparkable/capture/page.tsx` reads is invisible until
+ * `app/(resparkable)/resparkable/capture/page.tsx` reads is invisible until
  * someone actually shares a page from their phone.
  *
  * @see lib/framework/resparkable/pwa/manifest.ts

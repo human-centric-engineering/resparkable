@@ -2,7 +2,7 @@
 
 /**
  * BoardTab — the launcher-opened counterpart to
- * `app/(protected)/resparkable/boards/[slug]/page.tsx`.
+ * `app/(resparkable)/resparkable/boards/[slug]/page.tsx`.
  *
  * This is one of the two kinds the build plan calls out for real work
  * (`GraphTab` is the other):

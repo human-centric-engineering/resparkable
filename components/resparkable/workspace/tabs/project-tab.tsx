@@ -2,7 +2,7 @@
 
 /**
  * ProjectTab — the launcher-opened counterpart to
- * `app/(protected)/resparkable/projects/[id]/page.tsx`.
+ * `app/(resparkable)/resparkable/projects/[id]/page.tsx`.
  *
  * The server page calls `notFound()` on a 404, which renders the route
  * group's `not-found.tsx` — the *whole page*. A tab's 404 must stay

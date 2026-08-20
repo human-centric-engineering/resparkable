@@ -1,7 +1,7 @@
 /**
  * Unit Tests: Resparkable misc server-component pages
  *
- * Covers today (app/(protected)/resparkable/page.tsx), plan, settings, search,
+ * Covers today (app/(resparkable)/resparkable/page.tsx), plan, settings, search,
  * graph and connections — the pages that don't fit the "plain collection" or
  * "dynamic route" groupings.
  *
@@ -10,20 +10,22 @@
  * `<EmptyState>` are left real since asserting their actual rendered text is
  * exactly what pins the page's branch choice.
  *
- * @see app/(protected)/resparkable/page.tsx
- * @see app/(protected)/resparkable/plan/page.tsx
- * @see app/(protected)/resparkable/settings/page.tsx
- * @see app/(protected)/resparkable/search/page.tsx
- * @see app/(protected)/resparkable/graph/page.tsx
- * @see app/(protected)/resparkable/connections/page.tsx
- * @see app/(protected)/resparkable/chat/page.tsx
- * @see app/(protected)/resparkable/archive/page.tsx
+ * @see app/(resparkable)/resparkable/page.tsx
+ * @see app/(resparkable)/resparkable/plan/page.tsx
+ * @see app/(resparkable)/resparkable/settings/page.tsx
+ * @see app/(resparkable)/resparkable/search/page.tsx
+ * @see app/(resparkable)/resparkable/graph/page.tsx
+ * @see app/(resparkable)/resparkable/connections/page.tsx
+ * @see app/(resparkable)/resparkable/chat/page.tsx
+ * @see app/(resparkable)/resparkable/archive/page.tsx
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { redirect } from 'next/navigation';
 
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -175,7 +177,7 @@ beforeEach(() => {
 describe('ResparkableTodayPage', () => {
   it('reads the today endpoint', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
-    const { default: ResparkableTodayPage } = await import('@/app/(protected)/resparkable/page');
+    const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
     await ResparkableTodayPage();
 
@@ -184,7 +186,7 @@ describe('ResparkableTodayPage', () => {
 
   it('renders LoadError when the read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'today down'));
-    const { default: ResparkableTodayPage } = await import('@/app/(protected)/resparkable/page');
+    const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
     render(await ResparkableTodayPage());
 
@@ -194,7 +196,7 @@ describe('ResparkableTodayPage', () => {
   it('forwards the payload to TodayView on success', async () => {
     const payload = { generatedAt: 'now', tasks: [] };
     vi.mocked(readResparkable).mockResolvedValue(ok(payload));
-    const { default: ResparkableTodayPage } = await import('@/app/(protected)/resparkable/page');
+    const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
     render(await ResparkableTodayPage());
 
@@ -213,7 +215,7 @@ describe('ResparkablePlanPage', () => {
   it('uses a valid YYYY-MM-DD day param verbatim to build the from/to window', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
     const day = '2026-03-14';
     const { from, to } = expectedDayWindow(day);
 
@@ -234,7 +236,7 @@ describe('ResparkablePlanPage', () => {
 
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
 
     await ResparkablePlanPage({ searchParams: Promise.resolve({ day: 'not-a-date' }) });
 
@@ -254,7 +256,7 @@ describe('ResparkablePlanPage', () => {
     // branch, which has no key, and that would trivially satisfy nothing.
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
 
     const element = await ResparkablePlanPage({ searchParams: Promise.resolve({}) });
 
@@ -264,7 +266,7 @@ describe('ResparkablePlanPage', () => {
   it('keys the returned element on the resolved day, so switching days remounts DayPlanner', async () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
 
     const element = await ResparkablePlanPage({
       searchParams: Promise.resolve({ day: '2026-05-01' }),
@@ -278,7 +280,7 @@ describe('ResparkablePlanPage', () => {
       path.startsWith(RESPARKABLE_API.TIME_BLOCKS) ? fail(500, 'blocks down') : ok([])
     );
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
 
     render(await ResparkablePlanPage({ searchParams: Promise.resolve({ day: '2026-05-01' }) }));
 
@@ -292,7 +294,7 @@ describe('ResparkablePlanPage', () => {
       path.startsWith(RESPARKABLE_API.TIME_BLOCKS) ? ok(blocks) : fail(500, 'down')
     );
     const { default: ResparkablePlanPage } =
-      await import('@/app/(protected)/resparkable/plan/page');
+      await import('@/app/(resparkable)/resparkable/plan/page');
 
     render(await ResparkablePlanPage({ searchParams: Promise.resolve({ day: '2026-05-01' }) }));
 
@@ -316,7 +318,7 @@ describe('ResparkableSettingsPage', () => {
   it('reads the space settings endpoint', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableSettingsPage } =
-      await import('@/app/(protected)/resparkable/settings/page');
+      await import('@/app/(resparkable)/resparkable/settings/page');
 
     await ResparkableSettingsPage();
 
@@ -326,7 +328,7 @@ describe('ResparkableSettingsPage', () => {
   it('renders LoadError when the read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'settings down'));
     const { default: ResparkableSettingsPage } =
-      await import('@/app/(protected)/resparkable/settings/page');
+      await import('@/app/(resparkable)/resparkable/settings/page');
 
     render(await ResparkableSettingsPage());
 
@@ -337,7 +339,7 @@ describe('ResparkableSettingsPage', () => {
     const settings = { timezone: 'UTC', workStyle: 'balanced' };
     vi.mocked(readResparkable).mockResolvedValue(ok(settings));
     const { default: ResparkableSettingsPage } =
-      await import('@/app/(protected)/resparkable/settings/page');
+      await import('@/app/(resparkable)/resparkable/settings/page');
 
     render(await ResparkableSettingsPage());
 
@@ -349,7 +351,7 @@ describe('ResparkableSettingsPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(ok({}));
     vi.mocked(getSparkeyPronoun).mockResolvedValue('he');
     const { default: ResparkableSettingsPage } =
-      await import('@/app/(protected)/resparkable/settings/page');
+      await import('@/app/(resparkable)/resparkable/settings/page');
 
     render(await ResparkableSettingsPage());
 
@@ -363,7 +365,7 @@ describe('ResparkableSettingsPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'settings down'));
 
     const { default: ResparkableSettingsPage } =
-      await import('@/app/(protected)/resparkable/settings/page');
+      await import('@/app/(resparkable)/resparkable/settings/page');
 
     render(await ResparkableSettingsPage());
 
@@ -377,7 +379,7 @@ describe('ResparkableSettingsPage', () => {
 describe('ResparkableSearchPage', () => {
   it('renders the empty prompt and never reads when there is no query', async () => {
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     render(await ResparkableSearchPage({ searchParams: Promise.resolve({}) }));
 
@@ -387,7 +389,7 @@ describe('ResparkableSearchPage', () => {
 
   it('renders the empty prompt when q is only whitespace', async () => {
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     render(await ResparkableSearchPage({ searchParams: Promise.resolve({ q: '   ' }) }));
 
@@ -398,7 +400,7 @@ describe('ResparkableSearchPage', () => {
   it('reads the search endpoint with the trimmed q param', async () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     await ResparkableSearchPage({ searchParams: Promise.resolve({ q: '  coffee  ' }) });
 
@@ -408,7 +410,7 @@ describe('ResparkableSearchPage', () => {
   it('adds includeArchived=true to the query when requested', async () => {
     vi.mocked(readResparkable).mockResolvedValue(ok([]));
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     await ResparkableSearchPage({
       searchParams: Promise.resolve({ q: 'coffee', includeArchived: 'true' }),
@@ -420,7 +422,7 @@ describe('ResparkableSearchPage', () => {
   it('renders LoadError alongside SearchControls when the search read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'search down'));
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     render(await ResparkableSearchPage({ searchParams: Promise.resolve({ q: 'coffee' }) }));
 
@@ -433,7 +435,7 @@ describe('ResparkableSearchPage', () => {
     const hits = [{ id: 'h1', title: 'Coffee note' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(hits));
     const { default: ResparkableSearchPage } =
-      await import('@/app/(protected)/resparkable/search/page');
+      await import('@/app/(resparkable)/resparkable/search/page');
 
     render(await ResparkableSearchPage({ searchParams: Promise.resolve({ q: 'coffee' }) }));
 
@@ -454,7 +456,7 @@ describe('ResparkableSearchPage', () => {
 describe('ResparkableGraphPage', () => {
   it('renders the empty prompt and never reads when focus or focusType is missing', async () => {
     const { default: ResparkableGraphPage } =
-      await import('@/app/(protected)/resparkable/graph/page');
+      await import('@/app/(resparkable)/resparkable/graph/page');
 
     render(await ResparkableGraphPage({ searchParams: Promise.resolve({ focus: 'proj-1' }) }));
 
@@ -467,7 +469,7 @@ describe('ResparkableGraphPage', () => {
       ok({ depth: 1, nodeCap: 50, nodes: [], truncated: false })
     );
     const { default: ResparkableGraphPage } =
-      await import('@/app/(protected)/resparkable/graph/page');
+      await import('@/app/(resparkable)/resparkable/graph/page');
 
     await ResparkableGraphPage({
       searchParams: Promise.resolve({ focus: 'proj-1', focusType: 'project' }),
@@ -483,7 +485,7 @@ describe('ResparkableGraphPage', () => {
       ok({ depth: 3, nodeCap: 10, nodes: [], truncated: false })
     );
     const { default: ResparkableGraphPage } =
-      await import('@/app/(protected)/resparkable/graph/page');
+      await import('@/app/(resparkable)/resparkable/graph/page');
 
     await ResparkableGraphPage({
       searchParams: Promise.resolve({
@@ -507,7 +509,7 @@ describe('ResparkableGraphPage', () => {
   it('renders LoadError when the graph read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'graph down'));
     const { default: ResparkableGraphPage } =
-      await import('@/app/(protected)/resparkable/graph/page');
+      await import('@/app/(resparkable)/resparkable/graph/page');
 
     render(
       await ResparkableGraphPage({
@@ -533,7 +535,7 @@ describe('ResparkableGraphPage', () => {
     };
     vi.mocked(readResparkable).mockResolvedValue(ok(payload));
     const { default: ResparkableGraphPage } =
-      await import('@/app/(protected)/resparkable/graph/page');
+      await import('@/app/(resparkable)/resparkable/graph/page');
 
     render(
       await ResparkableGraphPage({
@@ -561,7 +563,7 @@ describe('ResparkableConnectionsPage', () => {
   it('reads the connections endpoint with limit=50', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableConnectionsPage } =
-      await import('@/app/(protected)/resparkable/connections/page');
+      await import('@/app/(resparkable)/resparkable/connections/page');
 
     await ResparkableConnectionsPage();
 
@@ -571,7 +573,7 @@ describe('ResparkableConnectionsPage', () => {
   it('renders LoadError when the read fails', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'connections down'));
     const { default: ResparkableConnectionsPage } =
-      await import('@/app/(protected)/resparkable/connections/page');
+      await import('@/app/(resparkable)/resparkable/connections/page');
 
     render(await ResparkableConnectionsPage());
 
@@ -582,7 +584,7 @@ describe('ResparkableConnectionsPage', () => {
     const connections = [{ id: 'c1' }, { id: 'c2' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(connections, { total: 12 }));
     const { default: ResparkableConnectionsPage } =
-      await import('@/app/(protected)/resparkable/connections/page');
+      await import('@/app/(resparkable)/resparkable/connections/page');
 
     render(await ResparkableConnectionsPage());
 
@@ -598,7 +600,7 @@ describe('ResparkableConnectionsPage', () => {
     const connections = [{ id: 'c1' }, { id: 'c2' }, { id: 'c3' }];
     vi.mocked(readResparkable).mockResolvedValue(ok(connections));
     const { default: ResparkableConnectionsPage } =
-      await import('@/app/(protected)/resparkable/connections/page');
+      await import('@/app/(resparkable)/resparkable/connections/page');
 
     render(await ResparkableConnectionsPage());
 
@@ -635,7 +637,7 @@ describe('ResparkableArchivePage', () => {
   it('reads the digest and all five archived collections with includeArchived=only and limit=100', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     await ResparkableArchivePage();
 
@@ -654,7 +656,7 @@ describe('ResparkableArchivePage', () => {
       path === RESPARKABLE_API.STALE ? fail(500, 'digest down') : ok([])
     );
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -679,7 +681,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -724,7 +726,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -748,7 +750,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -763,7 +765,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -784,7 +786,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -830,7 +832,7 @@ describe('ResparkableArchivePage', () => {
       return ok([]);
     });
     const { default: ResparkableArchivePage } =
-      await import('@/app/(protected)/resparkable/archive/page');
+      await import('@/app/(resparkable)/resparkable/archive/page');
 
     render(await ResparkableArchivePage());
 
@@ -842,51 +844,21 @@ describe('ResparkableArchivePage', () => {
 
 describe('Chat page', () => {
   /**
-   * The one Resparkable surface with no server read. The transcript lives in the
-   * stream, and the orientation an agent needs is injected server-side as the
-   * context block on every turn — fetching a snapshot here to render around the
-   * chat would show a second, staler copy of what the agent is already reading.
+   * Retired at the Phase 8 cutover — Sparkey's own pane absorbs chat, so
+   * this route is now a redirect rather than a page, kept alive so every
+   * existing link to it still resolves to something instead of a 404.
    */
-  it('renders without reading anything from the API', async () => {
-    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
+  beforeEach(() => {
+    vi.mocked(redirect).mockClear();
+  });
 
-    render(await Promise.resolve(ChatPage()));
+  it('redirects to Today rather than rendering chat', async () => {
+    const { default: ChatPage } = await import('@/app/(resparkable)/resparkable/chat/page');
 
-    expect(screen.getByTestId('resparkable-chat')).toBeInTheDocument();
+    ChatPage();
+
+    expect(redirect).toHaveBeenCalledTimes(1);
+    expect(redirect).toHaveBeenCalledWith(RESPARKABLE_ROUTES.TODAY);
     expect(readResparkable).not.toHaveBeenCalled();
-  });
-
-  /**
-   * A constant, not a picker. The other four agents hold write capabilities and
-   * the route refuses them, so a page offering one would be offering something
-   * the API rejects.
-   */
-  it('addresses the companion and nothing else', async () => {
-    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
-    const { RESPARKABLE_AGENT_SLUGS } = await import('@/lib/framework/resparkable/agents');
-
-    render(await Promise.resolve(ChatPage()));
-
-    const props = JSON.parse(
-      screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
-    ) as { agentSlug: string; starterPrompts?: string[] };
-
-    expect(props.agentSlug).toBe(RESPARKABLE_AGENT_SLUGS.companion);
-  });
-
-  /**
-   * No fixed starter-prompt buttons on this surface — the empty state's own
-   * "Ask Sparkey" heading and description carry that job instead.
-   */
-  it('renders with no starter prompts', async () => {
-    const { default: ChatPage } = await import('@/app/(protected)/resparkable/chat/page');
-
-    render(await Promise.resolve(ChatPage()));
-
-    const props = JSON.parse(
-      screen.getByTestId('resparkable-chat').getAttribute('data-props') ?? '{}'
-    ) as { starterPrompts?: string[] };
-
-    expect(props.starterPrompts).toBeUndefined();
   });
 });

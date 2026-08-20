@@ -75,7 +75,7 @@ Resparkable is the second. **Sunrise core never creates files or tables under ei
 | Tables     | `framework_resparkable_*` (e.g. `@@map("framework_resparkable_task")`) |
 | Docs       | `.context/framework/resparkable/**`                                    |
 | Seeds      | `prisma/seeds/framework-resparkable/001-*.ts` onward                   |
-| Routes     | `app/(protected)/resparkable/**`, `app/api/v1/resparkable/**`          |
+| Routes     | `app/(resparkable)/resparkable/**`, `app/api/v1/resparkable/**`        |
 | Components | `components/resparkable/**`                                            |
 
 **Namespaced inside the tier, not at its root.** `prisma/schema/framework-*.prisma` is a _glob_, so several framework modules coexist. A project already running another framework layer (Daybreak, say) can add Resparkable as a sibling — `lib/framework/daybreak/` and `lib/framework/resparkable/` — rather than colliding on the tier root. Never put anything directly in `lib/framework/` except the tier's own `eslint.config.mjs`.
@@ -540,7 +540,7 @@ Also: **`lib/orchestration/review-schema/`** defines a declarative schema for re
 
 ## 8. Capture channels
 
-**Web quick-capture** — `components/resparkable/layout/quick-capture.tsx`, ⌘/Ctrl+Enter, draft persisted via `lib/hooks/use-local-storage.ts` so a reload never loses a thought. Mounted in `app/(protected)/resparkable/layout.tsx`.
+**Web quick-capture** — `components/resparkable/layout/quick-capture.tsx`, ⌘/Ctrl+Enter, draft persisted via `lib/hooks/use-local-storage.ts` so a reload never loses a thought. Mounted in `app/(resparkable)/resparkable/layout.tsx`.
 
 **PWA** — the repo has **no manifest and no icons** (`public/` is just favicons). Add `app/manifest.ts` (`start_url: '/resparkable'`, `display: 'standalone'`, 192/512 + maskable icons), a **`method: 'GET'`** `share_target` → `/resparkable/capture` (a POST target needs a service-worker fetch interceptor; GET gets Android's share sheet working with zero SW), `shortcuts`, and `appleWebApp` metadata for iOS. CSP is already fine (`worker-src 'self' blob:`, `default-src 'self'`).
 
@@ -597,7 +597,7 @@ Open design question, not yet decided: whether Sparkey's chat pane should ever r
 
 ### Current implementation (shipped)
 
-Routes under `app/(protected)/resparkable/`: `layout.tsx` (sub-nav + persistent quick capture), `page.tsx` (Today), `inbox/`, `projects/[id]`, `goals/`, `entities/[id]`, `documents/`, `boards/` + `boards/[slug]`, `connections/`, `graph/`, `chat/`, `capture/`, `reviews/[id]`. Each gets a `loading.tsx`. Register `'/resparkable'` in `lib/app/protected-routes.ts`.
+Routes under `app/(resparkable)/resparkable/`: `layout.tsx` (sub-nav + persistent quick capture), `page.tsx` (Today), `inbox/`, `projects/[id]`, `goals/`, `entities/[id]`, `documents/`, `boards/` + `boards/[slug]`, `connections/`, `graph/`, `chat/`, `capture/`, `reviews/[id]`. Each gets a `loading.tsx`. Register `'/resparkable'` in `lib/app/protected-routes.ts`.
 
 ### Kanban board
 
@@ -1534,7 +1534,7 @@ Circles owned by an erased user **transfer to the longest-standing remaining mem
 
 ### 18.9 UI
 
-`app/(protected)/resparkable/pollination/`:
+`app/(resparkable)/resparkable/pollination/`:
 
 - `page.tsx` — the deliveries feed. **Sparse by design**; _"nothing this week"_ is a valid, calm state and should look like one rather than like a failure
 - `facets/` — **lines in the water** with time remaining on each, drafts awaiting approval, casts about to end

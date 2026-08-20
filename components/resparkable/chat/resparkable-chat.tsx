@@ -41,7 +41,7 @@ import * as React from 'react';
 import { Loader2, Send, Wrench } from 'lucide-react';
 
 import { parseChatStreamEvent } from '@/components/admin/orchestration/chat/chat-events';
-import { SparkGlyph } from '@/components/brand/spark-glyph';
+import { SparkIcon } from '@/components/brand/spark-glyph';
 import { ThinkingIndicator } from '@/components/resparkable/chat/thinking-indicator';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { AutoGrowTextarea } from '@/components/resparkable/ui/auto-grow-textarea';
@@ -393,8 +393,8 @@ export function ResparkableChat({
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           {messages.length === 0 ? (
             <EmptyState
-              icon={SparkGlyph}
-              iconClassName="h-8 w-[60px]"
+              icon={SparkIcon}
+              iconClassName="h-10 w-10"
               title="Ask Sparkey"
               description="Sparkey has a record of everything you've shared and can find meaning and connections based on what matters to you. Talk with the mic or write down your thoughts."
               className="border-0"
@@ -510,9 +510,16 @@ export function ResparkableChat({
         </div>
 
         {/* The composer is the bottom of the same panel — a divider, not a gap.
-            See the panel comment above. */}
+            See the panel comment above. Same unified box `Composer`
+            (`components/resparkable/sparkey/composer.tsx`) uses — one bordered
+            box holding the textarea and a footer row, not a textarea with
+            buttons floating beside it — so the surface a modal opens
+            (`ContextChatDrawer`, `CreateDialog`, `EntityEditorPanel`) matches
+            the workspace's own Ask Sparkey pane rather than reading as a
+            second, older composer design. This one has no Attach button:
+            unlike the pane's `Composer`, nothing here wires a file upload. */}
         <div className="bg-card border-t p-3">
-          <div className="flex items-end gap-2">
+          <div className="border-input bg-card focus-within:ring-ring rounded-md border shadow-sm focus-within:ring-1">
             <AutoGrowTextarea
               ref={inputRef}
               value={input}
@@ -523,31 +530,41 @@ export function ResparkableChat({
               maxRows={10}
               disabled={streaming}
               aria-label="Message"
+              className="border-0 bg-transparent shadow-none focus-visible:ring-0"
             />
-            {/* Dictation lands in the box rather than sending, so a transcript
-                with a wrong word in it can be fixed before it is asked. The
-                append is careful about the join — speaking twice in a row must
-                not weld the last word of one take to the first of the next. */}
-            <VoiceCaptureButton
-              onTranscript={(text) =>
-                setInput((current) => (current ? `${current.replace(/\s+$/, '')} ${text}` : text))
-              }
-              onError={setError}
-              disabled={streaming}
-            />
-            <Button
-              onClick={() => void send(input)}
-              disabled={streaming || input.trim().length === 0}
-              aria-label="Send"
-            >
-              {streaming ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-              ) : (
-                <Send className="size-4" aria-hidden="true" />
-              )}
-            </Button>
+            <div className="flex items-center justify-end gap-1.5 px-2 pb-2">
+              {/* Dictation lands in the box rather than sending, so a
+                  transcript with a wrong word in it can be fixed before it is
+                  asked. The append is careful about the join — speaking twice
+                  in a row must not weld the last word of one take to the
+                  first of the next. */}
+              <VoiceCaptureButton
+                onTranscript={(text) =>
+                  setInput((current) => (current ? `${current.replace(/\s+$/, '')} ${text}` : text))
+                }
+                onError={setError}
+                disabled={streaming}
+              />
+              <Button
+                size="sm"
+                onClick={() => void send(input)}
+                disabled={streaming || input.trim().length === 0}
+                aria-label="Send"
+              >
+                {streaming ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Send className="size-4" aria-hidden="true" />
+                )}
+              </Button>
+            </div>
           </div>
-          <p className="term-meta mt-2 px-1">Enter to send · Shift+Enter for a new line</p>
+          {/* `font-sans` overrides the mono this panel's `.terminal-surface`
+              would otherwise put it in — a caption about the keys, not
+              something the machine said. */}
+          <p className="text-muted-foreground mt-2 px-1 font-sans text-xs">
+            Enter to send · Shift+Enter for a new line
+          </p>
         </div>
       </div>
     </div>

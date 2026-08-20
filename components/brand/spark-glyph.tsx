@@ -131,6 +131,54 @@ export function SparkGlyph({
 }
 
 /**
+ * SparkIcon — the crossing spark alone, with no loop around it.
+ *
+ * **Fork-owned.** Everywhere the product says "Ask Sparkey" — the pane header,
+ * the nav rail, the empty-state mark — used to reach for either a Lucide
+ * placeholder (`Sparkles`, `MessageSquare`) or the full `SparkGlyph` lemniscate.
+ * Neither is the mark: live review asked for just the four-point spark from the
+ * crossing, since that's the part of the logo this feature is actually named
+ * after, and a full loop reads as "the app" rather than "the assistant" at icon
+ * size. Drawing from `SPARK_PATH`/`BRAND_SPARK_GRADIENT_ID` — the same geometry
+ * and the same theme-aware gradient `BrandMark`/`SparkGlyph` use — is what keeps
+ * this from becoming a second, slightly different spark to maintain by hand.
+ *
+ * The viewBox is the spark's own bounds (a 21×21 square centred on the
+ * crossing), not the mark's 64×34 — there is no loop to leave room for, so an
+ * icon consumer sizing this like any other square glyph (`h-5 w-5`, etc.) gets
+ * a spark that fills the box rather than one sitting in a lot of empty margin.
+ *
+ * Props are spread onto the `<svg>` rather than limited to `className`, so this
+ * drops into a slot typed for a Lucide icon (`className`, `aria-hidden`, …)
+ * without a wrapper.
+ */
+export function SparkIcon({
+  title,
+  className,
+  ...props
+}: React.SVGProps<SVGSVGElement> & {
+  /** Give it an accessible name. Omitted, it is decorative and hidden. */
+  title?: string;
+}): React.ReactNode {
+  return (
+    <svg
+      viewBox="21.5 6.5 21 21"
+      className={cn('shrink-0', className)}
+      role={title ? 'img' : undefined}
+      aria-hidden={title ? undefined : 'true'}
+      aria-label={title}
+      focusable="false"
+      {...props}
+    >
+      <defs>
+        <BrandGradientDefs />
+      </defs>
+      <path d={SPARK_PATH} fill={`url(#${BRAND_SPARK_GRADIENT_ID})`} />
+    </svg>
+  );
+}
+
+/**
  * A section rule with the mark set into it.
  *
  * The public pages separate sections with a single line rather than banding

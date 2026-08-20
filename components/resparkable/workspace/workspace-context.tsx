@@ -27,16 +27,27 @@ import {
   closeLeaf as closeLeafInTree,
   closeTab as closeTabInTree,
   createLeaf,
+  detachTab as detachTabInTree,
   findLeaf,
   listLeaves,
   openTabInLeaf,
   reorderTab as reorderTabInTree,
   resizeSplit as resizeSplitInTree,
+  setRouteTab as setRouteTabInTree,
   showLauncher as showLauncherInTree,
   splitLeaf as splitLeafInTree,
   type PaneNode,
   type SplitDirection,
 } from '@/lib/framework/resparkable/ui/workspace/split-tree';
+import {
+  addFloatingPanel,
+  bringFloatingPanelToFront,
+  moveFloatingPanel as moveFloatingPanelInList,
+  nextZIndex,
+  removeFloatingPanel,
+  resizeFloatingPanel as resizeFloatingPanelInList,
+  type FloatingPanel,
+} from '@/lib/framework/resparkable/ui/workspace/floating-panels';
 import type {
   TabKind,
   TabParams,
@@ -45,7 +56,11 @@ import type {
 } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
 import { useLocalStorage } from '@/lib/hooks/use-local-storage';
 
-const STORAGE_KEY = 'resparkable.workspace.v1';
+// v2: added `floatingPanels` — a v1 blob has no such field, and this hook's
+// bare `JSON.parse` performs no schema merge, so a bumped key is what avoids
+// scattering `?? []` defensive reads through every action below. Existing
+// users' saved pane layout resets once on first load after this ships.
+const STORAGE_KEY = 'resparkable.workspace.v2';
 
 /** The one leaf that exists before anything is ever opened. Never removed — see `closeLeaf`'s guarantee. */
 const ROOT_LEAF_ID = 'root';
@@ -53,12 +68,19 @@ const ROOT_LEAF_ID = 'root';
 export interface WorkspaceState {
   root: PaneNode;
   focusedLeafId: string;
+  /** Tabs dragged out of the pane tree into their own floating windows. */
+  floatingPanels: FloatingPanel[];
 }
 
 const DEFAULT_STATE: WorkspaceState = {
   root: createLeaf(ROOT_LEAF_ID),
   focusedLeafId: ROOT_LEAF_ID,
+  floatingPanels: [],
 };
+
+/** A freshly detached panel's starting size, when the drag didn't imply one of its own. */
+const DEFAULT_FLOATING_WIDTH = 360;
+const DEFAULT_FLOATING_HEIGHT = 280;
 
 export interface OpenTabOptions {
   /** Opens in a fresh split off the focused pane instead of in it. */
@@ -82,6 +104,30 @@ export interface WorkspaceContextValue {
   focusLeaf: (leafId: string) => void;
   /** The "+" affordance — shows the launcher in `leafId` without closing its tabs. */
   showLauncher: (leafId: string) => void;
+  /**
+   * `route-tab-bridge.tsx`'s (Phase 8) only write — syncs the tree's one
+   * `source: 'route'` tab to whatever route just matched, replacing it in
+   * place rather than opening a second one. See `setRouteTab` in
+   * `split-tree.ts` for the invariant this maintains.
+   */
+  syncRouteTab: (kind: TabKind, params?: TabParams) => void;
+
+  /** Tabs dragged out of the pane tree into their own floating windows. */
+  floatingPanels: FloatingPanel[];
+  /**
+   * Pulls `tabId` out of leaf `leafId` into a new floating panel at
+   * `position` — a no-op if the tab is the tree's `source: 'route'` tab (see
+   * `detachTab` in `split-tree.ts`) or already gone.
+   */
+  detachTab: (leafId: string, tabId: string, position: { x: number; y: number }) => void;
+  /** Docks a floating panel's tab into `targetLeafId`, appended and activated, and removes the panel. */
+  dockPanel: (panelId: string, targetLeafId: string) => void;
+  moveFloatingPanel: (panelId: string, x: number, y: number) => void;
+  resizeFloatingPanel: (panelId: string, width: number, height: number) => void;
+  /** Discards a floating panel's tab — no auto-redock. A `FloatingTabWindow`'s own redock button handles that. */
+  closeFloatingPanel: (panelId: string) => void;
+  /** Brings a floating panel to the front of the paint order. */
+  focusFloatingPanel: (panelId: string) => void;
 }
 
 const WorkspaceContext = React.createContext<WorkspaceContextValue | undefined>(undefined);
@@ -127,7 +173,11 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
         }
 
         const tab: TabState = { id: createId(), kind, params, source: opts?.source ?? 'launcher' };
-        return { root: openTabInLeaf(root, targetLeafId, tab), focusedLeafId: targetLeafId };
+        return {
+          ...prev,
+          root: openTabInLeaf(root, targetLeafId, tab),
+          focusedLeafId: targetLeafId,
+        };
       });
     },
     [setState]
@@ -158,7 +208,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     (leafId, direction) => {
       setState((prev) => {
         const split = performSplit(prev.root, leafId, direction);
-        return { root: split.root, focusedLeafId: split.newLeafId };
+        return { ...prev, root: split.root, focusedLeafId: split.newLeafId };
       });
     },
     [setState]
@@ -168,7 +218,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     (leafId) => {
       setState((prev) => {
         const root = closeLeafInTree(prev.root, leafId);
-        return { root, focusedLeafId: fallbackFocus(root, prev.focusedLeafId) };
+        return { ...prev, root, focusedLeafId: fallbackFocus(root, prev.focusedLeafId) };
       });
     },
     [setState]
@@ -195,6 +245,94 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     [setState]
   );
 
+  const syncRouteTab = React.useCallback<WorkspaceContextValue['syncRouteTab']>(
+    (kind, params = {}) => {
+      setState((prev) => {
+        const tab: TabState = { id: createId(), kind, params, source: 'route' };
+        const { root, leafId } = setRouteTabInTree(prev.root, tab, prev.focusedLeafId);
+        return { ...prev, root, focusedLeafId: leafId };
+      });
+    },
+    [setState]
+  );
+
+  const detachTab = React.useCallback<WorkspaceContextValue['detachTab']>(
+    (leafId, tabId, position) => {
+      setState((prev) => {
+        const { root, tab } = detachTabInTree(prev.root, leafId, tabId);
+        if (!tab) return prev;
+        const panel: FloatingPanel = {
+          id: createId(),
+          tab,
+          originLeafId: leafId,
+          x: position.x,
+          y: position.y,
+          width: DEFAULT_FLOATING_WIDTH,
+          height: DEFAULT_FLOATING_HEIGHT,
+          z: nextZIndex(prev.floatingPanels),
+        };
+        return { ...prev, root, floatingPanels: addFloatingPanel(prev.floatingPanels, panel) };
+      });
+    },
+    [setState]
+  );
+
+  const dockPanel = React.useCallback<WorkspaceContextValue['dockPanel']>(
+    (panelId, targetLeafId) => {
+      setState((prev) => {
+        const panel = prev.floatingPanels.find((candidate) => candidate.id === panelId);
+        if (!panel) return prev;
+        return {
+          ...prev,
+          root: openTabInLeaf(prev.root, targetLeafId, panel.tab),
+          focusedLeafId: targetLeafId,
+          floatingPanels: removeFloatingPanel(prev.floatingPanels, panelId),
+        };
+      });
+    },
+    [setState]
+  );
+
+  const moveFloatingPanel = React.useCallback<WorkspaceContextValue['moveFloatingPanel']>(
+    (panelId, x, y) => {
+      setState((prev) => ({
+        ...prev,
+        floatingPanels: moveFloatingPanelInList(prev.floatingPanels, panelId, x, y),
+      }));
+    },
+    [setState]
+  );
+
+  const resizeFloatingPanel = React.useCallback<WorkspaceContextValue['resizeFloatingPanel']>(
+    (panelId, width, height) => {
+      setState((prev) => ({
+        ...prev,
+        floatingPanels: resizeFloatingPanelInList(prev.floatingPanels, panelId, width, height),
+      }));
+    },
+    [setState]
+  );
+
+  const closeFloatingPanel = React.useCallback<WorkspaceContextValue['closeFloatingPanel']>(
+    (panelId) => {
+      setState((prev) => ({
+        ...prev,
+        floatingPanels: removeFloatingPanel(prev.floatingPanels, panelId),
+      }));
+    },
+    [setState]
+  );
+
+  const focusFloatingPanel = React.useCallback<WorkspaceContextValue['focusFloatingPanel']>(
+    (panelId) => {
+      setState((prev) => ({
+        ...prev,
+        floatingPanels: bringFloatingPanelToFront(prev.floatingPanels, panelId),
+      }));
+    },
+    [setState]
+  );
+
   const value = React.useMemo<WorkspaceContextValue>(
     () => ({
       root: state.root,
@@ -208,6 +346,14 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       resizeSplit,
       focusLeaf,
       showLauncher,
+      syncRouteTab,
+      floatingPanels: state.floatingPanels,
+      detachTab,
+      dockPanel,
+      moveFloatingPanel,
+      resizeFloatingPanel,
+      closeFloatingPanel,
+      focusFloatingPanel,
     }),
     [
       state,
@@ -220,6 +366,13 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       resizeSplit,
       focusLeaf,
       showLauncher,
+      syncRouteTab,
+      detachTab,
+      dockPanel,
+      moveFloatingPanel,
+      resizeFloatingPanel,
+      closeFloatingPanel,
+      focusFloatingPanel,
     ]
   );
 

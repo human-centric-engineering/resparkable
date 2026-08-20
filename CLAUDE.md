@@ -90,13 +90,16 @@ Full command reference: `.context/commands.md`
 ```
 app/
 ├── (auth)/        # Auth pages (login, signup) — minimal layout
-├── (protected)/   # Authenticated routes — requires session
+├── (protected)/   # Authenticated routes — requires session, Sunrise's own AppHeader/nav/footer chrome
 ├── (public)/      # Public routes — marketing, landing
+├── (resparkable)/ # /resparkable — own immersive shell, no Sunrise chrome (see below)
 ├── admin/         # Admin dashboard — creates /admin/* URLs (not a route group)
 └── api/v1/        # Versioned API endpoints
 ```
 
 **Route groups** `(name)` organize code without affecting URLs. **Regular folders** like `admin/` create URL segments.
+
+**Why `/resparkable` isn't inside `(protected)`:** a layout can't opt a subtree out of an ancestor's chrome in the App Router — the only way to give a route its own full-bleed shell is for it not to be a descendant of `(protected)/layout.tsx` in the file tree. Auth protection doesn't depend on that placement: `proxy.ts` gates routes by literal pathname prefix (`lib/app/protected-routes.ts`'s `appProtectedRoutes`), not by folder, so a route group can sit outside `(protected)` and still require a session. `(resparkable)/resparkable/layout.tsx` re-declares `MaintenanceWrapperWithAdminNotice` itself as a result, since it no longer inherits `(protected)/layout.tsx`'s copy. Follow this same pattern for any other route that needs its own app-like shell rather than Sunrise's page chrome.
 
 **Adding pages:** Same layout → add to existing group. Different layout → create new group or folder.
 

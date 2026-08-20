@@ -2,7 +2,7 @@
 
 /**
  * EntityTab — the launcher-opened counterpart to
- * `app/(protected)/resparkable/entities/[id]/page.tsx`. See `ProjectTab`
+ * `app/(resparkable)/resparkable/entities/[id]/page.tsx`. See `ProjectTab`
  * for why a 404 renders inline instead of reaching for `notFound()`.
  */
 

@@ -1,6 +1,6 @@
 # Resparkable UI — the rules, and why each one exists
 
-Everything under `app/(protected)/resparkable/**` and `components/resparkable/**`.
+Everything under `app/(resparkable)/resparkable/**` and `components/resparkable/**`.
 
 Read this before adding a surface. Every rule below is here because breaking it
 produces a page that looks correct.

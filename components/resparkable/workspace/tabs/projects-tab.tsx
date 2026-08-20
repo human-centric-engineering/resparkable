@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * ProjectsTab — the launcher-opened counterpart to `app/(protected)/resparkable/projects/page.tsx`.
+ * ProjectsTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/projects/page.tsx`.
  *
  * `status` is read from the real URL, same reasoning as `PlanTab`'s `day` —
  * and `ProjectsView` changes it via `router.push`, unmodified, the same

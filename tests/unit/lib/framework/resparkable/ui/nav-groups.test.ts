@@ -32,7 +32,10 @@ describe('RESPARKABLE_NAV_ITEMS', () => {
   it('gives every item a non-empty label and a real icon component', () => {
     for (const item of RESPARKABLE_NAV_ITEMS) {
       expect(item.label.length).toBeGreaterThan(0);
-      expect(item.icon).toBeTypeOf('object');
+      // Most icons are Lucide's `forwardRef` objects, but Ask Sparkey's is a
+      // plain function component (`SparkIcon`) — both are valid React
+      // component types, so this accepts either rather than assuming `object`.
+      expect(['function', 'object']).toContain(typeof item.icon);
     }
   });
 

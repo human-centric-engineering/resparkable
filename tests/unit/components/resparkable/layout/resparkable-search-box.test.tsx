@@ -90,4 +90,24 @@ describe('ResparkableSearchBox', () => {
 
     expect(push).not.toHaveBeenCalled();
   });
+
+  it('defaults to the full-size input, unchanged for the existing layout', () => {
+    render(<ResparkableSearchBox />);
+    expect(input().className).toContain('h-9');
+  });
+
+  it('shrinks the input when size="compact", for the sticky app header', () => {
+    render(<ResparkableSearchBox size="compact" />);
+    expect(input().className).toContain('h-8');
+  });
+
+  it('routes the same way in compact size — only the chrome changes', async () => {
+    const user = userEvent.setup();
+    render(<ResparkableSearchBox size="compact" />);
+
+    await user.type(input(), 'origami cranes');
+    fireEvent.submit(screen.getByRole('search'));
+
+    expect(push).toHaveBeenCalledWith(RESPARKABLE_ROUTES.searchFor('origami cranes'));
+  });
 });

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * ArchiveTab — the launcher-opened counterpart to `app/(protected)/resparkable/archive/page.tsx`.
+ * ArchiveTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/archive/page.tsx`.
  *
  * Six fetches, same as the server page: only the stale digest is
  * load-bearing enough to fail the whole tab, and each of the other five

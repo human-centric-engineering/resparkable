@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * SettingsTab — the launcher-opened counterpart to `app/(protected)/resparkable/settings/page.tsx`.
+ * SettingsTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/settings/page.tsx`.
  *
  * `settingsSchema` is defined inline in the server page rather than in
  * `payloads.ts` — this duplicates it locally rather than exporting it from
