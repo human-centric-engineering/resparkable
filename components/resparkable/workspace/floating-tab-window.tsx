@@ -55,6 +55,7 @@ import { Dock, X } from 'lucide-react';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { useWorkspaceOverlay } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
+import { Tip } from '@/components/ui/tooltip';
 import { findLeaf } from '@/lib/framework/resparkable/ui/workspace/split-tree';
 import type { FloatingPanel } from '@/lib/framework/resparkable/ui/workspace/floating-panels';
 import {
@@ -191,16 +192,17 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
             (which would arm `setPointerCapture` on the title bar for a
             pointer that a plain click's matching pointerup would then also
             resolve as a drop). */}
-        <button
-          type="button"
-          aria-label="Dock this tab"
-          title="Dock this tab"
-          onClick={() => workspace.dockPanel(panel.id, redockTarget())}
-          onPointerDown={(event) => event.stopPropagation()}
-          className="hover:bg-accent rounded-sm p-1"
-        >
-          <Dock className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
+        <Tip label="Dock this tab">
+          <button
+            type="button"
+            aria-label="Dock this tab"
+            onClick={() => workspace.dockPanel(panel.id, redockTarget())}
+            onPointerDown={(event) => event.stopPropagation()}
+            className="hover:bg-accent rounded-sm p-1"
+          >
+            <Dock className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </Tip>
         <button
           type="button"
           aria-label={`Close ${label}`}
