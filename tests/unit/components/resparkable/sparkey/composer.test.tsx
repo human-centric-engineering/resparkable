@@ -16,11 +16,57 @@
  */
 
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+vi.mock('@/components/resparkable/documents/upload-request', () => ({
+  uploadDocument: vi.fn(),
+}));
+
+// `VoiceCaptureButton` renders nothing unless `useVoiceRecording()` reports
+// `supported: true` — true in a real browser, false under jsdom, which has no
+// `MediaRecorder`. Mocked the same way `quick-capture.test.tsx` and
+// `voice-capture-button.test.tsx` mock it, so the dictation test below drives
+// the *real* button, not a stand-in for it.
+interface RecordingHookState {
+  state: 'idle' | 'requesting' | 'recording' | 'stopping';
+  elapsedMs: number;
+  error: { code: string; message: string } | null;
+  supported: boolean;
+}
+
+const hookState: RecordingHookState = {
+  state: 'idle',
+  elapsedMs: 0,
+  error: null,
+  supported: true,
+};
+
+const stopMock = vi.fn(async () => ({
+  blob: new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/webm' }),
+  mimeType: 'audio/webm',
+  durationMs: 1200,
+}));
+
+vi.mock('@/lib/hooks/use-voice-recording', () => ({
+  DEFAULT_MAX_DURATION_MS: 180_000,
+  useVoiceRecording: () => ({
+    state: hookState.state,
+    elapsedMs: hookState.elapsedMs,
+    error: hookState.error,
+    supported: hookState.supported,
+    stream: null as MediaStream | null,
+    start: vi.fn(async () => {}),
+    stop: stopMock,
+    cancel: vi.fn(),
+  }),
+}));
+
 import { Composer } from '@/components/resparkable/sparkey/composer';
+import { uploadDocument } from '@/components/resparkable/documents/upload-request';
+
+const mockedUpload = vi.mocked(uploadDocument);
 
 function jsonResponse(status: number, payload: unknown): Response {
   return {
@@ -29,6 +75,14 @@ function jsonResponse(status: number, payload: unknown): Response {
     json: async () => payload,
   } as unknown as Response;
 }
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  hookState.state = 'idle';
+  hookState.elapsedMs = 0;
+  hookState.error = null;
+  hookState.supported = true;
+});
 
 /** `AttachButton`'s hidden file input — matched by `accept` rather than assumed to be the only one. */
 function attachFileInput(): HTMLInputElement {
@@ -195,6 +249,53 @@ describe('Composer — file upload', () => {
 
     expect(screen.queryByText('roadmap.pdf')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('unrelated draft');
+  });
+
+  it('adding a new file to Documents dismisses the card and reports it added', async () => {
+    const user = userEvent.setup();
+    mockedUpload.mockResolvedValue({ ok: true, deduped: false });
+    renderComposer();
+
+    await user.upload(attachFileInput(), FILE);
+    await user.click(screen.getByRole('button', { name: /add to documents/i }));
+
+    await waitFor(() => expect(screen.queryByText('roadmap.pdf')).not.toBeInTheDocument());
+    expect(screen.getByText('Added to your documents.')).toBeInTheDocument();
+  });
+
+  it('adding an already-known file to Documents reports it as deduped, not newly added', async () => {
+    const user = userEvent.setup();
+    mockedUpload.mockResolvedValue({ ok: true, deduped: true });
+    renderComposer();
+
+    await user.upload(attachFileInput(), FILE);
+    await user.click(screen.getByRole('button', { name: /add to documents/i }));
+
+    await waitFor(() => expect(screen.queryByText('roadmap.pdf')).not.toBeInTheDocument());
+    expect(
+      screen.getByText('Already in your documents — nothing new was added.')
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Composer — voice capture', () => {
+  it('dictating into an empty draft appends the transcript and tags the submit as voice', async () => {
+    const user = userEvent.setup();
+    hookState.state = 'recording';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse(200, { success: true, data: { text: 'call the accountant' } })
+    );
+    const { onSubmit } = renderComposer('chat');
+
+    await user.click(screen.getByRole('button', { name: /stop recording/i }));
+    await waitFor(() =>
+      expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('call the accountant')
+    );
+    hookState.state = 'idle';
+
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onSubmit).toHaveBeenCalledWith('call the accountant', 'voice');
   });
 });
 

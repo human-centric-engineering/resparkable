@@ -47,6 +47,26 @@
  * `shadow-2xl` — that off-the-shelf shadow is tuned for a white page and
  * disappears against `--color-background: #0a0b0f` (live feedback, again).
  * See its comment in `brand-theme.css` for the fix.
+ *
+ * ## Persisting the drag/resize is debounced; following the pointer isn't
+ *
+ * `workspace.moveFloatingPanel`/`resizeFloatingPanel` are `useLocalStorage`-backed
+ * — every call synchronously serializes and writes the *entire* workspace tree
+ * (every pane, every tab, every floating panel) and dispatches a storage
+ * `CustomEvent`. Calling either on every `pointermove` tick, as a naive
+ * implementation does, is jank proportional to total tab/pane count, not to
+ * the one window being dragged — the exact problem `workspace-pane-tree.tsx`'s
+ * `useDebouncedResizeSplit` already solves for split-resize, mirrored here.
+ *
+ * The window still has to visually follow the pointer at full rate, so
+ * `liveRect` renders the in-progress position/size directly (bypassing
+ * `panel.x/y/width/height`, which now only reflect the last *persisted*
+ * state) while `schedulePersist` debounces the actual `moveFloatingPanel`/
+ * `resizeFloatingPanel` write. `flushPersist` forces that write through
+ * immediately on release, so the gesture's true end state is never lost to
+ * a pending debounce timer, and `liveRect` clears back to `null` in the same
+ * batch — `panel.x/y/width/height` has already caught up by the render that
+ * follows, so there's no visible snap-back.
  */
 
 import * as React from 'react';
@@ -57,7 +77,11 @@ import { useWorkspaceOverlay } from '@/components/resparkable/workspace/workspac
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { Tip } from '@/components/ui/tooltip';
 import { findLeaf } from '@/lib/framework/resparkable/ui/workspace/split-tree';
-import type { FloatingPanel } from '@/lib/framework/resparkable/ui/workspace/floating-panels';
+import {
+  MIN_FLOATING_PANEL_HEIGHT,
+  MIN_FLOATING_PANEL_WIDTH,
+  type FloatingPanel,
+} from '@/lib/framework/resparkable/ui/workspace/floating-panels';
 import {
   defaultTitleForTab,
   TAB_REGISTRY,
@@ -83,18 +107,58 @@ interface ResizeState {
   startClientY: number;
   originWidth: number;
   originHeight: number;
+  currentWidth: number;
+  currentHeight: number;
 }
+
+interface LiveRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Matches `workspace-pane-tree.tsx`'s `RESIZE_PERSIST_DEBOUNCE_MS` — same tradeoff, same cadence. */
+const PERSIST_DEBOUNCE_MS = 150;
 
 export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.ReactElement {
   const workspace = useWorkspace();
   const overlay = useWorkspaceOverlay();
   const dragRef = React.useRef<DragState | null>(null);
   const resizeRef = React.useRef<ResizeState | null>(null);
+  const [liveRect, setLiveRect] = React.useState<LiveRect | null>(null);
+  const persistTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  React.useEffect(
+    () => () => {
+      if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    },
+    []
+  );
+
+  function schedulePersist(write: () => void): void {
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(write, PERSIST_DEBOUNCE_MS);
+  }
+
+  function flushPersist(write: () => void): void {
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+    }
+    write();
+  }
 
   // A plain lookup, not `iconForTab(panel.tab.kind)` — same React Compiler
   // "no components created during render" reasoning `TabPill` documents.
   const Icon = TAB_REGISTRY[panel.tab.kind].icon;
   const label = panel.tab.title ?? defaultTitleForTab(panel.tab.kind);
+  const rect: LiveRect = liveRect ?? {
+    x: panel.x,
+    y: panel.y,
+    width: panel.width,
+    height: panel.height,
+  };
 
   function redockTarget(): string {
     return findLeaf(workspace.root, panel.originLeafId)
@@ -119,11 +183,30 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
   function onTitlePointerMove(event: React.PointerEvent<HTMLDivElement>): void {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const x = drag.originX + (event.clientX - drag.startClientX);
-    const y = drag.originY + (event.clientY - drag.startClientY);
+    let x = drag.originX + (event.clientX - drag.startClientX);
+    let y = drag.originY + (event.clientY - drag.startClientY);
+
+    // Clamped here, not in `floating-panels.ts` — see that module's header
+    // comment: this needs the overlay's live, measured container size, which
+    // is runtime knowledge only this component (via `useWorkspaceOverlay()`)
+    // has. Guarded on a real (non-zero) measurement rather than applied
+    // unconditionally: happy-dom's `getBoundingClientRect()` always reports a
+    // zeroed rect (no layout engine), which would otherwise pin every drag to
+    // (0,0) under test. Skipping the clamp on an unmeasured container is safe
+    // in production too — a window can't be dragged before the shell around
+    // it has laid out.
+    const containerRect = overlay.containerRef.current?.getBoundingClientRect();
+    if (containerRect && containerRect.width > 0 && containerRect.height > 0) {
+      const maxX = Math.max(0, containerRect.width - panel.width);
+      const maxY = Math.max(0, containerRect.height - panel.height);
+      x = Math.min(Math.max(x, 0), maxX);
+      y = Math.min(Math.max(y, 0), maxY);
+    }
+
     drag.currentX = x;
     drag.currentY = y;
-    workspace.moveFloatingPanel(panel.id, x, y);
+    setLiveRect({ x, y, width: panel.width, height: panel.height });
+    schedulePersist(() => workspace.moveFloatingPanel(panel.id, x, y));
   }
 
   function onTitlePointerUp(event: React.PointerEvent<HTMLDivElement>): void {
@@ -131,6 +214,9 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+    flushPersist(() => workspace.moveFloatingPanel(panel.id, drag.currentX, drag.currentY));
+    setLiveRect(null);
 
     const centerX = drag.currentX + panel.width / 2;
     const centerY = drag.currentY + panel.height / 2;
@@ -147,21 +233,42 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
       startClientY: event.clientY,
       originWidth: panel.width,
       originHeight: panel.height,
+      currentWidth: panel.width,
+      currentHeight: panel.height,
     };
   }
 
   function onResizePointerMove(event: React.PointerEvent<HTMLDivElement>): void {
     const resize = resizeRef.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
-    const width = resize.originWidth + (event.clientX - resize.startClientX);
-    const height = resize.originHeight + (event.clientY - resize.startClientY);
-    workspace.resizeFloatingPanel(panel.id, width, height);
+    // Clamped to the same minimum `resizeFloatingPanel` itself enforces —
+    // that clamp used to be visible live because every tick round-tripped
+    // through the reducer; matched here so debouncing that write doesn't
+    // let the live-follow render dip below it before the next persist catches up.
+    const width = Math.max(
+      resize.originWidth + (event.clientX - resize.startClientX),
+      MIN_FLOATING_PANEL_WIDTH
+    );
+    const height = Math.max(
+      resize.originHeight + (event.clientY - resize.startClientY),
+      MIN_FLOATING_PANEL_HEIGHT
+    );
+    resize.currentWidth = width;
+    resize.currentHeight = height;
+    setLiveRect({ x: panel.x, y: panel.y, width, height });
+    schedulePersist(() => workspace.resizeFloatingPanel(panel.id, width, height));
   }
 
   function onResizePointerUp(event: React.PointerEvent<HTMLDivElement>): void {
-    if (!resizeRef.current || resizeRef.current.pointerId !== event.pointerId) return;
+    const resize = resizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
     resizeRef.current = null;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
+
+    flushPersist(() =>
+      workspace.resizeFloatingPanel(panel.id, resize.currentWidth, resize.currentHeight)
+    );
+    setLiveRect(null);
   }
 
   return (
@@ -170,10 +277,10 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
       aria-label={label}
       onPointerDown={() => workspace.focusFloatingPanel(panel.id)}
       style={{
-        left: panel.x,
-        top: panel.y,
-        width: panel.width,
-        height: panel.height,
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
         zIndex: panel.z,
       }}
       className="floating-window border-input bg-popover pointer-events-auto absolute flex flex-col rounded-lg border"

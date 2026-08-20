@@ -31,6 +31,13 @@ vi.mock('@/components/resparkable/layout/voice-capture-button', () => ({
       <button onClick={() => onTranscript('talking through the Q4 roadmap')}>
         Simulate dictation
       </button>
+      <button onClick={() => onTranscript('\nActual content after a leading blank line')}>
+        Simulate leading-newline dictation
+      </button>
+      <button onClick={() => onTranscript('Title line\nBody detail continues here')}>
+        Simulate multiline dictation
+      </button>
+      <button onClick={() => onTranscript('A'.repeat(120))}>Simulate long dictation</button>
       <button onClick={() => onError('Microphone access was blocked.')}>Simulate mic error</button>
     </div>
   ),
@@ -98,6 +105,41 @@ describe('PresentPane — Deck mode', () => {
 
     expect(screen.queryByText('1 of 1')).not.toBeInTheDocument();
   });
+
+  it('unchecking a node removes it from the selection, disabling Build again', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    const checkbox = screen.getByLabelText(/Q4 launch/);
+    await user.click(checkbox);
+    expect(screen.getByRole('button', { name: 'Build deck (1)' })).toBeEnabled();
+
+    // Uncheck — exercises toggleNode's `delete` branch, not just `add`.
+    await user.click(checkbox);
+
+    expect(screen.getByRole('button', { name: 'Build deck (0)' })).toBeDisabled();
+  });
+
+  it('steps forward and back through a multi-slide deck, disabling at each end', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    await user.click(screen.getByLabelText(/Q4 launch/));
+    await user.click(screen.getByLabelText(/A note/));
+    await user.click(screen.getByRole('button', { name: 'Build deck (2)' }));
+
+    const region = screen.getByRole('region', { name: 'Current slide' });
+    expect(within(region).getByText('1 of 2')).toBeInTheDocument();
+    expect(within(region).getByRole('button', { name: 'Previous slide' })).toBeDisabled();
+    expect(within(region).getByRole('button', { name: 'Next slide' })).toBeEnabled();
+
+    await user.click(within(region).getByRole('button', { name: 'Next slide' }));
+    expect(within(region).getByText('2 of 2')).toBeInTheDocument();
+    expect(within(region).getByRole('button', { name: 'Next slide' })).toBeDisabled();
+
+    await user.click(within(region).getByRole('button', { name: 'Previous slide' }));
+    expect(within(region).getByText('1 of 2')).toBeInTheDocument();
+  });
 });
 
 describe('PresentPane — On-the-fly mode', () => {
@@ -125,5 +167,65 @@ describe('PresentPane — On-the-fly mode', () => {
 
     await user.click(screen.getByText('Simulate dictation'));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('steps forward and back through dictated slides', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    await user.click(screen.getByRole('radio', { name: 'On the fly' }));
+    await user.click(screen.getByText('Simulate dictation'));
+    await user.click(screen.getByText('Simulate multiline dictation'));
+
+    const region = screen.getByRole('region', { name: 'Current slide' });
+    expect(within(region).getByText('2 of 2')).toBeInTheDocument();
+
+    await user.click(within(region).getByRole('button', { name: 'Previous slide' }));
+    expect(within(region).getByText('1 of 2')).toBeInTheDocument();
+    expect(within(region).getByText('talking through the Q4 roadmap')).toBeInTheDocument();
+
+    await user.click(within(region).getByRole('button', { name: 'Next slide' }));
+    expect(within(region).getByText('2 of 2')).toBeInTheDocument();
+  });
+
+  it('titles a dictated slide from the transcript’s first line only', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    await user.click(screen.getByRole('radio', { name: 'On the fly' }));
+    await user.click(screen.getByText('Simulate multiline dictation'));
+
+    const region = screen.getByRole('region', { name: 'Current slide' });
+    expect(within(region).getByRole('heading', { name: 'Title line' })).toBeInTheDocument();
+    // The body still shows the full transcript since it differs from the title.
+    expect(region.querySelector('p.text-sm')?.textContent).toBe(
+      'Title line\nBody detail continues here'
+    );
+  });
+
+  it('falls back to the whole trimmed transcript when the first line is blank', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    await user.click(screen.getByRole('radio', { name: 'On the fly' }));
+    await user.click(screen.getByText('Simulate leading-newline dictation'));
+
+    const region = screen.getByRole('region', { name: 'Current slide' });
+    expect(
+      within(region).getByRole('heading', { name: 'Actual content after a leading blank line' })
+    ).toBeInTheDocument();
+  });
+
+  it('truncates a long dictated title with an ellipsis', async () => {
+    const user = userEvent.setup();
+    render(<PresentPane payload={payload()} />);
+
+    await user.click(screen.getByRole('radio', { name: 'On the fly' }));
+    await user.click(screen.getByText('Simulate long dictation'));
+
+    const region = screen.getByRole('region', { name: 'Current slide' });
+    const heading = within(region).getByRole('heading');
+    expect(heading.textContent).toHaveLength(80);
+    expect(heading.textContent?.endsWith('…')).toBe(true);
   });
 });

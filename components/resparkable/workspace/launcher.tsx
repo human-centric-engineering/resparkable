@@ -69,7 +69,7 @@ interface LauncherTile {
  * non-resolvable item (only `chat`, today) never becomes a tile with a
  * nullable `kind` in the first place — nothing downstream has to re-check.
  */
-function launcherGroups(): Array<{ label: NavGroup['label']; tiles: LauncherTile[] }> {
+function buildLauncherGroups(): Array<{ label: NavGroup['label']; tiles: LauncherTile[] }> {
   return RESPARKABLE_NAV_GROUPS.map((group) => ({
     label: group.label,
     tiles: group.items.flatMap((item): LauncherTile[] => {
@@ -80,6 +80,11 @@ function launcherGroups(): Array<{ label: NavGroup['label']; tiles: LauncherTile
   })).filter((group) => group.tiles.length > 0);
 }
 
+// `RESPARKABLE_NAV_GROUPS` is a static module-level constant, so this never
+// changes across renders — computed once here rather than redone on every
+// render of every empty pane (which re-renders on any `useWorkspace()` change).
+const LAUNCHER_GROUPS = buildLauncherGroups();
+
 export function Launcher({ leafId }: LauncherProps): React.ReactElement {
   const workspace = useWorkspace();
 
@@ -89,7 +94,7 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
         <h2 className="font-display text-lg font-semibold">Open a tab</h2>
         <p className="text-muted-foreground mt-1 text-sm">Ask Sparkey, or pick a view</p>
       </div>
-      {launcherGroups().map((group) => (
+      {LAUNCHER_GROUPS.map((group) => (
         <div key={group.label}>
           <div className="term-label text-muted-foreground mb-2 px-1">{group.label}</div>
           <div className="grid grid-cols-1 gap-2 @sm:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4">

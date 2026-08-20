@@ -172,7 +172,12 @@ function WorkspacePane({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeTab ? (
           <div className="space-y-4 p-4">
-            <SectionHeader href={href} />
+            {/* `href` is `undefined` for a non-route-backed tab (`note`) —
+                `SectionHeader` would otherwise fall back to its own default
+                (`usePathname()`, the *browser's* URL), showing whichever
+                route-backed tab the address bar happens to match instead of
+                no header at all. */}
+            {href && <SectionHeader href={href} />}
             {isRouteTab && routeContent ? routeContent : <TabContent tab={activeTab} />}
           </div>
         ) : (

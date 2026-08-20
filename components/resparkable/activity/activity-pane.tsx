@@ -21,6 +21,15 @@
  * segment would reflow every other pane sitting on it too (the same trap
  * flagged for `ConnectionsTab` in the plan's deferred-follow-ups). A failed
  * PATCH rolls the row back into view rather than leaving it hidden.
+ *
+ * `errors` tracks a failure message per connection id, not one shared status
+ * for the whole feed: two decisions can be in flight at once (accept one
+ * card, then reject another before the first PATCH resolves), and a single
+ * shared status would have whichever settles last silently overwrite the
+ * other's outcome. It lives here rather than inside `DiscoveryCard` itself
+ * because a failed decision briefly unmounts that card (optimistic removal,
+ * then a rollback re-add) — state owned by the card wouldn't survive that
+ * remount; state owned by this pane, which never unmounts, does.
  */
 
 import * as React from 'react';
@@ -30,7 +39,6 @@ import { DiscoveryCard } from '@/components/resparkable/activity/discovery-card'
 import type { ActivityItem } from '@/components/resparkable/activity/activity-types';
 import { PaneRail } from '@/components/resparkable/shell/pane-rail';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
-import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
@@ -53,23 +61,28 @@ export function ActivityPane({
     `${RESPARKABLE_API.CONNECTIONS}?limit=50`,
     connectionRowsSchema
   );
-  const review = useSaveStatus();
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
+  const [errors, setErrors] = React.useState<Record<string, string>>({});
 
-  async function decide(id: string, status: 'accepted' | 'rejected'): Promise<void> {
+  function decide(id: string, status: 'accepted' | 'rejected'): void {
     setReviewed((current) => new Set(current).add(id));
+    setErrors((current) => {
+      if (!(id in current)) return current;
+      const { [id]: _removed, ...rest } = current;
+      return rest;
+    });
 
-    const ok = await review.run(() =>
-      apiClient.patch(RESPARKABLE_API.linkById(id), { body: { status } })
-    );
-
-    if (!ok) {
+    void apiClient.patch(RESPARKABLE_API.linkById(id), { body: { status } }).catch((error) => {
       setReviewed((current) => {
         const next = new Set(current);
         next.delete(id);
         return next;
       });
-    }
+      setErrors((current) => ({
+        ...current,
+        [id]: error instanceof Error ? error.message : 'Something went wrong',
+      }));
+    });
   }
 
   const items: ActivityItem[] =
@@ -120,17 +133,14 @@ export function ActivityPane({
                 <DiscoveryCard
                   key={item.connection.id}
                   item={item}
-                  onDecide={(id, status) => void decide(id, status)}
+                  errorMessage={errors[item.connection.id]}
+                  onDecide={decide}
                 />
               ))}
             </ul>
           </>
         )}
       </div>
-
-      {connections.status === 'ready' && items.length > 0 && (
-        <SaveStatus state={review.state} message={review.message} className="px-3 pb-2" />
-      )}
     </div>
   );
 }

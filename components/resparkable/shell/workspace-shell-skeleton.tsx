@@ -23,12 +23,19 @@
  */
 
 import { Skeleton, SkeletonBlock } from '@/components/resparkable/ui/skeleton';
+import { SIDE_PANE_DEFAULT_SIZE } from '@/components/resparkable/shell/workspace-shell';
+
+const SIDE_PANE_FLEX_BASIS = `${SIDE_PANE_DEFAULT_SIZE}%`;
+const CENTER_PANE_FLEX_BASIS = `${100 - 2 * SIDE_PANE_DEFAULT_SIZE}%`;
 
 export function WorkspacePanesSkeleton(): React.ReactElement {
   return (
     <div className="flex min-h-0 flex-1">
       {/* Sparkey: header, a couple of transcript bubbles, the composer bar. */}
-      <div className="flex h-full min-w-0 flex-col border-r" style={{ flexBasis: '22%' }}>
+      <div
+        className="flex h-full min-w-0 flex-col border-r"
+        style={{ flexBasis: SIDE_PANE_FLEX_BASIS }}
+      >
         <div className="flex items-center justify-center gap-2 border-b px-3 py-3">
           <Skeleton className="h-4 w-4 rounded-full" />
           <Skeleton className="h-4 w-20" />
@@ -43,7 +50,10 @@ export function WorkspacePanesSkeleton(): React.ReactElement {
       </div>
 
       {/* Workspace: toolbar, then a launcher-shaped tile grid. */}
-      <div className="@container flex h-full min-w-0 flex-col" style={{ flexBasis: '56%' }}>
+      <div
+        className="@container flex h-full min-w-0 flex-col"
+        style={{ flexBasis: CENTER_PANE_FLEX_BASIS }}
+      >
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <Skeleton className="h-6 w-24" />
         </div>
@@ -55,7 +65,10 @@ export function WorkspacePanesSkeleton(): React.ReactElement {
       </div>
 
       {/* Activity: header, a few discovery-card-shaped rows. */}
-      <div className="flex h-full min-w-0 flex-col border-l" style={{ flexBasis: '22%' }}>
+      <div
+        className="flex h-full min-w-0 flex-col border-l"
+        style={{ flexBasis: SIDE_PANE_FLEX_BASIS }}
+      >
         <div className="flex items-center gap-2 border-b px-3 py-3">
           <Skeleton className="h-4 w-4 rounded-full" />
           <Skeleton className="h-4 w-14" />

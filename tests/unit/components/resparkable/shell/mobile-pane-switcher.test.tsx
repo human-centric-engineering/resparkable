@@ -91,4 +91,64 @@ describe('MobilePaneSwitcher', () => {
     renderSwitcher();
     expect(hiddenAncestor('activity pane marker')).toBe(false);
   });
+
+  describe('roving tabindex', () => {
+    it('keeps only the active tab in the Tab-key order', () => {
+      renderSwitcher();
+
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('tabindex', '0');
+      expect(screen.getByRole('tab', { name: 'Sparkey' })).toHaveAttribute('tabindex', '-1');
+      expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('tabindex', '-1');
+    });
+
+    it('ArrowRight moves focus and activates the next tab, wrapping past the end', async () => {
+      const user = userEvent.setup();
+      renderSwitcher();
+
+      screen.getByRole('tab', { name: 'Activity' }).focus();
+      await user.keyboard('{ArrowRight}');
+
+      const sparkey = screen.getByRole('tab', { name: 'Sparkey' });
+      expect(sparkey).toHaveFocus();
+      expect(sparkey).toHaveAttribute('aria-selected', 'true');
+      expect(hiddenAncestor('sparkey pane marker')).toBe(false);
+    });
+
+    it('ArrowLeft moves focus and activates the previous tab, wrapping before the start', async () => {
+      const user = userEvent.setup();
+      renderSwitcher();
+
+      screen.getByRole('tab', { name: 'Sparkey' }).focus();
+      await user.keyboard('{ArrowLeft}');
+
+      const activity = screen.getByRole('tab', { name: 'Activity' });
+      expect(activity).toHaveFocus();
+      expect(activity).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('Home and End jump to the first and last tab', async () => {
+      const user = userEvent.setup();
+      renderSwitcher();
+
+      screen.getByRole('tab', { name: 'Workspace' }).focus();
+      await user.keyboard('{End}');
+      expect(screen.getByRole('tab', { name: 'Activity' })).toHaveFocus();
+
+      await user.keyboard('{Home}');
+      expect(screen.getByRole('tab', { name: 'Sparkey' })).toHaveFocus();
+    });
+
+    it('ignores keys other than the arrow/Home/End set', async () => {
+      const user = userEvent.setup();
+      renderSwitcher();
+
+      screen.getByRole('tab', { name: 'Workspace' }).focus();
+      await user.keyboard('{Enter}');
+
+      expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      );
+    });
+  });
 });

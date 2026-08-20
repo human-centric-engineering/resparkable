@@ -14,6 +14,17 @@
  * Reject writes a tombstone (`status: 'rejected'`), not a delete — the
  * caller's `PATCH /links/:id` is what stops the sweep proposing the same
  * pair again, same as everywhere else this decision is made.
+ *
+ * `errorMessage` is owned by `ActivityPane`, keyed per connection id, rather
+ * than one shared `useSaveStatus()` for the whole list: a shared instance
+ * means two decisions in flight at once (accept card A, then reject card B
+ * before A's PATCH resolves) race for the same status, so whichever settles
+ * last silently overwrites the other's outcome. It also can't live *inside*
+ * this component as its own `useSaveStatus()` — a failed decision optimistically
+ * removes this card from the list immediately and only re-adds it if the PATCH
+ * rejects, which unmounts and remounts this component with a fresh instance,
+ * losing any state owned here. Keying the error by id in the parent, which
+ * never unmounts, is what makes the message survive that remount.
  */
 
 import * as React from 'react';
@@ -29,6 +40,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import type { DiscoveryItem } from '@/components/resparkable/activity/activity-types';
+import { SaveStatus } from '@/components/resparkable/ui/save-status';
 
 const ORIGIN_LABELS: Record<string, string> = {
   user: 'you',
@@ -37,10 +49,16 @@ const ORIGIN_LABELS: Record<string, string> = {
 
 export interface DiscoveryCardProps {
   item: DiscoveryItem;
+  /** Set when this card's last decision failed to save; absent otherwise. */
+  errorMessage?: string | null;
   onDecide: (id: string, status: 'accepted' | 'rejected') => void;
 }
 
-export function DiscoveryCard({ item, onDecide }: DiscoveryCardProps): React.ReactElement {
+export function DiscoveryCard({
+  item,
+  errorMessage,
+  onDecide,
+}: DiscoveryCardProps): React.ReactElement {
   const { connection } = item;
 
   return (
@@ -108,6 +126,7 @@ export function DiscoveryCard({ item, onDecide }: DiscoveryCardProps): React.Rea
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
       </div>
+      {errorMessage && <SaveStatus state="error" message={errorMessage} />}
     </li>
   );
 }

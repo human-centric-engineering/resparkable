@@ -129,8 +129,12 @@ const DESKTOP_QUERY = '(min-width: 1024px)';
 /** A rail wide enough for `PaneRail`'s chevron and vertical label. */
 const COLLAPSED_RAIL_SIZE = 4;
 
-/** Both side panels' `defaultSize`, and what a re-open always resizes to. */
-const SIDE_PANE_DEFAULT_SIZE = 22;
+/**
+ * Both side panels' `defaultSize`, and what a re-open always resizes to.
+ * Exported so `workspace-shell-skeleton.tsx`'s placeholder split can't drift
+ * from the real one — see that file's header comment.
+ */
+export const SIDE_PANE_DEFAULT_SIZE = 22;
 
 export interface WorkspaceShellProps {
   children: React.ReactNode;

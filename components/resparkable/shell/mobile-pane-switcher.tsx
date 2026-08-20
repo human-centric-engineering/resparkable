@@ -28,6 +28,14 @@
  * other `lg:hidden` swap in this app. A live resize losing an in-progress
  * capture is a real, accepted edge case, not a case this file defends
  * against.
+ *
+ * ## Roving tabindex
+ *
+ * The strip carries real `role="tablist"`/`role="tab"` semantics, which
+ * implies arrow-key navigation per the WAI-ARIA tabs pattern — only the
+ * active tab is in the Tab-key order (`tabIndex={active ? 0 : -1}`);
+ * Left/Right/Home/End move focus *and* activate, the same "automatic
+ * activation" model a plain click already uses here.
  */
 
 import * as React from 'react';
@@ -61,20 +69,56 @@ export function MobilePaneSwitcher({
   workspaceContent,
 }: MobilePaneSwitcherProps): React.ReactElement {
   const [pane, setPane] = useLocalStorage<MobilePane>(PANE_KEY, 'workspace');
+  const tabRefs = React.useRef<Array<HTMLButtonElement | null>>([]);
+
+  function focusAndActivate(index: number): void {
+    const option = OPTIONS[(index + OPTIONS.length) % OPTIONS.length];
+    if (!option) return;
+    setPane(option.value);
+    tabRefs.current[OPTIONS.indexOf(option)]?.focus();
+  }
+
+  function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number): void {
+    switch (event.key) {
+      case 'ArrowRight':
+        event.preventDefault();
+        focusAndActivate(index + 1);
+        break;
+      case 'ArrowLeft':
+        event.preventDefault();
+        focusAndActivate(index - 1);
+        break;
+      case 'Home':
+        event.preventDefault();
+        focusAndActivate(0);
+        break;
+      case 'End':
+        event.preventDefault();
+        focusAndActivate(OPTIONS.length - 1);
+        break;
+      default:
+        break;
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
       <div role="tablist" aria-label="Pane" className="border-border/60 flex border-b">
-        {OPTIONS.map((option) => {
+        {OPTIONS.map((option, index) => {
           const Icon = option.icon;
           const active = pane === option.value;
           return (
             <button
               key={option.value}
+              ref={(element) => {
+                tabRefs.current[index] = element;
+              }}
               type="button"
               role="tab"
               aria-selected={active}
+              tabIndex={active ? 0 : -1}
               onClick={() => setPane(option.value)}
+              onKeyDown={(event) => onTabKeyDown(event, index)}
               className={cn(
                 'flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium transition-colors',
                 active

@@ -29,22 +29,18 @@ vi.mock('@/lib/framework/resparkable/ui/server-read', () => ({
   readResparkable: vi.fn(),
 }));
 
-vi.mock('next/navigation', () => ({
-  notFound: vi.fn(() => {
-    throw new Error('NEXT_NOT_FOUND');
-  }),
-  // LoadError (rendered on non-404 failures) calls useRouter() for its retry
-  // button — the global setup.ts mock is shadowed by this file-local mock, so
-  // it has to be re-provided here too.
-  useRouter: vi.fn(() => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  })),
-}));
+vi.mock('next/navigation', async () => {
+  const { createMockRouter } = await import('@/tests/types/mocks');
+  return {
+    notFound: vi.fn(() => {
+      throw new Error('NEXT_NOT_FOUND');
+    }),
+    // LoadError (rendered on non-404 failures) calls useRouter() for its retry
+    // button — the global setup.ts mock is shadowed by this file-local mock, so
+    // it has to be re-provided here too.
+    useRouter: vi.fn(() => createMockRouter()),
+  };
+});
 
 vi.mock('@/components/resparkable/projects/project-detail', () => ({
   ProjectDetail: (props: { view: unknown; areas: unknown[] }) => (

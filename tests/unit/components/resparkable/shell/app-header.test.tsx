@@ -20,6 +20,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 import { ResparkableAppHeader } from '@/components/resparkable/shell/app-header';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
@@ -47,14 +48,7 @@ const mockedSearchParams = useSearchParams as unknown as ReturnType<typeof vi.fn
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  mockedRouter.mockReturnValue(createMockRouter());
   mockedSearchParams.mockReturnValue(new URLSearchParams());
   mockUseSession.mockReturnValue({
     data: { user: { name: 'Jamie Doe', email: 'jamie@example.com', role: 'USER' } },
