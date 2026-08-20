@@ -38,7 +38,15 @@
  * is the brighter of the two border weights for the same reason a field
  * needs to announce itself before you click it — here it's a window
  * announcing that it's a separate, draggable surface, not part of the tree
- * underneath.
+ * underneath. The title bar's two buttons hover on `bg-accent`, not the
+ * `bg-muted` most icon buttons use elsewhere — `muted` (#14161e) sits one
+ * unit off `popover` (#14161f) and would hover-highlight to effectively
+ * nothing on this particular surface.
+ *
+ * `.floating-window` (`brand-theme.css`) stands in for Tailwind's
+ * `shadow-2xl` — that off-the-shelf shadow is tuned for a white page and
+ * disappears against `--color-background: #0a0b0f` (live feedback, again).
+ * See its comment in `brand-theme.css` for the fix.
  */
 
 import * as React from 'react';
@@ -167,7 +175,7 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
         height: panel.height,
         zIndex: panel.z,
       }}
-      className="border-input bg-popover pointer-events-auto absolute flex flex-col rounded-lg border shadow-2xl"
+      className="floating-window border-input bg-popover pointer-events-auto absolute flex flex-col rounded-lg border"
     >
       <div
         onPointerDown={onTitlePointerDown}

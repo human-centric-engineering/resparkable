@@ -210,6 +210,12 @@
   --lattice-hex-line: rgb(27 21 17 / 0.05);
   --lattice-panel: rgb(255 255 255 / 0.72);
   --lattice-inset-highlight: rgb(255 255 255 / 0.9);
+  /* `.floating-window`'s drop shadow — see the dark-mode block for why this
+     needs its own token instead of a plain Tailwind `shadow-2xl`. On paper,
+     `shadow-2xl`'s black-at-25% already separates a raised surface from the
+     warm background just fine; this only exists so both modes read off one
+     property. */
+  --shadow-float: 0 20px 25px -8px rgb(27 21 17 / 0.15), 0 8px 10px -6px rgb(27 21 17 / 0.1);
   /* The public pages' section rule (`SparkRule`) — deliberately not built
      from `--lattice-hairline`. A neutral hairline at any opacity this file's
      other tokens use lands within a couple of `rgb()` steps of the hex
@@ -313,6 +319,21 @@
   /* See the light-mode block above. Same amber `--color-primary` carries here
      too, since the ember is the constant across modes. */
   --brand-rule: rgb(245 165 36 / 0.4);
+  /* `.floating-window`'s drop shadow. A plain `shadow-2xl` here is the exact
+     "dishonest, shows up as a smudge" case §3's own note above warns about:
+     Tailwind's black-at-25% blur reads as almost nothing dropped onto a base
+     that's already `#0a0b0f` (live feedback — a detached tab window was
+     barely distinguishable from the shell behind it). Two fixes, not one:
+     the outer shadow goes both larger and considerably more opaque so it
+     visibly interrupts `.lattice-field`'s grid line and radial bloom under
+     the window instead of just faintly deepening a background that's
+     already near-black; and an `inset` top highlight (the same
+     `--lattice-inset-highlight` `.lattice-chrome` uses for "a lit edge
+     against a blurred backdrop") gives the window a bright edge to read
+     *against* the shadow, since dark-on-dark contrast alone won't carry it. */
+  --shadow-float:
+    inset 0 1px 0 0 var(--lattice-inset-highlight), 0 12px 24px -8px rgb(0 0 0 / 0.6),
+    0 32px 64px -16px rgb(0 0 0 / 0.75);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -681,6 +702,15 @@
     backdrop-filter: blur(14px) saturate(160%);
     -webkit-backdrop-filter: blur(14px) saturate(160%);
     box-shadow: inset 0 1px 0 0 var(--lattice-inset-highlight);
+  }
+
+  /* ── `.floating-window` — a tab detached above the tiled shell ────────
+     See `--shadow-float`'s own comment in each palette block for why this
+     needs a hand-tuned shadow rather than Tailwind's `shadow-2xl`: the
+     off-the-shelf shadow is calibrated for a white page, and reads as
+     nothing against `--color-background: #0a0b0f`. */
+  .floating-window {
+    box-shadow: var(--shadow-float);
   }
 
   /* ── `.live-edge` — "this one is live" ───────────────────────────────
