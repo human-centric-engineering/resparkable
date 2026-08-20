@@ -166,7 +166,9 @@ export function Composer({
         />
       )}
 
-      <div className="border-input bg-card focus-within:ring-ring rounded-md border shadow-sm focus-within:ring-1">
+      {/* `bg-background`, not `bg-card` — `SparkeyPane` itself is `bg-card`
+          (chrome, not a page), so the input recesses a rung below it. */}
+      <div className="border-input bg-background focus-within:ring-ring rounded-md border shadow-sm focus-within:ring-1">
         <AutoGrowTextarea
           ref={inputRef}
           value={value}

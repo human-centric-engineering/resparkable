@@ -214,7 +214,14 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      {/* `bg-background`, not the window's own `bg-popover` — the same
+          `TabContent` renders docked, where its pane is `bg-background`
+          (`workspace-pane-tree.tsx`) precisely so its own `bg-card` boxes
+          climb the surface ladder and stay visible. Floating shouldn't
+          re-flatten them; the popover shade stays confined to this padded
+          frame around the content, doing the "distinct from the shell"
+          job it was added for without doing it twice to what's inside. */}
+      <div className="bg-background min-h-0 flex-1 overflow-y-auto p-3">
         <TabContent tab={panel.tab} />
       </div>
 

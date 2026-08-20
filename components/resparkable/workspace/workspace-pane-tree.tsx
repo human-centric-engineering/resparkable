@@ -155,7 +155,14 @@ function WorkspacePane({
   );
 
   return (
-    <div ref={containerRef} className="bg-card flex h-full flex-col">
+    // `bg-background`, matching `SparkeyPane`/`ActivityPane` — not `bg-card`,
+    // which this leaf ran until it was caught live: every tab's own content
+    // boxes (`Card`, `thought-card.tsx`, `VaultExportCard`) are themselves
+    // `bg-card`, so on a `bg-card` pane they painted the identical shade as
+    // their background and only their 1px border showed. A pane is this
+    // tab's page, not a card on one — content climbs the surface ladder
+    // correctly once the pane itself sits at the bottom rung.
+    <div ref={containerRef} className="bg-background flex h-full flex-col">
       <PaneToolbar leafId={leaf.id} />
       {hasTabs && (
         <div ref={headerRef}>

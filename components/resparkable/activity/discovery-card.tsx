@@ -44,7 +44,10 @@ export function DiscoveryCard({ item, onDecide }: DiscoveryCardProps): React.Rea
   const { connection } = item;
 
   return (
-    <li className="bg-card space-y-3 rounded-lg border p-4">
+    // `bg-background`, not `bg-card` — `ActivityPane`'s own wrapper is
+    // `bg-card` (it's chrome, not a page), so this card recesses a rung
+    // below it instead of matching it (live feedback).
+    <li className="bg-background space-y-3 rounded-lg border p-4">
       <div className="flex flex-wrap items-center gap-1.5">
         <EntityChip
           type={connection.source.type}

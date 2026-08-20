@@ -93,7 +93,9 @@ function ChatTurn({
     <div className="space-y-2">
       <p className="text-sm">{entry.userText}</p>
       {(entry.assistantText || entry.status === 'streaming') && (
-        <div className="bg-card rounded-md border p-2.5">
+        // `bg-background`, not `bg-card` — `SparkeyPane` itself is `bg-card`
+        // (chrome, not a page), so this receipt recesses a rung below it.
+        <div className="bg-background rounded-md border p-2.5">
           {entry.assistantText ? (
             <MarkdownView content={entry.assistantText} className="text-sm" />
           ) : (
@@ -123,7 +125,8 @@ function InstructReceipt({
   entry: Extract<TranscriptEntry, { kind: 'instruct' }>;
 }): React.ReactElement {
   return (
-    <div className="bg-card flex items-start gap-2.5 rounded-md border p-2.5">
+    // `bg-background` — see `ChatTurn`'s comment above.
+    <div className="bg-background flex items-start gap-2.5 rounded-md border p-2.5">
       <StatusIcon status={entry.status} />
       <div className="min-w-0 flex-1 space-y-1">
         <p className="text-sm font-medium">{entry.userText}</p>
@@ -152,7 +155,8 @@ function CaptureReceipt({
   entry: Extract<TranscriptEntry, { kind: 'capture' }>;
 }): React.ReactElement {
   return (
-    <div className="bg-card flex items-start gap-2.5 rounded-md border p-2.5">
+    // `bg-background` — see `ChatTurn`'s comment above.
+    <div className="bg-background flex items-start gap-2.5 rounded-md border p-2.5">
       {entry.status === 'saving' ? (
         <Loader2
           className="text-muted-foreground mt-0.5 h-4 w-4 shrink-0 animate-spin"

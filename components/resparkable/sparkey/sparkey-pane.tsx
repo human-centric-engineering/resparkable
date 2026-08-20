@@ -166,11 +166,19 @@ export function SparkeyPane({
   }
 
   return (
+    // `bg-card`, not `bg-background`: Sparkey is chrome — a persistent
+    // utility rail alongside the workspace, the same rung as the header's
+    // own `.lattice-chrome` — not a page in its own right. `Transcript`'s
+    // and `Composer`'s own boxes are `bg-background` for exactly the
+    // opposite reason `WorkspacePane`'s are `bg-background` under `bg-card`
+    // content: here the pane is the elevated surface, so its nested boxes
+    // recess a rung *below* it instead of climbing above it (live feedback).
+    //
     // `.terminal-surface` (brand-theme.css) puts the transcript and the
     // composer into the mono family — a session with a program, not a
     // document. The header's own `font-display` on the `h2` below wins over
     // the inherited mono, same as every other display heading in the app.
-    <div className="bg-background terminal-surface flex h-full flex-col">
+    <div className="bg-card terminal-surface flex h-full flex-col">
       <div className="flex items-center justify-center gap-2 border-b px-3 py-3">
         <SparkIcon className="h-4 w-4" aria-hidden="true" />
         <h2 className="font-display text-sm font-semibold tracking-wide">Ask Sparkey</h2>

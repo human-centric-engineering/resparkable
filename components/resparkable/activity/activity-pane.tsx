@@ -84,7 +84,10 @@ export function ActivityPane({
   }
 
   return (
-    <div className="bg-background flex h-full flex-col">
+    // `bg-card`, not `bg-background` — see `sparkey-pane.tsx`'s comment on
+    // the same choice. `DiscoveryCard`'s own box is `bg-background` to
+    // recess below this rung rather than collide with it (live feedback).
+    <div className="bg-card flex h-full flex-col">
       <div className="flex items-center gap-2 border-b px-3 py-3">
         <Waves className="text-primary h-4 w-4 shrink-0" aria-hidden="true" />
         <h2 className="font-display text-sm font-semibold tracking-wide">Activity</h2>
@@ -100,7 +103,10 @@ export function ActivityPane({
             icon={Link2}
             title="Nothing waiting"
             description="The sweep compares what you've already captured and turns up anything it thinks is related here."
-            className="m-3"
+            // `bg-background`, overriding `EmptyState`'s own default
+            // `bg-card` — this pane is `bg-card` (see the wrapper's own
+            // comment above), so the default would collide with it.
+            className="bg-background m-3"
           />
         )}
         {connections.status === 'ready' && items.length > 0 && (

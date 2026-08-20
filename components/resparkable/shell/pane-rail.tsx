@@ -53,7 +53,10 @@ export function PaneRail({ label, side, icon: Icon, onExpand }: PaneRailProps): 
       aria-label={`Show ${label}`}
       title={`Show ${label}`}
       className={cn(
-        'bg-background hover:bg-accent flex h-full w-full flex-col items-center gap-3 py-3 transition-colors',
+        // `bg-card`, matching the pane this rail stands in for when expanded
+        // (`SparkeyPane`/`ActivityPane` are both `bg-card` — see their own
+        // comments) — collapsing shouldn't change what rung the pane reads at.
+        'bg-card hover:bg-accent flex h-full w-full flex-col items-center gap-3 py-3 transition-colors',
         side === 'left' ? 'border-r' : 'border-l'
       )}
     >
