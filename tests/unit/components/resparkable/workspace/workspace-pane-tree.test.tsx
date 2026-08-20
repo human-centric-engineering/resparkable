@@ -23,6 +23,7 @@ import {
   useWorkspace,
   WorkspaceProvider,
 } from '@/components/resparkable/workspace/workspace-context';
+import { WorkspaceOverlayProvider } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { WorkspacePaneTree } from '@/components/resparkable/workspace/workspace-pane-tree';
 import { apiClient } from '@/lib/api/client';
 
@@ -48,7 +49,9 @@ function Harness({ routeContent }: { routeContent?: React.ReactNode }): React.Re
 function renderTree(routeContent?: React.ReactNode) {
   return render(
     <WorkspaceProvider>
-      <Harness routeContent={routeContent} />
+      <WorkspaceOverlayProvider>
+        <Harness routeContent={routeContent} />
+      </WorkspaceOverlayProvider>
     </WorkspaceProvider>
   );
 }

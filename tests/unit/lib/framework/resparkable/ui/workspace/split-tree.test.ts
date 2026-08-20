@@ -18,7 +18,10 @@ import {
   closeLeaf,
   closeTab,
   createLeaf,
+  detachTab,
+  extractTab,
   findLeaf,
+  isPointInsideRect,
   listLeaves,
   openTabInLeaf,
   reorderTab,
@@ -181,6 +184,66 @@ describe('closeTab — active-tab handoff', () => {
     const oneTab = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
     const next = closeTab(oneTab, 'a', 't1') as LeafNode;
     expect(next).toEqual({ kind: 'leaf', id: 'a', tabs: [], activeTabId: null, locked: false });
+  });
+});
+
+describe('extractTab', () => {
+  it('removes the tab and returns it alongside the updated tree', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
+    const { root: next, tab: removed } = extractTab(root, 'a', 't1');
+    expect((next as LeafNode).tabs).toHaveLength(0);
+    expect(removed).toEqual(tab('t1'));
+  });
+
+  it('returns the same active-tab handoff closeTab relies on', () => {
+    const root = openTabInLeaf(
+      openTabInLeaf(openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')), 'a', distinctTab('t2')),
+      'a',
+      distinctTab('t3')
+    );
+    const active = activateTab(root, 'a', 't2');
+    const { root: next } = extractTab(active, 'a', 't2');
+    expect((next as LeafNode).activeTabId).toBe('t3');
+  });
+
+  it('returns a null tab and the tree unchanged for an id that is not there', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
+    const { root: next, tab: removed } = extractTab(root, 'a', 'missing');
+    expect(next).toEqual(root);
+    expect(removed).toBeNull();
+  });
+});
+
+describe('detachTab', () => {
+  it('extracts a launcher-sourced tab exactly like extractTab', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1'));
+    const { root: next, tab: removed } = detachTab(root, 'a', 't1');
+    expect((next as LeafNode).tabs).toHaveLength(0);
+    expect(removed).toEqual(tab('t1'));
+  });
+
+  it('refuses the tree’s source: route tab — tree unchanged, tab null', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', tab('t1', { source: 'route' }));
+    const { root: next, tab: removed } = detachTab(root, 'a', 't1');
+    expect(next).toEqual(root);
+    expect(removed).toBeNull();
+  });
+});
+
+describe('isPointInsideRect', () => {
+  const rect = { left: 10, right: 20, top: 5, bottom: 15 };
+
+  it('is true for a point inside the rect, edges included', () => {
+    expect(isPointInsideRect({ x: 15, y: 10 }, rect)).toBe(true);
+    expect(isPointInsideRect({ x: 10, y: 5 }, rect)).toBe(true);
+    expect(isPointInsideRect({ x: 20, y: 15 }, rect)).toBe(true);
+  });
+
+  it('is false for a point outside any one edge', () => {
+    expect(isPointInsideRect({ x: 9, y: 10 }, rect)).toBe(false);
+    expect(isPointInsideRect({ x: 21, y: 10 }, rect)).toBe(false);
+    expect(isPointInsideRect({ x: 15, y: 4 }, rect)).toBe(false);
+    expect(isPointInsideRect({ x: 15, y: 16 }, rect)).toBe(false);
   });
 });
 

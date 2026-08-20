@@ -16,9 +16,11 @@ import { VaultImportCard } from '@/components/resparkable/vault/vault-import-car
 
 export function VaultTab(): React.ReactElement {
   return (
-    <div className="grid gap-4 p-4 lg:grid-cols-2">
-      <VaultExportCard />
-      <VaultImportCard />
+    <div className="@container p-4">
+      <div className="grid gap-4 @lg:grid-cols-2">
+        <VaultExportCard />
+        <VaultImportCard />
+      </div>
     </div>
   );
 }

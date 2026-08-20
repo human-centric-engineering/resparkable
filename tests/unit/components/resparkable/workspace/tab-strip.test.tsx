@@ -20,6 +20,7 @@ import {
   useWorkspace,
   WorkspaceProvider,
 } from '@/components/resparkable/workspace/workspace-context';
+import { WorkspaceOverlayProvider } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { TabStrip } from '@/components/resparkable/workspace/tab-strip';
 import { findLeaf, type LeafNode } from '@/lib/framework/resparkable/ui/workspace/split-tree';
 
@@ -44,7 +45,9 @@ function Harness(): React.ReactElement {
 function renderStrip() {
   return render(
     <WorkspaceProvider>
-      <Harness />
+      <WorkspaceOverlayProvider>
+        <Harness />
+      </WorkspaceOverlayProvider>
     </WorkspaceProvider>
   );
 }
@@ -64,6 +67,20 @@ describe('TabStrip', () => {
     const strip = screen.getByRole('list', { name: 'Open tabs' });
     expect(within(strip).getByText('Today')).toBeInTheDocument();
     expect(within(strip).getByText('Inbox')).toBeInTheDocument();
+  });
+
+  it('renders the tab kind’s icon to the left of the label', async () => {
+    const user = userEvent.setup();
+    renderStrip();
+
+    await user.click(screen.getByText('open today'));
+
+    const pill = screen.getByText('Today').closest('[role="button"]') as HTMLElement;
+    const icon = pill.querySelector('svg');
+    const label = screen.getByText('Today');
+    expect(icon).toBeInTheDocument();
+    // DOM order, not just presence — the icon precedes the label text node.
+    expect(icon!.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('activates a tab on click', async () => {

@@ -58,6 +58,17 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+describe('Launcher — page header', () => {
+  it('shows the page-level title and blurb above the grouped tiles', async () => {
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByText('split'));
+
+    expect(screen.getByRole('heading', { name: 'Open a tab' })).toBeInTheDocument();
+    expect(screen.getByText('Ask Sparkey, or pick a view')).toBeInTheDocument();
+  });
+});
+
 describe('Launcher — coverage', () => {
   it('groups items exactly like the nav rail, minus chat', async () => {
     const user = userEvent.setup();
@@ -73,13 +84,17 @@ describe('Launcher — coverage', () => {
     expect(screen.queryByRole('button', { name: /Ask Sparkey/ })).not.toBeInTheDocument();
   });
 
-  it('shows each tile’s one-line blurb from section-help.ts', async () => {
+  it('renders each tile as icon-over-label only — no blurb underneath', async () => {
     const user = userEvent.setup();
     renderLauncher();
     await user.click(screen.getByText('split'));
 
-    const todayTile = screen.getByRole('button', { name: /Today/ });
-    expect(within(todayTile).getByText(/ranked task list/i)).toBeInTheDocument();
+    const todayTile = screen.getByRole('button', { name: 'Today' });
+    expect(within(todayTile).getByText('Today')).toBeInTheDocument();
+    // Tiles used to carry section-help.ts's one-line blurb underneath the
+    // label — live review asked for that dropped, so the accessible name
+    // is exactly the label, not the label plus a sentence after it.
+    expect(todayTile).toHaveAccessibleName('Today');
   });
 });
 

@@ -151,3 +151,29 @@ describe('ActivityPane', () => {
     expect(screen.getByText('A note')).toBeInTheDocument();
   });
 });
+
+describe('ActivityPane — collapsed drawer', () => {
+  it('renders PaneRail instead of the feed when collapsed, whole strip clickable to expand', async () => {
+    mockedGet.mockReturnValue(new Promise(() => {}));
+    const onExpand = vi.fn();
+    const user = userEvent.setup();
+    render(<ActivityPane collapsed onExpand={onExpand} />);
+
+    expect(screen.queryByRole('heading', { name: 'Activity' })).not.toBeInTheDocument();
+    // PaneRail is one full-strip <button>, not a small icon target — clicking
+    // it anywhere (not e.g. only its chevron) must re-expand.
+    const rail = screen.getByRole('button', { name: 'Show Activity' });
+    expect(rail).toBeInTheDocument();
+
+    await user.click(rail);
+    expect(onExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders no collapse control of its own when expanded — that lives on the handle now', () => {
+    mockedGet.mockReturnValue(new Promise(() => {}));
+    render(<ActivityPane />);
+
+    expect(screen.queryByRole('button', { name: /collapse activity/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show activity/i })).not.toBeInTheDocument();
+  });
+});

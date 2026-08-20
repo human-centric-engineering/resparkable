@@ -24,7 +24,7 @@ import {
   type LeafNode,
 } from '@/lib/framework/resparkable/ui/workspace/split-tree';
 
-const STORAGE_KEY = 'resparkable.workspace.v1';
+const STORAGE_KEY = 'resparkable.workspace.v2';
 
 function renderWorkspace() {
   return renderHook(() => useWorkspace(), { wrapper: WorkspaceProvider });
@@ -120,7 +120,7 @@ describe('openTab', () => {
     expect(newLeaf.tabs[0].kind).toBe('graph');
   });
 
-  it('persists to localStorage under resparkable.workspace.v1', () => {
+  it('persists to localStorage under resparkable.workspace.v2', () => {
     const { result } = renderWorkspace();
 
     act(() => {
@@ -176,6 +176,184 @@ describe('splitLeaf / closeLeaf', () => {
       activeTabId: null,
       locked: false,
     });
+  });
+});
+
+describe('floating panels', () => {
+  it('starts with no floating panels', () => {
+    const { result } = renderWorkspace();
+    expect(result.current.floatingPanels).toEqual([]);
+  });
+
+  it('detachTab moves a tab out of its leaf and into floatingPanels', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('inbox');
+    });
+    const tabId = (findLeaf(result.current.root, leafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(leafId, tabId, { x: 40, y: 60 });
+    });
+
+    expect((findLeaf(result.current.root, leafId) as LeafNode).tabs).toHaveLength(0);
+    expect(result.current.floatingPanels).toHaveLength(1);
+    expect(result.current.floatingPanels[0]).toMatchObject({
+      tab: { id: tabId, kind: 'inbox' },
+      originLeafId: leafId,
+      x: 40,
+      y: 60,
+    });
+  });
+
+  it('detachTab is a no-op for the tree’s source: route tab', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.syncRouteTab('today');
+    });
+    const tabId = (findLeaf(result.current.root, leafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(leafId, tabId, { x: 0, y: 0 });
+    });
+
+    expect((findLeaf(result.current.root, leafId) as LeafNode).tabs).toHaveLength(1);
+    expect(result.current.floatingPanels).toHaveLength(0);
+  });
+
+  it('dockPanel appends the panel’s tab into the target leaf, activates it, and focuses that leaf', () => {
+    const { result } = renderWorkspace();
+    const originLeafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('inbox');
+      result.current.splitLeaf(originLeafId, 'horizontal');
+    });
+    const targetLeafId = result.current.focusedLeafId;
+    const tabId = (findLeaf(result.current.root, originLeafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(originLeafId, tabId, { x: 0, y: 0 });
+    });
+    const panelId = result.current.floatingPanels[0].id;
+
+    act(() => {
+      result.current.dockPanel(panelId, targetLeafId);
+    });
+
+    const targetLeaf = findLeaf(result.current.root, targetLeafId) as LeafNode;
+    expect(targetLeaf.tabs.map((tab) => tab.id)).toEqual([tabId]);
+    expect(targetLeaf.activeTabId).toBe(tabId);
+    expect(result.current.focusedLeafId).toBe(targetLeafId);
+    expect(result.current.floatingPanels).toHaveLength(0);
+  });
+
+  it('dockPanel dedupes into an existing tab of the same kind and params, same as openTabInLeaf', () => {
+    const { result } = renderWorkspace();
+    const originLeafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('project', { id: 'clx1' });
+      result.current.splitLeaf(originLeafId, 'horizontal');
+    });
+    const targetLeafId = result.current.focusedLeafId;
+    const originalTabId = (findLeaf(result.current.root, originLeafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(originLeafId, originalTabId, { x: 0, y: 0 });
+    });
+    const panelId = result.current.floatingPanels[0].id;
+
+    act(() => {
+      result.current.openTab('project', { id: 'clx1' });
+    });
+    const existingTabId = (findLeaf(result.current.root, targetLeafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.dockPanel(panelId, targetLeafId);
+    });
+
+    const targetLeaf = findLeaf(result.current.root, targetLeafId) as LeafNode;
+    expect(targetLeaf.tabs.map((tab) => tab.id)).toEqual([existingTabId]);
+  });
+
+  it('moveFloatingPanel/resizeFloatingPanel update only the target panel', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('inbox');
+    });
+    const tabId = (findLeaf(result.current.root, leafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(leafId, tabId, { x: 0, y: 0 });
+    });
+    const panelId = result.current.floatingPanels[0].id;
+
+    act(() => {
+      result.current.moveFloatingPanel(panelId, 120, 80);
+      result.current.resizeFloatingPanel(panelId, 500, 400);
+    });
+
+    expect(result.current.floatingPanels[0]).toMatchObject({
+      x: 120,
+      y: 80,
+      width: 500,
+      height: 400,
+    });
+  });
+
+  it('closeFloatingPanel discards the panel without touching the pane tree', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('inbox');
+    });
+    const tabId = (findLeaf(result.current.root, leafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(leafId, tabId, { x: 0, y: 0 });
+    });
+    const panelId = result.current.floatingPanels[0].id;
+
+    act(() => {
+      result.current.closeFloatingPanel(panelId);
+    });
+
+    expect(result.current.floatingPanels).toHaveLength(0);
+    expect((findLeaf(result.current.root, leafId) as LeafNode).tabs).toHaveLength(0);
+  });
+
+  it('focusFloatingPanel brings the target panel to the front of the paint order', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('inbox');
+      result.current.openTab('projects');
+    });
+    const leaf = findLeaf(result.current.root, leafId) as LeafNode;
+
+    act(() => {
+      result.current.detachTab(leafId, leaf.tabs[0].id, { x: 0, y: 0 });
+      result.current.detachTab(leafId, leaf.tabs[1].id, { x: 0, y: 0 });
+    });
+    const [first, second] = result.current.floatingPanels;
+
+    act(() => {
+      result.current.focusFloatingPanel(first.id);
+    });
+
+    const refreshed = result.current.floatingPanels;
+    const refreshedFirst = refreshed.find((panel) => panel.id === first.id)!;
+    const refreshedSecond = refreshed.find((panel) => panel.id === second.id)!;
+    expect(refreshedFirst.z).toBeGreaterThan(refreshedSecond.z);
   });
 });
 

@@ -137,24 +137,60 @@ export function showLauncher(root: PaneNode, leafId: string): PaneNode {
 }
 
 /**
- * Closes `tabId` out of leaf `leafId`. If it was the active tab, the tab to
- * its right becomes active, or its left if it was the last one — so closing
- * never jumps focus across the strip. An empty leaf is left in place (it
- * renders the launcher); it is only ever removed from the tree by
- * `closeLeaf`.
+ * Removes `tabId` out of leaf `leafId`, returning both the updated tree and
+ * the tab that was removed (`null` if it wasn't there). If it was the active
+ * tab, the tab to its right becomes active, or its left if it was the last
+ * one — so removal never jumps focus across the strip. An empty leaf is left
+ * in place (it renders the launcher); it is only ever removed from the tree
+ * by `closeLeaf`.
+ *
+ * The removed tab is what a floating panel is made from (see `detachTab`) —
+ * `closeTab` below is this same removal with the tab discarded.
  */
-export function closeTab(root: PaneNode, leafId: string, tabId: string): PaneNode {
-  return mapNode(root, leafId, (node) => {
+export function extractTab(
+  root: PaneNode,
+  leafId: string,
+  tabId: string
+): { root: PaneNode; tab: TabState | null } {
+  let removed: TabState | null = null;
+  const nextRoot = mapNode(root, leafId, (node) => {
     if (node.kind !== 'leaf') return node;
     const index = node.tabs.findIndex((tab) => tab.id === tabId);
     if (index === -1) return node;
 
+    removed = node.tabs[index];
     const tabs = [...node.tabs.slice(0, index), ...node.tabs.slice(index + 1)];
     if (node.activeTabId !== tabId) return { ...node, tabs };
 
     const nextActive = tabs[index] ?? tabs[index - 1] ?? null;
     return { ...node, tabs, activeTabId: nextActive?.id ?? null };
   });
+  return { root: nextRoot, tab: removed };
+}
+
+/** Closes `tabId` out of leaf `leafId`, discarding it. See `extractTab`. */
+export function closeTab(root: PaneNode, leafId: string, tabId: string): PaneNode {
+  return extractTab(root, leafId, tabId).root;
+}
+
+/**
+ * Detaches `tabId` out of leaf `leafId` for a floating panel — the same
+ * removal `extractTab` performs, but refuses the tree's one `source: 'route'`
+ * tab first. That tab mirrors the current URL (`setRouteTab`'s invariant)
+ * and has no redock story, so floating it would break the mapping with
+ * nothing to put it back. The guard lives here rather than in the UI so a
+ * drag-out of the route tab can call this unconditionally: this no-ops (tree
+ * unchanged, `tab: null`) and the tab just visually snaps back into its strip.
+ */
+export function detachTab(
+  root: PaneNode,
+  leafId: string,
+  tabId: string
+): { root: PaneNode; tab: TabState | null } {
+  const leaf = findLeaf(root, leafId);
+  const tab = leaf?.tabs.find((candidate) => candidate.id === tabId) ?? null;
+  if (!tab || tab.source === 'route') return { root, tab: null };
+  return extractTab(root, leafId, tabId);
 }
 
 /** Moves `tabId` to `toIndex` within leaf `leafId`'s tab strip. */
@@ -314,4 +350,27 @@ function normalizeSizes(sizes: number[]): number[] {
 
 function clampIndex(index: number, length: number): number {
   return Math.min(Math.max(index, 0), Math.max(length - 1, 0));
+}
+
+/** A `DOMRect`'s own shape, narrowed to what `isPointInsideRect` needs. */
+export interface RectLike {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+/**
+ * Whether `point` falls within `rect`, inclusive of its edges.
+ *
+ * Generic geometry, not tree logic — kept here rather than as a one-function
+ * module because its only caller (`TabStrip`'s drag-out guard: did this drop
+ * land outside the strip's own bounding box, or just at a stale rect from a
+ * horizontally-scrolled tab) sits right next to this file's other pure
+ * helpers in the same feature.
+ */
+export function isPointInsideRect(point: { x: number; y: number }, rect: RectLike): boolean {
+  return (
+    point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
+  );
 }

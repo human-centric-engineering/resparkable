@@ -32,6 +32,7 @@ import { TabStrip } from '@/components/resparkable/workspace/tab-strip';
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { PaneToolbar } from '@/components/resparkable/workspace/toolbar';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
+import { useWorkspaceOverlay } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { SectionHeader } from '@/components/resparkable/layout/section-header';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { buildRouteForTab } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
@@ -133,11 +134,33 @@ function WorkspacePane({
   const rawHref = activeTab ? buildRouteForTab(activeTab.kind, activeTab.params) : null;
   const href = rawHref?.split('?')[0];
 
+  const containerRef = React.useRef<HTMLDivElement | null>(null);
+  const headerRef = React.useRef<HTMLDivElement | null>(null);
+  const overlay = useWorkspaceOverlay();
+  const hasTabs = leaf.tabs.length > 0;
+  // Registered once per pane. When the pane has open tabs, only the tab
+  // strip itself (`headerRef`) is the redock target — dropping a floating
+  // window anywhere over a pane's *content* used to redock it, which made
+  // dragging the window around the workspace at all feel like it was
+  // constantly about to get swallowed. An empty pane has no tab strip to aim
+  // at, so it falls back to its whole area (`containerRef`) — the same
+  // `showLauncher` no-active-tab case this used to handle unconditionally.
+  React.useEffect(
+    () =>
+      overlay.registerLeafRect(leaf.id, () => {
+        const target = hasTabs ? headerRef.current : containerRef.current;
+        return target?.getBoundingClientRect() ?? null;
+      }),
+    [overlay, leaf.id, hasTabs]
+  );
+
   return (
-    <div className="bg-card flex h-full flex-col">
+    <div ref={containerRef} className="bg-card flex h-full flex-col">
       <PaneToolbar leafId={leaf.id} />
-      {leaf.tabs.length > 0 && (
-        <TabStrip leafId={leaf.id} tabs={leaf.tabs} activeTabId={leaf.activeTabId} />
+      {hasTabs && (
+        <div ref={headerRef}>
+          <TabStrip leafId={leaf.id} tabs={leaf.tabs} activeTabId={leaf.activeTabId} />
+        </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {activeTab ? (

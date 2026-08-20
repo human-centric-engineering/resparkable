@@ -33,9 +33,10 @@
  */
 
 import * as React from 'react';
-import { Sparkles } from 'lucide-react';
 
+import { SparkIcon } from '@/components/brand/spark-glyph';
 import { useChatStream } from '@/components/resparkable/chat/use-chat-stream';
+import { PaneRail } from '@/components/resparkable/shell/pane-rail';
 import { Composer } from '@/components/resparkable/sparkey/composer';
 import type {
   CaptureEntry,
@@ -57,7 +58,17 @@ function createId(): string {
   return crypto.randomUUID();
 }
 
-export function SparkeyPane(): React.ReactElement {
+export interface SparkeyPaneProps {
+  /** True once `WorkspaceShell`'s Sparkey panel has collapsed to a rail. */
+  collapsed?: boolean;
+  /** Expands the panel — wired to `PaneRail`'s click, not a button this pane renders itself. */
+  onExpand?: () => void;
+}
+
+export function SparkeyPane({
+  collapsed = false,
+  onExpand,
+}: SparkeyPaneProps = {}): React.ReactElement {
   const [mode, setMode] = useLocalStorage<SparkeyMode>(MODE_KEY, 'chat');
   const [draft, setDraft] = React.useState('');
   const [entries, setEntries] = React.useState<TranscriptEntry[]>([]);
@@ -150,10 +161,18 @@ export function SparkeyPane(): React.ReactElement {
     submitAgentTurn(mode, text);
   }
 
+  if (collapsed) {
+    return <PaneRail label="Sparkey" side="left" icon={SparkIcon} onExpand={onExpand} />;
+  }
+
   return (
-    <div className="bg-background flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-3">
-        <Sparkles className="text-primary h-4 w-4 shrink-0" aria-hidden="true" />
+    // `.terminal-surface` (brand-theme.css) puts the transcript and the
+    // composer into the mono family — a session with a program, not a
+    // document. The header's own `font-display` on the `h2` below wins over
+    // the inherited mono, same as every other display heading in the app.
+    <div className="bg-background terminal-surface flex h-full flex-col">
+      <div className="flex items-center justify-center gap-2 border-b px-3 py-3">
+        <SparkIcon className="h-4 w-4" aria-hidden="true" />
         <h2 className="font-display text-sm font-semibold tracking-wide">Ask Sparkey</h2>
       </div>
       <Transcript entries={entries} />

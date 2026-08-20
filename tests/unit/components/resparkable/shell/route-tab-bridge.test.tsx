@@ -18,6 +18,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 
 import { RouteTabBridge } from '@/components/resparkable/shell/route-tab-bridge';
 import { WorkspaceProvider } from '@/components/resparkable/workspace/workspace-context';
+import { WorkspaceOverlayProvider } from '@/components/resparkable/workspace/workspace-overlay-context';
 
 vi.mock('next/navigation', () => ({
   usePathname: vi.fn(),
@@ -32,9 +33,11 @@ function renderBridge(pathname: string, search = '') {
   mockedSearchParams.mockReturnValue(new URLSearchParams(search));
   return render(
     <WorkspaceProvider>
-      <RouteTabBridge>
-        <div>the real routed page</div>
-      </RouteTabBridge>
+      <WorkspaceOverlayProvider>
+        <RouteTabBridge>
+          <div>the real routed page</div>
+        </RouteTabBridge>
+      </WorkspaceOverlayProvider>
     </WorkspaceProvider>
   );
 }

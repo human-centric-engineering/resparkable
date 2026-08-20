@@ -22,6 +22,27 @@
  * way `section-help.test.ts` asserts coverage of the nav.
  */
 
+import {
+  Archive,
+  CalendarRange,
+  Compass,
+  FileText,
+  FolderKanban,
+  FolderSync,
+  Inbox,
+  LayoutGrid,
+  Link2,
+  PenLine,
+  Search,
+  Settings,
+  Share2,
+  StickyNote,
+  Sun,
+  Target,
+  Users,
+  type LucideIcon,
+} from 'lucide-react';
+
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 export type TabKind =
@@ -91,6 +112,8 @@ export interface TabRegistryEntry {
   kind: TabKind;
   /** Shown in the tab strip until/unless `TabState.title` overrides it. */
   defaultTitle: string;
+  /** Shown in the tab strip to the left of the label — see `iconForTab()`. */
+  icon: LucideIcon;
   /** False only for `note` — the one kind with no URL of its own. */
   routeBacked: boolean;
   /** Route-backed only: does `pathname` belong to this kind, and with what params. */
@@ -121,6 +144,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   today: {
     kind: 'today',
     defaultTitle: 'Today',
+    icon: Sun,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.TODAY),
     buildRoute: () => RESPARKABLE_ROUTES.TODAY,
@@ -128,6 +152,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   inbox: {
     kind: 'inbox',
     defaultTitle: 'Inbox',
+    icon: Inbox,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.INBOX),
     buildRoute: () => RESPARKABLE_ROUTES.INBOX,
@@ -135,6 +160,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   plan: {
     kind: 'plan',
     defaultTitle: 'Plan',
+    icon: CalendarRange,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.PLAN),
     buildRoute: () => RESPARKABLE_ROUTES.PLAN,
@@ -142,6 +168,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   projects: {
     kind: 'projects',
     defaultTitle: 'Projects',
+    icon: FolderKanban,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.PROJECTS),
     buildRoute: () => RESPARKABLE_ROUTES.PROJECTS,
@@ -149,6 +176,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   project: {
     kind: 'project',
     defaultTitle: 'Project',
+    icon: FolderKanban,
     routeBacked: true,
     matchRoute: detail(RESPARKABLE_ROUTES.PROJECTS, 'id'),
     buildRoute: (params) => RESPARKABLE_ROUTES.project(requireParam(params, 'id', 'project')),
@@ -156,6 +184,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   goals: {
     kind: 'goals',
     defaultTitle: 'Goals',
+    icon: Target,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.GOALS),
     buildRoute: () => RESPARKABLE_ROUTES.GOALS,
@@ -163,6 +192,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   areas: {
     kind: 'areas',
     defaultTitle: 'Life',
+    icon: Compass,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.AREAS),
     buildRoute: () => RESPARKABLE_ROUTES.AREAS,
@@ -170,6 +200,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   boards: {
     kind: 'boards',
     defaultTitle: 'Boards',
+    icon: LayoutGrid,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.BOARDS),
     buildRoute: () => RESPARKABLE_ROUTES.BOARDS,
@@ -177,6 +208,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   board: {
     kind: 'board',
     defaultTitle: 'Board',
+    icon: LayoutGrid,
     routeBacked: true,
     matchRoute: detail(RESPARKABLE_ROUTES.BOARDS, 'slug'),
     buildRoute: (params) => RESPARKABLE_ROUTES.board(requireParam(params, 'slug', 'board')),
@@ -184,6 +216,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   documents: {
     kind: 'documents',
     defaultTitle: 'Documents',
+    icon: FileText,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.DOCUMENTS),
     buildRoute: () => RESPARKABLE_ROUTES.DOCUMENTS,
@@ -191,6 +224,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   entities: {
     kind: 'entities',
     defaultTitle: 'People',
+    icon: Users,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.ENTITIES),
     buildRoute: () => RESPARKABLE_ROUTES.ENTITIES,
@@ -198,6 +232,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   entity: {
     kind: 'entity',
     defaultTitle: 'Person',
+    icon: Users,
     routeBacked: true,
     matchRoute: detail(RESPARKABLE_ROUTES.ENTITIES, 'id'),
     buildRoute: (params) => RESPARKABLE_ROUTES.entity(requireParam(params, 'id', 'entity')),
@@ -205,6 +240,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   connections: {
     kind: 'connections',
     defaultTitle: 'Connections',
+    icon: Link2,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.CONNECTIONS),
     buildRoute: () => RESPARKABLE_ROUTES.CONNECTIONS,
@@ -212,6 +248,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   graph: {
     kind: 'graph',
     defaultTitle: 'Graph',
+    icon: Share2,
     routeBacked: true,
     // Focus (`focusType`/`focus`) travels as a query string, which this
     // pathname-only matcher can't see — `route-tab-bridge.tsx` (Phase 8)
@@ -225,6 +262,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   vault: {
     kind: 'vault',
     defaultTitle: 'Vault',
+    icon: FolderSync,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.VAULT),
     buildRoute: () => RESPARKABLE_ROUTES.VAULT,
@@ -232,6 +270,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   settings: {
     kind: 'settings',
     defaultTitle: 'Settings',
+    icon: Settings,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.SETTINGS),
     buildRoute: () => RESPARKABLE_ROUTES.SETTINGS,
@@ -239,6 +278,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   archive: {
     kind: 'archive',
     defaultTitle: 'Archive',
+    icon: Archive,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.ARCHIVE),
     buildRoute: () => RESPARKABLE_ROUTES.ARCHIVE,
@@ -246,6 +286,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   search: {
     kind: 'search',
     defaultTitle: 'Search',
+    icon: Search,
     routeBacked: true,
     // Same story as `graph`: `q` is a query param, merged in by the bridge.
     matchRoute: exact(RESPARKABLE_ROUTES.SEARCH),
@@ -255,6 +296,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   capture: {
     kind: 'capture',
     defaultTitle: 'Capture',
+    icon: PenLine,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.CAPTURE),
     buildRoute: () => RESPARKABLE_ROUTES.CAPTURE,
@@ -262,6 +304,7 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
   note: {
     kind: 'note',
     defaultTitle: 'Note',
+    icon: StickyNote,
     routeBacked: false,
   },
 };
@@ -302,4 +345,9 @@ export function buildRouteForTab(kind: TabKind, params: TabParams = EMPTY_PARAMS
 /** The tab-strip label to show before (or absent) a title fetched from content. */
 export function defaultTitleForTab(kind: TabKind): string {
   return TAB_REGISTRY[kind].defaultTitle;
+}
+
+/** The icon `TabStrip` shows to the left of a tab's label. */
+export function iconForTab(kind: TabKind): LucideIcon {
+  return TAB_REGISTRY[kind].icon;
 }

@@ -521,6 +521,16 @@
     line-height: 1.7;
   }
 
+  /* Emphasis inside a terminal surface reads as the machine highlighting a
+     term — the same amber/vermilion `--color-primary` the rest of the app
+     reserves for "something is here" — rather than just heavier type. Scoped
+     to `.terminal-surface` rather than added to `MarkdownView`'s own class
+     list, since that component also renders task notes and project
+     descriptions a person wrote, where bold shouldn't suddenly mean "alert". */
+  .terminal-surface strong {
+    color: var(--color-primary);
+  }
+
   /* ── `.lattice-field` — the ground the app stands on ─────────────────
      A 48px grid at ~4% opacity with a single warm bloom in the top-left, sized
      to the viewport so it never tiles visibly.

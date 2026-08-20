@@ -102,4 +102,20 @@ describe('ResparkableAppHeader', () => {
     expect(screen.getByRole('menuitem', { name: /admin dashboard/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /sign out/i })).toBeInTheDocument();
   });
+
+  it('renders no Present button when no handler is passed', () => {
+    render(<ResparkableAppHeader />);
+
+    expect(screen.queryByRole('button', { name: 'Present' })).not.toBeInTheDocument();
+  });
+
+  it('renders a Present button that calls onPresent when passed', async () => {
+    const onPresent = vi.fn();
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    render(<ResparkableAppHeader onPresent={onPresent} />);
+
+    await user.click(screen.getByRole('button', { name: 'Present' }));
+    expect(onPresent).toHaveBeenCalledTimes(1);
+  });
 });

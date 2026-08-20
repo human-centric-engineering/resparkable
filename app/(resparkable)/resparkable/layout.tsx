@@ -1,7 +1,9 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 
 import { MaintenanceWrapperWithAdminNotice } from '@/components/maintenance-wrapper';
 import { WorkspaceShell } from '@/components/resparkable/shell/workspace-shell';
+import { WorkspaceShellSkeleton } from '@/components/resparkable/shell/workspace-shell-skeleton';
 
 export const metadata: Metadata = {
   title: {
@@ -74,11 +76,22 @@ export const metadata: Metadata = {
  * `ResparkableSidekick` (the fixed capture drawer) and `ResparkableNav`
  * (the rail) are unused from here on, but not deleted — Phase 9's job,
  * once nothing else could plausibly still reference them.
+ *
+ * `MaintenanceWrapperWithAdminNotice` is async (a DB read plus a session
+ * check) and un-Suspended before this point in the tree — without a
+ * boundary of its own, that gap has nothing standing in for the shell
+ * it's about to render. `WorkspaceShellSkeleton` is that boundary's
+ * fallback, shaped like the real three-pane shell rather than a bare
+ * spinner, so a slow maintenance check reads as "the workspace is
+ * loading" instead of a blank screen with only the pane collapse
+ * buttons floating on it (live feedback).
  */
 export default function ResparkableLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <MaintenanceWrapperWithAdminNotice>
-      <WorkspaceShell>{children}</WorkspaceShell>
-    </MaintenanceWrapperWithAdminNotice>
+    <Suspense fallback={<WorkspaceShellSkeleton />}>
+      <MaintenanceWrapperWithAdminNotice>
+        <WorkspaceShell>{children}</WorkspaceShell>
+      </MaintenanceWrapperWithAdminNotice>
+    </Suspense>
   );
 }

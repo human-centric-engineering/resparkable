@@ -25,17 +25,39 @@
  * `.lattice-chrome` (`design-language.md`) is the same translucent,
  * blurred-and-saturated panel treatment Sunrise's own sticky header used,
  * so the one header left reads as the same family, not a fork's own thing.
+ *
+ * Sparkey/Activity's collapse controls do **not** live here — a first cut
+ * put them here (an always-visible chrome bar felt like the safe place for
+ * a control tied to a panel that can shrink to nothing), but real usage
+ * flagged it as disconnected from what it operated on. They now live on
+ * `PaneCollapseButton`, floating on the `ResizableHandle` each pane sits
+ * against, plus the whole `PaneRail` strip once a pane is collapsed — see
+ * `workspace-shell.tsx`'s own header comment.
+ *
+ * "Present" is different from those and does belong here: it doesn't
+ * operate on one pane, it starts a whole-workspace mode (`PresentPane`,
+ * rendered full-screen by `workspace-shell.tsx`), and this header is the
+ * one piece of chrome that's always on screen regardless of which panes are
+ * open or collapsed. `onPresent` is optional so this component still
+ * renders standalone (tests, Storybook-style usage) without a caller
+ * wiring Present mode up.
  */
 
 import Link from 'next/link';
+import { Play } from 'lucide-react';
 
 import { UserButton } from '@/components/auth/user-button';
 import { BrandMark } from '@/components/brand/brand-mark';
 import { ResparkableSearchBox } from '@/components/resparkable/layout/resparkable-search-box';
+import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
-export function ResparkableAppHeader() {
+export interface ResparkableAppHeaderProps {
+  onPresent?: () => void;
+}
+
+export function ResparkableAppHeader({ onPresent }: ResparkableAppHeaderProps = {}) {
   return (
     <header className="border-border/60 lattice-chrome sticky top-0 z-40 flex items-center gap-4 border-b px-3 py-2">
       <Link
@@ -49,6 +71,12 @@ export function ResparkableAppHeader() {
       <ResparkableSearchBox size="compact" className="w-full max-w-xs" />
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        {onPresent && (
+          <Button size="sm" onClick={onPresent}>
+            <Play className="h-3.5 w-3.5" aria-hidden="true" />
+            Present
+          </Button>
+        )}
         <ThemeToggle />
         <UserButton />
       </div>

@@ -22,21 +22,26 @@ import {
   Inbox,
   LayoutGrid,
   Link2,
-  MessageSquare,
   Settings,
   Share2,
   Sun,
   Target,
   Users,
-  type LucideIcon,
 } from 'lucide-react';
+import type * as React from 'react';
 
+import { SparkIcon } from '@/components/brand/spark-glyph';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 export interface NavItem {
   href: string;
   label: string;
-  icon: LucideIcon;
+  /**
+   * A Lucide icon everywhere except Ask Sparkey, which uses `SparkIcon` — so
+   * this is typed to the shape both share (every call site here only ever
+   * passes `className`/`aria-hidden`) rather than to `LucideIcon` itself.
+   */
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   /** Index route — match exactly, or it lights up everywhere. */
   exact?: boolean;
 }
@@ -58,7 +63,7 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       { href: RESPARKABLE_ROUTES.TODAY, label: 'Today', icon: Sun, exact: true },
       { href: RESPARKABLE_ROUTES.INBOX, label: 'Inbox', icon: Inbox },
       { href: RESPARKABLE_ROUTES.PLAN, label: 'Plan', icon: CalendarRange },
-      { href: RESPARKABLE_ROUTES.CHAT, label: 'Ask Sparkey', icon: MessageSquare },
+      { href: RESPARKABLE_ROUTES.CHAT, label: 'Ask Sparkey', icon: SparkIcon },
     ],
   },
   {

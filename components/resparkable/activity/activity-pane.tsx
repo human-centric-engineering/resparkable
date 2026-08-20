@@ -28,6 +28,7 @@ import { Link2, Waves } from 'lucide-react';
 
 import { DiscoveryCard } from '@/components/resparkable/activity/discovery-card';
 import type { ActivityItem } from '@/components/resparkable/activity/activity-types';
+import { PaneRail } from '@/components/resparkable/shell/pane-rail';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
@@ -37,7 +38,17 @@ import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { connectionRowsSchema } from '@/lib/framework/resparkable/ui/payloads';
 
-export function ActivityPane(): React.ReactElement {
+export interface ActivityPaneProps {
+  /** True once `WorkspaceShell`'s Activity panel has collapsed to a rail. */
+  collapsed?: boolean;
+  /** Expands the panel — wired to `PaneRail`'s click, not a button this pane renders itself. */
+  onExpand?: () => void;
+}
+
+export function ActivityPane({
+  collapsed = false,
+  onExpand,
+}: ActivityPaneProps = {}): React.ReactElement {
   const [connections, retry] = useTabFetch(
     `${RESPARKABLE_API.CONNECTIONS}?limit=50`,
     connectionRowsSchema
@@ -67,6 +78,10 @@ export function ActivityPane(): React.ReactElement {
           .filter((row) => !reviewed.has(row.id))
           .map((row) => ({ kind: 'discovery', connection: row }))
       : [];
+
+  if (collapsed) {
+    return <PaneRail label="Activity" side="right" icon={Waves} onExpand={onExpand} />;
+  }
 
   return (
     <div className="bg-background flex h-full flex-col">
