@@ -167,13 +167,13 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
         height: panel.height,
         zIndex: panel.z,
       }}
-      className="bg-card pointer-events-auto absolute flex flex-col rounded-lg border shadow-2xl"
+      className="border-input bg-popover pointer-events-auto absolute flex flex-col rounded-lg border shadow-2xl"
     >
       <div
         onPointerDown={onTitlePointerDown}
         onPointerMove={onTitlePointerMove}
         onPointerUp={onTitlePointerUp}
-        className="border-border/60 flex shrink-0 cursor-grab touch-none items-center gap-1.5 rounded-t-lg border-b px-2.5 py-1.5 select-none active:cursor-grabbing"
+        className="border-input flex shrink-0 cursor-grab touch-none items-center gap-1.5 rounded-t-lg border-b px-2.5 py-1.5 select-none active:cursor-grabbing"
       >
         <Icon className="text-muted-foreground h-3.5 w-3.5 shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{label}</span>
@@ -189,7 +189,7 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
           title="Dock this tab"
           onClick={() => workspace.dockPanel(panel.id, redockTarget())}
           onPointerDown={(event) => event.stopPropagation()}
-          className="hover:bg-muted rounded-sm p-1"
+          className="hover:bg-accent rounded-sm p-1"
         >
           <Dock className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
@@ -198,7 +198,7 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
           aria-label={`Close ${label}`}
           onClick={() => workspace.closeFloatingPanel(panel.id)}
           onPointerDown={(event) => event.stopPropagation()}
-          className="hover:bg-muted rounded-sm p-1"
+          className="hover:bg-accent rounded-sm p-1"
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
