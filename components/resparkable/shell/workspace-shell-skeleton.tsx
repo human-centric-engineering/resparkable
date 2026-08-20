@@ -23,7 +23,7 @@
  */
 
 import { Skeleton, SkeletonBlock } from '@/components/resparkable/ui/skeleton';
-import { SIDE_PANE_DEFAULT_SIZE } from '@/components/resparkable/shell/workspace-shell';
+import { SIDE_PANE_DEFAULT_SIZE } from '@/components/resparkable/shell/workspace-shell-constants';
 
 const SIDE_PANE_FLEX_BASIS = `${SIDE_PANE_DEFAULT_SIZE}%`;
 const CENTER_PANE_FLEX_BASIS = `${100 - 2 * SIDE_PANE_DEFAULT_SIZE}%`;
