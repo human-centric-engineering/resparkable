@@ -16,8 +16,9 @@
  *
  * `focusType`/`focus` (Graph) and `q` (Search) travel as query params,
  * which `resolveTabForPathname` — a pathname-only matcher — can't see; this
- * is the one place that reads `useSearchParams()` and merges them in,
- * exactly as `tab-registry.ts`'s own header comment anticipates.
+ * is the one place that reads `useSearchParams()`, and hands it to
+ * `mergeQueryParamsForTab`, which owns the per-kind keys next to each
+ * entry's own `buildRoute` in `tab-registry.ts`.
  *
  * A pathname that doesn't resolve to any `TabKind` (there is no such route
  * under `/resparkable/**` today, but `resolveTabForPathname` returns `null`
@@ -35,27 +36,9 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { WorkspacePaneTree } from '@/components/resparkable/workspace/workspace-pane-tree';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import {
+  mergeQueryParamsForTab,
   resolveTabForPathname,
-  type TabKind,
-  type TabParams,
 } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
-
-function mergeQueryParams(
-  kind: TabKind,
-  params: TabParams,
-  searchParams: URLSearchParams
-): TabParams {
-  if (kind === 'graph') {
-    const focusType = searchParams.get('focusType');
-    const focus = searchParams.get('focus');
-    return focusType && focus ? { ...params, focusType, focus } : params;
-  }
-  if (kind === 'search') {
-    const query = searchParams.get('q');
-    return query ? { ...params, query } : params;
-  }
-  return params;
-}
 
 export interface RouteTabBridgeProps {
   children: React.ReactNode;
@@ -70,7 +53,10 @@ export function RouteTabBridge({ children }: RouteTabBridgeProps): React.ReactEl
   React.useEffect(() => {
     const resolved = resolveTabForPathname(pathname);
     if (!resolved) return;
-    syncRouteTab(resolved.kind, mergeQueryParams(resolved.kind, resolved.params, searchParams));
+    syncRouteTab(
+      resolved.kind,
+      mergeQueryParamsForTab(resolved.kind, resolved.params, searchParams)
+    );
   }, [pathname, searchParams, syncRouteTab]);
 
   return <WorkspacePaneTree node={workspace.root} routeContent={children} />;

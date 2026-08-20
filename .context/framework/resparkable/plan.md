@@ -16,7 +16,22 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 
 > **Added 2026-08-08: Situations (§21).** A fourth thing sits alongside the second brain, sharing and Obsidian: **Situations** — describe or upload a life question, problem or piece of raw material (a transcript, a thread), and work it through four deliberate stages — framing → perspectives → tensions → resolution — that draw on your own brain, on collaborators who've shared with you, and on the model's own read of what hasn't been considered yet. The name **Resparkable** is literally about this: old captured sparks (`ResparkableThought`), reignited against fresh references. Full spec at §21; phased as Release 7 in §15.
 
-> **Scoped, 2026-08-19: UI/UX redesign experiment.** A new three-pane authenticated layout is under active design exploration — an always-visible **Sparkey** pane (chat + capture + instruct) on the left, a fluid tabbed/splittable **Workspace** pane in the centre, and a new **activity/status thread** on the right. It retires today's left-nav-rail-plus-capture-drawer shape in favour of Workspace-owned navigation; full detail in the new subsection at the top of §9. Alongside it, **The Honeycomb** is adopted as the product-facing name for the ideas/vector store this plan otherwise calls "the brain" — the two names coexist deliberately, see §9 for why. A new, unrelated-to-Cross-Pollination **Present mode** (§22) is also scoped: presenting ideas from The Honeycomb to a live audience. **Nothing here is built** — this is a plan/documentation update only, not phased into a Release, and none of §9's existing implementation detail below has changed. UI/UX experiments (mockups, prototypes) are the next step.
+> **Landed, 2026-08-19 through 2026-08-20: the three-pane shell.** The UI/UX
+> redesign scoped below as an experiment has since shipped, across the
+> "Workspace shell" Phases 0–9 (`components/resparkable/shell/workspace-shell.tsx`'s
+> own header comment has the phase-by-phase list): the always-visible
+> **Sparkey** pane (chat + capture + instruct) on the left, a fluid
+> tabbed/splittable **Workspace** pane in the centre, and an **Activity**
+> pane on the right, replacing the old nav-rail-plus-capture-drawer shape
+> entirely. `resparkable-nav.tsx` (the rail) and `resparkable-sidekick.tsx`
+> (the drawer) are both orphaned code today, not deleted but referenced by
+> nothing outside their own tests. **The Honeycomb** naming and **Present
+> mode** (§22) landed alongside it — Present mode is a `Dialog`-based
+> full-viewport mode, not a fourth panel. For how the shipped shell actually
+> works — pane collapse, floating detached-tab windows, the container-query
+> launcher grid — see [`ui.md`](./ui.md) §§10–14, not the design-stage detail
+> in §9 below, which is retained as the original scoping note rather than
+> updated to match.
 
 ### The Obsidian question, answered
 
@@ -571,9 +586,9 @@ Also: **`lib/orchestration/review-schema/`** defines a declarative schema for re
 
 ## 9. UI
 
-### UI/UX redesign experiment — Sparkey / Workspace / Activity (scoped 2026-08-19, design-stage, not built)
+### UI/UX redesign experiment — Sparkey / Workspace / Activity (scoped 2026-08-19; **landed 2026-08-20**, see the banner at the top of this document)
 
-Everything below this subsection documents **today's shipped UI** — the left `ResparkableNav` rail, the `/resparkable/chat` destination page, and the right-edge `ResparkableSidekick` capture drawer — and stays accurate until this redesign actually lands. This subsection captures the target shape from a UI/UX design conversation; no code has changed yet.
+This subsection is retained as the original scoping note from the design conversation that preceded the build — it is **not** a description of current behaviour. For that, see [`ui.md`](./ui.md) §§10–14. The "Current implementation (shipped)" subsection immediately below this one is, in turn, **no longer current**: it describes the pre-redesign UI (the left `ResparkableNav` rail, the `/resparkable/chat` destination page, the right-edge `ResparkableSidekick` capture drawer) that the shell rework replaced. It's kept here as a historical record of what Release 1 phase 5 originally shipped, not as a claim about today's UI.
 
 **Three persistent panes replace the current rail/drawer:**
 
@@ -591,11 +606,13 @@ Open design question, not yet decided: whether Sparkey's chat pane should ever r
 
 **Naming: The Honeycomb.** The ideas/vector-store ecosystem — what the rest of this plan calls "the brain" (D5, D6, the `.brain/` Obsidian sync directory, the `brain+<inboxToken>@` capture address) — gets a product-facing name: **The Honeycomb**. The two names are deliberately not unified: "the brain" is this plan's internal architecture shorthand and touches on-disk sync formats (§14) that are out of scope for a UI naming decision; "The Honeycomb" is what a user sees. The existing graph view (below) becomes, in product copy, the **Honeycomb view** — ideas rendered as interconnected hexagonal cells rather than generic nodes/edges, extending the existing "hex lattice" visual language (`.context/ui/design-language.md`) rather than introducing a new rendering engine.
 
-**Status.** Design exploration only — no Release, phase or schema work is attached yet (§15). The next step is UI/UX experimentation (mockups, prototypes), not implementation.
+**Status.** Landed — see the banner at the top of this document and `ui.md` §§10–14 for the shipped shape. This subsection's "no Release, phase or schema work is attached yet" was true when written and is not anymore; it's kept unedited as the scoping note it originally was.
 
 ---
 
-### Current implementation (shipped)
+### Current implementation (shipped) — pre-redesign UI, superseded by the shell above
+
+**This subsection describes the UI as it existed before the three-pane shell landed (see the banner at the top of this document); it is a historical record, not current behaviour.** For the shipped shell, see [`ui.md`](./ui.md).
 
 Routes under `app/(resparkable)/resparkable/`: `layout.tsx` (sub-nav + persistent quick capture), `page.tsx` (Today), `inbox/`, `projects/[id]`, `goals/`, `entities/[id]`, `documents/`, `boards/` + `boards/[slug]`, `connections/`, `graph/`, `chat/`, `capture/`, `reviews/[id]`. Each gets a `loading.tsx`. Register `'/resparkable'` in `lib/app/protected-routes.ts`.
 

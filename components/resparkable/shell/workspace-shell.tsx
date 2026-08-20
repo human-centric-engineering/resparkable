@@ -119,6 +119,7 @@ import { WorkspaceProvider } from '@/components/resparkable/workspace/workspace-
 import { WorkspaceOverlayProvider } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { FloatingPanelsLayer } from '@/components/resparkable/workspace/floating-panels-layer';
 import { WorkspacePanesSkeleton } from '@/components/resparkable/shell/workspace-shell-skeleton';
+import { SIDE_PANE_DEFAULT_SIZE } from '@/components/resparkable/shell/workspace-shell-constants';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { useMediaQuery } from '@/lib/hooks/use-media-query';
@@ -129,12 +130,66 @@ const DESKTOP_QUERY = '(min-width: 1024px)';
 /** A rail wide enough for `PaneRail`'s chevron and vertical label. */
 const COLLAPSED_RAIL_SIZE = 4;
 
+interface CollapsibleSidePanelProps {
+  panelRef: React.RefObject<ImperativePanelHandle | null>;
+  side: 'left' | 'right';
+  label: string;
+  collapsed: boolean;
+  onCollapse: () => void;
+  onExpand: () => void;
+  onToggle: () => void;
+  children: React.ReactNode;
+}
+
 /**
- * Both side panels' `defaultSize`, and what a re-open always resizes to.
- * Exported so `workspace-shell-skeleton.tsx`'s placeholder split can't drift
- * from the real one — see that file's header comment.
+ * Sparkey and Activity are mirror images of the same "resizable panel + its
+ * own collapse handle" unit — same sizing/collapse props, differing only by
+ * which side of the shell they sit on. The handle's position relative to the
+ * panel flips with `side`, though: it always sits on the edge nearest the
+ * centre pane (after the panel on the left, before it on the right), so the
+ * `ResizablePanelGroup` still sees panels and handles alternating correctly.
  */
-export const SIDE_PANE_DEFAULT_SIZE = 22;
+function CollapsibleSidePanel({
+  panelRef,
+  side,
+  label,
+  collapsed,
+  onCollapse,
+  onExpand,
+  onToggle,
+  children,
+}: CollapsibleSidePanelProps): React.ReactElement {
+  const panel = (
+    <ResizablePanel
+      ref={panelRef}
+      defaultSize={SIDE_PANE_DEFAULT_SIZE}
+      minSize={15}
+      maxSize={35}
+      collapsible
+      collapsedSize={COLLAPSED_RAIL_SIZE}
+      onCollapse={onCollapse}
+      onExpand={onExpand}
+    >
+      {children}
+    </ResizablePanel>
+  );
+  const handle = (
+    <ResizableHandle>
+      <PaneCollapseButton side={side} label={label} collapsed={collapsed} onToggle={onToggle} />
+    </ResizableHandle>
+  );
+  return side === 'left' ? (
+    <>
+      {panel}
+      {handle}
+    </>
+  ) : (
+    <>
+      {handle}
+      {panel}
+    </>
+  );
+}
 
 export interface WorkspaceShellProps {
   children: React.ReactNode;
@@ -193,53 +248,35 @@ export function WorkspaceShell({ children }: WorkspaceShellProps): React.ReactEl
             ) : isDesktop ? (
               <>
                 <ResizablePanelGroup direction="horizontal">
-                  <ResizablePanel
-                    ref={sparkeyPanelRef}
-                    defaultSize={SIDE_PANE_DEFAULT_SIZE}
-                    minSize={15}
-                    maxSize={35}
-                    collapsible
-                    collapsedSize={COLLAPSED_RAIL_SIZE}
+                  <CollapsibleSidePanel
+                    panelRef={sparkeyPanelRef}
+                    side="left"
+                    label="Sparkey"
+                    collapsed={sparkeyCollapsed}
                     onCollapse={() => setSparkeyCollapsed(true)}
                     onExpand={() => setSparkeyCollapsed(false)}
+                    onToggle={() =>
+                      sparkeyCollapsed ? expandSparkey() : sparkeyPanelRef.current?.collapse()
+                    }
                   >
                     <SparkeyPane collapsed={sparkeyCollapsed} onExpand={expandSparkey} />
-                  </ResizablePanel>
-                  <ResizableHandle>
-                    <PaneCollapseButton
-                      side="left"
-                      label="Sparkey"
-                      collapsed={sparkeyCollapsed}
-                      onToggle={() =>
-                        sparkeyCollapsed ? expandSparkey() : sparkeyPanelRef.current?.collapse()
-                      }
-                    />
-                  </ResizableHandle>
+                  </CollapsibleSidePanel>
                   <ResizablePanel defaultSize={56} minSize={30}>
                     <RouteTabBridge>{children}</RouteTabBridge>
                   </ResizablePanel>
-                  <ResizableHandle>
-                    <PaneCollapseButton
-                      side="right"
-                      label="Activity"
-                      collapsed={activityCollapsed}
-                      onToggle={() =>
-                        activityCollapsed ? expandActivity() : activityPanelRef.current?.collapse()
-                      }
-                    />
-                  </ResizableHandle>
-                  <ResizablePanel
-                    ref={activityPanelRef}
-                    defaultSize={SIDE_PANE_DEFAULT_SIZE}
-                    minSize={15}
-                    maxSize={35}
-                    collapsible
-                    collapsedSize={COLLAPSED_RAIL_SIZE}
+                  <CollapsibleSidePanel
+                    panelRef={activityPanelRef}
+                    side="right"
+                    label="Activity"
+                    collapsed={activityCollapsed}
                     onCollapse={() => setActivityCollapsed(true)}
                     onExpand={() => setActivityCollapsed(false)}
+                    onToggle={() =>
+                      activityCollapsed ? expandActivity() : activityPanelRef.current?.collapse()
+                    }
                   >
                     <ActivityPane collapsed={activityCollapsed} onExpand={expandActivity} />
-                  </ResizablePanel>
+                  </CollapsibleSidePanel>
                 </ResizablePanelGroup>
                 <FloatingPanelsLayer />
               </>
