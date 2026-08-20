@@ -18,7 +18,7 @@
  * @see components/resparkable/admin/resparkable-settings-tabs.tsx
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ResparkableSettingsTabs } from '@/components/resparkable/admin/resparkable-settings-tabs';
@@ -27,23 +27,20 @@ import type {
   ResparkableAdminBillingSettingsResponse,
   ResparkableAdminCreditAccountRow,
 } from '@/lib/framework/resparkable/validations';
+import { createMockRouter } from '@/tests/types/mocks';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 // Mock next/navigation, following the convention in
 // tests/unit/components/settings/settings-tabs.test.tsx.
-vi.mock('next/navigation', () => ({
-  useRouter: vi.fn(() => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  })),
-  usePathname: vi.fn(() => '/admin/resparkable/settings'),
-  useSearchParams: vi.fn(() => new URLSearchParams()),
-}));
+vi.mock('next/navigation', async () => {
+  const { createMockRouter } = await import('@/tests/types/mocks');
+  return {
+    useRouter: vi.fn(() => createMockRouter()),
+    usePathname: vi.fn(() => '/admin/resparkable/settings'),
+    useSearchParams: vi.fn(() => new URLSearchParams()),
+  };
+});
 
 // Mock the three child components with lightweight stand-ins that surface the
 // props they received, so assertions can verify ResparkableSettingsTabs'
@@ -100,7 +97,7 @@ const CREDIT_ACCOUNTS: ResparkableAdminCreditAccountRow[] = [
   { userId: 'user-1', balanceCredits: 42, userName: 'Ada Lovelace', userEmail: 'ada@example.com' },
 ];
 
-let mockReplace: ReturnType<typeof vi.fn>;
+let mockReplace: Mock;
 
 describe('components/resparkable/admin/resparkable-settings-tabs', () => {
   beforeEach(async () => {
@@ -112,14 +109,7 @@ describe('components/resparkable/admin/resparkable-settings-tabs', () => {
       new URLSearchParams() as unknown as ReturnType<typeof useSearchParams>
     );
     vi.mocked(usePathname).mockReturnValue('/admin/resparkable/settings');
-    vi.mocked(useRouter).mockReturnValue({
-      push: vi.fn(),
-      replace: mockReplace,
-      refresh: vi.fn(),
-      back: vi.fn(),
-      forward: vi.fn(),
-      prefetch: vi.fn(),
-    } as unknown as ReturnType<typeof useRouter>);
+    vi.mocked(useRouter).mockReturnValue(createMockRouter({ replace: mockReplace }));
   });
 
   afterEach(() => {

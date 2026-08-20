@@ -46,19 +46,15 @@ vi.mock('@/lib/api/client', () => ({
 // SnoozeMenu's `onDone`) land on a fn we can actually inspect.
 const { mockRefresh } = vi.hoisted(() => ({ mockRefresh: vi.fn() }));
 
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: mockRefresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  }),
-  usePathname: vi.fn(() => '/'),
-  useSearchParams: vi.fn(() => new URLSearchParams()),
-  useParams: vi.fn(() => ({})),
-}));
+vi.mock('next/navigation', async () => {
+  const { createMockRouter } = await import('@/tests/types/mocks');
+  return {
+    useRouter: () => createMockRouter({ refresh: mockRefresh }),
+    usePathname: vi.fn(() => '/'),
+    useSearchParams: vi.fn(() => new URLSearchParams()),
+    useParams: vi.fn(() => ({})),
+  };
+});
 
 import { apiClient } from '@/lib/api/client';
 
