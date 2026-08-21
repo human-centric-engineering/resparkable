@@ -120,6 +120,14 @@ export interface TabRegistryEntry {
   matchRoute?: (pathname: string) => TabParams | null;
   /** Route-backed only: the href for a tab of this kind with the given params. */
   buildRoute?: (params: TabParams) => string;
+  /**
+   * Route-backed only, and only for the kinds that read extra state out of
+   * the query string rather than the pathname (`graph`'s `focusType`/
+   * `focus`, `search`'s `q`) — `route-tab-bridge.tsx` is the one place with
+   * access to `useSearchParams()`, but the per-kind keys live here, next to
+   * each entry's own `buildRoute`, which already encodes the same keys.
+   */
+  mergeQueryParams?: (params: TabParams, searchParams: URLSearchParams) => TabParams;
 }
 
 /** `pathname` is exactly `href` — an index page, never a detail page. */
@@ -252,12 +260,17 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     routeBacked: true,
     // Focus (`focusType`/`focus`) travels as a query string, which this
     // pathname-only matcher can't see — `route-tab-bridge.tsx` (Phase 8)
-    // reads `useSearchParams()` itself and merges it into the tab's params.
+    // reads `useSearchParams()` itself and merges it in via `mergeQueryParams`.
     matchRoute: exact(RESPARKABLE_ROUTES.GRAPH),
     buildRoute: (params) =>
       params.focusType && params.focus
         ? RESPARKABLE_ROUTES.graphFocus(params.focusType, params.focus)
         : RESPARKABLE_ROUTES.GRAPH,
+    mergeQueryParams: (params, searchParams) => {
+      const focusType = searchParams.get('focusType');
+      const focus = searchParams.get('focus');
+      return focusType && focus ? { ...params, focusType, focus } : params;
+    },
   },
   vault: {
     kind: 'vault',
@@ -288,10 +301,14 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     defaultTitle: 'Search',
     icon: Search,
     routeBacked: true,
-    // Same story as `graph`: `q` is a query param, merged in by the bridge.
+    // Same story as `graph`: `q` is a query param, merged in via `mergeQueryParams`.
     matchRoute: exact(RESPARKABLE_ROUTES.SEARCH),
     buildRoute: (params) =>
       params.query ? RESPARKABLE_ROUTES.searchFor(params.query) : RESPARKABLE_ROUTES.SEARCH,
+    mergeQueryParams: (params, searchParams) => {
+      const query = searchParams.get('q');
+      return query ? { ...params, query } : params;
+    },
   },
   capture: {
     kind: 'capture',
@@ -340,6 +357,18 @@ export function resolveTabForPathname(
 /** The href for a tab of this kind, or `null` for a kind with no route (`note`). */
 export function buildRouteForTab(kind: TabKind, params: TabParams = EMPTY_PARAMS): string | null {
   return TAB_REGISTRY[kind].buildRoute?.(params) ?? null;
+}
+
+/**
+ * Merges any extra query-string keys `kind` reads (`graph`'s `focusType`/
+ * `focus`, `search`'s `q`) into `params`. A no-op for every other kind.
+ */
+export function mergeQueryParamsForTab(
+  kind: TabKind,
+  params: TabParams,
+  searchParams: URLSearchParams
+): TabParams {
+  return TAB_REGISTRY[kind].mergeQueryParams?.(params, searchParams) ?? params;
 }
 
 /** The tab-strip label to show before (or absent) a title fetched from content. */

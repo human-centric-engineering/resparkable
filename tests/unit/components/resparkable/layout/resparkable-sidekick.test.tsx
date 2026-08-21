@@ -27,6 +27,7 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { ResparkableSidekick } from '@/components/resparkable/layout/resparkable-sidekick';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn() },
@@ -38,14 +39,7 @@ const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  mockedRouter.mockReturnValue(createMockRouter());
 });
 
 function handle(): HTMLElement {

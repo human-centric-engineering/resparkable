@@ -78,8 +78,8 @@ Two rules:
   with the server in a way nobody notices until a refresh.
 - **Never lose user input.** `QuickCapture` clears the textarea immediately and
   puts the text _back_ if the POST fails. That is the one unforgivable failure in
-  this product. It is also why the capture drawer is parked off-screen rather
-  than unmounted when it closes (§10) — a stray click must not be able to bin a
+  this product. It is also why collapsing Sparkey to its rail doesn't unmount
+  the composer underneath it (§10) — a stray collapse must not be able to bin a
   half-written thought.
 
 ## 5. Missing primitives are built here, not installed.
@@ -158,31 +158,38 @@ would fill it in. Not every field has a mechanism behind it, though: Life's
 `description` has none, deliberately (`design-principles.md`), and its help text
 says so rather than inventing one.
 
-## 10. The capture sidekick
+## 10. The composer lives in Sparkey's own pane, not an overlay drawer
 
-`components/resparkable/layout/resparkable-sidekick.tsx` — a fixed, full-height drawer
-rendered by the Resparkable shell, not a column in it.
+`components/resparkable/sparkey/composer.tsx`, mounted inside `SparkeyPane`
+(`components/resparkable/sparkey/sparkey-pane.tsx`) — the left pane of the
+three-pane shell (§14), not a full-height drawer floating above the page.
+`resparkable-sidekick.tsx`, the fixed drawer this replaced at the Phase 8
+cutover, is orphaned code today (referenced only by its own test) — the
+drawer's actual job, a place to think that never narrows the page underneath
+it, is now Sparkey's own docked pane: it sits beside the page rather than
+over it, so it costs the tiled panes nothing to have open.
 
-**It overlays; it never narrows the page.** It used to be an 18rem card in a
-two-column grid, which cost every surface a fifth of its width permanently in
-exchange for a two-row textarea — the wrong trade twice over, since the board,
-the graph and the planner are all width-hungry and two rows is not room to think
-in. Opening the drawer now reflows nothing underneath.
+**Collapsing the pane parks it; it does not unmount it.** Sparkey collapses to
+a thin `PaneRail` strip (§14) rather than disappearing. See §4: the
+composer's draft, an attached file and an in-flight transcript all live in
+that pane's own React state, which stays mounted the whole time — only which
+of the pane's two JSX branches (full content vs. rail) renders changes.
 
-**Closing parks it, it does not unmount it** (`inert` + `translate-x-full`). See
-§4: the textarea's contents, an attached file and an in-flight transcript all
-survive being clicked away from.
-
-**Pointing anywhere else closes it, and that click still lands.** No backdrop
-above `sm`, no focus trap, no `preventDefault` on the outside click — a
-dismissing overlay that swallows the first click is what makes a drawer feel
-like an obstacle. The listener is on `pointerdown` rather than `click` so that
-releasing the resize drag past the page edge does not close it.
+**Three modes, one textarea.** Capture, Chat and Instruct (`ModeSelector`) all
+send through the same `Composer`; only what happens to the submitted text
+differs. Capture is a bare `POST /resparkable/thoughts`, deliberately never
+touching the agent — a capture that can fail for a reason unrelated to saving
+the words breaks this app's one rule above all others. Chat and Instruct both
+ride `useChatStream` against the same `resparkable-companion` agent; Instruct
+just renders the reply as a compact status card (`InstructReceipt`) instead of
+a conversational bubble — a board-shaped instruction is declined locally,
+before it ever reaches the agent, since no capability writes board membership
+or card position yet.
 
 **Three ways in, one destination.** Typing, dictating (`voice-capture-button.tsx`)
 and dropping a file (`capture-attachment.tsx`) all end in the same textarea. None
 of them posts anything on its own: dictation mishears, extracted document text
-needs cutting down, and both stay drafts until a person presses Capture. That is
+needs cutting down, and both stay drafts until a person presses Send. That is
 what makes it safe for the easy paths to be this easy.
 
 **A dropped file asks where it goes, and is never guessed at.** Two endpoints,
@@ -210,43 +217,46 @@ microphone addresses no agent.
 
 ---
 
-## 11. The section nav
+## 11. The launcher
 
-`components/resparkable/layout/resparkable-nav.tsx` — a grouped rail down the left of the
-shell, not a row of pills across the top.
+`components/resparkable/workspace/launcher.tsx` — what an empty pane shows,
+not a persistent rail down the left of the shell. `resparkable-nav.tsx`, the
+rail this replaced at the Phase 8 cutover, is orphaned code today (referenced
+only by its own test and one `@see` comment) — the grouped-by-section
+navigation it offered now lives here instead, opened per pane rather than
+pinned to the shell's edge. A freshly split pane always opens on Launcher
+(`splitLeaf` seeds a new leaf with no tabs); the tab strip's own "+" reaches
+it from a pane that already has tabs open.
 
-**Fourteen equal-weight pills is a list nobody has named.** Wrapped onto two
-rows, every item looked equally likely, so finding one was a linear scan of
-fourteen words — and the second row pushed the page's own heading below the fold
-on a laptop. The four groups (**Daily**, **Organise**, **Knowledge**,
-**Manage**) are the product's model, so a scan is four short lists, and a section
-added next month joins a group instead of starting a third row.
+**Same four groups, a different surface.** The four groups (**Daily**,
+**Organise**, **Knowledge**, **Manage**) are still the product's own model —
+`RESPARKABLE_NAV_GROUPS`/`RESPARKABLE_NAV_ITEMS`
+(`lib/framework/resparkable/ui/nav-groups.ts`) are unchanged and still the
+single source of truth (`section-help.test.ts` still asserts every item has
+help copy) — but Launcher renders them as a grid of tiles inside a workspace
+pane, not as a rail that's always on screen. A tile is icon-over-label only,
+no per-tile blurb: `<SectionHeader>` still shows that blurb once, on the page
+a tile opens, rather than repeating it on every tile here too.
 
-**Vertical is the axis these pages have to spare.** The rail costs 224px of a
-width nothing was using and returns the height everything was using. It collapses
-to icons for the surfaces that want the width back — Graph, Boards — and the
-choice persists under `resparkable.nav.collapsed.v1`.
+**"Ask Sparkey" is deliberately absent**, not filtered by accident:
+`tab-registry.ts` has no `chat` kind, because Sparkey's own pane (§10) already
+absorbs chat — `/resparkable/chat` is a redirect, not a destination page, from
+the Phase 8 cutover on. Any nav item that doesn't resolve to a real tab kind
+(via `resolveTabForPathname`) is skipped the same way, so Launcher can never
+offer a tile that does nothing when clicked.
 
-**Both the rail and the small-screen switcher are always rendered**, one hidden
-by a media query. No JS branch on viewport, so nothing shifts on hydration. It
-also means jsdom sees both: nav tests scope to
-`getByRole('navigation', { name: 'Resparkable sections' })`, or a badge in the tree
-twice reads as a badge on screen twice.
+**The tile grid is a container query, not a viewport breakpoint.** `@container`
+on Launcher's root div; `@sm:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4` on
+the tile grid itself. The pane this renders inside can be anywhere from a
+third of the screen (three-pane desktop, both side panes expanded) to the
+whole viewport (a maximized single pane, or `MobilePaneSwitcher`), and a
+viewport-keyed breakpoint would size the grid to the wrong thing — the screen,
+not the box the grid is actually laid out in.
 
-**`RESPARKABLE_NAV_ITEMS` is derived from `RESPARKABLE_NAV_GROUPS`**, never hand-kept
-alongside it. `section-help.test.ts` asserts every entry in the flat list has help
-copy; a second hand-maintained list is how a section would end up in the nav and
-outside that check.
-
-**Counts sit in a right-aligned column.** "What is waiting on me" should be one
-downward glance. Collapsed, the number becomes a dot for sighted users and stays
-a number in `sr-only` text — a link named `7 waiting` with no section name is
-worse than no badge.
-
-**The shell prints one title, and it is the section's.** `<SectionHeader>` owns
-the `h1`. The word "Resparkable" survives once, in the rail head, where it is also
-the way home — the app nav says it too, and the old product tagline under the
-old `h1` restated the section blurb one line below it.
+**Counts don't survive the move to a pane, and that's a deliberate upgrade, not
+a gap.** The old rail's per-item badges (`/resparkable/counts`) have no reader
+left in the new shell; Activity (§14) now surfaces pending connections as a
+live, browsable feed instead of a number on a nav item.
 
 ---
 
@@ -345,6 +355,56 @@ box. It also sets `min-h-0`: the base `<Textarea>` ships `min-h-[60px]`, and
 Dictation reuses `<VoiceCaptureButton>` and lands the transcript **in the box**
 rather than sending it — a transcript with a wrong word in it should be fixable
 before it is asked.
+
+---
+
+## 14. The three-pane shell
+
+`components/resparkable/shell/workspace-shell.tsx` — `SparkeyPane` (§10,
+left), the workspace pane tree (tabs, splits, the tab-registry-backed
+`RouteTabBridge`), and `ActivityPane` (the discovery feed, right), tiled with
+`ResizablePanelGroup` (`components/ui/resizable.tsx`) rather than three
+independently-scrolling regions of the page. `{children}` — whatever
+`page.tsx` a route resolved to — becomes the tree's one route-backed tab via
+`RouteTabBridge`, so every existing deep link, bookmark and email link still
+resolves through normal Next navigation: the URL still does the routing, this
+just also tells the tree which pane should show it. Below `lg` (1024px),
+`MobilePaneSwitcher` renders the same route-bridged tree as a single
+full-width pane instead of tiling it.
+
+**Both side panes collapse to a rail, never to nothing.** `collapsedSize` on
+each `ResizablePanel` is a few percent, not zero — collapsing takes Sparkey or
+Activity to a thin, still-clickable `PaneRail`, not out of existence. Neither
+pane unmounts either way, which is what keeps a collapsed Sparkey pane's
+composer draft alive (§10). `PaneCollapseButton`, floating on the
+`ResizableHandle` between panes, and clicking the rail itself both trigger the
+same `.collapse()`/`.resize(22)` calls — never `.expand()`, which would
+restore whatever size a manual drag left the panel at rather than a
+predictable width.
+
+**A tab can be dragged out of the tree entirely.** Detaching a tab (drag its
+tab-strip pill) turns it into a `FloatingTabWindow` — a free-floating,
+resizable window rendered above the whole shell by `FloatingPanelsLayer`,
+hand-rolled on pointer events rather than a library (`react-resizable-panels`
+only lays out panels docked within one group, and this is too small a job to
+justify a dependency for it). Dragging its title bar re-docks it into
+whichever pane the drop lands on; its own redock button is the only
+_keyboard_-reachable way back in, since dragging has none.
+
+**Present mode is a dialog, not a fourth panel.** `PresentPane`
+(`components/resparkable/workspace/present/present-pane.tsx`), triggered from
+the header's Present button, renders full-viewport inside `Dialog`/
+`DialogContent` rather than a fourth `ResizablePanel` — a mode whose whole
+point is _not_ sharing the screen doesn't belong in a layout built for sharing
+it. Three sub-modes: Lightweight (nothing built, just a prompt to talk from),
+Deck (built from a Graph tab's selected nodes), and On-the-fly (each dictated
+sentence becomes one slide, appended and jumped to immediately — no model
+call, the same "deliberately dumb" contract Capture mode holds elsewhere).
+Deck mode consumes a Graph tab's payload as a prop; `WorkspaceShell` passes
+`null` today rather than a live tab's data (wiring a focused Graph tab's
+payload through is deferred — see that file's own header comment), which is a
+real, already-handled state, not a stand-in for a crash: Deck's own empty
+state says "Open a Graph tab and come back."
 
 ---
 
