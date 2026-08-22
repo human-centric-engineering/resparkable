@@ -78,6 +78,35 @@ export function resizeFloatingPanel(
   );
 }
 
+/**
+ * Applies `update` to whichever panel holds the tab `tabId`, keyed on the
+ * **tab's** id rather than the panel's.
+ *
+ * The mirror of `split-tree.ts`'s `updateTab`, and keyed the same way for the
+ * same reason: a tab content adapter knows its own tab id and has no idea
+ * whether it is currently docked in a pane or floating in a window. One
+ * `setTabParams(tabId, …)` on the context can therefore hit either, without
+ * the caller branching on where the tab lives.
+ */
+export function updateFloatingPanelTab(
+  panels: FloatingPanel[],
+  tabId: string,
+  update: (tab: FloatingPanel['tab']) => FloatingPanel['tab']
+): FloatingPanel[] {
+  let changed = false;
+  const next = panels.map((panel) => {
+    if (panel.tab.id !== tabId) return panel;
+    const tab = update(panel.tab);
+    if (tab === panel.tab) return panel;
+    changed = true;
+    return { ...panel, tab };
+  });
+  // The identity of the input array, not a fresh copy of it, when nothing
+  // moved — `workspace-context.tsx` compares identities to decide whether a
+  // write is a no-op, and a `map` that always allocates would defeat that.
+  return changed ? next : panels;
+}
+
 /** Brings `panelId` to the front of the paint order. No-op if it isn't there. */
 export function bringFloatingPanelToFront(
   panels: FloatingPanel[],

@@ -26,7 +26,6 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { ArrowUpRight, Check, Trash2, X } from 'lucide-react';
 
 import { PromoteDialog } from '@/components/resparkable/inbox/promote-dialog';
@@ -34,6 +33,7 @@ import { SnoozeMenu } from '@/components/resparkable/controls/snooze-menu';
 import { EntityChip } from '@/components/resparkable/ui/entity-chip';
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
@@ -60,7 +60,7 @@ export interface ThoughtCardProps {
 }
 
 export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const [promoteOpen, setPromoteOpen] = React.useState(false);
   // Suggestions the user has just actioned, hidden immediately rather than
@@ -77,7 +77,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
     );
 
     if (ok) {
-      router.refresh();
+      refresh();
     } else {
       setReviewed((current) => {
         const next = new Set(current);
@@ -93,7 +93,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
         body: { status: 'dropped' },
       })
     );
-    if (ok) router.refresh();
+    if (ok) refresh();
   }
 
   const visibleSuggestions = suggestedLinks.filter((link) => !reviewed.has(link.id));
@@ -164,7 +164,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
           kind="thought"
           id={thought.id}
           snoozedUntil={thought.snoozedUntil}
-          onDone={() => router.refresh()}
+          onDone={() => refresh()}
         />
 
         <Button

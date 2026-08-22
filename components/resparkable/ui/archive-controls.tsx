@@ -41,6 +41,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -78,13 +79,14 @@ export function ArchiveControls({
   onDone,
 }: ArchiveControlsProps): React.ReactElement {
   const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
 
   async function archive(): Promise<void> {
     const ok = await run(() => apiClient.delete(RESPARKABLE_API.itemPath(collection, id)));
     if (ok) {
       onDone?.();
-      router.refresh();
+      refresh();
     }
   }
 
@@ -92,7 +94,7 @@ export function ArchiveControls({
     const ok = await run(() => apiClient.post(RESPARKABLE_API.restorePath(collection, id)));
     if (ok) {
       onDone?.();
-      router.refresh();
+      refresh();
     }
   }
 
@@ -104,7 +106,7 @@ export function ArchiveControls({
       onDone?.();
       // A detail page for a row that no longer exists would 404 on refresh.
       if (redirectTo) router.push(redirectTo);
-      else router.refresh();
+      else refresh();
     }
   }
 

@@ -31,6 +31,7 @@ import { TimeBlockForm } from '@/components/resparkable/plan/time-block-form';
 import { formatMinutes } from '@/components/resparkable/today/task-row';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { FieldHelp } from '@/components/ui/field-help';
@@ -45,12 +46,26 @@ export interface DayPlannerProps {
   blocks: TimeBlockWire[];
   projects: ProjectWire[];
   areas: AreaWire[];
-  /** `yyyy-mm-dd`, from the URL so the day is shareable and back-button-correct. */
+  /** `yyyy-mm-dd`. On the real page this comes from the URL; in a Workspace tab, from that tab's own params. */
   day: string;
+  /**
+   * Where a day change goes. Absent — the real `plan/page.tsx` — it navigates,
+   * so the day stays shareable and back-button-correct. A launcher-opened
+   * `PlanTab` passes its own `setTabParams` writer instead, because two Plan
+   * panes reading one URL meant changing the day in either moved both.
+   */
+  onDayChange?: (day: string) => void;
 }
 
-export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): React.ReactElement {
+export function DayPlanner({
+  blocks,
+  projects,
+  areas,
+  day,
+  onDayChange,
+}: DayPlannerProps): React.ReactElement {
   const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
 
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -67,11 +82,15 @@ export function DayPlanner({ blocks, projects, areas, day }: DayPlannerProps): R
     const ok = await run(() =>
       apiClient.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TIME_BLOCKS, id))
     );
-    if (ok) router.refresh();
+    if (ok) refresh();
   }
 
   function setDay(next: string): void {
-    router.push(`${RESPARKABLE_ROUTES.PLAN}?day=${next}`);
+    if (onDayChange) {
+      onDayChange(next);
+      return;
+    }
+    router.push(RESPARKABLE_ROUTES.planFor(next));
   }
 
   return (

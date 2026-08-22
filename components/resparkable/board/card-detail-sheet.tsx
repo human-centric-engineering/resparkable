@@ -24,11 +24,11 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { Plus, Trash2 } from 'lucide-react';
 
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -90,7 +90,7 @@ function CardDetailBody({
   card: BoardCardWire;
   allTags: TagWire[];
 }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const taskId = card.task.id;
 
@@ -108,7 +108,7 @@ function CardDetailBody({
       apiClient.patch(RESPARKABLE_API.checklistItem(itemId), { body: { isDone: next } })
     );
 
-    if (ok) router.refresh();
+    if (ok) refresh();
     else setChecked((current) => ({ ...current, [itemId]: !next }));
   }
 
@@ -122,14 +122,14 @@ function CardDetailBody({
       apiClient.post(RESPARKABLE_API.taskChecklist(taskId), { body: { text } })
     );
 
-    if (ok) router.refresh();
+    if (ok) refresh();
     // Give the words back, as everywhere else in this UI.
     else setNewItem(text);
   }
 
   async function removeItem(itemId: string): Promise<void> {
     const ok = await run(() => apiClient.delete(RESPARKABLE_API.checklistItem(itemId)));
-    if (ok) router.refresh();
+    if (ok) refresh();
   }
 
   async function toggleTag(tagId: string): Promise<void> {
@@ -143,7 +143,7 @@ function CardDetailBody({
       apiClient.put(RESPARKABLE_API.taskTags(taskId), { body: { tagIds: next } })
     );
 
-    if (ok) router.refresh();
+    if (ok) refresh();
     else setTagIds(previous);
   }
 

@@ -9,17 +9,26 @@
  * both depend on this), `retry()` re-firing the same endpoint, and
  * `httpStatus` surfacing a real HTTP status rather than a guess from the
  * error message (the thing `ProjectTab`/`EntityTab`/`BoardTab` check to
- * tell "not found" apart from "the server is unwell").
+ * tell "not found" apart from "the server is unwell"), and re-firing when
+ * the enclosing tab is refreshed — the mechanism that makes a mutation
+ * anywhere inside a launcher-opened tab show its new state without any
+ * per-adapter wiring.
  *
  * @see components/resparkable/workspace/tabs/use-tab-fetch.ts
  */
 
+import * as React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { z } from 'zod';
 
+import {
+  TabRefreshBoundary,
+  useResparkableRefresh,
+} from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
 import { apiClient, APIClientError } from '@/lib/api/client';
+import type { TabState } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -123,5 +132,74 @@ describe('useTabFetch', () => {
     );
     expect(apiClient.get).toHaveBeenCalledWith('/a');
     expect(apiClient.get).toHaveBeenCalledWith('/b');
+  });
+});
+
+describe('useTabFetch — refreshing the enclosing tab', () => {
+  // Any kind will do: these cases exercise the boundary's own counter, not
+  // which broadcast keys the tab happens to subscribe to (that is
+  // `change-scope.test.ts`'s job).
+  const TAB: TabState = { id: 'tab-1', kind: 'inbox', params: {}, source: 'launcher' };
+
+  function wrapper({ children }: { children: React.ReactNode }) {
+    return <TabRefreshBoundary tab={TAB}>{children}</TabRefreshBoundary>;
+  }
+
+  it('re-fires the same endpoint when the tab is refreshed', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ title: 'first' });
+
+    const { result } = renderHook(
+      () => {
+        const fetched = useTabFetch('/x', schema);
+        return { fetched, refresh: useResparkableRefresh() };
+      },
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.fetched[0].status).toBe('ready'));
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+
+    vi.mocked(apiClient.get).mockResolvedValue({ title: 'second' });
+    act(() => result.current.refresh());
+
+    await waitFor(() =>
+      expect(result.current.fetched[0]).toEqual({ status: 'ready', data: { title: 'second' } })
+    );
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+    expect(apiClient.get).toHaveBeenLastCalledWith('/x');
+  });
+
+  it('re-fires every fetch in the tab, not only the one the control knew about', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ title: 'x' });
+
+    const { result } = renderHook(
+      () => {
+        useTabFetch('/a', schema);
+        useTabFetch('/b', schema);
+        return useResparkableRefresh();
+      },
+      { wrapper }
+    );
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+    act(() => result.current());
+
+    // Four, not three: this is the "the whole surface is now stale" semantics
+    // `router.refresh()` had, scoped down to one pane.
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(4));
+  });
+
+  it('still skips a null endpoint on refresh rather than fetching "null"', async () => {
+    const { result } = renderHook(
+      () => {
+        useTabFetch(null, schema);
+        return useResparkableRefresh();
+      },
+      { wrapper }
+    );
+
+    act(() => result.current());
+
+    expect(apiClient.get).not.toHaveBeenCalled();
   });
 });

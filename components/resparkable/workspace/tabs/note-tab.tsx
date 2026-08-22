@@ -25,6 +25,10 @@ import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-stat
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import {
+  titleFromNoteBody,
+  useTabTitle,
+} from '@/components/resparkable/workspace/tabs/use-tab-title';
 import { Textarea } from '@/components/ui/textarea';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -34,10 +38,12 @@ import { thoughtSchema } from '@/lib/framework/resparkable/ui/payloads';
 const SAVE_DEBOUNCE_MS = 800;
 
 export interface NoteTabProps {
+  /** This tab's id — what `useTabTitle` names from the note's own first line. */
+  tabId: string;
   id: string;
 }
 
-export function NoteTab({ id }: NoteTabProps): React.ReactElement {
+export function NoteTab({ tabId, id }: NoteTabProps): React.ReactElement {
   const [thought, retry] = useTabFetch(
     RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, id),
     thoughtSchema
@@ -47,18 +53,25 @@ export function NoteTab({ id }: NoteTabProps): React.ReactElement {
   if (thought.status === 'error') {
     return <TabLoadError what="this note" message={thought.message} onRetry={retry} />;
   }
-  return <NoteEditor id={id} initialContent={thought.data.content} />;
+  return <NoteEditor tabId={tabId} id={id} initialContent={thought.data.content} />;
 }
 
 function NoteEditor({
+  tabId,
   id,
   initialContent,
 }: {
+  tabId: string;
   id: string;
   initialContent: string;
 }): React.ReactElement {
   const [content, setContent] = React.useState(initialContent);
   const { state, message, run } = useSaveStatus();
+  // Tracks the live editor value rather than the fetched one, so a note being
+  // retitled in its first line renames its own tab as you type. Debouncing
+  // this would be pointless — `setTabTitle` no-ops on an unchanged title, and
+  // the write it guards is a `useState` update, not a request.
+  useTabTitle(tabId, titleFromNoteBody(content));
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks the latest content a pending debounce would save, so unmount can
   // flush it — a ref rather than reading `content` in the effect below,

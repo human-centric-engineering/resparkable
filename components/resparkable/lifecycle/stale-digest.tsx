@@ -19,10 +19,10 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { CheckCircle2 } from 'lucide-react';
 
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { ClientDate } from '@/components/ui/client-date';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
@@ -113,7 +113,7 @@ function StaleRow({
   type: string;
   row: StaleSectionWire['rows'][number];
 }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const config = SECTIONS[type];
 
@@ -123,7 +123,7 @@ function StaleRow({
     );
     // The row leaves the digest because `lastActivityAt` moved, not because the
     // component hid it — so a refresh is the honest way to reflect the answer.
-    if (ok) router.refresh();
+    if (ok) refresh();
   }
 
   return (

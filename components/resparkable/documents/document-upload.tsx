@@ -15,11 +15,11 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { Upload } from 'lucide-react';
 
 import { uploadDocument } from '@/components/resparkable/documents/upload-request';
 import { ProgressBar } from '@/components/resparkable/ui/progress-bar';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -34,7 +34,7 @@ type UploadState =
 const ACCEPTED = '.pdf,.docx,.epub,.csv,.html,.htm,.md,.txt';
 
 export function DocumentUpload(): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const [state, setState] = React.useState<UploadState>({ kind: 'idle' });
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -55,7 +55,7 @@ export function DocumentUpload(): React.ReactElement {
 
     if (result.ok) {
       setState({ kind: 'done', deduped: result.deduped, title: file.name });
-      router.refresh();
+      refresh();
     } else {
       setState({ kind: 'error', message: result.message });
     }

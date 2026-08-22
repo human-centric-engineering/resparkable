@@ -85,6 +85,16 @@ export interface TabParams {
   /** `graph` — which node it opens focused on, and its type. */
   focusType?: string;
   focus?: string;
+  /**
+   * `plan` — the ISO `YYYY-MM-DD` day on screen. Absent means "today",
+   * resolved at render time rather than pinned here, so a tab left open
+   * overnight still shows the current day rather than yesterday's.
+   */
+  day?: string;
+  /** `projects` — the status filter. Absent means every project. */
+  status?: string;
+  /** `search` — whether the (keyword-only) archived corpus is included. */
+  includeArchived?: boolean;
 }
 
 /** Every field defaulted, so two tabs with the same kind compare by simple equality. */
@@ -98,12 +108,13 @@ export interface TabState {
   params: TabParams;
   source: TabSource;
   /**
-   * Meant to override the registry's `defaultTitle` once real content is
-   * known — a `project` tab starting as "Project" and becoming "Q3 Roadmap"
-   * once its fetch resolves. **Nothing writes this field yet**: no context
-   * action sets it and no detail adapter (`project`/`entity`/`board`/`note`)
-   * calls one, so every detail tab shows its generic default for now — see
-   * the build plan's "Deferred follow-ups" for what wiring this up needs.
+   * Overrides the registry's `defaultTitle` once real content is known — a
+   * `project` tab starting as "Project" and becoming "Q3 Roadmap" once its
+   * fetch resolves. Written by the four detail adapters
+   * (`project`/`entity`/`board`/`note`) through `useWorkspace().setTabTitle`,
+   * which resolves a tab by id alone so a *floating* detail tab names itself
+   * too. Absent until that fetch lands, and absent for every index kind,
+   * whose `defaultTitle` is already the real name.
    */
   title?: string;
 }
@@ -170,8 +181,15 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     defaultTitle: 'Plan',
     icon: CalendarRange,
     routeBacked: true,
+    // `day` travels as `?day=`, same story as `graph`'s focus below: the
+    // pathname matcher can't see it, so `route-tab-bridge.tsx` merges it in.
     matchRoute: exact(RESPARKABLE_ROUTES.PLAN),
-    buildRoute: () => RESPARKABLE_ROUTES.PLAN,
+    buildRoute: (params) =>
+      params.day ? RESPARKABLE_ROUTES.planFor(params.day) : RESPARKABLE_ROUTES.PLAN,
+    mergeQueryParams: (params, searchParams) => {
+      const day = searchParams.get('day');
+      return day ? { ...params, day } : params;
+    },
   },
   projects: {
     kind: 'projects',
@@ -179,7 +197,14 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     icon: FolderKanban,
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.PROJECTS),
-    buildRoute: () => RESPARKABLE_ROUTES.PROJECTS,
+    buildRoute: (params) =>
+      params.status
+        ? RESPARKABLE_ROUTES.projectsWithStatus(params.status)
+        : RESPARKABLE_ROUTES.PROJECTS,
+    mergeQueryParams: (params, searchParams) => {
+      const status = searchParams.get('status');
+      return status ? { ...params, status } : params;
+    },
   },
   project: {
     kind: 'project',
@@ -304,10 +329,17 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     // Same story as `graph`: `q` is a query param, merged in via `mergeQueryParams`.
     matchRoute: exact(RESPARKABLE_ROUTES.SEARCH),
     buildRoute: (params) =>
-      params.query ? RESPARKABLE_ROUTES.searchFor(params.query) : RESPARKABLE_ROUTES.SEARCH,
+      params.query
+        ? RESPARKABLE_ROUTES.searchFor(params.query, params.includeArchived === true)
+        : RESPARKABLE_ROUTES.SEARCH,
     mergeQueryParams: (params, searchParams) => {
       const query = searchParams.get('q');
-      return query ? { ...params, query } : params;
+      // Merged independently of `q`: `?includeArchived=true` with no query is
+      // a legitimate (if empty) state, and dropping the flag whenever the
+      // query is missing would silently untick the box on the way back.
+      const includeArchived = searchParams.get('includeArchived') === 'true';
+      const next = query ? { ...params, query } : params;
+      return includeArchived ? { ...next, includeArchived } : next;
     },
   },
   capture: {
@@ -329,7 +361,16 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
 /** Every kind, in registry-declaration order — for exhaustive coverage tests. */
 export const TAB_KINDS: TabKind[] = Object.keys(TAB_REGISTRY) as TabKind[];
 
-function requireParam(params: TabParams, field: keyof TabParams, kind: string): string {
+/**
+ * Narrowed to the string-valued keys rather than `keyof TabParams`: the shape
+ * now carries a `boolean` (`includeArchived`), and a route segment built from
+ * one would be the string "true" sitting in a URL path.
+ */
+type StringTabParam = {
+  [K in keyof TabParams]-?: TabParams[K] extends string | undefined ? K : never;
+}[keyof TabParams];
+
+function requireParam(params: TabParams, field: StringTabParam, kind: string): string {
   const value = params[field];
   if (!value) {
     throw new Error(`buildRoute for '${kind}' tab requires params.${field}`);
@@ -352,6 +393,34 @@ export function resolveTabForPathname(
     if (params) return { kind, params };
   }
   return null;
+}
+
+/**
+ * The kind and params a full `href` resolves to, query string included.
+ *
+ * `resolveTabForPathname` matches pathnames only, which is all
+ * `route-tab-bridge.tsx` needs because it reads `useSearchParams()`
+ * separately. A link, though, arrives as one string with everything in it
+ * (`/resparkable/search?q=roadmap`), and dropping the query would open a
+ * Search tab with no query in it. This is that resolver: split, match, then
+ * merge the query keys the kind declares, so `WorkspaceLink` opens the tab
+ * the href actually names.
+ *
+ * `null` for an href that belongs to no tab kind. Callers treat that as "this
+ * is real navigation, leave it alone" rather than as an error: `/resparkable/chat`
+ * is a redirect and external hrefs pass through here too.
+ */
+export function resolveTabForHref(href: string): { kind: TabKind; params: TabParams } | null {
+  // Deliberately not `new URL(href)`: these are same-origin app paths, and
+  // constructing a URL would need a base and would happily accept an absolute
+  // href pointing somewhere else entirely.
+  const [pathname, query = ''] = href.split('#')[0].split('?');
+  const resolved = resolveTabForPathname(pathname);
+  if (!resolved) return null;
+  return {
+    kind: resolved.kind,
+    params: mergeQueryParamsForTab(resolved.kind, resolved.params, new URLSearchParams(query)),
+  };
 }
 
 /** The href for a tab of this kind, or `null` for a kind with no route (`note`). */

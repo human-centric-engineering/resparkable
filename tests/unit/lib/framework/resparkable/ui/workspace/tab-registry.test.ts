@@ -17,6 +17,8 @@ import {
   buildRouteForTab,
   defaultTitleForTab,
   iconForTab,
+  mergeQueryParamsForTab,
+  resolveTabForHref,
   resolveTabForPathname,
   TAB_KINDS,
   TAB_REGISTRY,
@@ -141,5 +143,127 @@ describe('iconForTab', () => {
     expect(iconForTab('project')).toBe(iconForTab('projects'));
     expect(iconForTab('board')).toBe(iconForTab('boards'));
     expect(iconForTab('entity')).toBe(iconForTab('entities'));
+  });
+});
+
+describe('the filter params — mergeQueryParamsForTab and buildRouteForTab', () => {
+  it('reads Plan\u2019s day off the query string', () => {
+    expect(mergeQueryParamsForTab('plan', {}, new URLSearchParams('day=2026-01-05'))).toEqual({
+      day: '2026-01-05',
+    });
+  });
+
+  it('leaves Plan\u2019s params alone when there is no day, rather than writing undefined', () => {
+    const params = {};
+
+    // Identity: `syncRouteTab` runs on every searchParams change, and a fresh
+    // object every time would replace the route tab's params with an equal
+    // but different one on each render.
+    expect(mergeQueryParamsForTab('plan', params, new URLSearchParams())).toBe(params);
+  });
+
+  it('reads Projects\u2019 status off the query string', () => {
+    expect(mergeQueryParamsForTab('projects', {}, new URLSearchParams('status=paused'))).toEqual({
+      status: 'paused',
+    });
+  });
+
+  it('reads Search\u2019s includeArchived independently of the query, so the box survives a round trip', () => {
+    expect(
+      mergeQueryParamsForTab('search', {}, new URLSearchParams('includeArchived=true'))
+    ).toEqual({ includeArchived: true });
+  });
+
+  it('reads both of Search\u2019s keys together', () => {
+    expect(
+      mergeQueryParamsForTab('search', {}, new URLSearchParams('q=roadmap&includeArchived=true'))
+    ).toEqual({ query: 'roadmap', includeArchived: true });
+  });
+
+  it('treats any includeArchived value other than the literal "true" as off', () => {
+    expect(mergeQueryParamsForTab('search', {}, new URLSearchParams('includeArchived=1'))).toEqual(
+      {}
+    );
+  });
+
+  it('builds Plan and Projects hrefs that carry the filter, and bare ones when it is absent', () => {
+    expect(buildRouteForTab('plan', {})).toBe(RESPARKABLE_ROUTES.PLAN);
+    expect(buildRouteForTab('plan', { day: '2026-01-05' })).toBe(
+      RESPARKABLE_ROUTES.planFor('2026-01-05')
+    );
+    expect(buildRouteForTab('projects', {})).toBe(RESPARKABLE_ROUTES.PROJECTS);
+    expect(buildRouteForTab('projects', { status: 'paused' })).toBe(
+      RESPARKABLE_ROUTES.projectsWithStatus('paused')
+    );
+  });
+
+  it('appends includeArchived to a Search href only when it is on', () => {
+    expect(buildRouteForTab('search', { query: 'roadmap' })).toBe(
+      RESPARKABLE_ROUTES.searchFor('roadmap')
+    );
+    expect(buildRouteForTab('search', { query: 'roadmap', includeArchived: true })).toBe(
+      `${RESPARKABLE_ROUTES.searchFor('roadmap')}&includeArchived=true`
+    );
+  });
+
+  it('still round-trips a filtered href back to its own kind', () => {
+    for (const href of [
+      buildRouteForTab('plan', { day: '2026-01-05' }),
+      buildRouteForTab('projects', { status: 'paused' }),
+    ]) {
+      // `resolveTabForPathname` is pathname-only by design, so strip the
+      // query the same way `route-tab-bridge.tsx` hands it over separately.
+      const pathname = (href as string).split('?')[0];
+      expect(resolveTabForPathname(pathname)).not.toBeNull();
+    }
+  });
+});
+
+/**
+ * `resolveTabForHref` is what `workspace-link.tsx` calls, and it exists
+ * because a link arrives as one string with its query attached where
+ * `route-tab-bridge.tsx` gets the two separately. Dropping the query is the
+ * failure mode worth guarding: it does not throw, it opens a Search tab with
+ * no search in it.
+ */
+describe('resolveTabForHref', () => {
+  it('resolves a plain pathname exactly as the pathname matcher does', () => {
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.INBOX)).toEqual({ kind: 'inbox', params: {} });
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.project('clx1'))).toEqual({
+      kind: 'project',
+      params: { id: 'clx1' },
+    });
+  });
+
+  it("carries a kind's own query keys into its params", () => {
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.searchFor('roadmap'))).toEqual({
+      kind: 'search',
+      params: { query: 'roadmap' },
+    });
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.searchFor('roadmap', true))).toEqual({
+      kind: 'search',
+      params: { query: 'roadmap', includeArchived: true },
+    });
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.graphFocus('project', 'clx1'))).toEqual({
+      kind: 'graph',
+      params: { focusType: 'project', focus: 'clx1' },
+    });
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.planFor('2026-01-05'))).toEqual({
+      kind: 'plan',
+      params: { day: '2026-01-05' },
+    });
+  });
+
+  it('ignores a fragment rather than folding it into the last param', () => {
+    expect(resolveTabForHref(`${RESPARKABLE_ROUTES.project('clx1')}#tasks`)).toEqual({
+      kind: 'project',
+      params: { id: 'clx1' },
+    });
+  });
+
+  it('returns null for an href no tab kind owns, so the caller navigates for real', () => {
+    expect(resolveTabForHref(RESPARKABLE_ROUTES.CHAT)).toBeNull();
+    expect(resolveTabForHref('/admin')).toBeNull();
+    expect(resolveTabForHref('https://example.com/resparkable/inbox')).toBeNull();
   });
 });

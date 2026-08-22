@@ -13,12 +13,17 @@
  * Adapts `create-dialog.tsx`'s sliding-pane technique — both halves always
  * mounted, `inert` on whichever is hidden, a `translate-x` transform
  * instead of swapping component trees — without the `Dialog` chrome that
- * technique was built inside. `EntityFormDialog` routes an existing
+ * technique was built inside. `EntityFormDialog` used to route an existing
  * resource to form-only precisely because it had nowhere to put a second,
- * edit-shaped chat option; this panel is that option, meant to be mounted
- * wherever an edit affordance for one of these three kinds needs it (a
- * workspace tab's "Edit" action, Sparkey referencing the item under
- * discussion), not swapped in for `EntityFormDialog` itself.
+ * edit-shaped chat option; this panel is that option, and is now what that
+ * file's edit branch renders.
+ *
+ * Chrome-free is still the point of the shape, not an accident of where it
+ * first landed. `EntityFormDialog` supplies the `Dialog` around it because an
+ * "Edit" button in a detail view wants a modal; a caller that wants this
+ * inline — Sparkey referencing the item under discussion, a pane with an edit
+ * mode — mounts the same component with no dialog at all and passes
+ * `className` to size it. Nothing in here assumes either.
  *
  * Mode is remembered under its own key, deliberately independent from
  * `useCreateMode`'s `resparkable.create-mode.v1` — a preference for

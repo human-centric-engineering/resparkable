@@ -22,7 +22,10 @@ export const RESPARKABLE_ROUTES = {
   SEARCH: `${BASE}/search`,
   CHAT: `${BASE}/chat`,
   SETTINGS: `${BASE}/settings`,
+
   PLAN: `${BASE}/plan`,
+  /** One day of the planner. `day` is an ISO `YYYY-MM-DD`, resolved in the browser's zone. */
+  planFor: (day: string): string => `${BASE}/plan?day=${encodeURIComponent(day)}`,
 
   /**
    * The PWA share-target landing page (phase 9, §8). Android's share sheet
@@ -34,6 +37,9 @@ export const RESPARKABLE_ROUTES = {
   CAPTURE: `${BASE}/capture`,
 
   PROJECTS: `${BASE}/projects`,
+  /** The project list narrowed to one status. No status means every project. */
+  projectsWithStatus: (status: string): string =>
+    `${BASE}/projects?status=${encodeURIComponent(status)}`,
   project: (id: string): string => `${BASE}/projects/${id}`,
 
   GOALS: `${BASE}/goals`,
@@ -75,6 +81,11 @@ export const RESPARKABLE_ROUTES = {
    */
   VAULT: `${BASE}/vault`,
 
-  /** Search prefilled from the layout's box. */
-  searchFor: (query: string): string => `${BASE}/search?q=${encodeURIComponent(query)}`,
+  /**
+   * Search prefilled from the layout's box. `includeArchived` is only ever
+   * appended when true, so the common href stays exactly what it always was
+   * and the flag reads as opt-in rather than as a default that got turned off.
+   */
+  searchFor: (query: string, includeArchived = false): string =>
+    `${BASE}/search?q=${encodeURIComponent(query)}${includeArchived ? '&includeArchived=true' : ''}`,
 } as const;

@@ -18,6 +18,64 @@ release process.
 
 ### Added
 
+- **Workspace tabs hold their own filter state, and name themselves.**
+  `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains
+  `day`, `status` and `includeArchived`, so Plan's day, Projects' status filter
+  and Search's include-archived checkbox belong to one tab instead of to the
+  shared browser URL. Two new pure tree operations back them —
+  `setTabParams`/`setTabTitle` (plus the `updateTab` they are built on) in
+  `split-tree.ts`, and `updateFloatingPanelTab` in `floating-panels.ts` — all
+  keyed on the **tab** id rather than a leaf id, so a detached floating tab is
+  reachable by the same call. `useWorkspace()` exposes `setTabParams(tabId,
+  patch)` and `setTabTitle(tabId, title)`. `TabState.title` is now actually
+  written: the `project`, `entity`, `board` and `note` adapters name their tab
+  from their own loaded content via the new
+  `components/resparkable/workspace/tabs/use-tab-title.ts`. New route helpers
+  `RESPARKABLE_ROUTES.planFor(day)` and `.projectsWithStatus(status)`;
+  `.searchFor(query)` gains an optional second `includeArchived` argument
+  (default `false`, so existing calls are byte-identical).
+
+- **`useResparkableRefresh()`** (`components/resparkable/workspace/tabs/tab-refresh-context.tsx`)
+  — the replacement for a bare `router.refresh()` anywhere under
+  `components/resparkable/`. Inside a Workspace tab it refetches that one tab;
+  on a real page it still calls `router.refresh()`, so adopting it changes
+  nothing where the old call already worked. Ships with `TabRefreshBoundary`
+  (rendered per tab by `TabContent`) and `useTabRefreshGeneration()`, which
+  `useTabFetch` now reads so a refresh re-runs every fetch the tab made.
+
+- **`countsSchema`/`CountsWire`** in `lib/framework/resparkable/ui/payloads.ts`
+  — the wire shape for `GET /api/v1/resparkable/counts`, previously declared
+  inline in the deleted Resparkable layout. The Launcher's Inbox tile now
+  carries the un-triaged count again, the one badge the nav rail's removal left
+  without a replacement.
+
+- **A write from outside the Workspace pane tree can reach the tabs showing
+  what it changed.** New
+  `components/resparkable/workspace/data-change-context.tsx` (`DataChangeProvider`,
+  `useNotifyDataChange()`, `useDataRevision()`) and the pure
+  `lib/framework/resparkable/ui/workspace/change-scope.ts`
+  (`ResparkableChange`, `keysForChange`, `keysForTab`,
+  `changesForCapabilities`). Sparkey and Activity are panes rather than tabs, so
+  `useResparkableRefresh()` resolved to `router.refresh()` there and left every
+  launcher-opened tab stale: a Sparkey capture put nothing in an open Inbox tab.
+  A writer now names `{ type, id? }` and only the tabs subscribed to that type
+  refetch. `useResparkableRefresh()` takes the same change as an optional
+  argument (omitting it is unchanged behaviour), and `TabRefreshBoundary` now
+  takes a `tab` prop so it can look up that tab's subscriptions itself.
+
+- **`<WorkspaceLink>`** (`components/resparkable/workspace/workspace-link.tsx`)
+  — the in-content link seam. Inside the Workspace shell it opens the href's
+  tab in the pane that was clicked, rather than moving the browser URL (which
+  is the tree's single route-backed tab, and so acted on a different pane than
+  the one clicked). Renders a real `<a href>` and intercepts only an unmodified
+  primary click, so ⌘/Ctrl-click, middle-click and copy-link are unaffected;
+  falls back to `next/link` outside the shell, for an href that resolves to no
+  tab kind, or on an explicit `external`. Backed by new
+  `resolveTabForHref(href)` in `tab-registry.ts`, which resolves query params as
+  well as the pathname. New `useOptionalWorkspace()` in `workspace-context.tsx`
+  returns `null` instead of throwing outside a provider.
+
+
 
 - **Phase 29: billing foundation.** New `ResparkableCreditAccount` (per-user
   credit balance), `ResparkableCreditLedgerEntry` (append-only spend/grant
@@ -132,6 +190,24 @@ release process.
 
 ### Changed
 
+- **Editing an Area, Goal or Project offers chat as well as a form.**
+  `EntityFormDialog`'s edit branch now renders `EntityEditorPanel` (bound to
+  `resparkable-companion`, which holds the `resparkable_upsert_*` capabilities)
+  in place of the plain `ResourceDialog`. `time-block` edits stay form-only —
+  `ResparkableChat`'s `entityContext` has no shape for one.
+
+- **Three shared view components take an optional callback instead of always
+  navigating.** `ProjectsView` gains `onStatusChange`, `DayPlanner` gains
+  `onDayChange`, and `SearchControls` gains `includeArchived` +
+  `onIncludeArchivedChange`. All three are optional, and absent means the exact
+  previous behaviour (`router.push`) — which is what the real
+  `projects`/`plan`/`search` pages still get. `BoardView`, `CardDetailSheet`,
+  `ThoughtCard`, `TaskRow`, `ArchiveControls`, `RelatedList`,
+  `ConnectionsView`, `BoardsList`, `PromoteDialog`, `DocumentUpload`,
+  `StaleDigest`, `VaultImportCard`, `SpaceSettingsForm`, `CreateDialog` and
+  `ResourceDialog` now refresh through `useResparkableRefresh()` rather than
+  `router.refresh()` — no prop changes, but a mutation in one pane no longer
+  refetches every other pane sharing the route segment.
 
 - **The three verbs are now catch, kindle, ignite.** They were catch, carry,
   pass on, which was three unrelated things you do with your hands; this is one
@@ -725,6 +801,18 @@ release process.
 
 ### Removed
 
+- **`components/resparkable/layout/resparkable-nav.tsx` and
+  `components/resparkable/layout/resparkable-sidekick.tsx`** — the pre-cutover
+  nav rail and capture drawer, orphaned since the Workspace shell replaced them
+  and now deleted with their tests. `RESPARKABLE_NAV_GROUPS` (extracted from the
+  rail before it went) and `QuickCapture` (still what `/resparkable/capture`
+  renders) both survive.
+
+- **The "Ask Sparkey" nav and section-help entries** (`nav-groups.ts`,
+  `section-help.ts`). Sparkey is a permanent pane in the shell, not a
+  destination; `/resparkable/chat` has been a redirect since the cutover, and
+  the Launcher was already skipping the tile. `RESPARKABLE_ROUTES.CHAT` itself
+  is unchanged, so existing links still resolve through the redirect.
 
 - **`updateSpace()`** (`lib/framework/resparkable/repo/space.ts`) — replaced by
   `updateSpaceSettings()`, which takes the patch in domain terms and translates

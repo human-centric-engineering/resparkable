@@ -41,11 +41,11 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import type { FieldValues, UseFormReturn } from 'react-hook-form';
 
 import { FormError } from '@/components/forms/form-error';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -148,7 +148,7 @@ export function ResourceDialog<TValues extends FieldValues>({
   children,
   submitLabel,
 }: ResourceDialogProps<TValues>): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -166,7 +166,7 @@ export function ResourceDialog<TValues extends FieldValues>({
           {...(submitLabel ? { submitLabel } : {})}
           onSaved={() => {
             onOpenChange(false);
-            router.refresh();
+            refresh();
           }}
         >
           {children}

@@ -17,9 +17,16 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 import { EntityTab } from '@/components/resparkable/workspace/tabs/entity-tab';
+import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { EntityViewWire } from '@/lib/framework/resparkable/ui/payloads';
+
+vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
+  useWorkspace: vi.fn(),
+}));
+
+const setTabTitle = vi.fn();
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -55,6 +62,10 @@ function makeView(overrides: Partial<EntityViewWire> = {}): EntityViewWire {
 }
 
 beforeEach(() => {
+  setTabTitle.mockReset();
+  vi.mocked(useWorkspace).mockReturnValue({ setTabTitle } as unknown as ReturnType<
+    typeof useWorkspace
+  >);
   vi.mocked(apiClient.get).mockReset();
 });
 
@@ -62,7 +73,7 @@ describe('EntityTab', () => {
   it('fetches the entity view endpoint built from the given id', () => {
     vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
 
-    render(<EntityTab id="ent_42" />);
+    render(<EntityTab tabId="tab_1" id="ent_42" />);
 
     expect(apiClient.get).toHaveBeenCalledWith(
       RESPARKABLE_API.viewPath(RESPARKABLE_API.ENTITIES, 'ent_42')
@@ -72,7 +83,7 @@ describe('EntityTab', () => {
   it('shows a loading skeleton before the fetch resolves', () => {
     vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
 
-    render(<EntityTab id="ent_1" />);
+    render(<EntityTab tabId="tab_1" id="ent_1" />);
 
     expect(screen.getByText('Loading')).toBeInTheDocument();
   });
@@ -80,7 +91,7 @@ describe('EntityTab', () => {
   it('renders an inline not-found state for a 404, not the generic load error', async () => {
     vi.mocked(apiClient.get).mockRejectedValue(new APIClientError('Not found.', 'NOT_FOUND', 404));
 
-    render(<EntityTab id="ent_1" />);
+    render(<EntityTab tabId="tab_1" id="ent_1" />);
 
     expect(await screen.findByText('Not found')).toBeInTheDocument();
     expect(
@@ -92,7 +103,7 @@ describe('EntityTab', () => {
   it('renders the generic load error for a non-404 failure', async () => {
     vi.mocked(apiClient.get).mockRejectedValue(new APIClientError('Server is down.', 'ERR', 500));
 
-    render(<EntityTab id="ent_1" />);
+    render(<EntityTab tabId="tab_1" id="ent_1" />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'Couldn’t load this person or company.'
@@ -105,7 +116,7 @@ describe('EntityTab', () => {
     const view = makeView();
     vi.mocked(apiClient.get).mockResolvedValue(view);
 
-    render(<EntityTab id="ent_1" />);
+    render(<EntityTab tabId="tab_1" id="ent_1" />);
 
     const detail = await screen.findByTestId('entity-detail');
     expect(JSON.parse(detail.textContent ?? '{}')).toEqual(view);

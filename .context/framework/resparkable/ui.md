@@ -408,6 +408,106 @@ state says "Open a Graph tab and come back."
 
 ---
 
+## 15. Inside a tab, "refresh", "the current filter" and "open this" all change meaning
+
+The three rules that stop a shared view component behaving differently
+depending on which pane it happens to be in. All were regressions the shell
+introduced, and all are invisible when broken in the same way: everything
+works, just in the wrong pane.
+
+**Never call `router.refresh()` under `components/resparkable/`. Call
+`useResparkableRefresh()`.** The old call was correct while each surface was
+its own page, and became wrong in two directions at once when three panes
+started sharing a route. Too wide: `router.refresh()` refetches the whole
+current route segment, and every pane sits under it, so a card drag in one pane
+made an unrelated tab two panes over refetch and reflow. Too narrow: a
+launcher-opened tab's data came from `useTabFetch`, not from the server render
+of whatever URL the address bar held, so refreshing that route re-rendered a
+page the pane wasn't showing and the tab stayed exactly as stale — the mutation
+appeared to do nothing at all.
+
+`useResparkableRefresh()`
+(`components/resparkable/workspace/tabs/tab-refresh-context.tsx`) resolves to
+whichever is right where it is called: the enclosing tab's own refetch when
+there is a `TabRefreshBoundary` above it (`TabContent` renders one per tab),
+and `router.refresh()` when there isn't — a real page, or the tree's one
+route-backed tab, which renders the actual server output and genuinely wants
+its route re-run. The fallback is what makes the rule cheap to follow: a
+component switching to the hook behaves identically everywhere it already
+worked. `useTabFetch` reads the boundary's generation as an effect dependency,
+so one refresh re-runs **every** fetch the tab made rather than only the one
+the control knew about — the same "this whole surface is now stale" semantics
+`router.refresh()` had, scoped to one pane.
+
+**A filter belongs to the tab, not to the URL — unless the view is a page.**
+Plan's day, Projects' status and Search's include-archived all used to live in
+`useSearchParams()`, which every pane reads: two Plan tabs stepped days
+together, and Search's checkbox navigated the address bar while changing
+nothing on screen. They now live in `TabParams` and are written with
+`useWorkspace().setTabParams(tabId, patch)` — keyed on the tab id alone, so a
+detached floating tab works through the same call with no idea which pane, if
+any, it belongs to.
+
+The shared view components take **one optional callback each**
+(`ProjectsView`'s `onStatusChange`, `DayPlanner`'s `onDayChange`,
+`SearchControls`' `onIncludeArchivedChange`). Absent, they navigate exactly as
+they always did, which is what the real `page.tsx` for each still wants and why
+the URL stays shareable there. Present, the tab adapter supplies a writer. Do
+the same for any new filter: a prop with a navigating default, never a second
+component and never a `'use client'` branch on "am I in a tab".
+
+`TabState.title` follows the same id-only shape — `useTabTitle(tabId, name)`
+in a detail adapter, so a Project tab reads "Q3 Roadmap" rather than "Project".
+
+**A write that happens outside every tab names what it touched.**
+`useResparkableRefresh()` answers "refresh the tab I am in", which is
+meaningless to a writer that is not in one. Sparkey and Activity are panes
+beside the pane tree with no `TabRefreshBoundary` above them, so the hook fell
+back to `router.refresh()` there: capturing a thought in Sparkey put nothing in
+an open Inbox tab, and telling Sparkey to change a goal changed nothing on
+screen.
+
+The fix is not a wider refresh — that is the "too wide" failure above,
+reintroduced. A writer outside the pane tree calls
+`useNotifyDataChange()(change)`
+(`components/resparkable/workspace/data-change-context.tsx`), or passes the
+same change to `useResparkableRefresh()`, where a `change` is
+`{ type, id? }` from
+`lib/framework/resparkable/ui/workspace/change-scope.ts`. That file also holds
+the one table saying which tab kinds care about which types, so a tab
+subscribes to nothing by hand: `TabContent` hands the whole tab to its
+boundary, the boundary looks the tab up, and the matching counters add into the
+same generation an in-tab refresh bumps. Adding a change type or a tab kind
+means editing that table, and `change-scope.test.ts` fails if a kind is left
+out.
+
+Name the `id` when the writer knows it, so a detail tab for some _other_
+record does not refetch for nothing. Omit it honestly when it cannot — an
+agent turn only ever learns _which capability ran_, never what it returned, so
+those changes carry no id and reach every detail tab of that type on purpose.
+
+**Inside the workspace, an in-content link opens a tab.** Use
+`<WorkspaceLink href={…}>` (`components/resparkable/workspace/workspace-link.tsx`),
+never a bare `next/link`, for any link rendered inside a tab's content. A plain
+`<Link>` moves the browser URL, which the route bridge turns into the tree's
+_one_ route-backed tab — so clicking a project link inside a Board tab in the
+right pane replaced whatever the left pane was showing and left the pane you
+clicked in untouched.
+
+`WorkspaceLink` renders a real `<a href>` and intercepts only an unmodified
+primary click, so ⌘/Ctrl-click, middle-click and copy-link all still do the
+browser thing and land on a genuine URL. It falls back to an ordinary `<Link>`
+when there is no workspace above it (a plain page, a component under test),
+when the href resolves to no tab kind (`/resparkable/chat`, anything outside
+`/resparkable`), or when the caller passes `external`. That is what makes it
+safe to use in a component shared between a tab and a page.
+
+Chrome is the exception, and only chrome: `ResparkableAppHeader`'s brand mark
+and search box move the real URL deliberately, because they sit above the pane
+tree and "the pane you clicked from" means nothing there.
+
+---
+
 ## Adding a surface — the checklist
 
 1. Does an endpoint return **everything** the page renders? If not, add a `/view`
@@ -418,5 +518,11 @@ state says "Open a Graph tab and come back."
    a group in `RESPARKABLE_NAV_GROUPS`, and a matching entry in `ui/section-help.ts`
    or its test fails.
 5. Add a `loading.tsx` using `SkeletonList`.
-6. Component tests for the behaviour that would look fine if wrong — optimistic
+6. If it becomes a Workspace tab, add a `tab-registry.ts` entry (or
+   `tab-registry.test.ts`'s coverage block fails), a `change-scope.ts` entry
+   (or `change-scope.test.ts`'s does), and an adapter under `workspace/tabs/`.
+   Any mutating control refreshes through `useResparkableRefresh()`, any filter
+   it carries goes in `TabParams` with a navigating-by-default callback prop on
+   the view, and any in-content link is a `<WorkspaceLink>` — §15.
+7. Component tests for the behaviour that would look fine if wrong — optimistic
    rollback, request shape, and the copy that explains a silent behaviour.

@@ -12,7 +12,7 @@ export const metadata: Metadata = {
  *
  * ## Why this page exists at all
  *
- * The capture drawer (`resparkable-sidekick.tsx`) already covers every other
+ * Sparkey's own Capture mode already covers every other
  * entry point, but Android's Web Share Target API opens a **page**, not a
  * drawer — there is no way to hand a share intent to something that starts
  * closed. `app/manifest.ts` declares `share_target: { method: 'GET', action:

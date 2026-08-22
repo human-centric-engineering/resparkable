@@ -19,21 +19,26 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import { useTabTitle } from '@/components/resparkable/workspace/tabs/use-tab-title';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { areaSchema, projectViewSchema } from '@/lib/framework/resparkable/ui/payloads';
 
 const areasSchema = z.array(areaSchema);
 
 export interface ProjectTabProps {
+  /** This tab's id — what `useTabTitle` names once the project's own name is known. */
+  tabId: string;
   id: string;
 }
 
-export function ProjectTab({ id }: ProjectTabProps): React.ReactElement {
+export function ProjectTab({ tabId, id }: ProjectTabProps): React.ReactElement {
   const [view, retryView] = useTabFetch(
     RESPARKABLE_API.viewPath(RESPARKABLE_API.PROJECTS, id),
     projectViewSchema
   );
   const [areas] = useTabFetch(`${RESPARKABLE_API.AREAS}?limit=200`, areasSchema);
+
+  useTabTitle(tabId, view.status === 'ready' ? view.data.project.name : null);
 
   if (view.status === 'loading') return <SkeletonList label="Loading project" />;
   if (view.status === 'error') {

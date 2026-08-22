@@ -19,7 +19,6 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import {
   Building2,
   FileText,
@@ -31,6 +30,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { cn } from '@/lib/utils';
 
@@ -168,8 +168,8 @@ export function EntityChip({
   }
 
   return (
-    <Link href={href} className={cn(classes, 'hover:opacity-80')}>
+    <WorkspaceLink href={href} className={cn(classes, 'hover:opacity-80')}>
       {body}
-    </Link>
+    </WorkspaceLink>
   );
 }

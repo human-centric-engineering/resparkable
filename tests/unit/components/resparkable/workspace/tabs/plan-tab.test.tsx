@@ -4,11 +4,14 @@
  * Three independent `useTabFetch` calls (time blocks, active projects,
  * areas) share one `apiClient.get` mock, distinguished by endpoint —
  * `useTabFetch`'s own mechanics are covered by `use-tab-fetch.test.ts`.
- * What's this adapter's own logic, and what's pinned here: reading `day`
- * from `useSearchParams()` with a regex-validated fallback to "today", the
- * from/to range it derives from that day to build the time-blocks
- * endpoint, and that only the blocks fetch drives loading/error while
- * projects/areas degrade to `[]` when not yet ready — same accepted
+ * What's this adapter's own logic, and what's pinned here: `day` is this
+ * tab's **own** state, taken off `tab.params` with a regex-validated
+ * fallback to "today" and written back through `setTabParams` — never the
+ * shared browser URL, which is the regression this replaced (two Plan panes
+ * read one `useSearchParams()`, so stepping to tomorrow in either stepped
+ * both). Then: the from/to range it derives from that day to build the
+ * time-blocks endpoint, and that only the blocks fetch drives loading/error
+ * while projects/areas degrade to `[]` when not yet ready — same accepted
  * pattern as `GoalsTab`/`InboxTab`.
  *
  * @see components/resparkable/workspace/tabs/plan-tab.tsx
@@ -17,9 +20,9 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useSearchParams } from 'next/navigation';
 
 import { PlanTab } from '@/components/resparkable/workspace/tabs/plan-tab';
+import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, ProjectWire, TimeBlockWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -29,8 +32,8 @@ vi.mock('@/lib/api/client', async () => {
   return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn() } };
 });
 
-vi.mock('next/navigation', () => ({
-  useSearchParams: vi.fn(),
+vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
+  useWorkspace: vi.fn(),
 }));
 
 vi.mock('@/components/resparkable/plan/day-planner', () => ({
@@ -39,13 +42,28 @@ vi.mock('@/components/resparkable/plan/day-planner', () => ({
     projects,
     areas,
     day,
+    onDayChange,
   }: {
     blocks: TimeBlockWire[];
     projects: ProjectWire[];
     areas: AreaWire[];
     day: string;
-  }) => <div data-testid="day-planner">{JSON.stringify({ blocks, projects, areas, day })}</div>,
+    onDayChange?: (day: string) => void;
+  }) => (
+    <div data-testid="day-planner">
+      {/* The props live in their own node so the button below doesn't end up
+          inside the JSON the assertions parse. */}
+      <span data-testid="day-planner-props">
+        {JSON.stringify({ blocks, projects, areas, day })}
+      </span>
+      <button type="button" onClick={() => onDayChange?.('2024-02-02')}>
+        next day
+      </button>
+    </div>
+  ),
 }));
+
+const setTabParams = vi.fn();
 
 const PROJECTS_ENDPOINT = `${RESPARKABLE_API.PROJECTS}?status=active&limit=200`;
 const AREAS_ENDPOINT = `${RESPARKABLE_API.AREAS}?limit=200`;
@@ -70,10 +88,9 @@ function todayIso(): string {
   return `${now.getFullYear()}-${month}-${date}`;
 }
 
-function mockSearchParams(day: string | null): void {
-  vi.mocked(useSearchParams).mockReturnValue({
-    get: (key: string) => (key === 'day' ? day : null),
-  } as unknown as ReturnType<typeof useSearchParams>);
+/** `day` is a prop off `tab.params` now — `undefined` is "the tab carries none". */
+function renderPlanTab(day?: string) {
+  return render(<PlanTab tabId="tab_1" day={day} />);
 }
 
 function makeTimeBlock(overrides: Partial<TimeBlockWire> = {}): TimeBlockWire {
@@ -133,33 +150,35 @@ function pending<T>(): Promise<T> {
 
 beforeEach(() => {
   vi.mocked(apiClient.get).mockReset();
-  mockSearchParams(null);
+  setTabParams.mockReset();
+  vi.mocked(useWorkspace).mockReturnValue({ setTabParams } as unknown as ReturnType<
+    typeof useWorkspace
+  >);
 });
 
 describe('PlanTab', () => {
-  it('builds the time-blocks endpoint from a valid day search param', () => {
-    mockSearchParams('2024-01-15');
+  it('builds the time-blocks endpoint from the day the tab carries', () => {
+    const day = '2024-01-15';
     vi.mocked(apiClient.get).mockImplementation(() => pending());
 
-    render(<PlanTab />);
+    renderPlanTab(day);
 
     expect(apiClient.get).toHaveBeenCalledWith(timeBlocksEndpointFor('2024-01-15'));
   });
 
-  it('falls back to today when the day search param is missing', () => {
-    mockSearchParams(null);
+  it('falls back to today when the tab carries no day', () => {
     vi.mocked(apiClient.get).mockImplementation(() => pending());
 
-    render(<PlanTab />);
+    renderPlanTab();
 
     expect(apiClient.get).toHaveBeenCalledWith(timeBlocksEndpointFor(todayIso()));
   });
 
-  it('falls back to today when the day search param is malformed', () => {
-    mockSearchParams('not-a-date');
+  it('falls back to today when the day the tab carries is malformed', () => {
+    const day = 'not-a-date';
     vi.mocked(apiClient.get).mockImplementation(() => pending());
 
-    render(<PlanTab />);
+    renderPlanTab(day);
 
     expect(apiClient.get).toHaveBeenCalledWith(timeBlocksEndpointFor(todayIso()));
   });
@@ -167,7 +186,7 @@ describe('PlanTab', () => {
   it('also fetches active projects and areas', () => {
     vi.mocked(apiClient.get).mockImplementation(() => pending());
 
-    render(<PlanTab />);
+    renderPlanTab();
 
     expect(apiClient.get).toHaveBeenCalledWith(PROJECTS_ENDPOINT);
     expect(apiClient.get).toHaveBeenCalledWith(AREAS_ENDPOINT);
@@ -180,13 +199,13 @@ describe('PlanTab', () => {
         : pending()
     );
 
-    render(<PlanTab />);
+    renderPlanTab();
 
     expect(screen.getByText('Loading your day')).toBeInTheDocument();
   });
 
   it('shows a load error naming your day and retries only the time-blocks fetch', async () => {
-    mockSearchParams('2024-01-15');
+    const day = '2024-01-15';
     const blocksEndpoint = timeBlocksEndpointFor('2024-01-15');
     vi.mocked(apiClient.get).mockImplementation((endpoint: string) =>
       endpoint === blocksEndpoint
@@ -195,7 +214,7 @@ describe('PlanTab', () => {
     );
     const user = userEvent.setup();
 
-    render(<PlanTab />);
+    renderPlanTab(day);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Couldn’t load your day.');
 
@@ -209,7 +228,7 @@ describe('PlanTab', () => {
   });
 
   it('passes blocks, projects, areas and day through once everything is ready', async () => {
-    mockSearchParams('2024-01-15');
+    const day = '2024-01-15';
     const blocksEndpoint = timeBlocksEndpointFor('2024-01-15');
     const blocks = [makeTimeBlock()];
     const projects = [makeProject()];
@@ -221,9 +240,10 @@ describe('PlanTab', () => {
       return Promise.reject(new Error(`unexpected endpoint ${endpoint}`));
     });
 
-    render(<PlanTab />);
+    renderPlanTab(day);
 
-    const view = await screen.findByTestId('day-planner');
+    await screen.findByTestId('day-planner');
+    const view = screen.getByTestId('day-planner-props');
     expect(JSON.parse(view.textContent ?? '{}')).toEqual({
       blocks,
       projects,
@@ -233,21 +253,37 @@ describe('PlanTab', () => {
   });
 
   it('defaults projects and areas to an empty array when those fetches have not resolved yet', async () => {
-    mockSearchParams('2024-01-15');
+    const day = '2024-01-15';
     const blocksEndpoint = timeBlocksEndpointFor('2024-01-15');
     const blocks = [makeTimeBlock()];
     vi.mocked(apiClient.get).mockImplementation((endpoint: string) =>
       endpoint === blocksEndpoint ? Promise.resolve(blocks) : pending()
     );
 
-    render(<PlanTab />);
+    renderPlanTab(day);
 
-    const view = await screen.findByTestId('day-planner');
+    await screen.findByTestId('day-planner');
+    const view = screen.getByTestId('day-planner-props');
     expect(JSON.parse(view.textContent ?? '{}')).toEqual({
       blocks,
       projects: [],
       areas: [],
       day: '2024-01-15',
     });
+  });
+
+  it('writes a day change back to this tab, keyed on its own id, not to the URL', async () => {
+    const user = userEvent.setup();
+    const day = '2024-01-15';
+    vi.mocked(apiClient.get).mockImplementation((endpoint: string) =>
+      endpoint === timeBlocksEndpointFor(day) ? Promise.resolve([makeTimeBlock()]) : pending()
+    );
+
+    renderPlanTab(day);
+
+    await screen.findByTestId('day-planner');
+    await user.click(screen.getByRole('button', { name: 'next day' }));
+
+    expect(setTabParams).toHaveBeenCalledWith('tab_1', { day: '2024-02-02' });
   });
 });

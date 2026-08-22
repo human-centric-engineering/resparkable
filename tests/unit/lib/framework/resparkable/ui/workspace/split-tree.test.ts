@@ -27,8 +27,11 @@ import {
   reorderTab,
   resizeSplit,
   setRouteTab,
+  setTabParams,
+  setTabTitle,
   showLauncher,
   splitLeaf,
+  updateTab,
   type LeafNode,
   type PaneNode,
   type SplitNode,
@@ -429,5 +432,120 @@ describe('setRouteTab', () => {
 
     const leaf = findLeaf(result.root, 'a') as LeafNode;
     expect(leaf.tabs).toContainEqual(tab('launcher-tab', { kind: 'boards', source: 'launcher' }));
+  });
+});
+
+describe('updateTab / setTabParams / setTabTitle — keyed on the tab, not the leaf', () => {
+  function twoLeafTree(): SplitNode {
+    return {
+      kind: 'split',
+      id: 's',
+      direction: 'horizontal',
+      children: [
+        { kind: 'leaf', id: 'a', tabs: [tab('t1')], activeTabId: 't1', locked: false },
+        {
+          kind: 'leaf',
+          id: 'b',
+          tabs: [tab('t2', { kind: 'plan' }), tab('t3', { kind: 'project', params: { id: 'p1' } })],
+          activeTabId: 't2',
+          locked: false,
+        },
+      ],
+      sizes: [50, 50],
+    };
+  }
+
+  it('finds a tab in a nested leaf without being told which leaf it is in', () => {
+    const next = setTabTitle(twoLeafTree(), 't3', 'Q3 Roadmap');
+
+    const leaf = findLeaf(next, 'b') as LeafNode;
+    expect(leaf.tabs[1].title).toBe('Q3 Roadmap');
+  });
+
+  it('merges params rather than replacing them, so a tab keeps what identifies it', () => {
+    const next = setTabParams(twoLeafTree(), 't3', { status: 'paused' });
+
+    const leaf = findLeaf(next, 'b') as LeafNode;
+    expect(leaf.tabs[1].params).toEqual({ id: 'p1', status: 'paused' });
+  });
+
+  it('leaves every other tab in the tree untouched', () => {
+    const before = twoLeafTree();
+    const next = setTabParams(before, 't2', { day: '2026-01-02' });
+
+    const leafA = findLeaf(next, 'a') as LeafNode;
+    const leafB = findLeaf(next, 'b') as LeafNode;
+    expect(leafA.tabs[0]).toEqual(tab('t1'));
+    expect(leafB.tabs[1].params).toEqual({ id: 'p1' });
+  });
+
+  it('returns the same tree object when the tab is gone — a write racing a close is a no-op', () => {
+    const before = twoLeafTree();
+
+    expect(setTabParams(before, 'nope', { day: '2026-01-02' })).toBe(before);
+  });
+
+  it('returns the same tree object when the title is already what it would be set to', () => {
+    const titled = setTabTitle(twoLeafTree(), 't3', 'Q3 Roadmap');
+
+    // Identity, not deep equality: `workspace-context.tsx` compares
+    // identities to skip a localStorage write and a re-render of every pane,
+    // and `useTabTitle` writes on every render of a loaded detail tab.
+    expect(setTabTitle(titled, 't3', 'Q3 Roadmap')).toBe(titled);
+  });
+
+  it('does not rebuild untouched split branches', () => {
+    const before = twoLeafTree();
+    const next = updateTab(before, 't1', (t) => ({ ...t, title: 'Today' })) as SplitNode;
+
+    expect(next).not.toBe(before);
+    expect(next.children[1]).toBe(before.children[1]);
+  });
+});
+
+describe('openTabInLeaf — dedupe across the filter params', () => {
+  it('treats two Plan tabs on different days as different tabs', () => {
+    const leaf = createLeaf('a');
+    const withMonday = openTabInLeaf(
+      leaf,
+      'a',
+      tab('t1', { kind: 'plan', params: { day: '2026-01-05' } })
+    );
+    const withTuesday = openTabInLeaf(
+      withMonday,
+      'a',
+      tab('t2', { kind: 'plan', params: { day: '2026-01-06' } })
+    );
+
+    expect((withTuesday as LeafNode).tabs).toHaveLength(2);
+  });
+
+  it('still dedupes two Plan tabs on the same day', () => {
+    const leaf = createLeaf('a');
+    const first = openTabInLeaf(
+      leaf,
+      'a',
+      tab('t1', { kind: 'plan', params: { day: '2026-01-05' } })
+    );
+    const second = openTabInLeaf(
+      first,
+      'a',
+      tab('t2', { kind: 'plan', params: { day: '2026-01-05' } })
+    );
+
+    expect((second as LeafNode).tabs).toHaveLength(1);
+    expect((second as LeafNode).activeTabId).toBe('t1');
+  });
+
+  it('distinguishes a Search tab that includes the archive from one that does not', () => {
+    const leaf = createLeaf('a');
+    const plain = openTabInLeaf(leaf, 'a', tab('t1', { kind: 'search', params: { query: 'x' } }));
+    const archived = openTabInLeaf(
+      plain,
+      'a',
+      tab('t2', { kind: 'search', params: { query: 'x', includeArchived: true } })
+    );
+
+    expect((archived as LeafNode).tabs).toHaveLength(2);
   });
 });

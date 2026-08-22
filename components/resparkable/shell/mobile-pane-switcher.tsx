@@ -3,7 +3,7 @@
 /**
  * MobilePaneSwitcher — the narrow-viewport fallback for the three fixed
  * panes, below `lg` (matching the rail's own precedent breakpoint —
- * `resparkable-nav.tsx`'s `lg:hidden` section switcher — rather than the
+ * the deleted nav rail's `lg:hidden` section switcher — rather than the
  * Risks section's "~900px" approximation of the same cutoff).
  *
  * Three fixed panes cost about 900px before any of them has room to be

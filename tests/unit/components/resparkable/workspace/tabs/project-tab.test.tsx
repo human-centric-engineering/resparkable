@@ -21,9 +21,16 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { ProjectTab } from '@/components/resparkable/workspace/tabs/project-tab';
+import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { AreaWire, ProjectViewWire } from '@/lib/framework/resparkable/ui/payloads';
+
+vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
+  useWorkspace: vi.fn(),
+}));
+
+const setTabTitle = vi.fn();
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -87,6 +94,10 @@ function mockGet(responses: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  setTabTitle.mockReset();
+  vi.mocked(useWorkspace).mockReturnValue({ setTabTitle } as unknown as ReturnType<
+    typeof useWorkspace
+  >);
   vi.mocked(apiClient.get).mockReset();
 });
 
@@ -94,7 +105,7 @@ describe('ProjectTab', () => {
   it('fetches the project view and shows a loading skeleton first', () => {
     mockGet({});
 
-    render(<ProjectTab id="proj_1" />);
+    render(<ProjectTab tabId="tab_1" id="proj_1" />);
 
     expect(screen.getByText('Loading project')).toBeInTheDocument();
     expect(apiClient.get).toHaveBeenCalledWith(viewEndpoint);
@@ -105,7 +116,7 @@ describe('ProjectTab', () => {
       [viewEndpoint]: () => Promise.reject(new APIClientError('Not found.', 'NOT_FOUND', 404)),
     });
 
-    render(<ProjectTab id="proj_1" />);
+    render(<ProjectTab tabId="tab_1" id="proj_1" />);
 
     await waitFor(() => expect(screen.getByText('Project not found')).toBeInTheDocument());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -123,7 +134,7 @@ describe('ProjectTab', () => {
       },
     });
 
-    render(<ProjectTab id="proj_1" />);
+    render(<ProjectTab tabId="tab_1" id="proj_1" />);
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByText(/Couldn.t load this project/)).toBeInTheDocument();
@@ -136,7 +147,7 @@ describe('ProjectTab', () => {
   it('falls back to an empty areas array while the areas fetch is still loading', async () => {
     mockGet({ [viewEndpoint]: validView }); // areasEndpoint left pending
 
-    render(<ProjectTab id="proj_1" />);
+    render(<ProjectTab tabId="tab_1" id="proj_1" />);
 
     await waitFor(() => expect(screen.getByTestId('project-detail')).toBeInTheDocument());
     expect(screen.getByTestId('project-detail')).toHaveTextContent('"areas":[]');
@@ -145,7 +156,7 @@ describe('ProjectTab', () => {
   it('passes the resolved areas through once both fetches are ready', async () => {
     mockGet({ [viewEndpoint]: validView, [areasEndpoint]: [area] });
 
-    render(<ProjectTab id="proj_1" />);
+    render(<ProjectTab tabId="tab_1" id="proj_1" />);
 
     await waitFor(() => expect(screen.getByTestId('project-detail')).toBeInTheDocument());
     expect(screen.getByTestId('project-detail')).toHaveTextContent('"name":"Home"');

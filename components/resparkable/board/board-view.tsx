@@ -35,7 +35,6 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import {
   DndContext,
   DragOverlay,
@@ -53,6 +52,7 @@ import { BoardColumn } from '@/components/resparkable/board/board-column';
 import { CardDetailSheet } from '@/components/resparkable/board/card-detail-sheet';
 import { TaskCard } from '@/components/resparkable/board/task-card';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
@@ -71,7 +71,7 @@ export interface BoardViewProps {
 }
 
 export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
 
   // Local mirror of the server payload so a drag can move a card before the
@@ -168,7 +168,7 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
     });
 
     if (ok) {
-      router.refresh();
+      refresh();
     } else {
       // Wholesale restore — a partial rollback is how a board ends up disagreeing
       // with the server in a way nobody notices until a refresh.

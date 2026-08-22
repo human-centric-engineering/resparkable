@@ -21,9 +21,9 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import { Link2, ListTodo, MessageCircle, Pencil } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ProjectForm } from '@/components/resparkable/projects/project-form';
 import { SnoozeMenu } from '@/components/resparkable/controls/snooze-menu';
@@ -71,9 +71,9 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
               {area ? (
                 <>
                   Part of{' '}
-                  <Link href={RESPARKABLE_ROUTES.AREAS} className="hover:underline">
+                  <WorkspaceLink href={RESPARKABLE_ROUTES.AREAS} className="hover:underline">
                     {area.name}
-                  </Link>
+                  </WorkspaceLink>
                   {' · '}
                 </>
               ) : (

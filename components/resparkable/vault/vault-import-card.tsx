@@ -24,10 +24,10 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { AlertTriangle, FileUp, Loader2 } from 'lucide-react';
 import { z } from 'zod';
 
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -63,7 +63,7 @@ const envelopeSchema = z.object({
 });
 
 export function VaultImportCard(): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const [state, setState] = React.useState<State>({ kind: 'idle' });
   const [allowBlanking, setAllowBlanking] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -106,7 +106,7 @@ export function VaultImportCard(): React.ReactElement {
         // The brain changed underneath every other Resparkable surface — counts,
         // inbox badge, ranked list. Re-render the server components rather than
         // leaving a stale shell around a fresh import.
-        router.refresh();
+        refresh();
       } else {
         setState({ kind: 'planned', result: parsed.data, file });
       }

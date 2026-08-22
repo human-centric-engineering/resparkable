@@ -45,13 +45,13 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { Send } from 'lucide-react';
 
 import { AttachButton, AttachmentCard } from '@/components/resparkable/layout/capture-attachment';
 import { ImageCaptureButton } from '@/components/resparkable/layout/image-capture-button';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { apiClient } from '@/lib/api/client';
@@ -84,7 +84,7 @@ export function QuickCapture({
   initialValue,
   initialSource,
 }: QuickCaptureProps = {}): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const [value, setValue] = React.useState(initialValue ?? '');
   const [file, setFile] = React.useState<File | null>(null);
@@ -135,8 +135,11 @@ export function QuickCapture({
     );
 
     if (ok) {
-      // The inbox count in the nav and any inbox list on screen are now stale.
-      router.refresh();
+      // Any inbox list on screen is now stale — including one in a pane this
+      // page is not, since `/resparkable/capture` renders as a tab inside the
+      // workspace shell like every other route. `refresh` handles the route
+      // itself; naming the change is what reaches the other panes.
+      refresh({ type: 'thought' });
     } else {
       // Give the words (and their source) back. Losing them is the one
       // unforgivable failure here.
@@ -227,7 +230,7 @@ export function QuickCapture({
                 ? 'Already in your documents — same file, so nothing new was created.'
                 : 'Added to your documents. It becomes searchable once indexed.',
             });
-            router.refresh();
+            refresh({ type: 'document' });
           }}
         />
       )}

@@ -30,6 +30,7 @@ import {
 } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { WorkspacePaneTree } from '@/components/resparkable/workspace/workspace-pane-tree';
 import { apiClient } from '@/lib/api/client';
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -157,8 +158,12 @@ describe('WorkspacePaneTree — the route-backed tab', () => {
     await user.click(screen.getByText('sync route to today'));
 
     expect(screen.getByText('real server-rendered Today page')).toBeInTheDocument();
-    // TabContent's own client fetch never fires for the route tab.
-    expect(apiClient.get).not.toHaveBeenCalled();
+    // TabContent's own client fetch never fires for the route tab. Asserted
+    // against the Today endpoint specifically rather than "nothing was
+    // fetched at all" — the empty pane this tree starts on shows the
+    // `Launcher`, which fetches its own inbox count.
+    const calledPaths = vi.mocked(apiClient.get).mock.calls.map((call) => String(call[0]));
+    expect(calledPaths).not.toContain(RESPARKABLE_API.TODAY);
   });
 
   it('falls back to TabContent for a launcher-opened tab even when routeContent is set', async () => {

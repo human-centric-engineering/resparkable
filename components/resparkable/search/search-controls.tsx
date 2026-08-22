@@ -23,12 +23,33 @@ import { FieldHelp } from '@/components/ui/field-help';
 import { Label } from '@/components/ui/label';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
-export function SearchControls({ query }: { query: string }): React.ReactElement {
+export interface SearchControlsProps {
+  query: string;
+  /**
+   * Whether the archived corpus is currently included. Absent on the real
+   * page, which reads it off the URL itself — a launcher-opened `SearchTab`
+   * passes its own tab-scoped value, because two Search panes reading one
+   * `useSearchParams()` meant ticking the box in either ticked both.
+   */
+  includeArchived?: boolean;
+  /** Where a change goes. Absent, it navigates, exactly as this header describes. */
+  onIncludeArchivedChange?: (includeArchived: boolean) => void;
+}
+
+export function SearchControls({
+  query,
+  includeArchived: includeArchivedProp,
+  onIncludeArchivedChange,
+}: SearchControlsProps): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
-  const includeArchived = params.get('includeArchived') === 'true';
+  const includeArchived = includeArchivedProp ?? params.get('includeArchived') === 'true';
 
   function setIncludeArchived(next: boolean): void {
+    if (onIncludeArchivedChange) {
+      onIncludeArchivedChange(next);
+      return;
+    }
     const search = new URLSearchParams(params.toString());
     search.set('q', query);
     if (next) {

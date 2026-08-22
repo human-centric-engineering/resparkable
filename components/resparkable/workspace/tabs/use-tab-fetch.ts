@@ -21,6 +21,7 @@
 import * as React from 'react';
 import type { z } from 'zod';
 
+import { useTabRefreshGeneration } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { apiClient, APIClientError } from '@/lib/api/client';
 
 export type TabFetchState<T> =
@@ -37,6 +38,14 @@ const SHAPE_ERROR = 'That response wasn’t what we expected.';
  * response with `schema`. Re-fetches whenever `endpoint` changes, and
  * ignores a response that resolves after `endpoint` has already changed
  * again or the caller has unmounted.
+ *
+ * Also re-fetches when the enclosing tab is refreshed — a mutation anywhere
+ * in this tab's content calling `useResparkableRefresh()` (see
+ * `tab-refresh-context.tsx`). That is what gives a launcher-opened tab the
+ * "I changed something, show me the new state" behavior `router.refresh()`
+ * used to provide on a real page, scoped to this pane instead of the whole
+ * route segment. Outside a tab the generation is a constant `0`, so this
+ * hook behaves exactly as it did before.
  */
 export function useTabFetch<T>(
   endpoint: string | null,
@@ -44,6 +53,7 @@ export function useTabFetch<T>(
 ): [TabFetchState<T>, () => void] {
   const [state, setState] = React.useState<TabFetchState<T>>({ status: 'loading' });
   const [attempt, setAttempt] = React.useState(0);
+  const generation = useTabRefreshGeneration();
 
   React.useEffect(() => {
     if (endpoint === null) return;
@@ -77,7 +87,7 @@ export function useTabFetch<T>(
     return () => {
       cancelled = true;
     };
-  }, [endpoint, attempt, schema]);
+  }, [endpoint, attempt, generation, schema]);
 
   const retry = React.useCallback(() => setAttempt((n) => n + 1), []);
   return [state, retry];
