@@ -108,7 +108,7 @@ function CardDetailBody({
       apiClient.patch(RESPARKABLE_API.checklistItem(itemId), { body: { isDone: next } })
     );
 
-    if (ok) refresh();
+    if (ok) refresh({ type: 'task', id: taskId });
     else setChecked((current) => ({ ...current, [itemId]: !next }));
   }
 
@@ -122,14 +122,14 @@ function CardDetailBody({
       apiClient.post(RESPARKABLE_API.taskChecklist(taskId), { body: { text } })
     );
 
-    if (ok) refresh();
+    if (ok) refresh({ type: 'task', id: taskId });
     // Give the words back, as everywhere else in this UI.
     else setNewItem(text);
   }
 
   async function removeItem(itemId: string): Promise<void> {
     const ok = await run(() => apiClient.delete(RESPARKABLE_API.checklistItem(itemId)));
-    if (ok) refresh();
+    if (ok) refresh({ type: 'task', id: taskId });
   }
 
   async function toggleTag(tagId: string): Promise<void> {
@@ -143,7 +143,7 @@ function CardDetailBody({
       apiClient.put(RESPARKABLE_API.taskTags(taskId), { body: { tagIds: next } })
     );
 
-    if (ok) refresh();
+    if (ok) refresh({ type: 'task', id: taskId });
     else setTagIds(previous);
   }
 

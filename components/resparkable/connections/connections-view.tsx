@@ -68,7 +68,7 @@ export function ConnectionsView({
     );
 
     if (ok) {
-      refresh();
+      refresh({ type: 'link', id });
     } else {
       setReviewed((current) => {
         const next = new Set(current);

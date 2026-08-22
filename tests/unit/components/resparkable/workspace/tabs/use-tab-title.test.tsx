@@ -9,11 +9,17 @@
  * write settles rather than looping, since the hook fires on every render of
  * a loaded detail tab.
  *
+ * The write is debounced, so the cases that expect one assert through
+ * `waitFor`. That is not test ceremony around an implementation detail: the
+ * write serializes the entire workspace tree to localStorage and re-renders
+ * every pane, and `NoteTab` passes a value that changes on every keystroke.
+ * The last test pins the coalescing directly.
+ *
  * @see components/resparkable/workspace/tabs/use-tab-title.ts
  */
 
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 
 import {
   titleFromNoteBody,
@@ -35,10 +41,10 @@ beforeEach(() => {
 });
 
 describe('useTabTitle', () => {
-  it('writes the title against the tab id it was given', () => {
+  it('writes the title against the tab id it was given', async () => {
     renderHook(() => useTabTitle('tab_7', 'Q3 Roadmap'));
 
-    expect(setTabTitle).toHaveBeenCalledWith('tab_7', 'Q3 Roadmap');
+    await waitFor(() => expect(setTabTitle).toHaveBeenCalledWith('tab_7', 'Q3 Roadmap'));
   });
 
   it('writes nothing while the fetch is still in flight', () => {
@@ -53,35 +59,50 @@ describe('useTabTitle', () => {
     expect(setTabTitle).not.toHaveBeenCalled();
   });
 
-  it('trims surrounding whitespace off the name it writes', () => {
+  it('trims surrounding whitespace off the name it writes', async () => {
     renderHook(() => useTabTitle('tab_7', '  Q3 Roadmap  '));
 
-    expect(setTabTitle).toHaveBeenCalledWith('tab_7', 'Q3 Roadmap');
+    await waitFor(() => expect(setTabTitle).toHaveBeenCalledWith('tab_7', 'Q3 Roadmap'));
   });
 
-  it('writes once and stays quiet on a re-render with the same title', () => {
+  it('writes once and stays quiet on a re-render with the same title', async () => {
     const { rerender } = renderHook(({ title }) => useTabTitle('tab_7', title), {
       initialProps: { title: 'Q3 Roadmap' },
     });
 
     rerender({ title: 'Q3 Roadmap' });
 
-    expect(setTabTitle).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(setTabTitle).toHaveBeenCalledTimes(1));
   });
 
-  it('writes again when the content is renamed under it', () => {
+  it('writes again when the content is renamed under it', async () => {
     const { rerender } = renderHook(({ title }) => useTabTitle('tab_7', title), {
       initialProps: { title: 'Q3 Roadmap' },
     });
 
     rerender({ title: 'Q4 Roadmap' });
 
-    expect(setTabTitle).toHaveBeenLastCalledWith('tab_7', 'Q4 Roadmap');
+    await waitFor(() => expect(setTabTitle).toHaveBeenLastCalledWith('tab_7', 'Q4 Roadmap'));
   });
 
-  it('caps a very long name so one tab cannot take the whole strip', () => {
+  it('coalesces a burst of typing into one write', async () => {
+    // The reason the debounce exists. `NoteTab` passes the live editor value,
+    // so without this every keystroke in a note's first line serialized the
+    // whole workspace tree and re-rendered every pane in the shell.
+    const { rerender } = renderHook(({ title }) => useTabTitle('tab_7', title), {
+      initialProps: { title: 'K' },
+    });
+    for (const title of ['Ki', 'Kic', 'Kick', 'Kicko', 'Kickoff']) rerender({ title });
+
+    await waitFor(() => expect(setTabTitle).toHaveBeenCalledTimes(1));
+    // The trailing edge wins, so the settled title is the exact final value.
+    expect(setTabTitle).toHaveBeenCalledWith('tab_7', 'Kickoff');
+  });
+
+  it('caps a very long name so one tab cannot take the whole strip', async () => {
     renderHook(() => useTabTitle('tab_7', 'x'.repeat(200)));
 
+    await waitFor(() => expect(setTabTitle).toHaveBeenCalledTimes(1));
     const [, written] = setTabTitle.mock.calls[0];
     expect(written).toHaveLength(60);
   });

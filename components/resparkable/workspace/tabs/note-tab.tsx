@@ -68,9 +68,11 @@ function NoteEditor({
   const [content, setContent] = React.useState(initialContent);
   const { state, message, run } = useSaveStatus();
   // Tracks the live editor value rather than the fetched one, so a note being
-  // retitled in its first line renames its own tab as you type. Debouncing
-  // this would be pointless — `setTabTitle` no-ops on an unchanged title, and
-  // the write it guards is a `useState` update, not a request.
+  // retitled in its first line renames its own tab as you type. `useTabTitle`
+  // debounces the write itself: this is the one caller that passes a value
+  // changing per keystroke, and the write beneath it serializes the whole
+  // workspace tree to localStorage rather than being the plain `useState`
+  // update an earlier note here claimed.
   useTabTitle(tabId, titleFromNoteBody(content));
   const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks the latest content a pending debounce would save, so unmount can

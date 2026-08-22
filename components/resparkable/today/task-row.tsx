@@ -78,7 +78,7 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
     );
 
     if (ok) {
-      refresh();
+      refresh({ type: 'task', id: task.id });
     } else {
       setDone(!next);
     }
@@ -170,8 +170,16 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
       </div>
 
       <div className="flex shrink-0 items-center">
-        <PinControl taskId={task.id} manualBoost={task.manualBoost} onDone={() => refresh()} />
-        <SnoozeMenu kind="task" id={task.id} onDone={() => refresh()} />
+        <PinControl
+          taskId={task.id}
+          manualBoost={task.manualBoost}
+          onDone={() => refresh({ type: 'task', id: task.id })}
+        />
+        <SnoozeMenu
+          kind="task"
+          id={task.id}
+          onDone={() => refresh({ type: 'task', id: task.id })}
+        />
       </div>
     </li>
   );

@@ -62,6 +62,17 @@ release process.
   refetch. `useResparkableRefresh()` takes the same change as an optional
   argument (omitting it is unchanged behaviour), and `TabRefreshBoundary` now
   takes a `tab` prop so it can look up that tab's subscriptions itself.
+  `changeTypeForCollection(collection)` names the change for the two writers
+  handed a `RESPARKABLE_API` collection rather than a domain noun
+  (`ArchiveControls`, `ResourceFormBody`).
+
+- **`useTabFetch` revalidates in place instead of resetting to `loading`.** A
+  refresh now keeps the previous data on screen while the refetch is in flight;
+  a skeleton still shows on first load, on an endpoint change, and on a retry
+  after an error. Every tab adapter early-returns a skeleton on `loading`, so
+  the old behaviour unmounted and remounted the tab's whole client subtree —
+  and with the broadcast above, another pane could trigger that, discarding a
+  Note tab's unsaved edit or an open dialog.
 
 - **`<WorkspaceLink>`** (`components/resparkable/workspace/workspace-link.tsx`)
   — the in-content link seam. Inside the Workspace shell it opens the href's
@@ -74,6 +85,13 @@ release process.
   `resolveTabForHref(href)` in `tab-registry.ts`, which resolves query params as
   well as the pathname. New `useOptionalWorkspace()` in `workspace-context.tsx`
   returns `null` instead of throwing outside a provider.
+
+- **Interacting with a workspace pane focuses it.** `WorkspacePane` calls
+  `focusLeaf` on mousedown and on focus. `openTab` targets the focused pane, and
+  previously only the Launcher's own tiles moved focus — so any other cross-pane
+  open (a `WorkspaceLink`, `BoardTab`'s "All boards") landed in whichever pane
+  last had focus rather than the one clicked. `focusLeaf` now returns state
+  unchanged when the leaf is already focused, so this costs one comparison.
 
 
 

@@ -125,7 +125,10 @@ export function PromoteDialog({
 
     if (ok) {
       onOpenChange(false);
-      refresh();
+      // Triage consumes the thought, creates a task, and may file it under a
+      // new project. Naming all three is what reaches a Today or Projects tab
+      // in another pane, which a bare refresh could not.
+      refresh([{ type: 'thought' }, { type: 'task' }, { type: 'project' }]);
     }
   }
 

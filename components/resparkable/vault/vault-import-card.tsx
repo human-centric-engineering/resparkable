@@ -104,9 +104,22 @@ export function VaultImportCard(): React.ReactElement {
       if (apply) {
         setState({ kind: 'applied', result: parsed.data });
         // The brain changed underneath every other Resparkable surface — counts,
-        // inbox badge, ranked list. Re-render the server components rather than
-        // leaving a stale shell around a fresh import.
-        refresh();
+        // inbox badge, ranked list. Every type is named rather than a bare
+        // `refresh()`: an import is a bulk write that can create or update notes
+        // of any kind plus their task updates and mentions, and this card lives
+        // in a Vault tab that fetches nothing of its own — so a local refresh
+        // has literally nothing to re-run, and naming the types is the only
+        // thing that reaches the panes actually showing the imported material.
+        refresh([
+          { type: 'thought' },
+          { type: 'task' },
+          { type: 'project' },
+          { type: 'goal' },
+          { type: 'area' },
+          { type: 'entity' },
+          { type: 'document' },
+          { type: 'link' },
+        ]);
       } else {
         setState({ kind: 'planned', result: parsed.data, file });
       }

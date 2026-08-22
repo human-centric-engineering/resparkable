@@ -53,6 +53,7 @@
  * `RESPARKABLE_CAPABILITY_SLUGS`, so the two cannot drift apart silently.
  */
 
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { TabKind, TabParams } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
 
 /**
@@ -113,7 +114,10 @@ interface TabChangeScope {
  * loud:
  *
  * - `today` subscribes to `link` because the Today payload carries the
- *   unreviewed-suggestion count, not only tasks and goals.
+ *   unreviewed-suggestion count, and to `timeBlock` because it renders the
+ *   day's blocks and the "Nothing blocked out" empty state. Neither is
+ *   guessable from the tab's name, which is exactly why this table is written
+ *   from what the payload actually contains.
  * - `project` and `board` subscribe to `task` as a collection, so any task
  *   write anywhere refreshes them. That is deliberate rather than sloppy:
  *   both render a task list, and scoping it per project would mean the
@@ -130,7 +134,7 @@ interface TabChangeScope {
  *   empty entry exists to satisfy the exhaustive record, nothing more.
  */
 const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
-  today: { collections: ['task', 'thought', 'goal', 'link'] },
+  today: { collections: ['task', 'thought', 'goal', 'link', 'timeBlock'] },
   inbox: { collections: ['thought', 'project'] },
   plan: { collections: ['timeBlock', 'project', 'area'] },
   projects: { collections: ['project', 'area'] },
@@ -159,7 +163,13 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
  * `useTabFetch` by the one path.
  */
 export function keysForTab(kind: TabKind, params: TabParams): string[] {
-  const scope = TAB_CHANGE_SCOPES[kind];
+  // Defaulted rather than asserted non-null. `kind` reaches here from a tab in
+  // `WorkspaceProvider`'s state, which is rehydrated by `useLocalStorage`'s
+  // bare `JSON.parse` with no schema check — so a blob saved before a future
+  // `TabKind` rename still carries the old name. An unguarded lookup would
+  // throw inside `TabRefreshBoundary`, above `renderTab`, taking the whole
+  // shell down rather than the one tab that cannot be rendered.
+  const scope = TAB_CHANGE_SCOPES[kind] ?? { collections: [] };
   const keys: string[] = [...scope.collections];
   if (scope.record) {
     const id = params[scope.record.param];
@@ -200,6 +210,34 @@ const CHANGES_BY_CAPABILITY: Record<string, ResparkableChangeType[]> = {
   // Rewrites task ranking rather than task content, but a reordered list is a
   // changed list as far as anything showing one is concerned.
   resparkable_reprioritise: ['task'],
+};
+
+/**
+ * The type a generic, collection-driven writer just wrote.
+ *
+ * For the components that are handed a `RESPARKABLE_API` collection constant
+ * rather than a domain noun — `ArchiveControls` and `ResourceFormBody` are the
+ * two — and so cannot name their own change without this. `undefined` for a
+ * collection with no tab showing it, which is a legitimate answer rather than
+ * a gap: the caller then falls back to refreshing its own tab only.
+ */
+export function changeTypeForCollection(collection: string): ResparkableChangeType | undefined {
+  return COLLECTION_CHANGE_TYPES[collection];
+}
+
+const COLLECTION_CHANGE_TYPES: Record<string, ResparkableChangeType> = {
+  [RESPARKABLE_API.THOUGHTS]: 'thought',
+  [RESPARKABLE_API.TASKS]: 'task',
+  [RESPARKABLE_API.PROJECTS]: 'project',
+  [RESPARKABLE_API.GOALS]: 'goal',
+  [RESPARKABLE_API.AREAS]: 'area',
+  [RESPARKABLE_API.ENTITIES]: 'entity',
+  [RESPARKABLE_API.DOCUMENTS]: 'document',
+  [RESPARKABLE_API.BOARDS]: 'board',
+  [RESPARKABLE_API.TAGS]: 'tag',
+  [RESPARKABLE_API.LINKS]: 'link',
+  [RESPARKABLE_API.TIME_BLOCKS]: 'timeBlock',
+  [RESPARKABLE_API.SPACE]: 'space',
 };
 
 /** Exported for the test that cross-checks these literals against the catalogue. */

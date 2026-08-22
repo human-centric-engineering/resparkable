@@ -237,7 +237,7 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
       })
     );
 
-    if (ok) refresh();
+    if (ok) refresh({ type: 'space' });
   });
 
   return (

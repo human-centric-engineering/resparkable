@@ -133,15 +133,45 @@ was for.
   re-run **in that pane**; the address bar does not change.
 - Reload. Each tab comes back on its own day / filter / checkbox.
 
-**16. A mutation refreshes its own pane only. new** Open a Board in one pane and
-Projects (or Today) in another.
+**16. A mutation refreshes the panes showing what changed, and no others. new**
+Open a Board in one pane and Projects (or Today) in another.
 
-- Drag a card between columns. The board updates; **the other pane does not
-  flicker, refetch, or scroll**.
+The rule is **not** "only the pane you acted in updates" — an earlier draft of
+this item said that, and it was wrong in a way worth stating, because a pane
+showing a stale copy of something you just changed is the whole problem this
+pass set out to fix. What was removed is the _blunt_ refresh: `router.refresh()`
+re-ran the route segment every pane sits under, so a pane showing something
+entirely unrelated reflowed too.
+
+- Drag a card between columns. The board updates. Today and Projects also
+  refetch, because they list tasks — that is correct. **Documents, Settings or
+  a Vault tab in a third pane do not move.**
 - Tick a checklist item in a card's detail sheet, and archive something from a
-  list. Same rule: only the pane you acted in updates.
-- _Wrong:_ any visible reflow in a pane you didn't touch. That was the old
-  `router.refresh()` behaviour and is what this pass removed.
+  list. Same rule: the panes showing that kind of thing catch up; the rest hold
+  still.
+- Capture a thought in **Sparkey** with an Inbox tab open in another pane. The
+  new thought appears there without touching that pane. (This is the case a
+  pane-local refresh could not do at all.)
+- _Wrong:_ a pane refetching when it shows nothing of the type that changed —
+  or a pane **not** refetching when it does. Both are `change-scope.ts`
+  disagreeing with what a tab actually renders.
+- _Wrong:_ a tab visibly reverting to its loading skeleton on a refresh. Data
+  is revalidated in place; a skeleton here would mean the tab's client state
+  (a half-typed note, an open dialog) was just thrown away.
+
+**16b. A link inside a tab opens in the pane you clicked. new** Open a Project
+list in the left pane and anything at all in the right. Click into the **right**
+pane first (so it holds focus), then click a project link in the **left** pane.
+
+- The Project tab opens in the **left** pane — the one you clicked in.
+- Hold ⌘/Ctrl and click the same link: a real browser tab opens on that URL,
+  and the workspace does not change. Right-click → Copy link address gives a
+  real `/resparkable/…` URL.
+- _Wrong:_ the tab appearing in the right pane. Interacting with a pane focuses
+  it, and `openTab` targets the focused pane; if this fails, that focus handler
+  has been lost and every cross-pane open goes to the wrong place.
+- _Wrong:_ the address bar changing. That would replace whatever the
+  route-backed tab was showing, in some other pane.
 
 **17. A route-backed tab still refreshes properly. new** Navigate the browser
 directly to `/resparkable/inbox` (address bar, not the Launcher), then triage a

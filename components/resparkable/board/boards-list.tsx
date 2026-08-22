@@ -142,7 +142,7 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
 
     const ok = await run(() => apiClient.post(RESPARKABLE_API.TAGS, { body: { name: trimmed } }));
 
-    if (ok) refresh();
+    if (ok) refresh({ type: 'tag' });
     else setName(trimmed);
   }
 
@@ -150,7 +150,7 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
     const ok = await run(() =>
       apiClient.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TAGS, tagId))
     );
-    if (ok) refresh();
+    if (ok) refresh({ type: 'tag' });
   }
 
   return (

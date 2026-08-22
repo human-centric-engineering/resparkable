@@ -42,9 +42,11 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 
 export interface ArchiveControlsProps {
   /** One of the `RESPARKABLE_API` collection constants. */
@@ -80,13 +82,20 @@ export function ArchiveControls({
 }: ArchiveControlsProps): React.ReactElement {
   const router = useRouter();
   const refresh = useResparkableRefresh();
+  const workspace = useOptionalWorkspace();
   const { state, message, run } = useSaveStatus();
+
+  // Archiving, restoring and deleting all change the same row, and this
+  // component is handed a collection rather than a domain noun — so the type
+  // is looked up once here rather than at each of the three call sites.
+  const changed = changeTypeForCollection(collection);
+  const change = changed ? { type: changed, id } : undefined;
 
   async function archive(): Promise<void> {
     const ok = await run(() => apiClient.delete(RESPARKABLE_API.itemPath(collection, id)));
     if (ok) {
       onDone?.();
-      refresh();
+      refresh(change);
     }
   }
 
@@ -94,7 +103,7 @@ export function ArchiveControls({
     const ok = await run(() => apiClient.post(RESPARKABLE_API.restorePath(collection, id)));
     if (ok) {
       onDone?.();
-      refresh();
+      refresh(change);
     }
   }
 
@@ -104,9 +113,15 @@ export function ArchiveControls({
     );
     if (ok) {
       onDone?.();
-      // A detail page for a row that no longer exists would 404 on refresh.
-      if (redirectTo) router.push(redirectTo);
-      else refresh();
+      // A detail *page* for a row that no longer exists would 404 on refresh,
+      // which is what `redirectTo` is for. Inside the workspace it is the wrong
+      // move: the URL is the tree's single route-backed tab, so navigating
+      // replaces whatever some *other* pane was showing while the pane you
+      // acted in carries on displaying the deleted row. Announcing the change
+      // instead lets this pane's own detail tab refetch and land on the "not
+      // found" empty state it already implements, and touches nothing else.
+      if (redirectTo && !workspace) router.push(redirectTo);
+      else refresh(change);
     }
   }
 

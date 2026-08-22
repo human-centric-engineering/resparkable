@@ -46,6 +46,7 @@ import type { FieldValues, UseFormReturn } from 'react-hook-form';
 import { FormError } from '@/components/forms/form-error';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -166,7 +167,12 @@ export function ResourceDialog<TValues extends FieldValues>({
           {...(submitLabel ? { submitLabel } : {})}
           onSaved={() => {
             onOpenChange(false);
-            refresh();
+            // Named from the collection, which is the only thing this generic
+            // dialog knows about what it just wrote. `undefined` for a
+            // collection no tab shows, which falls back to refreshing the
+            // calling tab alone — the behaviour before changes were named.
+            const changed = changeTypeForCollection(collection);
+            refresh(changed ? { type: changed, ...(id ? { id } : {}) } : undefined);
           }}
         >
           {children}

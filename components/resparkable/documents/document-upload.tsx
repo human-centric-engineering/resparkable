@@ -55,7 +55,7 @@ export function DocumentUpload(): React.ReactElement {
 
     if (result.ok) {
       setState({ kind: 'done', deduped: result.deduped, title: file.name });
-      refresh();
+      refresh({ type: 'document' });
     } else {
       setState({ kind: 'error', message: result.message });
     }

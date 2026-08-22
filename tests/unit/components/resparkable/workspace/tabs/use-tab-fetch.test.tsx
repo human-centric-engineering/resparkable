@@ -203,3 +203,71 @@ describe('useTabFetch — refreshing the enclosing tab', () => {
     expect(apiClient.get).not.toHaveBeenCalled();
   });
 });
+
+describe('useTabFetch — revalidating without unmounting the tab', () => {
+  const TAB: TabState = { id: 'tab-9', kind: 'inbox', params: {}, source: 'launcher' };
+
+  function wrapper({ children }: { children: React.ReactNode }) {
+    return <TabRefreshBoundary tab={TAB}>{children}</TabRefreshBoundary>;
+  }
+
+  /**
+   * The regression this guards is invisible in the data and obvious on screen.
+   * Every adapter early-returns a skeleton on `loading`, so a refresh that reset
+   * to `loading` would unmount the tab's whole client subtree and remount it —
+   * throwing away a Note tab's in-progress edit, an open promote dialog, a
+   * scroll position. And since a refresh is now something *another pane* can
+   * trigger, that loss would arrive unprompted.
+   */
+  it('keeps the previous data on screen while a refresh is in flight', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ title: 'first' });
+    const { result } = renderHook(
+      () => ({
+        fetched: useTabFetch('/api/v1/thing', schema),
+        refresh: useResparkableRefresh(),
+      }),
+      { wrapper }
+    );
+    await waitFor(() => expect(result.current.fetched[0].status).toBe('ready'));
+
+    // Never resolves, so the assertion below lands strictly mid-flight.
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+    act(() => result.current.refresh());
+
+    expect(result.current.fetched[0]).toEqual({ status: 'ready', data: { title: 'first' } });
+  });
+
+  it('still shows a skeleton on the first load, when there is nothing to hold on to', () => {
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useTabFetch('/api/v1/thing', schema), { wrapper });
+
+    expect(result.current[0].status).toBe('loading');
+  });
+
+  it('shows a skeleton when the endpoint changes, since that is different content', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ title: 'first' });
+    const { result, rerender } = renderHook(
+      ({ endpoint }: { endpoint: string }) => useTabFetch(endpoint, schema),
+      { wrapper, initialProps: { endpoint: '/api/v1/a' } }
+    );
+    await waitFor(() => expect(result.current[0].status).toBe('ready'));
+
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+    rerender({ endpoint: '/api/v1/b' });
+
+    // Holding stale data from a *different* endpoint would show one record's
+    // content under another's heading, which is worse than a skeleton.
+    expect(result.current[0].status).toBe('loading');
+  });
+
+  it('shows a skeleton when retrying after an error, so the retry button is not dead', async () => {
+    vi.mocked(apiClient.get).mockRejectedValue(new Error('nope'));
+    const { result } = renderHook(() => useTabFetch('/api/v1/thing', schema), { wrapper });
+    await waitFor(() => expect(result.current[0].status).toBe('error'));
+
+    vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
+    act(() => result.current[1]());
+
+    expect(result.current[0].status).toBe('loading');
+  });
+});

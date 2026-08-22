@@ -63,6 +63,7 @@
 
 import * as React from 'react';
 
+import { useDataRevision } from '@/components/resparkable/workspace/data-change-context';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -116,7 +117,13 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
   // launcher — the same call the old layout made, for the same reason it made
   // it: a badge is an affordance, and a picker that broke over a decoration
   // would take out the only way to open anything.
-  const [counts] = useTabFetch(RESPARKABLE_API.COUNTS, countsSchema);
+  // Subscribed to `thought` explicitly. This component renders in an *empty*
+  // pane, so it sits outside every `TabRefreshBoundary` and would otherwise
+  // hold its mount-time count forever — including through the exact flow the
+  // badge exists for: capturing a thought in Sparkey while an empty pane shows
+  // the launcher beside it.
+  const inboxRevision = useDataRevision(['thought']);
+  const [counts] = useTabFetch(RESPARKABLE_API.COUNTS, countsSchema, inboxRevision);
   const inboxCount = counts.status === 'ready' ? counts.data.inbox : 0;
 
   return (

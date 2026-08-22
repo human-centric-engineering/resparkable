@@ -77,6 +77,7 @@ function Harness({ routeContent }: { routeContent?: React.ReactNode }): React.Re
       <button onClick={() => setProbed(overlay.findLeafAtPoint(0, 0))}>probe leaf rect</button>
       <p data-testid="probe-result">{probed ?? 'null'}</p>
       <p data-testid="root-leaf-id">{workspace.root.kind === 'leaf' ? workspace.root.id : ''}</p>
+      <p data-testid="focused-leaf-id">{workspace.focusedLeafId}</p>
       <WorkspacePaneTree node={workspace.root} routeContent={routeContent} />
     </div>
   );
@@ -224,5 +225,36 @@ describe('WorkspacePaneTree — split resize persistence', () => {
       const after = JSON.parse(window.localStorage.getItem('resparkable.workspace.v2') ?? '{}');
       expect(after.root?.sizes).toEqual([70, 30]);
     });
+  });
+});
+
+describe('WorkspacePaneTree — which pane an interaction belongs to', () => {
+  /**
+   * `openTab` targets `focusedLeafId`, and nothing used to move focus except
+   * the Launcher's own explicit call on its tiles. So a link or button inside
+   * an *unfocused* pane opened its tab in whichever pane last had focus — the
+   * thing you asked for appearing somewhere you were not looking. That is the
+   * defect `WorkspaceLink` and `BoardTab`'s "All boards" were both written to
+   * avoid, and neither could avoid it on its own.
+   *
+   * The click below deliberately lands on the Launcher's **heading**, not one
+   * of its tiles: the tiles call `focusLeaf` themselves, so clicking one would
+   * pass with or without the pane-level handler and prove nothing.
+   */
+  it('focuses a pane when it is interacted with, so a cross-open lands there', async () => {
+    const user = userEvent.setup();
+    renderTree();
+    const originalLeafId = screen.getByTestId('root-leaf-id').textContent ?? '';
+    expect(originalLeafId).not.toBe('');
+
+    // Splitting focuses the *new* pane, leaving the original one unfocused.
+    await user.click(screen.getByText('split with inbox'));
+    expect(screen.getByTestId('focused-leaf-id').textContent).not.toBe(originalLeafId);
+
+    // The original pane still has no tabs, so it shows the Launcher. Its
+    // heading is inert markup inside that pane and nothing else.
+    await user.click(screen.getByRole('heading', { name: 'Open a tab' }));
+
+    expect(screen.getByTestId('focused-leaf-id').textContent).toBe(originalLeafId);
   });
 });

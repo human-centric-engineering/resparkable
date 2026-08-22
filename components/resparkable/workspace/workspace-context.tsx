@@ -255,7 +255,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
 
   const focusLeaf = React.useCallback<WorkspaceContextValue['focusLeaf']>(
     (leafId) => {
-      setState((prev) => (findLeaf(prev.root, leafId) ? { ...prev, focusedLeafId: leafId } : prev));
+      setState((prev) => {
+        // Returned unchanged when this leaf is already focused, which is the
+        // overwhelmingly common case now that `WorkspacePane` calls this on
+        // every mousedown. `useLocalStorage`'s setter serializes the whole tree
+        // and dispatches a sync event whether or not the reducer changed
+        // anything, so a new object here would mean a full write and a
+        // re-render of every pane on each click.
+        if (prev.focusedLeafId === leafId) return prev;
+        return findLeaf(prev.root, leafId) ? { ...prev, focusedLeafId: leafId } : prev;
+      });
     },
     [setState]
   );

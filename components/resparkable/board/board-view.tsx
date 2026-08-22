@@ -168,7 +168,7 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
     });
 
     if (ok) {
-      refresh();
+      refresh({ type: 'task' });
     } else {
       // Wholesale restore — a partial rollback is how a board ends up disagreeing
       // with the server in a way nobody notices until a refresh.

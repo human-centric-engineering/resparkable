@@ -82,7 +82,7 @@ export function DayPlanner({
     const ok = await run(() =>
       apiClient.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TIME_BLOCKS, id))
     );
-    if (ok) refresh();
+    if (ok) refresh({ type: 'timeBlock' });
   }
 
   function setDay(next: string): void {

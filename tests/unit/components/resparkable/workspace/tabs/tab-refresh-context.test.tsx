@@ -39,6 +39,7 @@ import type {
   TabParams,
   TabState,
 } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
@@ -87,9 +88,7 @@ function tab(kind: TabKind, params: TabParams = {}): TabState {
 
 beforeEach(() => {
   routerRefresh.mockReset();
-  vi.mocked(useRouter).mockReturnValue({ refresh: routerRefresh } as unknown as ReturnType<
-    typeof useRouter
-  >);
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh: routerRefresh }));
 });
 
 describe('useResparkableRefresh — outside a boundary', () => {

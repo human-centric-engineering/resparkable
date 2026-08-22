@@ -77,7 +77,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
     );
 
     if (ok) {
-      refresh();
+      refresh({ type: 'link', id: linkId });
     } else {
       setReviewed((current) => {
         const next = new Set(current);
@@ -93,7 +93,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
         body: { status: 'dropped' },
       })
     );
-    if (ok) refresh();
+    if (ok) refresh({ type: 'thought', id: thought.id });
   }
 
   const visibleSuggestions = suggestedLinks.filter((link) => !reviewed.has(link.id));
@@ -164,7 +164,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
           kind="thought"
           id={thought.id}
           snoozedUntil={thought.snoozedUntil}
-          onDone={() => refresh()}
+          onDone={() => refresh({ type: 'thought', id: thought.id })}
         />
 
         <Button

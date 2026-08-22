@@ -64,7 +64,7 @@ export function RelatedList({ related, emptyMessage }: RelatedListProps): React.
     );
 
     if (ok) {
-      refresh();
+      refresh({ type: 'link' });
     } else {
       setReviewed((current) => {
         const next = new Set(current);

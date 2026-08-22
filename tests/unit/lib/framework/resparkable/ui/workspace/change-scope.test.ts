@@ -24,10 +24,12 @@ import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabi
 import {
   TAB_CHANGE_SCOPE_KINDS,
   WRITING_CAPABILITY_SLUGS,
+  changeTypeForCollection,
   changesForCapabilities,
   keysForChange,
   keysForTab,
 } from '@/lib/framework/resparkable/ui/workspace/change-scope';
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
   TAB_KINDS,
   type TabKind,
@@ -67,6 +69,15 @@ describe('lists', () => {
   it('ignore a type they do not show', () => {
     expect(reaches({ type: 'document' }, 'inbox')).toBe(false);
     expect(reaches({ type: 'board' }, 'goals')).toBe(false);
+  });
+
+  it('refresh Today for everything its one payload actually carries', () => {
+    // Each of these is on the Today screen and none is guessable from the tab's
+    // name — `timeBlock` in particular was missed on the first pass, so a block
+    // booked in a Plan pane left Today still saying "Nothing blocked out".
+    for (const type of ['task', 'thought', 'goal', 'link', 'timeBlock'] as const) {
+      expect(reaches({ type }, 'today'), `today should hear about ${type}`).toBe(true);
+    }
   });
 
   it('leave Search and Vault alone, which have nothing a change invalidates', () => {
@@ -138,5 +149,38 @@ describe('changesForCapabilities', () => {
 
   it('ignores a slug it has never heard of rather than throwing', () => {
     expect(changesForCapabilities(['some_host_project_capability'])).toEqual([]);
+  });
+});
+
+describe('changeTypeForCollection', () => {
+  // For the writers handed a `RESPARKABLE_API` collection rather than a domain
+  // noun — `ArchiveControls` and `ResourceFormBody`. Without this they cannot
+  // name what they wrote, and stay stuck refreshing their own pane.
+  it('maps every collection a tab actually shows', () => {
+    expect(changeTypeForCollection(RESPARKABLE_API.PROJECTS)).toBe('project');
+    expect(changeTypeForCollection(RESPARKABLE_API.GOALS)).toBe('goal');
+    expect(changeTypeForCollection(RESPARKABLE_API.AREAS)).toBe('area');
+    expect(changeTypeForCollection(RESPARKABLE_API.ENTITIES)).toBe('entity');
+    expect(changeTypeForCollection(RESPARKABLE_API.THOUGHTS)).toBe('thought');
+    expect(changeTypeForCollection(RESPARKABLE_API.TASKS)).toBe('task');
+    expect(changeTypeForCollection(RESPARKABLE_API.TIME_BLOCKS)).toBe('timeBlock');
+    expect(changeTypeForCollection(RESPARKABLE_API.DOCUMENTS)).toBe('document');
+    expect(changeTypeForCollection(RESPARKABLE_API.BOARDS)).toBe('board');
+  });
+
+  it('returns undefined for a collection nothing renders, rather than guessing', () => {
+    expect(changeTypeForCollection(RESPARKABLE_API.REVIEWS)).toBeUndefined();
+    expect(changeTypeForCollection('/api/v1/some/host/collection')).toBeUndefined();
+  });
+});
+
+describe('an unknown tab kind', () => {
+  it('subscribes to nothing instead of throwing', () => {
+    // `kind` is rehydrated from localStorage by a bare `JSON.parse`, so a blob
+    // saved before a future `TabKind` rename still carries the old name. An
+    // unguarded lookup threw inside `TabRefreshBoundary` — above `renderTab`,
+    // so it took the whole shell down rather than the one unrenderable tab.
+    expect(() => keysForTab('not-a-kind' as TabKind, {})).not.toThrow();
+    expect(keysForTab('not-a-kind' as TabKind, {})).toEqual([]);
   });
 });
