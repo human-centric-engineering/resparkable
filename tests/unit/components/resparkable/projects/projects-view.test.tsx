@@ -30,13 +30,13 @@ import { useRouter } from 'next/navigation';
 import { ProjectsView } from '@/components/resparkable/projects/projects-view';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { AreaWire, ProjectWire } from '@/lib/framework/resparkable/ui/payloads';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   APIClientError: class APIClientError extends Error {},
 }));
 
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const push = vi.fn();
 
 function project(overrides: Partial<ProjectWire> = {}): ProjectWire {
@@ -75,14 +75,7 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedRouter.mockReturnValue({
-    push,
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push }));
 });
 
 describe('ProjectsView', () => {

@@ -29,13 +29,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 
 import { ResparkableSearchBox } from '@/components/resparkable/layout/resparkable-search-box';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
   useSearchParams: vi.fn(),
 }));
 
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const mockedSearchParams = useSearchParams as unknown as ReturnType<typeof vi.fn>;
 const push = vi.fn();
 
@@ -45,14 +45,7 @@ function input(): HTMLInputElement {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedRouter.mockReturnValue({
-    push,
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push }));
   mockedSearchParams.mockReturnValue(new URLSearchParams());
 });
 

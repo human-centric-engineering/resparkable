@@ -642,6 +642,19 @@ release process.
   every other kind too. So the gate reads `source = 'user'`, and a system write
   does not wake a dormant brain.
 
+- **`npm run check:router-mocks` — hand-rolled `next/navigation` router mocks
+  now fail the build.** The rules live in `scripts/ci/router-mocks.ts`
+  (`scanRouterMocks`), the CLI in `scripts/ci/check-router-mocks.ts`; it is
+  chained into `npm run validate` and has its own CI step. It replaces a
+  regex-and-brace-matching scanner that lived inside `/pre-pr` check 4m and was
+  only ever run by hand. That scanner reported CLEAN over 16 complete six-member
+  router literals and 17 casts, because it collected members with a regex
+  requiring a colon (so a shorthand `refresh,` was invisible) and grepped for
+  one literal cast spelling (so the `ReturnType<typeof vi.fn>` form every real
+  offender used went unseen). Parsing with the TypeScript compiler removes both
+  classes of blind spot. The 17 affected test files now build their router with
+  `createMockRouter()`. Forks inheriting `validate` get the check for free.
+
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains
   `day`, `status` and `includeArchived`, so Plan's day, Projects' status filter

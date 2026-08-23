@@ -42,9 +42,9 @@ vi.mock('@/lib/api/client', () => ({
 }));
 
 import { apiClient } from '@/lib/api/client';
+import { createMockRouter } from '@/tests/types/mocks';
 
 const mockedPost = apiClient.post as ReturnType<typeof vi.fn>;
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const refresh = vi.fn();
 
 const PROJECTS = [
@@ -55,14 +55,7 @@ const PROJECTS = [
 beforeEach(() => {
   vi.clearAllMocks();
   mockedPost.mockResolvedValue({ target: { type: 'task', id: 'task_1', title: 'x' } });
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh }));
 });
 
 function renderDialog(props: Partial<React.ComponentProps<typeof PromoteDialog>> = {}) {
