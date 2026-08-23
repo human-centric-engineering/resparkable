@@ -655,6 +655,19 @@ release process.
   classes of blind spot. The 17 affected test files now build their router with
   `createMockRouter()`. Forks inheriting `validate` get the check for free.
 
+- **A detail tab closes when the record it is about is deleted.**
+  `components/resparkable/workspace/tabs/tab-close-context.tsx` adds
+  `TabCloseProvider` and `useOptionalTabClose()` — a context carrying an
+  already-resolved `close()` rather than an id, because closing resolves to
+  `closeTab(leafId, tabId)` for a docked tab and `closeFloatingPanel(panelId)`
+  for a detached one, and a detached tab has no live `leafId` to pass. Bound by
+  `WorkspacePane` and `FloatingTabWindow`; deliberately absent on the
+  route-backed tab, whose content navigates instead because the browser URL is
+  that tab's identity. `ArchiveControls` consumes it in `destroy()` and gains no
+  new props, so its nine call sites are untouched — `redirectTo` already marks
+  the two detail views, and a list row still leaves its list tab open.
+  Previously such a tab refetched, 404'd, and sat on its "not found" empty state.
+
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains
   `day`, `status` and `includeArchived`, so Plan's day, Projects' status filter

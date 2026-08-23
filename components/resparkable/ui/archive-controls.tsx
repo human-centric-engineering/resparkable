@@ -41,6 +41,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
+import { useOptionalTabClose } from '@/components/resparkable/workspace/tabs/tab-close-context';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
@@ -57,7 +59,19 @@ export interface ArchiveControlsProps {
   /** Singular noun for the copy — "project", "person", "area". */
   noun: string;
   archived: boolean;
-  /** Where to go after a destroy, when the current page was the item's own. */
+  /**
+   * Set this when the surface rendering these controls is *about* this item —
+   * a detail view rather than a row in a list.
+   *
+   * It carries a URL because that is what a plain page under `app/` needs
+   * after a destroy, but the flag matters more than the destination: it is
+   * what tells `destroy()` that the surface should not outlive the item. Left
+   * unset, a destroy refreshes and the surface stays, which is what a list
+   * wants. Set, and inside the workspace the tab closes instead.
+   *
+   * Only the two detail views pass it. Setting it on a list row would close
+   * the list tab when a row is deleted.
+   */
   redirectTo?: string;
   /**
    * Icon-only, for rows rather than pages.
@@ -82,7 +96,9 @@ export function ArchiveControls({
 }: ArchiveControlsProps): React.ReactElement {
   const router = useRouter();
   const refresh = useResparkableRefresh();
+  const notify = useNotifyDataChange();
   const workspace = useOptionalWorkspace();
+  const closeSelf = useOptionalTabClose();
   const { state, message, run } = useSaveStatus();
 
   // Archiving, restoring and deleting all change the same row, and this
@@ -111,18 +127,50 @@ export function ArchiveControls({
     const ok = await run(() =>
       resparkableApi.delete(`${RESPARKABLE_API.itemPath(collection, id)}?permanent=true`)
     );
-    if (ok) {
-      onDone?.();
-      // A detail *page* for a row that no longer exists would 404 on refresh,
-      // which is what `redirectTo` is for. Inside the workspace it is the wrong
-      // move: the URL is the tree's single route-backed tab, so navigating
-      // replaces whatever some *other* pane was showing while the pane you
-      // acted in carries on displaying the deleted row. Announcing the change
-      // instead lets this pane's own detail tab refetch and land on the "not
-      // found" empty state it already implements, and touches nothing else.
-      if (redirectTo && !workspace) router.push(withActiveSpace(redirectTo));
-      else refresh(change);
+    if (!ok) return;
+    onDone?.();
+
+    // Four situations, and `redirectTo` is what separates the first from the
+    // rest. It marks "this surface is *about* the thing just deleted" — only
+    // the two detail views pass it. A list row deleted from a list must leave
+    // the list alone; the surface outlives the row.
+    if (!redirectTo) {
+      refresh(change);
+      return;
     }
+
+    // A launcher-opened or floating detail tab. Tested before `workspace`
+    // because it is the stronger signal: something knowing how to close this
+    // tab means there is a tab to close, whatever else is or isn't above.
+    //
+    // Announce first so panes showing the same thing catch up, then close this
+    // one. Both are state updates on providers above this component, so React
+    // batches them into one render in which the tab is already gone — the
+    // refetch that used to leave it sitting on its "not found" empty state
+    // never runs.
+    if (closeSelf) {
+      refresh(change);
+      closeSelf();
+      return;
+    }
+
+    // A plain page under `app/`, outside the shell. It would 404 on a refresh,
+    // so it goes somewhere that still exists.
+    if (!workspace) {
+      router.push(withActiveSpace(redirectTo));
+      return;
+    }
+
+    // The route-backed tab. The browser URL *is* this tab, so navigating
+    // changes this tab and nothing else — pane-local, which is what the old
+    // blanket "never push inside the workspace" rule could not express.
+    // `notify` rather than `refresh`: with no boundary above it, `refresh`
+    // would be a `router.refresh()` into a 404 immediately before the push,
+    // flashing the not-found page on the way out.
+    // Guarded because `change` is undefined for a collection with no mapped
+    // change type — `refresh` takes that as "no announcement", `notify` does not.
+    if (change) notify(change);
+    router.push(withActiveSpace(redirectTo));
   }
 
   return (

@@ -29,6 +29,8 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
+import { TabCloseProvider } from '@/components/resparkable/workspace/tabs/tab-close-context';
+import { WorkspaceProvider } from '@/components/resparkable/workspace/workspace-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { createMockRouter } from '@/tests/types/mocks';
 
@@ -234,6 +236,154 @@ describe('ArchiveControls', () => {
         expect(mockRefresh).toHaveBeenCalledTimes(1);
       });
       expect(mockPush).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Inside the workspace, a detail view's own tab should not survive the thing
+   * it is about. It used to: the destroy announced the change, the tab
+   * refetched, got a 404, and sat on its "not found" empty state until someone
+   * closed it by hand.
+   *
+   * `redirectTo` is the guard for all of this. It means "this surface is about
+   * this item", which is true of the two detail views and false of every list.
+   */
+  describe('inside a workspace tab', () => {
+    function renderInTab(props: { redirectTo?: string; archived?: boolean }, close: () => void) {
+      return render(
+        <TabCloseProvider close={close}>
+          <ArchiveControls
+            collection={RESPARKABLE_API.PROJECTS}
+            id="proj_1"
+            label="Q4 launch"
+            noun="project"
+            archived={props.archived ?? false}
+            {...(props.redirectTo ? { redirectTo: props.redirectTo } : {})}
+          />
+        </TabCloseProvider>
+      );
+    }
+
+    async function destroy(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByRole('button', { name: /delete q4 launch permanently/i }));
+      await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+    }
+
+    it('closes its own tab instead of leaving it on "not found"', async () => {
+      const user = userEvent.setup();
+      const close = vi.fn();
+      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(close).toHaveBeenCalledTimes(1);
+      });
+      // Not the URL. That is the tree's single route-backed tab, and moving it
+      // would replace whatever some *other* pane was showing.
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('announces the change as well, so other panes showing it catch up', async () => {
+      const user = userEvent.setup();
+      const close = vi.fn();
+      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+
+      await destroy(user);
+
+      // `useResparkableRefresh` falls back to `router.refresh()` with no
+      // boundary above it, which is what this asserts on — the announcement
+      // happening at all is the point, not which arm it took.
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('does NOT close the tab for a list row, which has no redirectTo', async () => {
+      // The regression that matters. Without the `redirectTo` guard, deleting
+      // one project from a Projects list would close the Projects tab.
+      const user = userEvent.setup();
+      const close = vi.fn();
+      renderInTab({}, close);
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('does not close the tab when archiving, only when destroying', async () => {
+      const user = userEvent.setup();
+      const close = vi.fn();
+      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+
+      await user.click(screen.getByRole('button', { name: /archive q4 launch/i }));
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('does not close the tab when restoring', async () => {
+      const user = userEvent.setup();
+      const close = vi.fn();
+      renderInTab({ redirectTo: '/resparkable/projects', archived: true }, close);
+
+      await user.click(screen.getByRole('button', { name: /restore q4 launch/i }));
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(close).not.toHaveBeenCalled();
+    });
+
+    it('navigates instead of closing for the route-backed tab, which has no closer', async () => {
+      // The one tab in the tree whose identity IS the browser URL. It renders
+      // the real server page, so nothing can hand it a closer — and it does
+      // not need one: moving the URL changes that tab and nothing else, which
+      // is pane-local in exactly the way the old blanket "never push inside
+      // the workspace" rule assumed was impossible.
+      const user = userEvent.setup();
+      render(
+        <WorkspaceProvider>
+          <ArchiveControls
+            collection={RESPARKABLE_API.PROJECTS}
+            id="proj_1"
+            label="Q4 launch"
+            noun="project"
+            archived={false}
+            redirectTo="/resparkable/projects"
+          />
+        </WorkspaceProvider>
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
+      });
+      // No `router.refresh()` first. That would be a refresh into a 404
+      // immediately before navigating away, flashing the not-found page.
+      expect(mockRefresh).not.toHaveBeenCalled();
+    });
+
+    it('leaves the tab open when the delete fails', async () => {
+      const user = userEvent.setup();
+      const close = vi.fn();
+      mockDelete.mockRejectedValueOnce(new Error('boom'));
+      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockDelete).toHaveBeenCalled();
+      });
+      // A tab that vanishes on a failed delete takes the error message with it.
+      expect(close).not.toHaveBeenCalled();
+      expect(mockRefresh).not.toHaveBeenCalled();
     });
   });
 

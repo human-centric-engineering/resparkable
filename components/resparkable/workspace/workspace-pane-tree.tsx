@@ -29,6 +29,7 @@ import * as React from 'react';
 
 import { Launcher } from '@/components/resparkable/workspace/launcher';
 import { TabStrip } from '@/components/resparkable/workspace/tab-strip';
+import { TabCloseProvider } from '@/components/resparkable/workspace/tabs/tab-close-context';
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { PaneToolbar } from '@/components/resparkable/workspace/toolbar';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
@@ -124,9 +125,19 @@ function WorkspacePane({
   leaf: LeafNode;
   routeContent?: React.ReactNode;
 }): React.ReactElement {
-  const { focusLeaf } = useWorkspace();
+  const { focusLeaf, closeTab } = useWorkspace();
   const activeTab = leaf.tabs.find((tab) => tab.id === leaf.activeTabId) ?? null;
   const isRouteTab = activeTab?.source === 'route';
+
+  // Resolved here because this is the lowest component that knows both ids —
+  // `TabContent` is handed the tab and nothing about which pane holds it.
+  // Left to the React Compiler rather than wrapped in a `useCallback`, which
+  // it cannot preserve through `activeTab` being found by a `.find()` on each
+  // render (`react-hooks/preserve-manual-memoization`).
+  const activeTabId = activeTab?.id;
+  const closeActiveTab = (): void => {
+    if (activeTabId) closeTab(leaf.id, activeTabId);
+  };
   // `buildRouteForTab` returns a full, navigable href — Graph's and
   // Search's carry a query string (`?focusType=…&focus=…`, `?q=…`) that
   // `SectionHeader`'s lookup (`findSectionHelp`, plain-pathname matching)
@@ -196,7 +207,18 @@ function WorkspacePane({
                 route-backed tab the address bar happens to match instead of
                 no header at all. */}
             {href && <SectionHeader href={href} />}
-            {isRouteTab && routeContent ? routeContent : <TabContent tab={activeTab} />}
+            {/* Only the `TabContent` branch gets a `TabCloseProvider`. The
+                route-backed tab deliberately gets none: the browser URL is
+                that tab's identity, so a control inside it that wants this
+                tab gone navigates instead, which changes that tab and
+                nothing else. See `tab-close-context.tsx`. */}
+            {isRouteTab && routeContent ? (
+              routeContent
+            ) : (
+              <TabCloseProvider close={closeActiveTab}>
+                <TabContent tab={activeTab} />
+              </TabCloseProvider>
+            )}
           </div>
         ) : (
           <Launcher leafId={leaf.id} />
