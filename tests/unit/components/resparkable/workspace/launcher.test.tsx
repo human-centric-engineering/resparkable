@@ -9,11 +9,18 @@
  * `focusedLeafId`, which is wrong whenever the launcher is showing in a pane
  * that isn't the focused one.
  *
+ * The badge cases cover the one number that survived the nav rail's deletion.
+ * Two things about it are easy to get wrong and invisible when they are: a
+ * failed counts fetch must still render the picker (a badge is a decoration;
+ * losing the only way to open anything over one is not), and the count must
+ * reach a screen reader, since a purely visual badge is silent to the people
+ * most likely to be relying on it.
+ *
  * @see components/resparkable/workspace/launcher.tsx
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { Launcher } from '@/components/resparkable/workspace/launcher';
@@ -21,7 +28,14 @@ import {
   useWorkspace,
   WorkspaceProvider,
 } from '@/components/resparkable/workspace/workspace-context';
+import { apiClient, APIClientError } from '@/lib/api/client';
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { listLeaves } from '@/lib/framework/resparkable/ui/workspace/split-tree';
+
+vi.mock('@/lib/api/client', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
+  return { ...actual, apiClient: { ...actual.apiClient, get: vi.fn() } };
+});
 
 /**
  * Splits off a second leaf and renders its Launcher — `splitLeaf`'s new-leaf
@@ -56,6 +70,10 @@ function renderLauncher() {
 
 beforeEach(() => {
   window.localStorage.clear();
+  vi.mocked(apiClient.get).mockReset();
+  // Nothing waiting, unless a case says otherwise — a badge on every tile
+  // would otherwise leak into the unrelated coverage/focus assertions.
+  vi.mocked(apiClient.get).mockResolvedValue({ inbox: 0, connections: 0, openTasks: 0 });
 });
 
 describe('Launcher — page header', () => {
@@ -124,5 +142,62 @@ describe('Launcher — targets its own pane, not focusedLeafId', () => {
     // Without the fix, this tab would have landed in 'root' instead.
     expect(screen.getByTestId('new-leaf-tab-kinds')).toHaveTextContent('goals');
     expect(screen.getByTestId('focused-is-new-leaf')).toHaveTextContent('true');
+  });
+});
+
+describe('Launcher — the inbox badge', () => {
+  it('fetches the counts endpoint', async () => {
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByRole('button', { name: 'split' }));
+
+    expect(apiClient.get).toHaveBeenCalledWith(RESPARKABLE_API.COUNTS);
+  });
+
+  it('names the count on the Inbox tile itself, so it is not silent to a screen reader', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ inbox: 7, connections: 3, openTasks: 12 });
+
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByRole('button', { name: 'split' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Inbox.*7 waiting/ })).toBeInTheDocument()
+    );
+  });
+
+  it('shows no badge at zero — a count that never clears is one people stop seeing', async () => {
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByRole('button', { name: 'split' }));
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
+    expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
+  });
+
+  it('badges Inbox alone — Connections is the Activity pane\u2019s job now', async () => {
+    vi.mocked(apiClient.get).mockResolvedValue({ inbox: 7, connections: 3, openTasks: 12 });
+
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByRole('button', { name: 'split' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Inbox.*7 waiting/ })).toBeInTheDocument()
+    );
+    expect(screen.getByRole('button', { name: 'Connections' })).toBeInTheDocument();
+  });
+
+  it('still renders every tile when the counts fetch fails', async () => {
+    vi.mocked(apiClient.get).mockRejectedValue(new APIClientError('Down.', 'ERR', 500));
+
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByRole('button', { name: 'split' }));
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Today' })).toBeInTheDocument();
   });
 });

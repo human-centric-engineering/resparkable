@@ -123,26 +123,6 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
-    href: RESPARKABLE_ROUTES.CHAT,
-    title: 'Ask Sparkey',
-    blurb: 'Ask questions about your own material.',
-    blocks: [
-      {
-        heading: 'What it already knows',
-        body: 'Today’s date, your goals, what you are working on and how much of the week is left are given to it before you type. It can also search your material, read your ranked task list, get an overview of everything, read the briefing and look at connections.',
-      },
-      {
-        heading: 'What it can change',
-        body: 'It can capture a note, promote one, create or update tasks, projects, goals and people, and link items together. It is instructed to do this only when you ask. Each reply lists which tools it used.',
-      },
-      {
-        heading: 'Conversations are not stored in your brain',
-        body: 'Chat messages are not indexed and will not appear in search results. If something in a reply is worth keeping, capture it.',
-      },
-    ],
-  },
-
-  {
     href: RESPARKABLE_ROUTES.BOARDS,
     title: 'Boards',
     blurb: 'A kanban view of tasks that already exist.',

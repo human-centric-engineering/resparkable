@@ -14,18 +14,23 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import { useTabTitle } from '@/components/resparkable/workspace/tabs/use-tab-title';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { entityViewSchema } from '@/lib/framework/resparkable/ui/payloads';
 
 export interface EntityTabProps {
+  /** This tab's id — what `useTabTitle` names once the person's own name is known. */
+  tabId: string;
   id: string;
 }
 
-export function EntityTab({ id }: EntityTabProps): React.ReactElement {
+export function EntityTab({ tabId, id }: EntityTabProps): React.ReactElement {
   const [view, retry] = useTabFetch(
     RESPARKABLE_API.viewPath(RESPARKABLE_API.ENTITIES, id),
     entityViewSchema
   );
+
+  useTabTitle(tabId, view.status === 'ready' ? view.data.entity.name : null);
 
   if (view.status === 'loading') return <SkeletonList label="Loading" />;
   if (view.status === 'error') {

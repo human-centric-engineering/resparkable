@@ -19,9 +19,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { BoardTab } from '@/components/resparkable/workspace/tabs/board-tab';
-import { apiClient, APIClientError } from '@/lib/api/client';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
+import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+
+const setTabTitle = vi.fn();
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -95,10 +97,12 @@ function mockEndpoints(responses: {
 }
 
 beforeEach(() => {
+  setTabTitle.mockReset();
   vi.mocked(apiClient.get).mockReset();
   openTab.mockReset();
   vi.mocked(useWorkspace).mockReturnValue({
     openTab,
+    setTabTitle,
   } as unknown as ReturnType<typeof useWorkspace>);
 });
 
@@ -106,7 +110,7 @@ describe('BoardTab', () => {
   it('shows a labelled loading state while the boards list is still fetching', () => {
     vi.mocked(apiClient.get).mockReturnValue(new Promise(() => {}));
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     expect(screen.getByText('Loading board')).toBeInTheDocument();
   });
@@ -115,7 +119,7 @@ describe('BoardTab', () => {
     const user = userEvent.setup();
     mockEndpoints({ boards: new APIClientError('Boards down.', 'ERR', 500) });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByText('Boards down.')).toBeInTheDocument();
@@ -129,7 +133,7 @@ describe('BoardTab', () => {
   it('renders a not-found empty state when no board matches the slug', async () => {
     mockEndpoints({ boards: [boardRow({ slug: 'other-slug' })] });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByText('Board not found')).toBeInTheDocument());
     // Never fetches a view/tags for an id that was never resolved.
@@ -147,7 +151,7 @@ describe('BoardTab', () => {
       return Promise.resolve([]);
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
     expect(screen.getByText('Loading board')).toBeInTheDocument();
     expect(apiClient.get).not.toHaveBeenCalledWith(
       RESPARKABLE_API.viewPath(RESPARKABLE_API.BOARDS, 'board_1')
@@ -167,7 +171,7 @@ describe('BoardTab', () => {
       view: new APIClientError('Not found.', 'NOT_FOUND', 404),
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByText('Board not found')).toBeInTheDocument());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -180,7 +184,7 @@ describe('BoardTab', () => {
       view: new APIClientError('Server exploded.', 'ERR', 500),
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByText('Server exploded.')).toBeInTheDocument();
@@ -199,7 +203,7 @@ describe('BoardTab', () => {
       tags: [{ id: 'tag_1', name: 'Urgent', slug: 'urgent', colour: '#f00', sortOrder: 0 }],
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByTestId('board-view')).toBeInTheDocument());
     expect(screen.getByRole('heading', { name: 'Roadmap' })).toBeInTheDocument();
@@ -216,7 +220,7 @@ describe('BoardTab', () => {
   it('renders the singular "card" label when there is exactly one card', async () => {
     mockEndpoints({ boards: [boardRow()], view: boardView({ totalCards: 1 }), tags: [] });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByText(/1 card\b/)).toBeInTheDocument());
     expect(screen.queryByText(/1 cards/)).not.toBeInTheDocument();
@@ -229,7 +233,7 @@ describe('BoardTab', () => {
       tags: [],
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() =>
       expect(screen.getByText(/a live query, ordered by what matters most/)).toBeInTheDocument()
@@ -244,7 +248,7 @@ describe('BoardTab', () => {
       return Promise.reject(new Error(`unexpected endpoint: ${endpoint}`));
     });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByTestId('board-view')).toBeInTheDocument());
     const rendered = JSON.parse(screen.getByTestId('board-view').textContent ?? '{}');
@@ -255,7 +259,7 @@ describe('BoardTab', () => {
     const user = userEvent.setup();
     mockEndpoints({ boards: [boardRow()], view: boardView(), tags: [] });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByTestId('board-view')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: /all boards/i }));
@@ -266,7 +270,7 @@ describe('BoardTab', () => {
   it('builds CSV and JSON export links from the resolved board id', async () => {
     mockEndpoints({ boards: [boardRow()], view: boardView(), tags: [] });
 
-    render(<BoardTab slug="roadmap" />);
+    render(<BoardTab tabId="tab_1" slug="roadmap" />);
 
     await waitFor(() => expect(screen.getByTestId('board-view')).toBeInTheDocument());
     expect(screen.getByRole('link', { name: /csv/i })).toHaveAttribute(

@@ -14,6 +14,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
 import {
+  useOptionalWorkspace,
   useWorkspace,
   WorkspaceProvider,
   type WorkspaceState,
@@ -45,6 +46,27 @@ describe('useWorkspace outside a provider', () => {
     expect(() => renderHook(() => useWorkspace())).toThrow(
       'useWorkspace must be used within a WorkspaceProvider'
     );
+  });
+});
+
+describe('useOptionalWorkspace', () => {
+  // The throwing hook is the right default: it catches a pane component
+  // rendered somewhere it cannot work. This one exists for the components that
+  // genuinely render both inside the shell and on a plain page — `WorkspaceLink`
+  // is why it was added, and "no workspace" is a real answer for it, not a bug.
+  it('returns null outside a provider instead of throwing', () => {
+    const { result } = renderHook(() => useOptionalWorkspace());
+
+    expect(result.current).toBeNull();
+  });
+
+  it('returns the same context as useWorkspace inside a provider', () => {
+    const { result } = renderHook(
+      () => ({ optional: useOptionalWorkspace(), required: useWorkspace() }),
+      { wrapper: WorkspaceProvider }
+    );
+
+    expect(result.current.optional).toBe(result.current.required);
   });
 });
 

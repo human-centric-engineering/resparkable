@@ -6,7 +6,7 @@
  * 1. **Coverage is the whole promise.** `SectionHeader` renders from this table,
  *    so a nav entry with no matching help entry is a section that silently loses
  *    both its heading and its explanation — invisible in a type-check and easy to
- *    miss in review. The first test walks `ResparkableNav`'s own list, so adding a
+ *    miss in review. The first test walks the nav registry's own list, so adding a
  *    section without documenting it fails here rather than in production.
  *
  * 2. **The matcher's two rules are exactly the ones that fail quietly.** `TODAY`

@@ -124,6 +124,7 @@ function WorkspacePane({
   leaf: LeafNode;
   routeContent?: React.ReactNode;
 }): React.ReactElement {
+  const { focusLeaf } = useWorkspace();
   const activeTab = leaf.tabs.find((tab) => tab.id === leaf.activeTabId) ?? null;
   const isRouteTab = activeTab?.source === 'route';
   // `buildRouteForTab` returns a full, navigable href — Graph's and
@@ -162,7 +163,24 @@ function WorkspacePane({
     // their background and only their 1px border showed. A pane is this
     // tab's page, not a card on one — content climbs the surface ladder
     // correctly once the pane itself sits at the bottom rung.
-    <div ref={containerRef} className="bg-background flex h-full flex-col">
+    // Interacting anywhere in a pane focuses it, which is what makes "opens in
+    // the pane you clicked from" true at all. `openTab` targets
+    // `focusedLeafId`, so without this a link inside an unfocused pane opened
+    // its tab in whichever pane last had focus — the exact behaviour
+    // `WorkspaceLink` and `BoardTab`'s "All boards" exist to avoid, and one
+    // `Launcher` alone used to work around with a `focusLeaf` call of its own.
+    //
+    // `Capture` on both, so it runs before any inner handler and is not
+    // defeated by a `stopPropagation` in a tab's own content. `mousedown`
+    // rather than `click` because it precedes the click that opens the tab;
+    // `focus` covers reaching a pane by keyboard. `focusLeaf` no-ops when the
+    // leaf is already focused, so this costs one comparison per interaction.
+    <div
+      ref={containerRef}
+      className="bg-background flex h-full flex-col"
+      onMouseDownCapture={() => focusLeaf(leaf.id)}
+      onFocusCapture={() => focusLeaf(leaf.id)}
+    >
       <PaneToolbar leafId={leaf.id} />
       {hasTabs && (
         <div ref={headerRef}>

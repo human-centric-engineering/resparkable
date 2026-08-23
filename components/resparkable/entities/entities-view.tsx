@@ -14,9 +14,9 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import { Pencil, Plus, Users } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { EntityForm } from '@/components/resparkable/entities/entity-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
@@ -74,12 +74,12 @@ export function EntitiesView({ entities }: { entities: EntityWire[] }): React.Re
             {entities.map((entity) => (
               <TableRow key={entity.id}>
                 <TableCell>
-                  <Link
+                  <WorkspaceLink
                     href={RESPARKABLE_ROUTES.entity(entity.id)}
                     className="font-medium hover:underline"
                   >
                     {entity.name}
-                  </Link>
+                  </WorkspaceLink>
                   {entity.archivedAt !== null && (
                     <Badge variant="outline" className="ml-1 text-[11px]">
                       archived

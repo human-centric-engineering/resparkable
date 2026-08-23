@@ -35,12 +35,12 @@
 import * as React from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { z } from 'zod';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { FormError } from '@/components/forms/form-error';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
@@ -185,7 +185,7 @@ const COMMON_ZONES = [
 ];
 
 export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
 
   const form = useForm<SettingsFormValues>({
@@ -237,7 +237,7 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
       })
     );
 
-    if (ok) router.refresh();
+    if (ok) refresh({ type: 'space' });
   });
 
   return (
@@ -441,9 +441,12 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
           ) : null}
 
           <p className="text-muted-foreground text-xs">
-            <Link href={RESPARKABLE_ROUTES.ARCHIVE} className="underline underline-offset-2">
+            <WorkspaceLink
+              href={RESPARKABLE_ROUTES.ARCHIVE}
+              className="underline underline-offset-2"
+            >
               See what is archived
-            </Link>{' '}
+            </WorkspaceLink>{' '}
             — and what has gone quiet and might want a decision.
           </p>
         </CardContent>

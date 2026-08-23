@@ -24,12 +24,12 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { ArrowRight, Check, Link2, RefreshCw, X } from 'lucide-react';
 
 import { EntityChip } from '@/components/resparkable/ui/entity-chip';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
@@ -54,7 +54,7 @@ export function ConnectionsView({
   connections: ConnectionRowWire[];
   total: number;
 }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const review = useSaveStatus();
   const sweep = useSaveStatus();
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
@@ -68,7 +68,7 @@ export function ConnectionsView({
     );
 
     if (ok) {
-      router.refresh();
+      refresh({ type: 'link', id });
     } else {
       setReviewed((current) => {
         const next = new Set(current);
@@ -88,7 +88,7 @@ export function ConnectionsView({
 
     if (ok) {
       setLastSweep(result);
-      router.refresh();
+      refresh();
     }
   }
 

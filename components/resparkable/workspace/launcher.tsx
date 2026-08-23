@@ -17,12 +17,34 @@
  * repeated on every tile here too. The *page-level* title/blurb above is a
  * separate thing (what this screen is, not what one tile does), and stays.
  *
- * "Ask Sparkey" is deliberately absent from `RESPARKABLE_NAV_GROUPS` here,
- * not just filtered by accident: `tab-registry.ts` has no `chat` kind
- * because Sparkey's own pane absorbs chat (§9) — `/resparkable/chat` is a
- * redirect from Phase 8 on, never a tab. Any nav item that doesn't resolve
- * to a real tab kind is skipped the same way, so the launcher can never
- * offer a tile that does nothing when clicked.
+ * "Ask Sparkey" is not a tile because it is not a destination: Sparkey's own
+ * pane is always on screen, `tab-registry.ts` has no `chat` kind, and
+ * `/resparkable/chat` is a redirect. It was skipped here for a while and has
+ * since been removed from `RESPARKABLE_NAV_GROUPS` outright, so today nothing
+ * in the nav registry fails to resolve. The `flatMap` below still drops a
+ * non-resolving item rather than assuming that stays true: the invariant
+ * worth keeping is that the launcher can never offer a tile that does
+ * nothing when clicked.
+ *
+ * ## The one tile that carries a number
+ *
+ * The old nav rail carried "N waiting" badges on Inbox and Connections, fed by
+ * `GET /resparkable/counts`. The rail went with the cutover and took both with
+ * it. Connections needs no replacement — the Activity pane is a live, always-
+ * on-screen feed of the very same pending suggestions, which is strictly more
+ * than a count was. Inbox had nothing left, and un-triaged thoughts that are
+ * invisible are un-triaged thoughts that stay that way, so the count comes
+ * back here.
+ *
+ * Only Inbox. `openTasks` is deliberately not shown: it is a count of things
+ * that are open rather than things waiting on a decision, and a badge that
+ * never reaches zero is a badge people learn to stop seeing. That is the same
+ * rule `services/counts.ts` states for why snoozed and deferred rows are
+ * excluded from the numbers at all.
+ *
+ * Every pane showing its launcher fetches this independently. That is fine
+ * rather than an oversight: the endpoint is three indexed counts and is
+ * ETag'd, so the second and later panes cost a 304 and no payload.
  *
  * `[contain:paint]` on the root div, alongside `.lattice-field-hex`: that
  * class's own `::before` honeycomb switches to `position: fixed` under
@@ -41,12 +63,16 @@
 
 import * as React from 'react';
 
+import { useDataRevision } from '@/components/resparkable/workspace/data-change-context';
+import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
   RESPARKABLE_NAV_GROUPS,
   type NavGroup,
   type NavItem,
 } from '@/lib/framework/resparkable/ui/nav-groups';
+import { countsSchema } from '@/lib/framework/resparkable/ui/payloads';
 import {
   resolveTabForPathname,
   type TabKind,
@@ -87,6 +113,18 @@ const LAUNCHER_GROUPS = buildLauncherGroups();
 
 export function Launcher({ leafId }: LauncherProps): React.ReactElement {
   const workspace = useWorkspace();
+  // A failed or still-loading counts fetch shows no badge rather than no
+  // launcher — the same call the old layout made, for the same reason it made
+  // it: a badge is an affordance, and a picker that broke over a decoration
+  // would take out the only way to open anything.
+  // Subscribed to `thought` explicitly. This component renders in an *empty*
+  // pane, so it sits outside every `TabRefreshBoundary` and would otherwise
+  // hold its mount-time count forever — including through the exact flow the
+  // badge exists for: capturing a thought in Sparkey while an empty pane shows
+  // the launcher beside it.
+  const inboxRevision = useDataRevision(['thought']);
+  const [counts] = useTabFetch(RESPARKABLE_API.COUNTS, countsSchema, inboxRevision);
+  const inboxCount = counts.status === 'ready' ? counts.data.inbox : 0;
 
   return (
     <div className="lattice-field-hex @container flex h-full flex-col gap-6 overflow-y-auto p-6 [contain:paint]">
@@ -100,6 +138,7 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
           <div className="grid grid-cols-1 gap-2 @sm:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
             {group.tiles.map(({ item, kind, params }) => {
               const Icon = item.icon;
+              const badge = kind === 'inbox' && inboxCount > 0 ? inboxCount : null;
               return (
                 <button
                   key={item.href}
@@ -119,8 +158,25 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
                   // card — the one state that most needs to read as opaque.
                   className="bg-card border-border hover:border-primary/50 hover:bg-accent flex flex-col items-start gap-3 rounded-lg border p-4 text-left transition-colors"
                 >
-                  <Icon className="text-primary h-5 w-5 shrink-0" aria-hidden="true" />
-                  <span className="text-sm font-semibold">{item.label}</span>
+                  <div className="flex w-full items-start justify-between gap-2">
+                    <Icon className="text-primary h-5 w-5 shrink-0" aria-hidden="true" />
+                    {badge !== null && (
+                      // The count is in the accessible name rather than beside
+                      // it as decoration — a screen reader hears "Inbox, 7
+                      // waiting" from the button itself, which is the whole
+                      // point of the badge and is otherwise silent.
+                      <span
+                        className="bg-primary/10 text-primary rounded-full px-1.5 py-0.5 text-[11px] leading-none font-semibold tabular-nums"
+                        aria-hidden="true"
+                      >
+                        {badge}
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-sm font-semibold">
+                    {item.label}
+                    {badge !== null && <span className="sr-only">, {badge} waiting</span>}
+                  </span>
                 </button>
               );
             })}

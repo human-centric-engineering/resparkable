@@ -19,6 +19,7 @@ import {
   nextZIndex,
   removeFloatingPanel,
   resizeFloatingPanel,
+  updateFloatingPanelTab,
   type FloatingPanel,
 } from '@/lib/framework/resparkable/ui/workspace/floating-panels';
 import type { TabState } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
@@ -86,5 +87,43 @@ describe('nextZIndex / bringFloatingPanelToFront', () => {
   it('is a no-op for an id that is not there', () => {
     const panels = [panel('p1', { z: 1 })];
     expect(bringFloatingPanelToFront(panels, 'missing')).toEqual(panels);
+  });
+});
+
+describe('updateFloatingPanelTab — keyed on the tab id, not the panel id', () => {
+  it('updates the panel holding that tab', () => {
+    const panels = [panel('p1'), panel('p2')];
+
+    const next = updateFloatingPanelTab(panels, 'p2-tab', (tab) => ({
+      ...tab,
+      title: 'Q3 Roadmap',
+    }));
+
+    expect(next[1].tab.title).toBe('Q3 Roadmap');
+    // The panel's own id, position and size are untouched — only its tab changed.
+    expect(next[1]).toMatchObject({ id: 'p2', x: 0, y: 0, width: 360, height: 280 });
+  });
+
+  it('leaves every other panel object identical, not merely equal', () => {
+    const panels = [panel('p1'), panel('p2')];
+
+    const next = updateFloatingPanelTab(panels, 'p2-tab', (tab) => ({ ...tab, title: 'x' }));
+
+    expect(next[0]).toBe(panels[0]);
+  });
+
+  it('returns the input array itself when no panel holds that tab', () => {
+    const panels = [panel('p1')];
+
+    // Identity, not deep equality — `workspace-context.tsx` decides whether a
+    // write happened by comparing this against what it passed in, and a
+    // `map` that always allocated would report every miss as a change.
+    expect(updateFloatingPanelTab(panels, 'not-here', (tab) => tab)).toBe(panels);
+  });
+
+  it('returns the input array itself when the updater returns the tab unchanged', () => {
+    const panels = [panel('p1')];
+
+    expect(updateFloatingPanelTab(panels, 'p1-tab', (tab) => tab)).toBe(panels);
   });
 });

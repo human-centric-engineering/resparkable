@@ -23,9 +23,9 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import { AlertTriangle, CalendarClock, Inbox, Link2, Sun } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { BriefingCard } from '@/components/resparkable/today/briefing-card';
 import { TaskRow, formatMinutes } from '@/components/resparkable/today/task-row';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
@@ -96,7 +96,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
               action={
                 payload.inboxCount > 0 ? (
                   <Button asChild size="sm">
-                    <Link href={RESPARKABLE_ROUTES.INBOX}>Go to the inbox</Link>
+                    <WorkspaceLink href={RESPARKABLE_ROUTES.INBOX}>Go to the inbox</WorkspaceLink>
                   </Button>
                 ) : undefined
               }
@@ -122,9 +122,9 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
           {payload.timeBlocks.length === 0 ? (
             <p className="text-muted-foreground text-xs">
               Nothing blocked out.{' '}
-              <Link href={RESPARKABLE_ROUTES.PLAN} className="underline">
+              <WorkspaceLink href={RESPARKABLE_ROUTES.PLAN} className="underline">
                 Plan your day
-              </Link>
+              </WorkspaceLink>
               {'. '}Blocked time is what makes the effort-fit ranking real.
             </p>
           ) : (
@@ -156,9 +156,9 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
             <ul className="space-y-1.5 text-sm">
               {payload.goalsAtRisk.map((goal) => (
                 <li key={goal.id} className="flex flex-wrap items-baseline gap-2">
-                  <Link href={RESPARKABLE_ROUTES.GOALS} className="hover:underline">
+                  <WorkspaceLink href={RESPARKABLE_ROUTES.GOALS} className="hover:underline">
                     {goal.title}
-                  </Link>
+                  </WorkspaceLink>
                   <Badge variant="outline" className="text-[11px]">
                     {goal.horizon}
                   </Badge>
@@ -190,7 +190,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
             </p>
             {payload.inboxCount > 0 && (
               <Button asChild size="sm" variant="outline">
-                <Link href={RESPARKABLE_ROUTES.INBOX}>Triage them</Link>
+                <WorkspaceLink href={RESPARKABLE_ROUTES.INBOX}>Triage them</WorkspaceLink>
               </Button>
             )}
           </CardContent>
@@ -211,7 +211,7 @@ export function TodayView({ payload }: { payload: TodayPayloadWire }): React.Rea
             </p>
             {payload.unreviewedLinks.count > 0 && (
               <Button asChild size="sm" variant="outline">
-                <Link href={RESPARKABLE_ROUTES.CONNECTIONS}>Review them</Link>
+                <WorkspaceLink href={RESPARKABLE_ROUTES.CONNECTIONS}>Review them</WorkspaceLink>
               </Button>
             )}
           </CardContent>

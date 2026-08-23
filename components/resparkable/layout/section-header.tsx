@@ -38,10 +38,10 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ArrowRight } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { FieldHelp } from '@/components/ui/field-help';
 import { RESPARKABLE_NAV_GROUPS } from '@/lib/framework/resparkable/ui/nav-groups';
 import { findSectionHelp } from '@/lib/framework/resparkable/ui/section-help';
@@ -129,14 +129,14 @@ export function SectionHeader({ href }: SectionHeaderProps = {}): React.ReactEle
           {section.links && section.links.length > 0 && (
             <div className="border-border mt-2 space-y-1 border-t pt-2">
               {section.links.map((link) => (
-                <Link
+                <WorkspaceLink
                   key={link.href}
                   href={link.href}
                   className="text-foreground hover:text-primary flex items-center gap-1 font-medium"
                 >
                   <ArrowRight className="h-3 w-3 shrink-0" aria-hidden="true" />
                   {link.label}
-                </Link>
+                </WorkspaceLink>
               ))}
             </div>
           )}

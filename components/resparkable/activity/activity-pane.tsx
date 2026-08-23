@@ -22,6 +22,15 @@
  * flagged for `ConnectionsTab` in the plan's deferred-follow-ups). A failed
  * PATCH rolls the row back into view rather than leaving it hidden.
  *
+ * The optimistic removal keeps this pane honest on its own, but a decision
+ * made here is also a decision a Connections tab, a Graph tab or Today's
+ * unreviewed count is showing wrongly from that moment on. So the PATCH
+ * announces itself through `useNotifyDataChange()` once it lands: this pane
+ * has no `TabRefreshBoundary` above it and could not otherwise reach a tab at
+ * all. Deliberately after the promise resolves rather than alongside the
+ * optimistic update — a rolled-back decision should not have refetched three
+ * other panes into agreeing with it first.
+ *
  * `errors` tracks a failure message per connection id, not one shared status
  * for the whole feed: two decisions can be in flight at once (accept one
  * card, then reject another before the first PATCH resolves), and a single
@@ -42,6 +51,7 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { connectionRowsSchema } from '@/lib/framework/resparkable/ui/payloads';
@@ -63,6 +73,7 @@ export function ActivityPane({
   );
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const notifyDataChange = useNotifyDataChange();
 
   function decide(id: string, status: 'accepted' | 'rejected'): void {
     setReviewed((current) => new Set(current).add(id));
@@ -72,17 +83,20 @@ export function ActivityPane({
       return rest;
     });
 
-    void apiClient.patch(RESPARKABLE_API.linkById(id), { body: { status } }).catch((error) => {
-      setReviewed((current) => {
-        const next = new Set(current);
-        next.delete(id);
-        return next;
+    void apiClient
+      .patch(RESPARKABLE_API.linkById(id), { body: { status } })
+      .then(() => notifyDataChange({ type: 'link', id }))
+      .catch((error) => {
+        setReviewed((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
+        setErrors((current) => ({
+          ...current,
+          [id]: error instanceof Error ? error.message : 'Something went wrong',
+        }));
       });
-      setErrors((current) => ({
-        ...current,
-        [id]: error instanceof Error ? error.message : 'Something went wrong',
-      }));
-    });
   }
 
   const items: ActivityItem[] =

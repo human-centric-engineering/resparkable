@@ -3,28 +3,41 @@
 /**
  * PlanTab — the launcher-opened counterpart to `app/(resparkable)/resparkable/plan/page.tsx`.
  *
- * `day` has no home in `TabParams` (`tab-registry.ts`) because the route
- * itself never carried it in the path, only as a `?day=` search param — so
- * this reads it the same way the server page did, just from
- * `useSearchParams()` instead of an awaited `searchParams` prop. `today()`
- * runs in the **browser's** local time rather than the server's, which the
- * original page's own comment flags as a known simplification — this
- * adapter is, if anything, more correct than the page it replaces.
+ * ## The day is this tab's own, not the browser's
  *
- * `DayPlanner` changes the day by `router.push`-ing `?day=...` on the real
- * URL, unmodified — same accepted quirk as `ProjectsView`'s status filter:
- * Graph and Board are the two kinds this build plan calls out for
- * navigation-behavior changes, not Plan.
+ * This adapter used to read `?day=` out of `useSearchParams()` and let
+ * `DayPlanner` change it with `router.push`. Both halves were wrong once two
+ * panes could be open at once: every Plan tab in the workspace reads the same
+ * search params, so stepping to tomorrow in one pane stepped every other Plan
+ * pane with it — and moved the address bar, which belongs to whichever tab is
+ * the tree's single `source: 'route'` tab, not to this one.
+ *
+ * The day now arrives as a prop off `tab.params` and is written back with
+ * `setTabParams`, which touches no URL. `DayPlanner` itself is unmodified
+ * except for one optional `onDayChange` callback: absent (the real
+ * `plan/page.tsx`, and the route-backed tab that renders it) it still
+ * navigates exactly as before, because for that one tab the URL genuinely is
+ * its identity.
+ *
+ * Saving or deleting a block needs no prop here at all: `DayPlanner` and the
+ * `CreateDialog` under it both call `useResparkableRefresh()`, which resolves
+ * to this tab's own refetch (see `tab-refresh-context.tsx`).
+ *
+ * `day` being absent means "today" rather than a date pinned at open time, so
+ * a Plan tab left open overnight shows the new day rather than yesterday's.
+ * `todayIso()` runs in the **browser's** local time rather than the server's,
+ * which the original page's own comment flags as a known simplification —
+ * this adapter is, if anything, more correct than the page it replaces.
  */
 
 import * as React from 'react';
-import { useSearchParams } from 'next/navigation';
 import { z } from 'zod';
 
 import { DayPlanner } from '@/components/resparkable/plan/day-planner';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
   areaSchema,
@@ -45,10 +58,16 @@ function todayIso(): string {
   return `${now.getFullYear()}-${month}-${date}`;
 }
 
-export function PlanTab(): React.ReactElement {
-  const searchParams = useSearchParams();
-  const raw = searchParams.get('day');
-  const day = raw && DAY_PATTERN.test(raw) ? raw : todayIso();
+export interface PlanTabProps {
+  /** This tab's id — what `setTabParams` writes the day back through. */
+  tabId: string;
+  /** From `tab.params.day`. Absent means today, resolved on every render. */
+  day?: string;
+}
+
+export function PlanTab({ tabId, day: dayParam }: PlanTabProps): React.ReactElement {
+  const { setTabParams } = useWorkspace();
+  const day = dayParam && DAY_PATTERN.test(dayParam) ? dayParam : todayIso();
 
   const from = new Date(`${day}T00:00:00`);
   const to = new Date(`${day}T23:59:59`);
@@ -68,6 +87,11 @@ export function PlanTab(): React.ReactElement {
   );
   const [areas] = useTabFetch(`${RESPARKABLE_API.AREAS}?limit=200`, areasSchema);
 
+  const onDayChange = React.useCallback(
+    (next: string) => setTabParams(tabId, { day: next }),
+    [setTabParams, tabId]
+  );
+
   if (blocks.status === 'loading') return <SkeletonList label="Loading your day" />;
   if (blocks.status === 'error') {
     return <TabLoadError what="your day" message={blocks.message} onRetry={retryBlocks} />;
@@ -80,6 +104,7 @@ export function PlanTab(): React.ReactElement {
       projects={projects.status === 'ready' ? projects.data : []}
       areas={areas.status === 'ready' ? areas.data : []}
       day={day}
+      onDayChange={onDayChange}
     />
   );
 }

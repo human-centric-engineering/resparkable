@@ -29,14 +29,15 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { Clock3, Zap } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { PinControl } from '@/components/resparkable/controls/pin-control';
 import { PriorityExplainer } from '@/components/resparkable/controls/priority-explainer';
 import { SnoozeMenu } from '@/components/resparkable/controls/snooze-menu';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { useNow } from '@/components/resparkable/ui/use-now';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ClientDate } from '@/components/ui/client-date';
@@ -45,7 +46,6 @@ import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { TodayTaskWire } from '@/lib/framework/resparkable/ui/payloads';
 import { cn } from '@/lib/utils';
-import Link from 'next/link';
 
 /** Statuses that read as "finished" for the tick box. */
 const DONE = 'done';
@@ -59,7 +59,7 @@ export interface TaskRowProps {
 }
 
 export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const now = useNow();
   // Optimistic local state, so the tick lands before the round trip.
@@ -78,7 +78,7 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
     );
 
     if (ok) {
-      router.refresh();
+      refresh({ type: 'task', id: task.id });
     } else {
       setDone(!next);
     }
@@ -120,9 +120,12 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
           />
 
           {task.project && (
-            <Link href={RESPARKABLE_ROUTES.project(task.project.id)} className="hover:underline">
+            <WorkspaceLink
+              href={RESPARKABLE_ROUTES.project(task.project.id)}
+              className="hover:underline"
+            >
               {task.project.name}
-            </Link>
+            </WorkspaceLink>
           )}
 
           {task.area && (
@@ -170,9 +173,13 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
         <PinControl
           taskId={task.id}
           manualBoost={task.manualBoost}
-          onDone={() => router.refresh()}
+          onDone={() => refresh({ type: 'task', id: task.id })}
         />
-        <SnoozeMenu kind="task" id={task.id} onDone={() => router.refresh()} />
+        <SnoozeMenu
+          kind="task"
+          id={task.id}
+          onDone={() => refresh({ type: 'task', id: task.id })}
+        />
       </div>
     </li>
   );

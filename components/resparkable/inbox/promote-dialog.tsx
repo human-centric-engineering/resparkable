@@ -29,9 +29,9 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -88,7 +88,7 @@ export function PromoteDialog({
   suggestedProjectId,
   projects,
 }: PromoteDialogProps): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
 
   const [target, setTarget] = React.useState<Target>('task');
@@ -125,7 +125,10 @@ export function PromoteDialog({
 
     if (ok) {
       onOpenChange(false);
-      router.refresh();
+      // Triage consumes the thought, creates a task, and may file it under a
+      // new project. Naming all three is what reaches a Today or Projects tab
+      // in another pane, which a bare refresh could not.
+      refresh([{ type: 'thought' }, { type: 'task' }, { type: 'project' }]);
     }
   }
 

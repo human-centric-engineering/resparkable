@@ -24,11 +24,11 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { ArrowLeft, ArrowRight, Check, X } from 'lucide-react';
 
 import { EntityChip } from '@/components/resparkable/ui/entity-chip';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
@@ -52,7 +52,7 @@ export interface RelatedListProps {
 }
 
 export function RelatedList({ related, emptyMessage }: RelatedListProps): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const [reviewed, setReviewed] = React.useState<Set<string>>(new Set());
 
@@ -64,7 +64,7 @@ export function RelatedList({ related, emptyMessage }: RelatedListProps): React.
     );
 
     if (ok) {
-      router.refresh();
+      refresh({ type: 'link' });
     } else {
       setReviewed((current) => {
         const next = new Set(current);

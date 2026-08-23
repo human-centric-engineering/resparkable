@@ -20,6 +20,18 @@
  * and a route-backed open renders the real page via `route-tab-bridge.tsx`
  * (Phase 8), never this dispatcher. The fallback below is a safety net for
  * that invariant, not an expected path.
+ *
+ * ## Why `tabId` is threaded into so many adapters
+ *
+ * Two things a tab can only do if it knows its own id: **name itself** from
+ * its loaded content (`setTabTitle`, the four detail kinds), and **hold its
+ * own filter** rather than the browser's (`setTabParams` — Plan's day,
+ * Projects' status, Search's include-archived). Both context actions key on
+ * the tab id alone, deliberately, so no adapter has to be told which pane is
+ * rendering it or whether it is floating in a window instead. That is why
+ * `tabId` arrives as a plain prop here rather than through a context: it
+ * makes each adapter independently testable with a stub, which is exactly
+ * what its own test file does.
  */
 
 import * as React from 'react';
@@ -42,6 +54,7 @@ import { ProjectTab } from '@/components/resparkable/workspace/tabs/project-tab'
 import { ProjectsTab } from '@/components/resparkable/workspace/tabs/projects-tab';
 import { SearchTab } from '@/components/resparkable/workspace/tabs/search-tab';
 import { SettingsTab } from '@/components/resparkable/workspace/tabs/settings-tab';
+import { TabRefreshBoundary } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { TodayTab } from '@/components/resparkable/workspace/tabs/today-tab';
 import { VaultTab } from '@/components/resparkable/workspace/tabs/vault-tab';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
@@ -51,18 +64,40 @@ export interface TabContentProps {
   tab: TabState;
 }
 
+/**
+ * Wrapped in `TabRefreshBoundary` so that every mutating control inside this
+ * tab — `ThoughtCard`'s triage buttons, a `CreateDialog` closing, a board
+ * card drag — refreshes *this tab* rather than `router.refresh()`-ing the
+ * whole route segment that every other pane also sits under. See
+ * `tab-refresh-context.tsx` for why that was wrong in both directions at
+ * once. Deliberately here rather than in `WorkspacePane`: the route-backed
+ * tab renders the real server page instead of this dispatcher, and that one
+ * tab genuinely does want `router.refresh()`.
+ *
+ * The boundary is handed the whole `tab`, not just its children, because it
+ * also subscribes this tab to the shell-wide change broadcast on its
+ * behalf — `change-scope.ts` maps `(kind, params)` to the changes that
+ * matter to it. That is what lets a Sparkey capture reach an open Inbox tab
+ * with no wiring in `InboxTab` itself. `renderTab(tab)` is called here rather
+ * than inside the boundary so the child element's identity survives a
+ * broadcast that this tab does not care about, and React skips the subtree.
+ */
 export function TabContent({ tab }: TabContentProps): React.ReactElement {
+  return <TabRefreshBoundary tab={tab}>{renderTab(tab)}</TabRefreshBoundary>;
+}
+
+function renderTab(tab: TabState): React.ReactElement {
   switch (tab.kind) {
     case 'today':
       return <TodayTab />;
     case 'inbox':
       return <InboxTab />;
     case 'plan':
-      return <PlanTab />;
+      return <PlanTab tabId={tab.id} day={tab.params.day} />;
     case 'projects':
-      return <ProjectsTab />;
+      return <ProjectsTab tabId={tab.id} status={tab.params.status ?? null} />;
     case 'project':
-      return <ProjectTab id={tab.params.id!} />;
+      return <ProjectTab tabId={tab.id} id={tab.params.id!} />;
     case 'goals':
       return <GoalsTab />;
     case 'areas':
@@ -70,13 +105,13 @@ export function TabContent({ tab }: TabContentProps): React.ReactElement {
     case 'boards':
       return <BoardsTab />;
     case 'board':
-      return <BoardTab slug={tab.params.slug!} />;
+      return <BoardTab tabId={tab.id} slug={tab.params.slug!} />;
     case 'documents':
       return <DocumentsTab />;
     case 'entities':
       return <EntitiesTab />;
     case 'entity':
-      return <EntityTab id={tab.params.id!} />;
+      return <EntityTab tabId={tab.id} id={tab.params.id!} />;
     case 'connections':
       return <ConnectionsTab />;
     case 'graph':
@@ -88,9 +123,15 @@ export function TabContent({ tab }: TabContentProps): React.ReactElement {
     case 'archive':
       return <ArchiveTab />;
     case 'search':
-      return <SearchTab query={tab.params.query} />;
+      return (
+        <SearchTab
+          tabId={tab.id}
+          query={tab.params.query}
+          includeArchived={tab.params.includeArchived === true}
+        />
+      );
     case 'note':
-      return <NoteTab id={tab.params.id!} />;
+      return <NoteTab tabId={tab.id} id={tab.params.id!} />;
     case 'capture':
       return (
         <EmptyState

@@ -87,6 +87,22 @@ export const linkSchema = z.object({
 
 export type LinkWire = z.infer<typeof linkSchema>;
 
+/**
+ * `GET /resparkable/counts` — the three "waiting on a decision" numbers.
+ *
+ * Lived inline in the old `(protected)/resparkable/layout.tsx` while the nav
+ * rail was the only consumer. The rail is gone; the `Launcher`'s Inbox tile
+ * is the consumer now (see that component for why only `inbox` is shown), and
+ * a schema two components share belongs here with the rest of them.
+ */
+export const countsSchema = z.object({
+  inbox: z.number(),
+  connections: z.number(),
+  openTasks: z.number(),
+});
+
+export type CountsWire = z.infer<typeof countsSchema>;
+
 export const todayPayloadSchema = z.object({
   generatedAt: isoDate,
   timezone: z.string(),

@@ -14,11 +14,19 @@
  *   for — the second `useTabFetch` call's endpoint is `null` until
  *   `boards` resolves and a matching slug is found, so the effect simply
  *   doesn't run until then, instead of a manual multi-stage fetch dance.
- * - **The "All boards" link becomes `openTab`, not `<Link>`.** The
- *   server page's `<Link href="/resparkable/boards">` is a real page
- *   navigation, which is meaningless inside a tab — this pane isn't a
- *   route, and other panes may be showing other things. It opens the
- *   Boards list as a tab in the same pane instead.
+ * - **The "All boards" control calls `openTab`, not `<Link>`.** The server
+ *   page's `<Link href="/resparkable/boards">` is a real page navigation,
+ *   which is meaningless inside a tab — this pane isn't a route, and other
+ *   panes may be showing other things. It opens the Boards list as a tab in
+ *   the same pane instead.
+ *
+ *   This was the first place to make that choice, and for a while the only
+ *   one, which is why it used to read as a local exception. It is now the
+ *   rule: `workspace-link.tsx` applies the same behaviour to every in-content
+ *   link in the app. This one stays a `<button>` calling `openTab` directly
+ *   rather than adopting `WorkspaceLink`, because it renders as a button in a
+ *   toolbar row beside two export links — a `WorkspaceLink` here would be an
+ *   anchor dressed as a button for no gain.
  */
 
 import * as React from 'react';
@@ -31,6 +39,7 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
+import { useTabTitle } from '@/components/resparkable/workspace/tabs/use-tab-title';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { boardSchema, boardViewSchema, tagSchema } from '@/lib/framework/resparkable/ui/payloads';
@@ -39,10 +48,12 @@ const boardsSchema = z.array(boardSchema);
 const tagsSchema = z.array(tagSchema);
 
 export interface BoardTabProps {
+  /** This tab's id — what `useTabTitle` names once the board's own name is known. */
+  tabId: string;
   slug: string;
 }
 
-export function BoardTab({ slug }: BoardTabProps): React.ReactElement {
+export function BoardTab({ tabId, slug }: BoardTabProps): React.ReactElement {
   const workspace = useWorkspace();
   const [boards, retryBoards] = useTabFetch(`${RESPARKABLE_API.BOARDS}?limit=200`, boardsSchema);
 
@@ -56,6 +67,8 @@ export function BoardTab({ slug }: BoardTabProps): React.ReactElement {
     boardViewSchema
   );
   const [tags] = useTabFetch(boardId ? `${RESPARKABLE_API.TAGS}?limit=100` : null, tagsSchema);
+
+  useTabTitle(tabId, view.status === 'ready' ? view.data.board.name : null);
 
   if (boards.status === 'loading') return <SkeletonList label="Loading board" />;
   if (boards.status === 'error') {

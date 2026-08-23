@@ -30,6 +30,24 @@
  * anyway is a guaranteed dead end — either a confusing non-answer or an
  * LLM inventing a tool call that doesn't exist. Declining locally costs
  * nothing and is honest about what Sparkey can't do yet.
+ *
+ * ## Why a write here announces itself
+ *
+ * This pane is not a tab. It has no `TabRefreshBoundary` above it, so
+ * `useResparkableRefresh()` would resolve to `router.refresh()` here, which
+ * re-renders the one route-backed tab and leaves every launcher-opened tab as
+ * stale as it was: capturing a thought put nothing in an open Inbox tab, and
+ * telling Sparkey to change a goal changed nothing on screen. So both writers
+ * below call `useNotifyDataChange()` instead, naming what they touched, and
+ * every tab showing that thing catches up. See `data-change-context.tsx`.
+ *
+ * The instruct path derives its changes from the capability slugs the stream
+ * reported, since that is the only account of what a turn did that reaches
+ * the browser. It carries no ids: the stream says *which* tool ran, not what
+ * it returned (`resparkable-chat.tsx` explains why), so these land on
+ * `change-scope.ts`'s unknown-id key, which detail tabs subscribe to for
+ * exactly this case. A chat turn that only read something announces nothing,
+ * because `changesForCapabilities` lists writers only.
  */
 
 import * as React from 'react';
@@ -46,9 +64,11 @@ import type {
   TranscriptEntry,
 } from '@/components/resparkable/sparkey/sparkey-types';
 import { Transcript } from '@/components/resparkable/sparkey/transcript';
+import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { changesForCapabilities } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { isBoardInstruction } from '@/lib/framework/resparkable/ui/workspace/classify-intent';
 import { useLocalStorage } from '@/lib/hooks/use-local-storage';
 
@@ -73,6 +93,7 @@ export function SparkeyPane({
   const [draft, setDraft] = React.useState('');
   const [entries, setEntries] = React.useState<TranscriptEntry[]>([]);
   const chat = useChatStream({ agentSlug: RESPARKABLE_AGENT_SLUGS.companion });
+  const notifyDataChange = useNotifyDataChange();
 
   function patchAgentTurn(
     id: string,
@@ -112,7 +133,12 @@ export function SparkeyPane({
       .post<unknown>(RESPARKABLE_API.THOUGHTS, {
         body: { content: text, ...(source ? { source } : {}) },
       })
-      .then(() => patchCapture(id, { status: 'saved' }))
+      .then(() => {
+        patchCapture(id, { status: 'saved' });
+        // Only after the POST resolves. Announcing on submit would have an
+        // open Inbox tab refetch before the row exists, then show nothing new.
+        notifyDataChange({ type: 'thought' });
+      })
       .catch((error: unknown) => {
         patchCapture(id, {
           status: 'error',
@@ -140,6 +166,11 @@ export function SparkeyPane({
           return;
         }
         patchAgentTurn(id, { assistantText: assistant, tools, status: 'done' });
+        // Both modes, not just instruct: Chat is the same agent holding the
+        // same write capabilities, and "add that to my inbox" typed in Chat
+        // writes exactly as much as it does in Instruct. The mode is a
+        // framing for the receipt, not a permission boundary.
+        notifyDataChange(changesForCapabilities(tools));
       },
       onError: (message) => patchAgentTurn(id, { status: 'error', errorMessage: message }),
     });

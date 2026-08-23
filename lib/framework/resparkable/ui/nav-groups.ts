@@ -1,16 +1,22 @@
 /**
- * The Resparkable section registry — grouped nav items, extracted from
- * `resparkable-nav.tsx` so it can be consumed without pulling in a client
- * component (or its `'use client'` boundary).
+ * The Resparkable section registry — the grouped list of everything the app
+ * has a section for.
  *
  * This is the product's own model of its sections, not a tidying exercise:
  * things you open every day, the structure you file work under, the
  * material and its links, and the two administrative surfaces. It backs the
- * rail (`ResparkableNav`), the section header's eyebrow (`SectionHeader`),
- * `section-help.ts`'s coverage test, and — from Phase 2 on — the Workspace
- * launcher's grouped picker.
+ * Workspace launcher's grouped picker, the section header's eyebrow
+ * (`SectionHeader`), and `section-help.ts`'s coverage test.
  *
- * @see components/resparkable/layout/resparkable-nav.tsx
+ * It was extracted from the old `resparkable-nav.tsx` rail so it could be
+ * consumed without pulling in a client component, which is what let that rail
+ * be deleted at the shell cutover's cleanup without taking the section model
+ * with it. The rail is gone; this is what it left behind.
+ *
+ * There is deliberately no Ask Sparkey entry any more. Sparkey is a permanent
+ * pane in the shell rather than a place you navigate to, `/resparkable/chat`
+ * is a redirect, and a launcher tile for it would have been a tile that opens
+ * nothing.
  */
 
 import {
@@ -30,16 +36,17 @@ import {
 } from 'lucide-react';
 import type * as React from 'react';
 
-import { SparkIcon } from '@/components/brand/spark-glyph';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 export interface NavItem {
   href: string;
   label: string;
   /**
-   * A Lucide icon everywhere except Ask Sparkey, which uses `SparkIcon` — so
-   * this is typed to the shape both share (every call site here only ever
-   * passes `className`/`aria-hidden`) rather than to `LucideIcon` itself.
+   * Typed to the shape every call site here actually uses (`className`,
+   * `aria-hidden`) rather than to `LucideIcon`. That was originally to admit
+   * `SparkIcon` alongside the Lucide set for the retired Ask Sparkey entry;
+   * it stays because it is the smaller, truer contract, and because the
+   * launcher renders these icons through it without needing anything more.
    */
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   /** Index route — match exactly, or it lights up everywhere. */
@@ -63,7 +70,6 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       { href: RESPARKABLE_ROUTES.TODAY, label: 'Today', icon: Sun, exact: true },
       { href: RESPARKABLE_ROUTES.INBOX, label: 'Inbox', icon: Inbox },
       { href: RESPARKABLE_ROUTES.PLAN, label: 'Plan', icon: CalendarRange },
-      { href: RESPARKABLE_ROUTES.CHAT, label: 'Ask Sparkey', icon: SparkIcon },
     ],
   },
   {

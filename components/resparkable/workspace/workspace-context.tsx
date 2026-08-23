@@ -34,6 +34,8 @@ import {
   reorderTab as reorderTabInTree,
   resizeSplit as resizeSplitInTree,
   setRouteTab as setRouteTabInTree,
+  setTabParams as setTabParamsInTree,
+  setTabTitle as setTabTitleInTree,
   showLauncher as showLauncherInTree,
   splitLeaf as splitLeafInTree,
   type PaneNode,
@@ -46,6 +48,7 @@ import {
   nextZIndex,
   removeFloatingPanel,
   resizeFloatingPanel as resizeFloatingPanelInList,
+  updateFloatingPanelTab,
   type FloatingPanel,
 } from '@/lib/framework/resparkable/ui/workspace/floating-panels';
 import type {
@@ -111,6 +114,25 @@ export interface WorkspaceContextValue {
    * `split-tree.ts` for the invariant this maintains.
    */
   syncRouteTab: (kind: TabKind, params?: TabParams) => void;
+
+  /**
+   * Merges `patch` into one tab's own params — how a launcher-opened tab
+   * changes its filter (Plan's day, Projects' status, Search's include-archived)
+   * **without touching the browser URL**.
+   *
+   * That distinction is the whole point. Before this existed, those filters
+   * lived in `useSearchParams()`, which every pane reads: changing the day in
+   * one Plan tab moved every other Plan tab with it, and moved the address bar
+   * besides. The tree's one `source: 'route'` tab is the deliberate exception
+   * and still tracks the URL — its params are written by `syncRouteTab`, and
+   * the real page it renders still navigates when its own controls change,
+   * because for that one tab the URL *is* its identity.
+   *
+   * Keyed on the tab id alone, so a floating detached tab is reachable too.
+   */
+  setTabParams: (tabId: string, patch: Partial<TabParams>) => void;
+  /** Names a tab from its own loaded content — see `TabState.title`. */
+  setTabTitle: (tabId: string, title: string) => void;
 
   /** Tabs dragged out of the pane tree into their own floating windows. */
   floatingPanels: FloatingPanel[];
@@ -233,7 +255,16 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
 
   const focusLeaf = React.useCallback<WorkspaceContextValue['focusLeaf']>(
     (leafId) => {
-      setState((prev) => (findLeaf(prev.root, leafId) ? { ...prev, focusedLeafId: leafId } : prev));
+      setState((prev) => {
+        // Returned unchanged when this leaf is already focused, which is the
+        // overwhelmingly common case now that `WorkspacePane` calls this on
+        // every mousedown. `useLocalStorage`'s setter serializes the whole tree
+        // and dispatches a sync event whether or not the reducer changed
+        // anything, so a new object here would mean a full write and a
+        // re-render of every pane on each click.
+        if (prev.focusedLeafId === leafId) return prev;
+        return findLeaf(prev.root, leafId) ? { ...prev, focusedLeafId: leafId } : prev;
+      });
     },
     [setState]
   );
@@ -251,6 +282,39 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
         const tab: TabState = { id: createId(), kind, params, source: 'route' };
         const { root, leafId } = setRouteTabInTree(prev.root, tab, prev.focusedLeafId);
         return { ...prev, root, focusedLeafId: leafId };
+      });
+    },
+    [setState]
+  );
+
+  // Both of these write to the tree *and* the floating-panel list, because a
+  // tab id resolves to exactly one of the two and the caller doesn't know
+  // which. Each helper returns its input unchanged when nothing matched, so
+  // the miss costs one identity comparison rather than a wasted re-render.
+  const setTabParams = React.useCallback<WorkspaceContextValue['setTabParams']>(
+    (tabId, patch) => {
+      setState((prev) => {
+        const root = setTabParamsInTree(prev.root, tabId, patch);
+        const floatingPanels = updateFloatingPanelTab(prev.floatingPanels, tabId, (tab) => ({
+          ...tab,
+          params: { ...tab.params, ...patch },
+        }));
+        if (root === prev.root && floatingPanels === prev.floatingPanels) return prev;
+        return { ...prev, root, floatingPanels };
+      });
+    },
+    [setState]
+  );
+
+  const setTabTitle = React.useCallback<WorkspaceContextValue['setTabTitle']>(
+    (tabId, title) => {
+      setState((prev) => {
+        const root = setTabTitleInTree(prev.root, tabId, title);
+        const floatingPanels = updateFloatingPanelTab(prev.floatingPanels, tabId, (tab) =>
+          tab.title === title ? tab : { ...tab, title }
+        );
+        if (root === prev.root && floatingPanels === prev.floatingPanels) return prev;
+        return { ...prev, root, floatingPanels };
       });
     },
     [setState]
@@ -347,6 +411,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       focusLeaf,
       showLauncher,
       syncRouteTab,
+      setTabParams,
+      setTabTitle,
       floatingPanels: state.floatingPanels,
       detachTab,
       dockPanel,
@@ -367,6 +433,8 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       focusLeaf,
       showLauncher,
       syncRouteTab,
+      setTabParams,
+      setTabTitle,
       detachTab,
       dockPanel,
       moveFloatingPanel,
@@ -385,4 +453,18 @@ export function useWorkspace(): WorkspaceContextValue {
     throw new Error('useWorkspace must be used within a WorkspaceProvider');
   }
   return context;
+}
+
+/**
+ * The workspace if there is one, `null` if not, without throwing.
+ *
+ * For the components that are shared between the shell and a plain page and
+ * have a real answer either way. `WorkspaceLink` is the reason it exists: the
+ * same `<EntityChip>` renders inside a tab, where a click should open a tab,
+ * and on `/resparkable/capture`, where a click is ordinary navigation. Every
+ * other caller wants {@link useWorkspace}'s throw, which catches a pane
+ * component rendered somewhere it cannot work.
+ */
+export function useOptionalWorkspace(): WorkspaceContextValue | null {
+  return React.useContext(WorkspaceContext) ?? null;
 }

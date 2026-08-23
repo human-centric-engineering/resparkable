@@ -13,14 +13,14 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { LayoutGrid, Pencil, Plus, Tag as TagIcon, Trash2 } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { BoardForm } from '@/components/resparkable/board/board-form';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -67,12 +67,12 @@ export function BoardsList({ boards, projects, tags }: BoardsListProps): React.R
               key={board.id}
               className="bg-card flex flex-wrap items-center gap-2 rounded-md border p-3"
             >
-              <Link
+              <WorkspaceLink
                 href={RESPARKABLE_ROUTES.board(board.slug)}
                 className="font-medium hover:underline"
               >
                 {board.name}
-              </Link>
+              </WorkspaceLink>
 
               <Badge variant="secondary" className="text-[11px]">
                 {board.membership === 'explicit' ? 'hand-picked' : 'a live query'}
@@ -130,7 +130,7 @@ export function BoardsList({ boards, projects, tags }: BoardsListProps): React.R
  * it", and that ambiguity only resolves badly.
  */
 function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const [name, setName] = React.useState('');
 
@@ -142,7 +142,7 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
 
     const ok = await run(() => apiClient.post(RESPARKABLE_API.TAGS, { body: { name: trimmed } }));
 
-    if (ok) router.refresh();
+    if (ok) refresh({ type: 'tag' });
     else setName(trimmed);
   }
 
@@ -150,7 +150,7 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
     const ok = await run(() =>
       apiClient.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TAGS, tagId))
     );
-    if (ok) router.refresh();
+    if (ok) refresh({ type: 'tag' });
   }
 
   return (

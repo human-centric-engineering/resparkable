@@ -30,7 +30,6 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import type { FieldValues, UseFormReturn } from 'react-hook-form';
 
 import { ResparkableChat } from '@/components/resparkable/chat/resparkable-chat';
@@ -39,6 +38,7 @@ import {
   type CreateMode,
 } from '@/components/resparkable/creation/create-mode-toggle';
 import { ResourceFormBody } from '@/components/resparkable/ui/resource-dialog';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import {
   Dialog,
   DialogContent,
@@ -98,7 +98,7 @@ export function CreateDialog<TValues extends FieldValues>({
   toBody,
   children,
 }: CreateDialogProps<TValues>): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
 
   // Shared by the Dialog's own close triggers (Escape, overlay click) AND
   // ResourceFormBody's onSaved below — calling the raw `onOpenChange` prop
@@ -107,7 +107,7 @@ export function CreateDialog<TValues extends FieldValues>({
   // triggers, not for a controlled `open` prop flipping externally.
   const handleOpenChange = (next: boolean): void => {
     onOpenChange(next);
-    if (!next) router.refresh();
+    if (!next) refresh();
   };
 
   return (

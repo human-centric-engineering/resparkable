@@ -19,15 +19,16 @@
  */
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { CheckCircle2 } from 'lucide-react';
 
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { ClientDate } from '@/components/ui/client-date';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import type { StaleDigestWire, StaleSectionWire } from '@/lib/framework/resparkable/ui/payloads';
 
 /** Wording per section — the question, and the collection its rows live in. */
@@ -113,7 +114,7 @@ function StaleRow({
   type: string;
   row: StaleSectionWire['rows'][number];
 }): React.ReactElement {
-  const router = useRouter();
+  const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
   const config = SECTIONS[type];
 
@@ -123,7 +124,14 @@ function StaleRow({
     );
     // The row leaves the digest because `lastActivityAt` moved, not because the
     // component hid it — so a refresh is the honest way to reflect the answer.
-    if (ok) router.refresh();
+    // Named from the section's own collection rather than from `type`, which
+    // arrives as a plain string off the payload — `SECTIONS` already holds the
+    // mapping, so there is no second place to keep in step.
+    // `config` is optional throughout this file (an unknown section type the
+    // API grew still renders its rows), so it is guarded here too even though
+    // this button only exists when `config.stillLive` is true.
+    const changed = config ? changeTypeForCollection(config.collection) : undefined;
+    if (ok) refresh(changed ? { type: changed, id: row.id } : undefined);
   }
 
   return (

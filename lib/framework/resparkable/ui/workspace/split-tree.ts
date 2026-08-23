@@ -78,13 +78,26 @@ function mapNode(root: PaneNode, id: string, fn: (node: PaneNode) => PaneNode): 
   return { ...root, children: root.children.map((child) => mapNode(child, id, fn)) };
 }
 
+/**
+ * Every field of `TabParams`, compared one by one rather than by a
+ * `JSON.stringify` shortcut — key order differs between a tab built by
+ * `resolveTabForPathname` and one built by `setTabParams`'s merge, and two
+ * tabs that are the same tab must not stop deduping because of it.
+ *
+ * The filter fields (`day`/`status`/`includeArchived`) are compared like any
+ * other: two Plan tabs on different days *are* two different tabs, the same
+ * way two Graph tabs on different focuses are.
+ */
 function sameParams(a: TabParams, b: TabParams): boolean {
   return (
     a.id === b.id &&
     a.slug === b.slug &&
     a.query === b.query &&
     a.focusType === b.focusType &&
-    a.focus === b.focus
+    a.focus === b.focus &&
+    a.day === b.day &&
+    a.status === b.status &&
+    a.includeArchived === b.includeArchived
   );
 }
 
@@ -112,6 +125,66 @@ export function openTabInLeaf(root: PaneNode, leafId: string, tab: TabState): Pa
     if (existing) return { ...node, activeTabId: existing.id };
     return { ...node, tabs: [...node.tabs, tab], activeTabId: tab.id };
   });
+}
+
+/**
+ * Applies `update` to the tab with `tabId`, wherever in the tree it sits.
+ *
+ * Deliberately **id-only** — no `leafId` — unlike every other mutator in this
+ * file. A tab's id is unique across the whole workspace (`crypto.randomUUID`
+ * in `workspace-context.tsx`), and the callers this exists for are the tab
+ * *content adapters*: a `ProjectTab` knows its own tab id and nothing about
+ * which pane is rendering it, and the same adapter renders inside a floating
+ * window, which has no leaf at all. Making the leaf a required argument would
+ * have forced every adapter to be told where it lives, for no gain.
+ *
+ * Returns the tree unchanged if no tab matches, so a write racing a close is
+ * a no-op rather than a crash.
+ */
+export function updateTab(
+  root: PaneNode,
+  tabId: string,
+  update: (tab: TabState) => TabState
+): PaneNode {
+  if (root.kind === 'leaf') {
+    let touched = false;
+    const tabs = root.tabs.map((tab) => {
+      if (tab.id !== tabId) return tab;
+      const next = update(tab);
+      if (next === tab) return tab;
+      touched = true;
+      return next;
+    });
+    // The same node back, not a fresh copy of it, when the update was a
+    // no-op — `workspace-context.tsx` compares identities to skip a
+    // pointless `localStorage` write and re-render of every pane.
+    return touched ? { ...root, tabs } : root;
+  }
+
+  let changed = false;
+  const children = root.children.map((child) => {
+    const next = updateTab(child, tabId, update);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...root, children } : root;
+}
+
+/**
+ * Merges `patch` into tab `tabId`'s params — the pane-local counterpart to
+ * changing a filter in the URL.
+ *
+ * A merge rather than a replace, because the callers patch one field at a
+ * time (`{ day }`, `{ status }`) on a tab whose other params — a Graph
+ * focus, a Board slug — identify it and must survive the write.
+ */
+export function setTabParams(root: PaneNode, tabId: string, patch: Partial<TabParams>): PaneNode {
+  return updateTab(root, tabId, (tab) => ({ ...tab, params: { ...tab.params, ...patch } }));
+}
+
+/** Names tab `tabId` from its own loaded content — see `TabState.title`. */
+export function setTabTitle(root: PaneNode, tabId: string, title: string): PaneNode {
+  return updateTab(root, tabId, (tab) => (tab.title === title ? tab : { ...tab, title }));
 }
 
 /** Makes `tabId` the active tab of leaf `leafId`. No-op if the tab isn't there. */

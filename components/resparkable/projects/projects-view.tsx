@@ -19,10 +19,10 @@
  */
 
 import * as React from 'react';
-import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { FolderKanban, Plus } from 'lucide-react';
 
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { ProjectForm } from '@/components/resparkable/projects/project-form';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
@@ -52,11 +52,24 @@ const ALL = '__all__';
 export interface ProjectsViewProps {
   projects: ProjectWire[];
   areas: AreaWire[];
-  /** From the URL, so the control reflects what the server actually filtered by. */
+  /** What the list was actually filtered by — from the URL on the page, from the tab's own params in a pane. */
   status: string | null;
+  /**
+   * Where a status change goes. Absent — the real `projects/page.tsx` — it
+   * navigates, keeping the URL shareable as the header comment above
+   * describes. A launcher-opened `ProjectsTab` passes its own writer instead:
+   * two Projects panes reading one URL meant changing the filter in either
+   * silently changed both.
+   */
+  onStatusChange?: (status: string | null) => void;
 }
 
-export function ProjectsView({ projects, areas, status }: ProjectsViewProps): React.ReactElement {
+export function ProjectsView({
+  projects,
+  areas,
+  status,
+  onStatusChange,
+}: ProjectsViewProps): React.ReactElement {
   const router = useRouter();
   const params = useSearchParams();
   const [createOpen, setCreateOpen] = React.useState(false);
@@ -64,6 +77,10 @@ export function ProjectsView({ projects, areas, status }: ProjectsViewProps): Re
   const areaNames = new Map(areas.map((area) => [area.id, area.name]));
 
   function setStatus(next: string): void {
+    if (onStatusChange) {
+      onStatusChange(next === ALL ? null : next);
+      return;
+    }
     const search = new URLSearchParams(params.toString());
     if (next === ALL) search.delete('status');
     else search.set('status', next);
@@ -119,12 +136,12 @@ export function ProjectsView({ projects, areas, status }: ProjectsViewProps): Re
             {projects.map((project) => (
               <TableRow key={project.id}>
                 <TableCell>
-                  <Link
+                  <WorkspaceLink
                     href={RESPARKABLE_ROUTES.project(project.id)}
                     className="font-medium hover:underline"
                   >
                     {project.name}
-                  </Link>
+                  </WorkspaceLink>
                   {project.description && (
                     <p className="text-muted-foreground line-clamp-1 text-xs">
                       {project.description}
