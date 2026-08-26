@@ -25,6 +25,7 @@ const findMany = vi.fn();
 const ledgerCreate = vi.fn();
 const userFindMany = vi.fn();
 const transaction = vi.fn();
+const queryRaw = vi.fn();
 
 vi.mock('@/lib/db/client', () => ({
   prisma: {
@@ -41,6 +42,7 @@ vi.mock('@/lib/db/client', () => ({
       findMany: (...args: unknown[]) => userFindMany(...args),
     },
     $transaction: (...args: unknown[]) => transaction(...args),
+    $queryRaw: (...args: unknown[]) => queryRaw(...args),
   },
 }));
 
@@ -49,6 +51,7 @@ import {
   applyLedgerEntry,
   ensureCreditAccount,
   findCreditAccount,
+  findUnbilledTerminalResparkableExecutions,
   grantCreditsAsAdmin,
   listCreditAccountsForAdmin,
 } from '@/lib/framework/resparkable/repo/billing';
@@ -241,5 +244,136 @@ describe('listCreditAccountsForAdmin', () => {
 
     expect(rows).toEqual([]);
     expect(findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('findUnbilledTerminalResparkableExecutions', () => {
+  /**
+   * The static half of the last `$queryRaw` tagged template, with `?` where a
+   * parameter went. Prisma receives the strings and the values separately, so
+   * nothing here can assert a value was inlined — it structurally cannot be.
+   */
+  function lastSql(): string {
+    const call = queryRaw.mock.calls.at(-1) ?? [];
+    const strings = call[0] as string[];
+    const flatten = (frag: unknown): string =>
+      typeof frag === 'object' &&
+      frag !== null &&
+      Array.isArray((frag as { strings?: unknown }).strings)
+        ? (frag as { strings: string[] }).strings.join(' ? ')
+        : ' ? ';
+    return strings.reduce(
+      (text, part, index) =>
+        text + part + (index < call.length - 1 ? flatten(call[index + 1]) : ''),
+      ''
+    );
+  }
+
+  beforeEach(() => {
+    queryRaw.mockResolvedValue([]);
+  });
+
+  it('excludes executions that already have an agent_spend ledger row', async () => {
+    // The whole point of the change. The previous implementation took the
+    // newest 100 terminal runs, so more than 100 completing between two passes
+    // meant the oldest fell off the bottom and were never billed at all —
+    // silently, with the platform eating the cost. An anti-join cannot lose a
+    // row: an execution leaves the candidate set only by being billed.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage'],
+      ['completed'],
+      100
+    );
+
+    const sql = lastSql();
+    expect(sql).toContain('NOT EXISTS');
+    expect(sql).toContain('framework_resparkable_credit_ledger_entry');
+    expect(sql).toContain('l."kind" = \'agent_spend\'');
+  });
+
+  it('excludes executions whose owner no longer has a brain', async () => {
+    // Without this, oldest-first becomes its own trap. A system-owned legacy
+    // run carries its owner in `scope`, and `AiWorkflowExecution.userId` is
+    // `onDelete: Cascade` — so a row with `userId: null` survives the erasure
+    // of the person named in its scope. Billing it makes `ensureCreditAccount`
+    // fail its FK (a P2003, not the P2002 the caller swallows), so it stays a
+    // candidate for ever — and being old, it sits at the HEAD of the ordering.
+    // Accumulate `limit` of those and billing stops entirely, while
+    // `executionsBilled: 0` looks exactly like a quiet install.
+    //
+    // Excluding it is also simply correct: there is nobody to bill.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage'],
+      ['completed'],
+      100
+    );
+
+    const sql = lastSql();
+    expect(sql).toContain('framework_resparkable_space');
+    expect(sql).toContain('COALESCE(e."userId"');
+  });
+
+  it('takes the oldest unbilled first', async () => {
+    // Safe here precisely because the set shrinks. Oldest-first over a plain
+    // `take` would re-select the same rows for ever once billed history
+    // exceeded the limit; with the anti-join there is no stable head to stick
+    // on, and a run that has waited longest to be billed should go first.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage'],
+      ['completed'],
+      100
+    );
+
+    expect(lastSql()).toContain('ORDER BY e."updatedAt" ASC');
+  });
+
+  it('drops zero-cost runs, which could never leave the set otherwise', async () => {
+    // `recordAgentSpend` returns null below its own threshold, so a zero-cost
+    // execution can never acquire a ledger row. Left in the candidate set it
+    // would be re-fetched by every pass for ever and the anti-join would stop
+    // draining — the exact failure it exists to remove.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage'],
+      ['completed'],
+      100
+    );
+
+    expect(lastSql()).toContain('e."totalCostUsd" > 0');
+  });
+
+  it('issues no query for an empty slug or status list', async () => {
+    // `Prisma.join([])` throws rather than producing an empty `IN ()`, so
+    // without these guards a caller with nothing to look for gets an exception
+    // instead of an empty result — inside the tick's billing pass, where it
+    // would take the whole tick with it.
+    expect(await findUnbilledTerminalResparkableExecutions([], ['completed'], 100)).toEqual([]);
+    expect(await findUnbilledTerminalResparkableExecutions(['resparkable-x'], [], 100)).toEqual([]);
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it('parameterises the slugs and statuses rather than interpolating them', async () => {
+    // The tier's standing rule for raw SQL, and the workflow slugs reach this
+    // from a module constant today but are exactly the kind of value a fork
+    // would make configurable.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage', 'resparkable-morning-briefing'],
+      ['completed', 'failed'],
+      50
+    );
+
+    expect(lastSql()).not.toContain('resparkable-nightly-triage');
+    expect(queryRaw.mock.calls.at(-1)?.slice(1)).toEqual(
+      expect.arrayContaining([expect.anything()])
+    );
+  });
+
+  it('returns what the query returned', async () => {
+    queryRaw.mockResolvedValue([
+      { id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.4 },
+    ]);
+
+    await expect(
+      findUnbilledTerminalResparkableExecutions(['resparkable-nightly-triage'], ['completed'], 100)
+    ).resolves.toEqual([{ id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.4 }]);
   });
 });

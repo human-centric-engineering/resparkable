@@ -372,16 +372,20 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/jobs.ts',
     risk: 'a stray job would run on every install\u2019s maintenance tick',
-    // FORK (Resparkable): Sunrise asserts this is empty. Resparkable fills it with the
-    // connection sweep — a continuous per-user pass over stored vectors, which
-    // is the shape `registerAppJob({ intervalMs })` was argued for upstream
-    // (#469) and the shape a cron row fits badly. The other four Resparkable
-    // workflows are calendar events and stay on `AiWorkflowSchedule`.
-    // Pinning the exact set keeps the original intent: a stray job still fails.
+    // FORK (Resparkable): Sunrise asserts this is empty. Resparkable fills it
+    // with exactly one job — the tick that bills completed runs and drains its
+    // own job queue, which is the shape `registerAppJob({ intervalMs })` was
+    // argued for upstream (#469).
+    //
+    // It was `resparkable:connection-sweep` until phase 56, when the sweep
+    // stopped being a rotation with a cursor and became one kind of row in
+    // `framework_resparkable_job` alongside six others. One registration
+    // either way; pinning the exact set keeps the original intent, which is
+    // that a *stray* job still fails here.
     assert: () => {
       __resetAppJobsForTests();
       // getAppJobs() triggers the lazy init, so this exercises the REAL seam.
-      expect(getAppJobs().map((job) => job.name)).toEqual(['resparkable:connection-sweep']);
+      expect(getAppJobs().map((job) => job.name)).toEqual(['resparkable:job-queue']);
     },
   },
   {

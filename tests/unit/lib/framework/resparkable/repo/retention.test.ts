@@ -179,6 +179,12 @@ describe('archiveAgedInboxThoughts', () => {
   it('writes one archived event per row, carrying the reason', async () => {
     // This is what lets the weekly review say "47 notes aged out" with an
     // ordinary `listEvents({ kind: 'archived' })` rather than a second table.
+    //
+    // `source: 'system'` is explicit because this write goes straight to the
+    // repo and never passes `services/events.ts`, where authorship is normally
+    // resolved. Left to the column default, a retention pass would read as the
+    // owner archiving hundreds of items overnight — which is precisely the
+    // false "something changed" the demand gate exists to avoid paying for.
     vi.mocked(prisma.resparkableThought.findMany).mockResolvedValue(rows(2) as never);
 
     await archiveAgedInboxThoughts(SCOPE, 90, { now: NOW });
@@ -190,6 +196,7 @@ describe('archiveAgedInboxThoughts', () => {
           kind: 'archived',
           entityType: 'thought',
           entityId: 'row_0',
+          source: 'system',
           metadata: { reason: 'aged_out' },
         },
         {
@@ -197,6 +204,7 @@ describe('archiveAgedInboxThoughts', () => {
           kind: 'archived',
           entityType: 'thought',
           entityId: 'row_1',
+          source: 'system',
           metadata: { reason: 'aged_out' },
         },
       ],

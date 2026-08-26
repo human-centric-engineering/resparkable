@@ -1,27 +1,31 @@
 /**
  * The owner's email address, resolved at send time.
  *
- * ## Why this exists rather than a field on a schedule row
+ * ## Why this exists rather than a field on the row that triggers the run
  *
  * `send_notification` resolves its `to` from the workflow input, so the obvious
- * way to email a user on a schedule is to stamp their address into
- * `AiWorkflowSchedule.inputTemplate` when the schedule is created. That is a
- * trap. `AiWorkflowSchedule.createdBy` is **`onDelete: SetNull`**, so the row
- * outlives the account — and an address baked into its config outlives it too,
- * as an orphan that `eraseUser()` cannot reach and nothing will ever look at
- * again. `plan.md` §7 refused `logEvent()` personal content for a weaker version
- * of the same problem.
+ * way to email a user on a schedule is to stamp their address into the trigger's
+ * config when it is created. That is a trap, and it was a sharper one before
+ * phase 56 than it is now: the trigger was an `AiWorkflowSchedule` row whose
+ * `createdBy` is **`onDelete: SetNull`**, so the row outlived the account — and
+ * an address baked into its `inputTemplate` outlived it too, as an orphan that
+ * `eraseUser()` could not reach and nothing would ever look at again.
+ * `plan.md` §7 refused `logEvent()` personal content for a weaker version of the
+ * same problem.
  *
- * So the schedule carries nothing at all — `inputTemplate` is `{}`, and must
- * stay that way, because a template becomes the execution's `inputData` and is
- * forwarded to any step declaring no `args`, where a `.strict()` capability
- * schema rejects it (`schedules/ensure.ts` clears rows written before that was
- * understood). The owner is identified by `AiWorkflowSchedule.createdBy`, which
- * the scheduler stamps onto the execution and the engine passes down as
+ * The trigger is now a `ResparkableJob` row, which *is* inside the erasure
+ * cascade — so the orphan half of the argument has gone. **The rule has not**,
+ * for the half that never depended on it: an address stored anywhere but the
+ * `user` row is a second copy that can go stale, and the one place it is
+ * guaranteed current is the row erasure actually deletes. The job carries a
+ * `userId` and a `kind` and nothing else.
+ *
+ * The owner reaches the run through `AiWorkflowExecution.userId`, which
+ * `queueResparkableWorkflowRun` stamps and the engine passes down as
  * `CapabilityContext.userId`; the address is looked up here, at the moment it is
- * needed, from the row that erasure actually deletes. If the user is gone, this
- * returns `null` and the notification is skipped — which is the correct
- * behaviour for a schedule that should not have fired at all.
+ * needed. If the user is gone, this returns `null` and the notification is
+ * skipped — which is the correct behaviour for a run that should not have
+ * happened at all.
  *
  * ## Why it lives in the repo layer
  *

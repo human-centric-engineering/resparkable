@@ -18,6 +18,77 @@ release process.
 
 ### Added
 
+- **One durable job queue owns every piece of per-user background work.**
+  `ResparkableJob` (`framework_resparkable_job`) holds one row per owner per
+  kind — `triage`, `briefing`, `weekly_review`, `horizon_check`, `sweep`,
+  `retention`, `reindex` — with a `dueAt`, a lease and a dormancy flag. Workers
+  claim batches with `SELECT … FOR UPDATE SKIP LOCKED`
+  (`lib/framework/resparkable/repo/jobs.ts`), so N workers take N *disjoint*
+  batches rather than contending; the drain
+  (`lib/framework/resparkable/queue/drain.ts`) is a bounded call that the 60s
+  maintenance tick makes with a small budget and
+  `npm run framework:resparkable:worker` makes in a loop with a large one.
+  Deployment topology is the operator's choice: a single container needs no
+  extra process, and a scaled install runs worker containers and sets
+  `RESPARKABLE_WORKER_MODE=external` on the web ones. **The four background
+  workflows are unchanged** — a job writes the same `PENDING`
+  `AiWorkflowExecution` the scheduler used to, and the engine runs it. Phase 56
+  replaced the trigger, not the executor. See
+  [`phase-56-plan.md`](./.context/framework/resparkable/phase-56-plan.md).
+
+- **Drift probe B2 — `framework_resparkable_embedding.embedding` must be
+  `halfvec`, not merely present.** The schema had claimed "Probe B2 asserts the
+  column exists" since the table was written and B2 was the one probe in the
+  series with no implementation, so the tier's largest column was the one
+  Prisma-unmodellable object nothing guarded. It asserts the column's **type**
+  rather than its presence, because presence was never the risk: Prisma models
+  it as `Unsupported`, so a regenerated migration re-emits it as *something*,
+  and a column of that name holding `vector` doubles the largest object in the
+  database while every query keeps working. `registerResparkableDriftProbes()`
+  now registers seven, not six.
+
+- **`RESPARKABLE_WORKER_MODE`** (`tick` | `external`, default `tick`) in
+  `resparkableEnvSchema`. Both values are correct; only one is faster. The lease
+  lives in the database, so leaving it unset on a scaled install costs
+  contention, never double runs.
+
+- **`npm run framework:resparkable:worker`** — the standalone drain loop, and
+  **`npm run framework:resparkable:smoke-queue`** — the four assertions only a
+  real database can make: disjoint claims under ten concurrent workers, lease
+  reclaim on expiry and not before, queue depth invariant under a day of
+  backlog, and erasure taking the job rows with it.
+
+- **`ResparkableEvent.source` (`user` | `system`), and the authorship context
+  behind it.** The demand gate below is only meaningful if an event can say who
+  wrote it. `ResparkableCapability.execute` marks a call as system-authored when
+  `CapabilityContext.workflowExecutionId` is set — which core already provides
+  for every capability dispatched from a workflow step — and
+  `recordResparkableEvent` reads that ambient mark
+  (`lib/framework/resparkable/services/authorship.ts`, `AsyncLocalStorage`).
+  Retention marks its own rows, since it writes through the repo rather than the
+  service. Existing rows default to `user`. **Forks reading
+  `framework_resparkable_event` directly should filter on `source` wherever they
+  mean "what the person did"**; a new index `(userId, source, createdAt DESC)`
+  serves that.
+
+- **Scheduled work no longer bills for runs that cannot produce anything.**
+  Before a demand-gated kind runs, it asks one indexed question against
+  `ResparkableEvent` — has anything changed in this brain since the last run? If
+  not the run is skipped outright: no model call, no debit, `dormantSince`
+  stamped, and `dueAt` pushed out on a backoff that floors at about a week. Any
+  write clears the flag and pulls due times back in with `LEAST`, so returning
+  after three months costs one cycle rather than thirteen. `retention` is
+  deliberately exempt: the calendar drives it, not activity.
+
+  **The gate counts only what the person did.** Asked against every event it
+  could never answer "no", because the background runs write events themselves —
+  all four workflows finish by recording a `review`, nightly triage records the
+  thoughts it promotes and the tasks it creates, and retention records what it
+  archived. Each run produced the evidence authorising the next one, on a brain
+  nobody had touched, and the wake on the same path cleared `dormantSince` for
+  every other kind too. So the gate reads `source = 'user'`, and a system write
+  does not wake a dormant brain.
+
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains
   `day`, `status` and `includeArchived`, so Plan's day, Projects' status filter
@@ -207,6 +278,45 @@ release process.
 
 
 ### Changed
+
+- **The billing pass can no longer lose executions.** It selected the newest 100
+  terminal runs, so more than 100 completing between two passes meant the oldest
+  fell off the bottom and were **never billed at all** — silently, with the
+  platform eating the cost, and worse the larger the install.
+  `findRecentTerminalResparkableExecutions` is replaced by
+  `findUnbilledTerminalResparkableExecutions`, which anti-joins against
+  `ResparkableCreditLedgerEntry` and takes the oldest unbilled first. An
+  execution leaves the candidate set the moment it is billed, permanently, so
+  the batch size is a per-pass bound rather than a window and there is nothing
+  left to fall behind. **Forks calling the old name must switch**; the argument
+  list is identical.
+
+- **`lib/framework/resparkable/repo/schedules.ts` is now
+  `repo/workflow-runs.ts`**, keeping `queueResparkableWorkflowRun` and
+  `RESPARKABLE_WORKFLOW_SLUG_PREFIX` and losing everything else. Nothing
+  schedule-shaped remained in it.
+
+- **`RESPARKABLE_SCHEDULED_WORKFLOWS` moved** from `schedules/ensure.ts` (which
+  is gone) to `lib/framework/resparkable/workflows/slugs.ts`, a leaf module with
+  no imports. The slugs and the workflows they name are unchanged.
+
+- **Background workflow executions are user-owned again.** A job queues its run
+  with `userId` set, rather than system-owned with the owner smuggled through
+  `AiWorkflowSchedule.scope`. resparkable#502's reasoning — that erasing an
+  operator must not destroy an organisation's cron history — is right for
+  org-level schedules and backwards for a run that belongs to one person and
+  *should* be erased with them. The billing pass still reads the scope key for
+  executions written before the cutover.
+
+- **`ResparkableEmbedding.embedding` is `halfvec(1536)`, not `vector(1536)`.**
+  Two bytes per dimension instead of four, for a recall difference that does not
+  show up on normalised embeddings. At the target scale set in
+  [`scale.md`](./.context/framework/resparkable/scale.md) this table is the
+  largest object in the database, so the change is worth roughly half of it.
+  Migration `20260825120000_resparkable_halfvec_and_index_prune` casts in place;
+  `contentHash` is untouched, so no re-embed is triggered and no cost is
+  incurred. Forks with their own raw SQL against this column must change
+  `::vector` casts to `::halfvec`; column-to-column comparisons are unaffected.
 
 - **Editing an Area, Goal or Project offers chat as well as a form.**
   `EntityFormDialog`'s edit branch now renders `EntityEditorPanel` (bound to
@@ -817,7 +927,57 @@ release process.
   archived corpus is keyword-searchable but not vector-searchable.
 
 
+
 ### Removed
+
+- **The per-user `AiWorkflowSchedule` rows, and everything that existed to keep
+  them correct.** `schedules/ensure.ts` (`ensureResparkableSchedules`),
+  `schedules/cron.ts` (`dailyCron`, `weeklyCron`, `monthlyCron`,
+  `offsetMinutes`, `toUtcTime`, `resparkableCronDrifts`), the schedule half of
+  `repo/schedules.ts` (`listResparkableSchedules`, `createResparkableSchedule`,
+  `updateResparkableScheduleCron`, `clearResparkableScheduleInputTemplate`,
+  `stampResparkableScheduleOwner`, `findResparkableWorkflowIds`,
+  `deleteResparkableSchedulesForUser`, `deleteOrphanedResparkableSchedules`),
+  and `lib/framework/resparkable/erasure.ts` in full
+  (`registerResparkableErasure`, `RESPARKABLE_ERASURE_HOOK_NAME`).
+
+  All of it existed to compensate for one missing column. `AiWorkflowSchedule`
+  has no timezone, so a user's offset had to be folded into a fixed cron
+  expression — correct for the offset in force when it was folded, and an hour
+  wrong for half the year after. That needed a drift-correction pass, which
+  needed the sweep rotation to reach every brain, which needed a rotation
+  cursor. And because `createdBy` is `onDelete: SetNull`, the rows outlived
+  their owners, which needed an erasure hook — and then a safety net under the
+  hook, because `eraseUser()` reads a registry that a boot-time registration may
+  not be present in. Storing `dueAt` instead of a cron string removes the
+  premise, and the whole structure with it. The migration deletes the rows;
+  `ResparkableJob` is inside the `ResparkableSpace` cascade, so erasure is one
+  foreign key again.
+
+- **`ResparkableSpace.lastSweptAt`** and its index, with
+  `listSpacesDueSweep`/`markSpacesSwept`. The across-users rotation cursor was
+  the best available answer to "whose brain next?" when one process-wide
+  callback had to choose; the queue answers "what is owed, and when", per kind.
+  Keeping both would have left two answers to "when was this brain last worked
+  on".
+
+- **`runResparkableSweepJob` / `RESPARKABLE_SWEEP_JOB_NAME`** — replaced by
+  `runResparkableTick` / `RESPARKABLE_QUEUE_JOB_NAME`. The registration in
+  `lib/app/jobs.ts` is unchanged, so forks need no edit there.
+
+- **Two unused indexes on `framework_resparkable_embedding` are dropped, and
+  drift probes B3 and B7 now assert they stay dropped.** The HNSW index
+  (`idx_framework_resparkable_embedding_hnsw`) and the GIN index over
+  `searchVector` (`idx_framework_resparkable_embedding_search_vector`) were
+  never used by any query: `hybridSearchRows` defeats the vector index path with
+  its distance pre-filter and blended `ORDER BY`, and carries no `@@` predicate
+  for the GIN index. pgvector HNSW stores a full copy of every vector, so the
+  pair cost roughly the size of the table plus a graph traversal per insert for
+  no benefit. B3 and B7 changed from existence probes to **forbidden-object**
+  probes, so `npm run db:drift-check` now fails if either is recreated. They
+  return only with the inner-CTE search rewrite (scale.md S4), which changes
+  recall semantics. `idx_framework_resparkable_task_search_vector` (B5) is a
+  different index, is genuinely used by `searchTaskKeywords`, and is unchanged.
 
 - **`components/resparkable/layout/resparkable-nav.tsx` and
   `components/resparkable/layout/resparkable-sidekick.tsx`** — the pre-cutover

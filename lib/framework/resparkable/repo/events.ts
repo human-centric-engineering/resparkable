@@ -13,6 +13,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import type { ResparkableEventSource } from '@/lib/framework/resparkable/services/authorship';
 import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import { pageArgs, type PageOptions } from '@/lib/framework/resparkable/repo/shared';
 import { Prisma } from '@prisma/client';
@@ -37,6 +38,13 @@ export interface RecordEventInput {
   entityType: string;
   entityId: string;
   metadata?: Prisma.InputJsonValue;
+  /**
+   * Who wrote this. Defaults to `user` at the database level.
+   *
+   * Resolved by `services/events.ts` from the ambient authorship context, not
+   * passed by callers — see `services/authorship.ts` for why it is ambient.
+   */
+  source?: ResparkableEventSource;
 }
 
 /**
@@ -57,6 +65,7 @@ export async function insertEvent(
       kind: input.kind,
       entityType: input.entityType,
       entityId: input.entityId,
+      ...(input.source === undefined ? {} : { source: input.source }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     },
   });

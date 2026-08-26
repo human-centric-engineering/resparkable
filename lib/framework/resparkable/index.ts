@@ -25,7 +25,6 @@
  * a leaf fork can override or extend them from `initLeafApp()`.
  */
 import { initLeafApp } from '@/lib/app/leaf-bootstrap';
-import { registerResparkableErasure } from '@/lib/framework/resparkable/erasure';
 import { registerBuiltInCapabilities } from '@/lib/orchestration/capabilities';
 import { logger } from '@/lib/logging';
 
@@ -65,11 +64,20 @@ export async function initResparkable(): Promise<void> {
   // — leaving it would be harmless, but it would be dead weight at boot.
   registerBuiltInCapabilities();
 
-  // Erasure has no such seam and no lazy re-init: `eraseUser()` reads a plain
-  // module-scope Map. Registering here is therefore best-effort by nature, and
-  // the sweep job carries a safety net that catches whatever this misses. See
-  // `repo/schedules.ts` → `deleteOrphanedResparkableSchedules`.
-  registerResparkableErasure();
+  // **Erasure needs no registration any more, and that is a phase-56 deletion
+  // rather than an omission.** The tier used to register a cleanup hook for one
+  // reason: `AiWorkflowSchedule.createdBy` is `onDelete: SetNull`, so an erased
+  // person's four schedule rows survived them with a live `nextRunAt`, firing
+  // for ever against a brain that no longer existed. That hook was itself
+  // best-effort — `eraseUser()` reads a plain module-scope Map with no lazy
+  // re-init, so a boot-time registration may not be present in the erasure
+  // request's realm (resparkable#462) — and needed a sweep-job safety net under
+  // it to catch what it missed.
+  //
+  // The queue removed the rows the hook existed for. `ResparkableJob` hangs off
+  // `ResparkableSpace` like every other satellite table, so erasure is the D1
+  // cascade again: one FK, no code, no realm problem, and nothing to
+  // silently not happen.
 
   logger.debug('Resparkable framework tier booted');
 

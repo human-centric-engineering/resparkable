@@ -121,9 +121,6 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       // mail systems that lowercase it.
       mint: { inboxToken: () => randomBytes(16).toString('hex') },
       reset: {
-        // Where the weekly connection sweep got to. Points at this
-        // installation's clock, not at anything the user owns.
-        lastSweptAt: null,
         // A similarity threshold tuned against whichever embedding model
         // produced this brain's vectors. Carried into an environment running a
         // different model it does not error — it silently stops proposing
@@ -509,6 +506,20 @@ export const resparkableTransferPolicies: TransferPolicySet = {
   ],
 
   excluded: [
+    {
+      model: 'ResparkableJob',
+      owner: 'framework:resparkable',
+      reason:
+        'The background-work queue: one row per kind saying when this ' +
+        'installation should next triage, brief, sweep or reindex this brain, ' +
+        'plus its lease, its failure count and whether it has gone quiet. ' +
+        'Every field points at this installation’s clock and its workers — a ' +
+        '"due at 04:30" carried into another deployment is a due time for a ' +
+        'worker that never claimed it. The far side mints its own set the ' +
+        'moment the space is created, from the timezone that travels with it, ' +
+        'so nothing is lost by leaving these behind. Same reasoning as ' +
+        '`lastSweptAt` used to have before the queue replaced it.',
+    },
     {
       model: 'ResparkableBillingSettings',
       owner: 'framework:resparkable',

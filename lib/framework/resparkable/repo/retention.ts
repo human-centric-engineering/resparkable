@@ -121,6 +121,15 @@ async function archiveAged(
         kind: 'archived',
         entityType,
         entityId: id,
+        // Explicit, because this write goes straight to the repo and never
+        // passes `services/events.ts` — so it is outside the one place the
+        // ambient authorship context is read, and outside
+        // `ResparkableCapability.execute`'s wrap as well (retention runs from
+        // the drain, not from a capability). Left to the column default these
+        // rows would read as the owner archiving hundreds of items overnight,
+        // which is exactly the false "something changed" the demand gate exists
+        // to avoid paying for.
+        source: 'system' as const,
         metadata: { reason },
       })),
     }),

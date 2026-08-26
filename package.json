@@ -59,7 +59,9 @@
     "framework:resparkable:smoke-priority": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-priority.ts",
     "framework:resparkable:smoke-search": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-search.ts",
     "framework:resparkable:eval-triage": "tsx --env-file=.env.local scripts/framework/resparkable/eval-triage.ts",
-    "framework:resparkable:build-pwa-icons": "tsx scripts/framework/resparkable/build-pwa-icons.ts"
+    "framework:resparkable:build-pwa-icons": "tsx scripts/framework/resparkable/build-pwa-icons.ts",
+    "framework:resparkable:worker": "tsx --env-file=.env.local scripts/framework/resparkable/worker.ts",
+    "framework:resparkable:smoke-queue": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-queue.ts"
   },
   "repository": {
     "type": "git",

@@ -120,4 +120,30 @@ describe('resparkableEnvSchema', () => {
 
     expect(keys.filter((key) => !key.startsWith('RESPARKABLE_'))).toEqual([]);
   });
+
+  describe('RESPARKABLE_WORKER_MODE', () => {
+    it('accepts both topologies and neither', () => {
+      // Both values are correct; only one is faster. The lease that makes
+      // concurrent draining safe lives in the database, so leaving this unset
+      // on a scaled install costs contention rather than double runs.
+      expect(resparkableEnvSchema.safeParse({ RESPARKABLE_WORKER_MODE: 'tick' }).success).toBe(
+        true
+      );
+      expect(resparkableEnvSchema.safeParse({ RESPARKABLE_WORKER_MODE: 'external' }).success).toBe(
+        true
+      );
+      expect(resparkableEnvSchema.safeParse({}).success).toBe(true);
+    });
+
+    it('rejects a value it does not recognise', () => {
+      // Fail at boot rather than at 03:15. `lib/env.ts` parses this fail-fast,
+      // so a typo here is a startup error with the key named — whereas
+      // `jobs.ts` reads `process.env` directly and treats anything unrecognised
+      // as `tick`, so without this an operator who typed `externl` on their web
+      // containers would get a silently *doubled* drain rather than none.
+      const result = resparkableEnvSchema.safeParse({ RESPARKABLE_WORKER_MODE: 'externl' });
+
+      expect(result.success).toBe(false);
+    });
+  });
 });

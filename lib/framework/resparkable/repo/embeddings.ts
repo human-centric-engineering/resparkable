@@ -48,7 +48,20 @@ export const EMBEDDED_TYPES = ['thought', 'project', 'goal', 'area', 'entity', '
 
 export type EmbeddedType = (typeof EMBEDDED_TYPES)[number];
 
-/** Dimension the `vector(1536)` column is sized for. Baked into the DDL. */
+/**
+ * Dimension the `halfvec(1536)` column is sized for. Baked into the DDL.
+ *
+ * **Still 1536, and the narrowing to 1024 (scale.md S2) is blocked rather than
+ * forgotten.** The dimension is a property of the *active model row*
+ * (`AiProviderModel.dimensions`), and Resparkable resolves its embedder through
+ * the same `getActiveEmbeddingModelSummary()` the platform knowledge base uses.
+ * `ai_knowledge_chunk.embedding` is `vector(1536) NOT NULL`, so narrowing the
+ * active model would break the platform's own corpus, and the seed that sets it
+ * is a core file. S2 needs Resparkable to own its own model row first.
+ *
+ * `halfvec` (S1) was free of all that: two bytes per dimension instead of four,
+ * same width, no coupling to anything outside this tier.
+ */
 export const RESPARKABLE_EMBEDDING_DIMENSION = 1536;
 
 /**
@@ -96,7 +109,13 @@ export interface NeighbourRow {
   distance: number;
 }
 
-/** `pgvector`'s literal form. */
+/**
+ * `pgvector`'s literal form.
+ *
+ * Identical for `vector` and `halfvec` — the text representation is the same
+ * bracketed list and the cast at the call site picks the type. So this survived
+ * the S1 migration untouched, which is why the casts moved and this did not.
+ */
 function toVectorLiteral(embedding: number[]): string {
   return `[${embedding.join(',')}]`;
 }
@@ -139,7 +158,7 @@ export async function upsertEmbeddings(
           "embeddingDimension", "embeddedAt", "createdAt", "updatedAt"
         ) VALUES (
           gen_random_uuid()::text, ${scope.userId}, ${row.entityType}, ${row.entityId},
-          ${row.chunkIndex}, ${row.content}, ${toVectorLiteral(row.embedding)}::vector,
+          ${row.chunkIndex}, ${row.content}, ${toVectorLiteral(row.embedding)}::halfvec,
           ${row.contentHash}, ${row.embeddingModel}, ${row.embeddingProvider},
           ${row.embeddingDimension}, ${row.embeddedAt}, NOW(), NOW()
         )
@@ -329,16 +348,23 @@ export interface HybridSearchInput {
  *
  * That is a deliberate trade at personal-brain scale, not an oversight. Exact
  * distance over one user's few thousand chunks gives perfect recall for a few
- * milliseconds; ANN would add approximation for no benefit at this size. The index
- * is kept because it costs little on insert, it is drift-probed (B3), and it is
- * what a later phase would need the moment the corpus outgrows exact search — at
- * which point the fix is an inner index-usable CTE (`ORDER BY … LIMIT k`) feeding
- * the blend, which changes recall semantics and so is a decision, not a tidy-up.
+ * milliseconds; ANN would add approximation for no benefit at this size.
  *
- * **Do not describe this as HNSW-accelerated.** It was documented that way and it
- * was not true; the same applies to "dropping the index degrades search to a
- * sequential scan" — search does not use it, so the probe protects a future, not a
- * present.
+ * **The HNSW index was dropped on 2026-08-25 (scale.md S3), and probe B3 now
+ * asserts it stays gone.** It had been kept on the theory that it cost little
+ * and a later phase would want it. The first half was wrong at scale: pgvector
+ * HNSW stores a full copy of every vector, so it cost roughly as much as the
+ * table it indexed and charged a graph traversal on every insert, in exchange
+ * for nothing any query could use. The second half stands, and the route back
+ * is unchanged: an inner index-usable CTE (`ORDER BY … LIMIT k`) feeding the
+ * blend (S4). That changes recall semantics, so it arrives as a decision, and it
+ * re-creates the index as part of itself.
+ *
+ * **Do not describe this as HNSW-accelerated, and do not "restore" the index.**
+ * It was documented that way once and it was not true. The same applies to the
+ * GIN index over `searchVector` (B7): `ts_rank_cd` here runs over the
+ * already-`userId`-filtered candidate set with no `@@` predicate, so that index
+ * was never consulted either.
  */
 export async function hybridSearchRows(
   scope: OwnerScope,
@@ -366,8 +392,8 @@ export async function hybridSearchRows(
         e."entityId",
         e."chunkIndex",
         e."content",
-        (e."embedding" <=> ${vector}::vector) AS distance,
-        GREATEST(0.0, 1.0 - (e."embedding" <=> ${vector}::vector)) AS vector_score,
+        (e."embedding" <=> ${vector}::halfvec) AS distance,
+        GREATEST(0.0, 1.0 - (e."embedding" <=> ${vector}::halfvec)) AS vector_score,
         COALESCE(
           ts_rank_cd(e."searchVector", plainto_tsquery('english', ${input.query}), 32),
           0.0
@@ -376,7 +402,7 @@ export async function hybridSearchRows(
       WHERE e."userId" = ${scope.userId}
         AND e."embedding" IS NOT NULL
         AND e."entityType" IN (${typeList(input.entityTypes)})
-        AND (e."embedding" <=> ${vector}::vector) < ${input.maxDistance}
+        AND (e."embedding" <=> ${vector}::halfvec) < ${input.maxDistance}
     )
     SELECT
       *,

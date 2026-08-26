@@ -77,3 +77,37 @@ Prioritisation itself is not the thing this document objects to — a
 deterministic ranking of what to do next is still useful. What it rules out
 is any of that ranking being driven by a manufactured quota over a part of
 someone's life.
+
+---
+
+## Token thrift: never spend on a run that cannot produce anything
+
+**Stated 2026-08-25.** Model calls are billed to the person, not absorbed by the
+platform (§20's credit ledger). That makes wastefulness a **correctness**
+problem rather than a margin problem, and the rule sharper than a budget cap:
+
+> Never debit a person's balance for a run that cannot produce anything.
+
+A nightly triage over an inbox with nothing new in it reads the same notes,
+calls the same model, writes the same "nothing to process" summary and charges
+for it. That is not a cheap run, it is a worthless one, and it is a charge the
+person would not agree to if asked.
+
+Three things follow, and they are requirements on new work rather than
+aspirations:
+
+1. **Every scheduled model call answers "has anything changed?" first.** The
+   question is one indexed query against `ResparkableEvent`. Phase 56 §7 makes
+   it a property of the job dispatcher so no individual job has to remember.
+2. **Deterministic first, model second.** D3 (prioritisation) and D4 (connection
+   finding) already work this way: the expensive step only ever sees candidates
+   a free step has already narrowed. A new feature that puts a model where a
+   rule would do needs a reason.
+3. **Change detection gates the spend, not the queue.** `indexedHash` is nulled
+   liberally because a queued row costs a **comparison**, not an embedding call
+   (`embedding/indexer.ts`). Queue generously; pay narrowly.
+
+**This is not a reason to make the product meaner.** It rules out charging for
+nothing; it does not rule out charging for work the person wants. The
+distinction is whether the run had anything to act on, never whether it was
+expensive.

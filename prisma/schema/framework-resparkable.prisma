@@ -96,20 +96,6 @@ model ResparkableSpace {
   /// invisible rather than adjustable.
   connectionStrengthFloor Float?
 
-  /// When the connection sweep last examined this brain — the **across-users**
-  /// cursor for `lib/app/jobs.ts` (phase 7).
-  ///
-  /// `registerAppJob` fires one process-wide callback while `sweepConnections`
-  /// takes an `OwnerScope`, so the job has to choose whose brain to sweep.
-  /// "The first N spaces" would re-sweep the same N for ever — which is exactly
-  /// the bug the sweep's own per-type `sweptAt` cursor exists to prevent,
-  /// reappearing one level up and just as silently. Ordering by this column
-  /// (nulls first) and stamping as it goes makes the rotation cover everyone.
-  ///
-  /// Nullable and unset means "never swept", which sorts first: a brand-new
-  /// brain is picked up on the next tick rather than after everyone else.
-  lastSweptAt DateTime?
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -140,10 +126,16 @@ model ResparkableSpace {
   creditAccount       ResparkableCreditAccount?
   creditLedgerEntries ResparkableCreditLedgerEntry[]
 
-  /// The sweep job's rotation order. Not `[userId, …]` like every other index
-  /// here, because this is the one query in the tier that is deliberately
-  /// **not** owner-scoped: it picks which owner to work on next.
-  @@index([lastSweptAt])
+  /// Phase 56: the job queue. One row per kind per owner; see `ResparkableJob`.
+  ///
+  /// `lastSweptAt` and its index used to sit here — the across-users rotation
+  /// cursor the connection sweep paged through. It is gone, because the queue
+  /// replaces it: a `dueAt` per kind says when each piece of work is next
+  /// owed, which is a strictly better answer than "who was worked on longest
+  /// ago" and does not force every kind onto one shared rotation. Keeping both
+  /// would have left two answers to "when was this brain last worked on".
+  jobs ResparkableJob[]
+
   @@map("framework_resparkable_space")
 }
 
@@ -495,23 +487,45 @@ model ResparkableLink {
 }
 
 /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
-/// THREE Postgres objects on this model are raw SQL in the migration:
+/// TWO Postgres objects on this model are raw SQL in the migration:
 ///
-///   1. `embedding vector(1536)` — the pgvector column type. Probe B2 asserts
-///      the column exists.
-///   2. HNSW index `idx_framework_resparkable_embedding_hnsw`
-///      (vector_cosine_ops, m=16, ef_construction=64). Probe B3. A drop here
-///      is SILENT — search keeps working, just as a sequential scan.
-///   3. `GENERATED ALWAYS AS (...) STORED` on `searchVector` + its GIN index
-///      `idx_framework_resparkable_embedding_search_vector`. Probe B6.
+///   1. `embedding halfvec(1536)` — the pgvector column type. Probe B2 asserts
+///      the column is `halfvec` and not merely present: `columnExists` cannot
+///      tell the two apart, and a column of this name holding `vector` doubles
+///      the largest object in the database while every query keeps working.
+///   2. `GENERATED ALWAYS AS (...) STORED` on `searchVector`. Probe B6.
 ///
-/// ONE vector table for all entity types (D2) — one column, one HNSW index,
-/// one re-embed path, one search query. That cuts the pgvector drift surface
-/// roughly five-fold versus a vector column per entity table.
+/// `halfvec`, not `vector`, since 2026-08-25 (scale.md S1). Half the bytes per
+/// dimension for a recall difference that does not show up on normalised
+/// embeddings, and at the target scale the table is the single largest object
+/// in the database: 800 GB of `vector(1536)` is 400 GB of `halfvec(1536)` at
+/// 100k users. The narrowing to 1024 dimensions (S2) is a further third and is
+/// blocked on Resparkable owning its own `AiProviderModel` row, because the
+/// platform knowledge base shares the active model and its own column is
+/// `vector(1536) NOT NULL`.
 ///
-/// Archiving DELETES the rows here rather than filtering them at query time:
-/// HNSW is approximate, so a post-filter over a mostly-archived corpus returns
-/// fewer rows than asked for, silently, degrading as history grows (§11).
+/// TWO INDEXES WERE DELIBERATELY REMOVED and probes B3 and B7 now assert they
+/// stay gone (scale.md S3). Do not "restore" them:
+///
+///   - HNSW `idx_framework_resparkable_embedding_hnsw` — `hybridSearchRows`
+///     cannot use it. The distance pre-filter and the blended `ORDER BY
+///     final_score` both defeat it, which the query's own doc comment has said
+///     since it was written. pgvector's HNSW stores a full copy of every vector,
+///     so it cost roughly the size of the table plus a graph traversal on every
+///     insert, in exchange for nothing.
+///   - GIN `idx_framework_resparkable_embedding_search_vector` — same story.
+///     The query computes `ts_rank_cd` over the already-`userId`-filtered set
+///     and carries no `@@` predicate, so the index is never consulted.
+///
+/// Both come back with the inner-CTE rewrite (S4) and not before. That rewrite
+/// changes recall semantics, so it is a decision, not a tidy-up.
+///
+/// ONE vector table for all entity types (D2) — one column, one re-embed path,
+/// one search query. That cuts the pgvector drift surface roughly five-fold
+/// versus a vector column per entity table.
+///
+/// Archiving DELETES the rows here rather than filtering them at query time
+/// (§11, §17 risk 5b).
 model ResparkableEmbedding {
   id     String @id @default(cuid())
   userId String
@@ -523,7 +537,7 @@ model ResparkableEmbedding {
 
   content String @db.Text
 
-  embedding    Unsupported("vector(1536)")?
+  embedding    Unsupported("halfvec(1536)")?
   searchVector Unsupported("tsvector")?
 
   /// Hash of SEMANTIC CONTENT ONLY — never rendered markdown, or every
@@ -908,6 +922,23 @@ model ResparkableEvent {
 
   metadata Json?
 
+  /// user | system — who wrote this, and the only thing the demand gate reads.
+  ///
+  /// `system` means the row was written from inside a workflow execution: a
+  /// background run's own output, not something the owner did. The distinction
+  /// is load-bearing rather than descriptive. Without it every background run
+  /// writes the evidence that authorises the next one — all four workflows
+  /// finish by recording a `review` event, and triage also records the
+  /// promotions and tasks it creates — so the gate can never answer "nothing
+  /// changed" and an idle brain is billed nightly, silently, for ever.
+  ///
+  /// Set at one chokepoint (`ResparkableCapability.execute`, from
+  /// `CapabilityContext.workflowExecutionId`) rather than by each writer, so a
+  /// background writer added later is marked without anyone remembering to.
+  /// A denylist over `kind`/`entityType` was the alternative and cannot work:
+  /// "retention archived this" and "the owner archived this" are the same row.
+  source String @default("user") @db.VarChar(8)
+
   createdAt DateTime @default(now())
 
   /// D1: the cascade path. Erasing a user removes the space row, which
@@ -917,6 +948,13 @@ model ResparkableEvent {
   @@index([userId, kind, createdAt(sort: Desc)])
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, entityType, entityId])
+  /// The demand gate. `source` sits BETWEEN the two columns of the index above,
+  /// and a b-tree cannot skip a middle column — so that index cannot serve this
+  /// query however similar it looks. On a dormant brain every event since the
+  /// last run is system-authored, so without this the `EXISTS` walks all of
+  /// them to answer "no": the one answer that saves money would be the most
+  /// expensive to reach.
+  @@index([userId, source, createdAt(sort: Desc)])
   @@map("framework_resparkable_event")
 }
 
@@ -1030,4 +1068,99 @@ model ResparkableBillingSettings {
   updatedAt                 DateTime @updatedAt
 
   @@map("framework_resparkable_billing_settings")
+}
+
+/// The one queue. Every piece of per-user background work is a row here.
+///
+/// **One row per owner per kind, not one per occurrence.** `dueAt` moves
+/// forward on completion, so the table is bounded at (brains × kinds) and a
+/// backlog makes rows LATE, never numerous. At 100k users × 7 kinds that is
+/// 700k rows, which is small, indexed, and does not grow when the workers fall
+/// behind. That invariant is the one that distinguishes this design from what
+/// it replaces: a fixed-batch drain under backlog grows a queue, this one grows
+/// a *latency*. The first is invisible until it is fatal, the second shows up
+/// on a graph.
+///
+/// Contrast `AiWorkflowSchedule`, which this replaces for Resparkable's own
+/// work. That table stores a cron string per row and therefore needs a
+/// correction pass after every DST change — Resparkable paid for one, plus the
+/// row-per-user-per-workflow creation and deletion around it. `dueAt` is
+/// recomputed from the owner's timezone every time the work completes, so it is
+/// always calculated against the offset in force, and there is nothing to
+/// correct. Deleting that correction pass is the whole reason this column is a
+/// timestamp rather than an expression.
+///
+/// See `.context/framework/resparkable/phase-56-plan.md`.
+model ResparkableJob {
+  id String @id @default(cuid())
+
+  /// **Keyed on the OWNER, not the space.** Today those are the same thing, so
+  /// this costs nothing. Under `plan.md` §24 (Workspaces) they diverge, and W2
+  /// requires the row count to stay invariant as a person acquires workspaces:
+  /// one `triage` job per person whose run fans out over their live spaces, not
+  /// one per space. Keying on the space would put the largest queue in the
+  /// system on the wrong side of that requirement and force a second migration.
+  ///
+  /// Renamed by §23's phase 45 with the other satellites: it relates to the
+  /// space today because a space is an owner; afterwards it relates to
+  /// `ownerUserId`.
+  userId String
+
+  /// triage | briefing | weekly_review | horizon_check | sweep | retention | reindex
+  ///
+  /// The vocabulary lives in `lib/framework/resparkable/queue/kinds.ts`, which
+  /// also carries each kind's cadence and whether it is demand-gated. A string
+  /// rather than an enum for the reason every other `kind` column in this
+  /// schema is one: adding a kind should be a code change and a backfill, not a
+  /// type migration that has to be deployed before the code that uses it.
+  kind String @db.VarChar(24)
+
+  /// The next moment this work is due. The queue is `dueAt <= now()`.
+  dueAt DateTime
+
+  /// Lease, not a boolean flag. A worker that dies mid-job must not pin the row
+  /// for ever, so reclaim is `leaseExpiresAt < now()` rather than a separate
+  /// reaper deciding what "stuck" means. `leasedBy` is checked on settle, so a
+  /// worker whose lease expired mid-run cannot clobber the row that has since
+  /// been re-claimed by someone else.
+  leasedBy       String?   @db.VarChar(64)
+  leaseExpiresAt DateTime?
+
+  /// Consecutive failures. Feeds exponential backoff on `dueAt` and, past the
+  /// cap, marks the row dormant rather than retrying for ever at cost. Reset to
+  /// zero by any successful run.
+  attempts  Int       @default(0)
+  lastRunAt DateTime?
+  lastError String?   @db.Text
+
+  /// Demand gating (`scale.md` S7 / `plan.md` §24 W3). Set when a run was
+  /// skipped because nothing had changed in this brain since `lastRunAt`;
+  /// cleared by the next write. A dormant row is still claimed, just far less
+  /// often — never deleted, because a deleted row is one that never comes back
+  /// when the person returns.
+  ///
+  /// It doubles as the backoff clock: the wait is however long the row has
+  /// already been dormant, floored at the kind's normal cadence and capped at a
+  /// week. So a brain quiet for three hours is re-checked in three hours and
+  /// one quiet for a month is re-checked weekly, with no counter column.
+  dormantSince DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// D1: the cascade path. Erasing a user removes the space row, which removes
+  /// every row here. Verified by scripts/framework/resparkable/smoke-isolation.ts.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  /// Idempotent enqueue: "make sure this owner has a triage job" is an
+  /// `ON CONFLICT DO NOTHING`. Owner-keyed, so it stays one row per kind
+  /// however many workspaces they hold (§24 W2).
+  @@unique([userId, kind])
+  /// The claim query, and the only index it needs. Ordinary and composite
+  /// rather than partial: the claim's predicate is `now()`-relative, so there
+  /// is no time-independent subset to index on, and an ordinary index is one
+  /// Prisma can model — which means `prisma migrate dev` recreates it rather
+  /// than silently dropping it, and it needs no drift probe.
+  @@index([dueAt, leaseExpiresAt])
+  @@map("framework_resparkable_job")
 }

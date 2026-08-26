@@ -35,8 +35,8 @@ import {
 } from '@/lib/framework/resparkable/workflows/definitions';
 import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
-import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/schedules/ensure';
-import { RESPARKABLE_WORKFLOW_SLUG_PREFIX } from '@/lib/framework/resparkable/repo/schedules';
+import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
+import { RESPARKABLE_WORKFLOW_SLUG_PREFIX } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { workflowDefinitionSchema } from '@/lib/validations/orchestration';
 
 const CAPABILITY_SLUGS = new Set<string>(Object.values(RESPARKABLE_CAPABILITY_SLUGS));

@@ -38,6 +38,7 @@ import {
   BaseCapability,
   type ProvenanceRedaction,
 } from '@/lib/orchestration/capabilities/base-capability';
+import { runAsSystemAuthored } from '@/lib/framework/resparkable/services/authorship';
 import type { CapabilityContext, CapabilityResult } from '@/lib/orchestration/capabilities/types';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
 import { redactedString } from '@/lib/security/redact';
@@ -195,10 +196,24 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
   readonly processesPii = true;
 
   /**
-   * Resolve the owner, then delegate. The `catch` is narrow on purpose: a
-   * missing user is an expected condition with a message worth showing, while
-   * anything else is a real fault and belongs in the dispatcher's error path
-   * where it gets logged rather than flattened into a tool result.
+   * Resolve the owner, mark the authorship, then delegate.
+   *
+   * The `catch` is narrow on purpose: a missing user is an expected condition
+   * with a message worth showing, while anything else is a real fault and
+   * belongs in the dispatcher's error path where it gets logged rather than
+   * flattened into a tool result.
+   *
+   * **The authorship wrap is why this method is final in intent.** Every event
+   * written beneath a workflow step has to be marked as system-authored, or the
+   * demand gate reads a background run's own output as a reason to run again —
+   * which is how an idle brain ends up billed nightly, silently, for ever (see
+   * `services/authorship.ts`). Doing it here rather than in each writer means a
+   * capability added later is covered without its author knowing: this is the
+   * one place every capability call in the tier passes through.
+   *
+   * `workflowExecutionId` is the discriminator, not "is there an agent". A
+   * capability invoked from **chat** is the person acting through an agent —
+   * they asked for it — and must still wake a dormant brain.
    */
   async execute(args: TArgs, context: CapabilityContext): Promise<CapabilityResult<TData>> {
     let scope: OwnerScope;
@@ -210,6 +225,10 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
         'This tool reads and writes one person’s notes, and this run has no owner. It cannot be used from a system-initiated run.',
         'no_user_context'
       );
+    }
+
+    if (context.workflowExecutionId) {
+      return runAsSystemAuthored(() => this.run(args, scope, context));
     }
     return this.run(args, scope, context);
   }

@@ -40,7 +40,7 @@ vi.mock('@/lib/framework/resparkable/repo/summaries', () => ({
   entityExists: vi.fn(),
 }));
 
-vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
+vi.mock('@/lib/framework/resparkable/repo/workflow-runs', () => ({
   queueResparkableWorkflowRun: vi.fn(),
 }));
 
@@ -54,7 +54,7 @@ import {
 } from '@/lib/framework/resparkable/api/handlers';
 import { snoozeItem, unsnoozeItem } from '@/lib/framework/resparkable/services/snooze';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
-import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
+import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {
   createTaskSchema,

@@ -17,8 +17,10 @@ import {
   ownerWhere,
   type OwnerScope,
 } from '@/lib/framework/resparkable/repo/owner-scope';
+import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
+import { Prisma } from '@prisma/client';
 import type { ResparkableCreditAccount, ResparkableCreditLedgerEntry } from '@prisma/client';
 
 /** The ledger's `kind` discriminator; see the schema doc comment. */
@@ -118,34 +120,107 @@ export interface BillableWorkflowExecution {
 }
 
 /**
- * Recently terminal, resparkable-slug workflow executions: candidates for
- * the Site B billing pass.
+ * Terminal, resparkable-slug workflow executions that have **not yet been
+ * billed** — the candidates for the Site B billing pass.
  *
- * Ordered newest-first rather than by the oldest-swept-first cursor the rest
- * of this tier uses (`listSpacesDueSweep`): there is no cursor column to
- * stamp on a platform-owned table, and newest-first is self-correcting
- * without one. A fresh completion is always in the top `limit` rows, so it is
- * billed within one tick regardless of how much already-billed history
- * exists; a repeat `P2002` on an already-billed row is cheap and ages out of
- * the window on its own as newer completions push it down. Oldest-first would
- * risk exactly the stuck-cursor bug this file's own doc comments warn about:
- * the same `limit` oldest rows re-selected forever once billed history
- * exceeds it.
+ * ## The cursor this replaces, and why it lost rows
+ *
+ * This used to be `orderBy: { updatedAt: 'desc' }, take: 100`, on the argument
+ * that newest-first is self-correcting without a cursor column: a fresh
+ * completion is always in the top 100 rows, so it is billed within one tick
+ * however much billed history exists. That reasoning holds for one completion
+ * at a time and fails in exactly the case that matters. If more than `limit`
+ * executions reach a terminal state between two passes — a hundred and fifty
+ * nightly triages finishing inside one window, which is a hundred and fifty
+ * users, not a hundred and fifty thousand — the oldest of them fall off the
+ * bottom of the window and are **never billed at all**. Nothing errors. The
+ * platform simply eats the cost of the runs it lost, silently, and the effect
+ * grows with the install.
+ *
+ * Anti-joining against the ledger fixes it at the root: an execution leaves the
+ * candidate set the moment it is billed, permanently, so the set only ever
+ * shrinks. That is what makes oldest-first safe here where it would not be
+ * against a plain `take` — the stuck-cursor bug this file's doc comments warn
+ * about needs a *stable* set of un-consumed rows at the head of the ordering,
+ * and there is no longer one. Oldest-first is then the right way round, because
+ * a run that has waited longest to be billed should be billed first.
+ *
+ * The `limit` survives as a per-pass bound rather than as a window: rows it does
+ * not reach stay candidates and are picked up on the next drain.
+ *
+ * ## What must be excluded, or oldest-first becomes its own trap
+ *
+ * Oldest-first is only safe while every candidate can eventually *leave* the
+ * set. A row that can never be billed stays a candidate for ever — and because
+ * it is old, it sits at the head of the ordering by construction. Accumulate
+ * `limit` of them and the pass returns nothing but sediment on every tick,
+ * billing stops entirely, and `executionsBilled: 0` looks exactly like a quiet
+ * install. Newest-first was immune to that and lost rows under a spike instead;
+ * this query has to be immune to both, so it excludes each unbillable class in
+ * SQL rather than letting the caller skip them in a loop.
+ *
+ * **`totalCostUsd > 0`** — `recordAgentSpend` returns `null` below its own
+ * threshold, so a zero-cost run can never acquire a ledger row. (It also drops
+ * a `NaN` cost, which `> 0` is false for: an unmapped model in the provider's
+ * cost table would otherwise be permanent sediment.)
+ *
+ * **The owner must still have a brain.** `resolveExecutionOwner` reads
+ * `userId`, falling back to the legacy `scope` key for runs the platform
+ * scheduler fired before the cutover. Two shapes never resolve to a billable
+ * owner: a system-owned row with no scope key at all, and — the one that
+ * accumulates — a scope key naming a user who has since been erased. The
+ * second is invisible to erasure's cascade, because `AiWorkflowExecution.userId`
+ * is `onDelete: Cascade` and a system-owned row has `userId: null`, so the row
+ * survives its owner with their id still in its `scope`. Handing that to
+ * `recordAgentSpend` makes `ensureCreditAccount` fail its FK into
+ * `ResparkableSpace` — a `P2003`, not the `P2002` the caller swallows — so it
+ * logs an error and re-fetches the same row on the next tick, for ever.
+ *
+ * Excluding it here is not merely a drainage fix, it is the correct answer:
+ * **there is nobody to bill.** The brain is gone, the credit account went with
+ * it, and a debit against an erased person is not a thing that can be right.
+ *
+ * `ResparkableCreditLedgerEntry`'s `@@unique([kind, relatedWorkflowExecutionId])`
+ * is what the `NOT EXISTS` reads, and it stays the last line of defence — two
+ * workers racing the same execution still collide there rather than
+ * double-charging.
  */
-export async function findRecentTerminalResparkableExecutions(
+export async function findUnbilledTerminalResparkableExecutions(
   workflowSlugs: string[],
   terminalStatuses: string[],
   limit: number
 ): Promise<BillableWorkflowExecution[]> {
-  return prisma.aiWorkflowExecution.findMany({
-    where: {
-      status: { in: terminalStatuses },
-      workflow: { slug: { in: workflowSlugs } },
-    },
-    select: { id: true, userId: true, scope: true, totalCostUsd: true },
-    orderBy: { updatedAt: 'desc' },
-    take: limit,
-  });
+  if (workflowSlugs.length === 0 || terminalStatuses.length === 0) return [];
+
+  // Raw SQL, and not by preference. `relatedWorkflowExecutionId` is a **soft**
+  // reference with no FK — the tier-boundary pattern this schema uses
+  // everywhere it points at a platform-owned row — so there is no Prisma
+  // relation to express `NOT EXISTS` through. Two round trips would work and
+  // would reintroduce the window: whatever the first query fetches is the set
+  // the second can filter, so anything past `limit` is still lost.
+  //
+  // The anti-join goes straight down `@@unique([kind, relatedWorkflowExecutionId])`
+  // — `kind` is the leading column and it is a constant here — so it costs one
+  // index probe per candidate.
+  return prisma.$queryRaw<BillableWorkflowExecution[]>`
+    SELECT e."id", e."userId", e."scope", e."totalCostUsd"
+    FROM "ai_workflow_execution" e
+    JOIN "ai_workflow" w ON w."id" = e."workflowId"
+    WHERE e."status" IN (${Prisma.join(terminalStatuses)})
+      AND w."slug" IN (${Prisma.join(workflowSlugs)})
+      AND e."totalCostUsd" > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM "framework_resparkable_credit_ledger_entry" l
+        WHERE l."kind" = 'agent_spend'
+          AND l."relatedWorkflowExecutionId" = e."id"
+      )
+      AND EXISTS (
+        SELECT 1 FROM "framework_resparkable_space" s
+        WHERE s."userId" = COALESCE(e."userId", e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY})
+      )
+    ORDER BY e."updatedAt" ASC
+    LIMIT ${limit}
+  `;
 }
 
 // ─── Admin cross-user functions ────────────────────────────────────────────

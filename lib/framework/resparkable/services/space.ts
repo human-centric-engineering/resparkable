@@ -39,7 +39,7 @@ import type {
   UpdateSpaceInput,
 } from '@/lib/framework/resparkable/validations';
 import { STRENGTH_FLOOR } from '@/lib/framework/resparkable/search/connections';
-import { ensureResparkableSchedules } from '@/lib/framework/resparkable/schedules/ensure';
+import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { logger } from '@/lib/logging';
 import type { ResparkableSpace } from '@prisma/client';
 
@@ -82,26 +82,23 @@ export async function ensureResparkableSpace(userId: string): Promise<Resparkabl
     // row — a new scorer factor or retention window must not need a backfill.
     logger.info('Resparkable space created', { userId, spaceId: created.id });
 
-    // A user's background workflows start the moment their brain exists.
+    // A user's background work starts the moment their brain exists: seven
+    // rows in `framework_resparkable_job`, one per kind, each with a `dueAt`
+    // computed from the timezone this row was just created with.
     //
-    // Fire-and-forget, and never allowed to fail the create. This runs on the
-    // read path of a brand-new brain — a first page load must not 500 because
-    // the workflow seeds have not been applied yet, or because the schedule
-    // table is briefly unavailable.
+    // Never allowed to fail the create. This runs on the read path of a
+    // brand-new brain, and a first page load must not 500 because the queue
+    // table was briefly unavailable. `ensureResparkableJobs` swallows its own
+    // failure for that reason, and the drain's backfill net picks up any brain
+    // that ends up with no rows (`queue/enqueue.ts`).
     //
-    // Nothing is lost if it does fail, and nothing is lost by this being the
-    // only call site on the create branch: the sweep job runs the same pass over
-    // every existing brain as its rotation reaches them (`jobs.ts`), so whatever
-    // this missed gets created — and any later drift corrected — within a
-    // rotation. Deliberately *not* called on the `existing` branch above, which
-    // is the hot read path under capture, chat and every resource service; two
-    // queries there to catch a twice-a-year offset change is the wrong trade.
-    await ensureResparkableSchedules(userId, created.timezone).catch((error: unknown) => {
-      logger.warn('Resparkable schedules could not be created for a new space', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    // Deliberately not called on the `existing` branch above, which is the hot
+    // read path under capture, chat and every resource service. Before phase 56
+    // this call site had a twin there in spirit — the sweep rotation re-ran the
+    // schedule pass over every brain to correct DST drift — and the whole point
+    // of storing `dueAt` rather than a cron string is that there is no longer
+    // any drift to correct, so there is nothing for a repeat pass to do.
+    await ensureResparkableJobs(userId, created.timezone);
 
     // Phase 29: billing. Same fire-and-forget shape as the schedules call
     // above and for the same reason: this is the read path of a brand-new

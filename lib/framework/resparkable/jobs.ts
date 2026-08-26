@@ -1,187 +1,165 @@
 /**
- * The per-brain rotation: connection sweep, schedule pass, retention.
+ * What Resparkable puts on the maintenance tick, now that it owns a queue.
  *
- * One job, three passes, because they want the same thing — every brain's turn,
- * reasonably often, a few brains per tick — and splitting them into three jobs
- * would mean three cursors over the same table, three rotations drifting out of
- * step, and three chances to page through every space in the system.
+ * ## What this file used to be, and why it is smaller
  *
- * ## Why none of these is a workflow schedule
+ * Until phase 56 this was the per-brain rotation: one `registerAppJob` callback
+ * paging through spaces oldest-swept-first, doing a connection sweep, a
+ * schedule-correction pass and a retention pass for four brains every six
+ * hours, plus an unconditional billing poll. Every one of those had a ceiling
+ * in it — `SWEEP_BATCH = 4` per six hours is a full rotation per day for about
+ * twelve users, and `BILLING_BATCH = 100` newest-first silently stopped billing
+ * anything past the hundredth completion in a window.
  *
- * Four of Resparkable's background workflows are calendar events — "9am on the 2nd",
- * "Friday at 16:00" — and a cron row expresses those exactly. The connection
- * sweep is not one: it is a continuous pass over stored vectors with its own
- * rotation cursor, which should run *often and cheaply* rather than *at a
- * particular moment*. That is the shape ask #1 argued for upstream and got, as
- * `registerAppJob({ name, intervalMs, run })` (#469).
+ * All of that work still happens. It is just no longer *scheduled* here: it is
+ * seven rows per brain in `framework_resparkable_job`, claimed with
+ * `SELECT … FOR UPDATE SKIP LOCKED`, and the rotation cursor
+ * (`ResparkableSpace.lastSweptAt`) is gone with the code that needed it. What
+ * is left in this file is the two things that are genuinely tick-shaped:
+ * calling the drain with a small budget, and the billing pass.
  *
- * It is also free. `sweepConnections` reads vectors that are already stored and
- * finds neighbour pairs in SQL (D4), so there is no embedding cost per run —
- * which is what makes leaving it on for ever affordable.
+ * ## Why the tick still drains at all
  *
- * Retention (phase 8) is the same shape and joined the rotation for the same
- * reason, against a plan that had put it in the nightly workflow. Nothing about
- * it is a moment: no user cares whether a 400-day-old event is deleted at 02:00
- * or 14:00, only that it eventually is. Per-user cron rows would have bought
- * that nothing, and cost a row each to create, correct after a DST change and
- * delete on erasure — the exact three problems phase 7 spent its schedule code
- * on. `install.md` §2.10 said "the retention pass joins it in phase 8"; this is
- * that, and `plan.md` §11 has been corrected to match.
+ * Because a fork installing Resparkable for a team of thirty should not have to
+ * run a second process to get a briefing. `drainResparkableJobs` is a bounded
+ * call, so the tick can take a few jobs and twenty seconds of it and stop;
+ * `npm run framework:resparkable:worker` calls the identical function with a large budget
+ * in a loop. Nothing about the queue's correctness depends on which one is
+ * running, because the lease lives in the database rather than in
+ * `registerAppJob`'s process memory.
  *
- * ## The second cursor
- *
- * `registerAppJob` fires **one process-wide callback** while `sweepConnections`
- * takes an `OwnerScope`, so this job has to choose whose brain to sweep. Both
- * obvious answers are wrong: sweeping everyone is unbounded work inside a
- * 60-second tick, and sweeping "the first N" re-sweeps the same N for ever.
- *
- * The second is worth naming, because this codebase has already met it: the
- * sweep's own per-type cursor exists because ordering candidates
- * most-recently-embedded-first re-examined the same 200 rows every run and left
- * a 900-project corpus 78% unreachable, while the log said only that it had
- * stopped early. Without a cursor across *users*, that bug reappears one level
- * up and just as quietly.
- *
- * So: page through spaces oldest-swept-first, a small batch per tick, stamping
- * as we go (`ResparkableSpace.lastSweptAt`).
- *
- * ## Multi-instance
- *
- * `registerAppJob` keeps last-run times **in process memory**, so N instances
- * run this N times per interval and a restart re-arms it. That is harmless here
- * — the cursor is in the database, so two instances racing take different
- * batches or redo work that is idempotent by construction (pair exclusion,
- * including the `rejected` tombstone, happens inside the query). **Any future
- * job registered here must clear the same bar**, and the seam gives no warning
- * if it does not.
- *
- * Retention clears it the same way, and it is the pass where clearing it
- * matters most, because it is the only one that removes rows. Every rule filters
- * on `archivedAt: null` or on rows that no longer exist after the first pass, so
- * a duplicate run archives nothing twice and deletes nothing twice — it finds an
- * empty batch and returns zero.
+ * A scaled install sets `RESPARKABLE_WORKER_MODE=external` so the tick stops
+ * draining and the worker containers have the queue to themselves. That is a
+ * throughput choice, not a correctness one — leaving it unset on a
+ * six-container deployment costs contention, not double runs.
  */
 
+import { RESPARKABLE_JOB_KINDS } from '@/lib/framework/resparkable/queue/kinds';
+import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
+import { drainResparkableJobs, type DrainResult } from '@/lib/framework/resparkable/queue/drain';
 import {
-  findRecentTerminalResparkableExecutions,
+  findUnbilledTerminalResparkableExecutions,
   type BillableWorkflowExecution,
 } from '@/lib/framework/resparkable/repo/billing';
 import {
   ownerScope,
   RESPARKABLE_SCHEDULE_OWNER_KEY,
 } from '@/lib/framework/resparkable/repo/owner-scope';
-import { deleteOrphanedResparkableSchedules } from '@/lib/framework/resparkable/repo/schedules';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
-import { listSpacesDueSweep, markSpacesSwept } from '@/lib/framework/resparkable/repo/space';
-import {
-  ensureResparkableSchedules,
-  RESPARKABLE_SCHEDULED_WORKFLOWS,
-} from '@/lib/framework/resparkable/schedules/ensure';
-import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
-import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
 import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
+import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { logger } from '@/lib/logging';
 import { registerAppJob } from '@/lib/orchestration/maintenance/app-jobs';
 import { WorkflowStatus } from '@/types/orchestration';
 
-export const RESPARKABLE_SWEEP_JOB_NAME = 'resparkable:connection-sweep';
+export const RESPARKABLE_QUEUE_JOB_NAME = 'resparkable:job-queue';
 
 /**
- * How often the sweep runs, and how many brains it covers each time.
+ * The tick's budget: a handful of jobs, well inside the 60-second tick it
+ * shares with everything else on it.
  *
- * Six hours × four brains is one full rotation per day for twelve or so users,
- * and degrades gracefully rather than breaking above that: more users means a
- * longer rotation, not a longer tick. The batch is small because the tick has a
- * 60-second budget shared with everything else on it, and a sweep is a few
- * hundred indexed queries per brain.
+ * These numbers are what a single-container install lives on, and they are
+ * deliberately modest rather than tuned: at this budget the tick drains 240
+ * jobs an hour, which covers a few hundred brains comfortably and degrades into
+ * *latency* rather than into a growing queue above that — one row per kind per
+ * brain, however far behind the workers fall. An operator who wants more runs
+ * the worker.
  */
-const SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const SWEEP_BATCH = 4;
+const TICK_MAX_JOBS = 4;
+const TICK_MAX_WALL_CLOCK_MS = 20_000;
+const TICK_CONCURRENCY = 2;
+
+/** Brains repaired per tick by the enqueue net. Rarely more than zero. */
+const BACKFILL_BATCH = 5;
 
 /**
- * Phase 29: billing. Every workflow slug that `queueResparkableWorkflowRun()`
- * can queue: the four calendar-scheduled workflows, plus the context-digest
- * workflow `/summarize` queues on demand (`api/handlers.ts`). That function
- * is the only way a resparkable-slug `AiWorkflowExecution` gets created, so
- * this list has to track every slug ever passed to it — a slug added there
- * without a matching entry here bills nothing for that workflow, silently.
- * The connection sweep this same job runs creates no `AiWorkflowExecution`
- * and has nothing to bill (see the module doc's "why none of these is a
- * workflow schedule").
+ * Every workflow slug that can produce a billable `AiWorkflowExecution`: the
+ * four the queue fires, plus the context-digest workflow `/summarize` queues on
+ * demand (`api/handlers.ts`). `queueResparkableWorkflowRun` is the only way a
+ * resparkable-slug execution is created, so this list has to track every slug
+ * ever passed to it — one added there without a matching entry here bills
+ * nothing for that workflow, silently.
+ *
+ * The three maintenance kinds create no execution and have nothing to bill.
  */
 const RESPARKABLE_BILLABLE_WORKFLOW_SLUGS: string[] = [
   ...Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS),
   RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
 ];
+
 const TERMINAL_WORKFLOW_STATUSES: string[] = [
   WorkflowStatus.COMPLETED,
   WorkflowStatus.FAILED,
   WorkflowStatus.CANCELLED,
 ];
-/** See `findRecentTerminalResparkableExecutions`'s doc comment for why this is newest-first. */
+
+/**
+ * Executions billed per pass.
+ *
+ * A **bound**, not a window — which is the whole difference from the
+ * `BILLING_BATCH = 100` this replaces. Rows this pass does not reach are still
+ * candidates on the next one, because the candidate set is an anti-join against
+ * the ledger rather than the newest N rows (see
+ * `findUnbilledTerminalResparkableExecutions`). So a spike of completions makes
+ * billing take a few more passes; it can no longer make billing lose rows.
+ */
 const BILLING_BATCH = 100;
 
-export interface SweepJobResult {
-  swept: number;
-  created: number;
-  /**
-   * Brains whose **connection sweep** threw. A schedule pass that throws is
-   * logged rather than counted here: this field's meaning predates that pass,
-   * and quietly widening it would make an existing number mean two things.
-   */
-  failed: number;
-  /** Schedules belonging to erased users, cleaned up on this tick. */
-  orphanedSchedules: number;
-  /** Schedules this tick created for brains that had none. */
-  schedulesCreated: number;
-  /** Schedules this tick brought back in line with what the code writes today. */
-  schedulesCorrected: number;
-  /** Rows the retention pass archived across every brain in the batch (phase 8). */
-  retentionArchived: number;
-  /** Derived and log rows the retention pass deleted (phase 8). */
-  retentionPruned: number;
-  /**
-   * At least one brain's retention pass stopped at a rule's batch cap, so there
-   * is more waiting for the next rotation. Surfaced rather than swallowed for
-   * the reason the sweep surfaces `cappedTypes`: a capped run and a complete run
-   * are otherwise the same green log line.
-   */
-  retentionCapped: boolean;
-  /** Phase 29: agent-spend ledger rows written for newly terminal executions. */
+export interface ResparkableTickResult extends DrainResult {
+  /** Ledger rows written for newly terminal executions. */
   executionsBilled: number;
-  /** Terminal executions this tick could not attribute to a user (skipped, not billed). */
+  /** Terminal executions that could not be attributed to a user, so not billed. */
   executionsSkipped: number;
+  /** Job rows created for brains that somehow had none. */
+  jobsBackfilled: number;
 }
 
 /**
- * Resolve a workflow execution's owner: `userId` for `queueResparkableWorkflowRun`-queued
- * rows (`briefing/regenerate`), or `scope[RESPARKABLE_SCHEDULE_OWNER_KEY]` for
- * genuine cron-fired rows, which are system-owned (`userId: null`) by design
- * (resparkable#502); see `repo/owner-scope.ts`'s doc comment for the full story.
- * `null` for anything else (an org-level or non-Resparkable run), which the
- * caller must skip rather than bill.
+ * Resolve a workflow execution's owner.
+ *
+ * `userId` for everything the queue and the routes create — phase 56 queues
+ * background runs as user-owned, which is correct for a run that belongs to one
+ * person and should be erased with them.
+ *
+ * `scope[RESPARKABLE_SCHEDULE_OWNER_KEY]` is the legacy branch: executions
+ * fired by the platform scheduler before the cutover are system-owned
+ * (`userId: null`) and carry the owner in `scope` instead (resparkable#502; ask
+ * #29). Nothing creates those any more, but the ones already in the table still
+ * have to be billed, and they age out on their own.
+ *
+ * `null` for anything else — an org-level or non-Resparkable run — which the
+ * caller must skip rather than bill to somebody.
  */
 function resolveExecutionOwner(execution: BillableWorkflowExecution): string | null {
   if (execution.userId) return execution.userId;
-  const scope = execution.scope as Record<string, unknown> | null;
-  const scoped = scope?.[RESPARKABLE_SCHEDULE_OWNER_KEY];
+
+  // Untrusted JSON from a platform-owned column, so every non-object shape is
+  // rejected before anything is read out of it — an array is an object to
+  // `typeof` and a bare string indexes to `undefined` rather than throwing, so
+  // neither would error, they would just quietly resolve to "no owner". The
+  // strict version of this check used to live in `repo/schedules.ts`'s
+  // `carriesOwnerScope`, which phase 56 deleted along with the rows it read;
+  // this is that check, kept.
+  const scope: unknown = execution.scope;
+  if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
+
+  const scoped = (scope as Record<string, unknown>)[RESPARKABLE_SCHEDULE_OWNER_KEY];
   return typeof scoped === 'string' && scoped.length > 0 ? scoped : null;
 }
 
 /**
- * Phase 29's billing pass: find recently terminal, resparkable-slug executions
- * and write their agent-spend ledger entry.
+ * Write the ledger entry for every terminal execution that has not got one.
  *
- * Unconditional and independent of the per-user sweep rotation below: a
- * completed workflow's bill should not wait for that user's turn in a
- * 6-hour-x-N-users cursor. Idempotent via the ledger's own unique constraint
- * (`repo/billing.ts`'s `applyLedgerEntry`): a repeat pass over an
- * already-billed execution throws `P2002`, caught and skipped here, not
- * logged as an error.
+ * Independent of the queue and of any per-user cursor: a completed workflow's
+ * bill should not wait for that user's turn at anything. Idempotent via the
+ * ledger's own `@@unique([kind, relatedWorkflowExecutionId])` — a repeat over an
+ * already-billed execution throws `P2002`, which is caught and skipped here
+ * rather than logged as an error, and is the backstop for two workers racing
+ * the same row.
  */
 async function billResparkableWorkflowExecutions(): Promise<{ billed: number; skipped: number }> {
-  const executions = await findRecentTerminalResparkableExecutions(
+  const executions = await findUnbilledTerminalResparkableExecutions(
     RESPARKABLE_BILLABLE_WORKFLOW_SLUGS,
     TERMINAL_WORKFLOW_STATUSES,
     BILLING_BATCH
@@ -191,8 +169,6 @@ async function billResparkableWorkflowExecutions(): Promise<{ billed: number; sk
   let skipped = 0;
 
   for (const execution of executions) {
-    if (execution.totalCostUsd <= 0) continue;
-
     const ownerUserId = resolveExecutionOwner(execution);
     if (!ownerUserId) {
       skipped++;
@@ -219,151 +195,114 @@ async function billResparkableWorkflowExecutions(): Promise<{ billed: number; sk
 }
 
 /**
- * One tick's worth of sweeping.
+ * One tick's worth of work: bill, repair, drain.
  *
- * Exported for the test and the smoke script: a job body that can only be
- * reached through the maintenance tick is a job body nobody exercises.
+ * Exported for the tests and the smoke script — a job body reachable only
+ * through the maintenance tick is a job body nobody exercises.
  *
- * **A failing brain does not stop the batch.** One user's sweep throwing — a
- * dimension mismatch after a model swap, say — must not stop the other three
- * from being swept, and must not stop the cursor moving past it. Otherwise a
- * single bad corpus wedges the rotation for everybody, which is the same
- * class of silent stall the cursor exists to prevent.
- *
- * ## Why the schedule pass rides along here
- *
- * `ensureResparkableSchedules` is idempotent and self-correcting, but until it runs
- * it corrects nothing — and `ensureResparkableSpace` only calls it on the branch
- * that *creates* a space, so an existing brain would never see it again. That
- * left the DST rewrite unreachable in practice, and would have left a schedule
- * carrying a stale `inputTemplate` failing its workflow for ever.
- *
- * Putting it on the rotation is what makes "self-correcting" true: every brain
- * gets the pass once per rotation, including the dormant ones, and it costs two
- * indexed queries against a batch of four. The read path stays untouched —
- * `ensureResparkableSpace` is called at the top of capture, chat and every resource
- * service, and adding two queries to all of them to catch a twice-a-year offset
- * change would be the wrong trade.
- *
- * It is failure-isolated from the connection sweep in both directions: neither
- * half of a brain's turn can cost it the other.
+ * The billing pass runs **first and unconditionally**, before the drain and
+ * regardless of `RESPARKABLE_WORKER_MODE`. It is not per-user work and has no
+ * business being in the queue: putting it there would mean a person's bill
+ * waited on their own brain's turn, and would give the largest table in the
+ * system an eighth kind that does nothing for the owner it is keyed on.
  */
-export async function runResparkableSweepJob(now: Date = new Date()): Promise<SweepJobResult> {
-  // The safety net under the erasure hook, run first so it happens even on a
-  // tick with no brains due. `registerErasureCleanupHook` writes into a plain
-  // module-scope Map that `eraseUser()` reads without lazily re-initialising any
-  // `lib/app/*` seam, so a hook registered at boot may not be present in the
-  // erasure request's realm — the shape resparkable#462 documented for the other two
-  // registries. A schedule with `createdBy: null` is an unambiguous tombstone,
-  // so cleaning it up here is safe regardless of why the hook did not fire.
-  const orphanedSchedules = await deleteOrphanedResparkableSchedules();
-  if (orphanedSchedules > 0) {
-    logger.info('Resparkable cleaned up schedules belonging to erased users', {
-      count: orphanedSchedules,
-    });
-  }
-
-  // Also unconditional, and independent of the per-user rotation below, see
-  // `billResparkableWorkflowExecutions`'s doc comment.
+export async function runResparkableTick(
+  options: { drain?: boolean } = {}
+): Promise<ResparkableTickResult> {
   const { billed: executionsBilled, skipped: executionsSkipped } =
     await billResparkableWorkflowExecutions();
 
-  const due = await listSpacesDueSweep(SWEEP_BATCH);
-  if (due.length === 0) {
-    return {
-      swept: 0,
-      created: 0,
-      failed: 0,
-      orphanedSchedules,
-      schedulesCreated: 0,
-      schedulesCorrected: 0,
-      retentionArchived: 0,
-      retentionPruned: 0,
-      retentionCapped: false,
-      executionsBilled,
-      executionsSkipped,
-    };
-  }
-
-  let created = 0;
-  let failed = 0;
-  let schedulesCreated = 0;
-  let schedulesCorrected = 0;
-  let retentionArchived = 0;
-  let retentionPruned = 0;
-  let retentionCapped = false;
-
-  for (const { userId, timezone } of due) {
-    // Its own try, not the sweep's. A schedule pass that throws must not cost
-    // this brain its connection sweep, and vice versa — they share only the turn.
-    try {
-      const schedules = await ensureResparkableSchedules(userId, timezone, now);
-      schedulesCreated += schedules.created.length;
-      schedulesCorrected += schedules.corrected.length;
-    } catch (error) {
-      logger.error('Resparkable schedule pass failed for one brain', {
-        userId,
+  const jobsBackfilled = await backfillMissingResparkableJobs(BACKFILL_BATCH).catch(
+    (error: unknown) => {
+      // Its own catch: the net under the enqueue must not cost the drain its
+      // turn. A brain missing its rows stays missing for one more tick, which
+      // is the same order of delay the net already tolerates.
+      logger.warn('Resparkable job backfill failed', {
         error: error instanceof Error ? error.message : String(error),
       });
+      return 0;
     }
-
-    try {
-      const result = await sweepConnections(ownerScope(userId), now);
-      created += result.created;
-    } catch (error) {
-      failed++;
-      logger.error('Resparkable connection sweep failed for one brain', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    // Its own try again, and last in the turn. Retention is the only pass here
-    // that removes anything, so it is the one whose failure must cost the brain
-    // least: a sweep that produced connections and a schedule pass that fixed a
-    // cron should both stand even if a retention rule throws.
-    try {
-      const retention = await enforceResparkableRetention(ownerScope(userId), { now });
-      retentionArchived += retention.archived;
-      retentionPruned += retention.pruned;
-      retentionCapped = retentionCapped || retention.capped;
-    } catch (error) {
-      logger.error('Resparkable retention pass failed for one brain', {
-        userId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  // Stamped even for the failures, deliberately. A brain that throws every time
-  // would otherwise sit at the head of the queue for ever and starve everyone
-  // behind it — the failure is logged, and it gets its next turn one rotation
-  // later like everybody else.
-  await markSpacesSwept(
-    due.map((space) => space.userId),
-    now
   );
 
+  const drained =
+    options.drain === false
+      ? emptyDrain()
+      : await drainResparkableJobs({
+          maxJobs: TICK_MAX_JOBS,
+          maxWallClockMs: TICK_MAX_WALL_CLOCK_MS,
+          concurrency: TICK_CONCURRENCY,
+        });
+
+  return { ...drained, executionsBilled, executionsSkipped, jobsBackfilled };
+}
+
+/**
+ * What a tick that did not drain reports.
+ *
+ * A function rather than a shared constant: `applyOutcome` in `drain.ts`
+ * accumulates into `result.outcome` with `+=`, so handing every caller the same
+ * object identity is one refactor away from a tick silently summing into a
+ * module-level singleton and reporting the whole process's history as this
+ * minute's work.
+ */
+function emptyDrain(): DrainResult {
   return {
-    swept: due.length,
-    created,
-    failed,
-    orphanedSchedules,
-    schedulesCreated,
-    schedulesCorrected,
-    retentionArchived,
-    retentionPruned,
-    retentionCapped,
-    executionsBilled,
-    executionsSkipped,
+    settled: 0,
+    skippedDormant: 0,
+    skippedNoCredit: 0,
+    skippedUnknown: 0,
+    failed: 0,
+    queueEmpty: true,
+    outcome: {
+      executionsQueued: 0,
+      connectionsCreated: 0,
+      retentionArchived: 0,
+      retentionPruned: 0,
+      reindexEmbedded: 0,
+      reindexChunks: 0,
+      incomplete: false,
+    },
   };
 }
 
-/** Register the sweep on the maintenance tick. Called from `initResparkable()`. */
+/**
+ * Register the tick job. Called from `lib/app/jobs.ts`.
+ *
+ * Every 60 seconds rather than every six hours, because the unit of work is now
+ * one job rather than a whole rotation: a short interval and a small budget
+ * gives low latency on a quiet install and bounded cost on a busy one, where
+ * the old six-hour rotation gave neither.
+ *
+ * `intervalMs` is a **minimum gap** kept in process memory, so N instances run
+ * this about N times per interval and a restart re-arms it. That is fine here
+ * and it is fine for a reason worth stating precisely, because it is the bar
+ * anything else registered on this seam has to clear: the drain does not rely
+ * on `registerAppJob` for correctness at all. Two ticks racing claim disjoint
+ * batches from the database, and the billing pass is idempotent through a
+ * unique constraint.
+ */
 export function registerResparkableJobs(): void {
+  const drain = resolveWorkerMode() !== 'external';
+
   registerAppJob({
-    name: RESPARKABLE_SWEEP_JOB_NAME,
-    intervalMs: SWEEP_INTERVAL_MS,
-    run: async () => runResparkableSweepJob(),
+    name: RESPARKABLE_QUEUE_JOB_NAME,
+    intervalMs: 60_000,
+    run: async () => runResparkableTick({ drain }),
   });
 }
+
+/**
+ * Whether this process should drain the queue from its tick.
+ *
+ * Read from the environment directly rather than through `lib/env.ts`, because
+ * `registerResparkableJobs` is called lazily from core's `app-jobs.ts` in
+ * whichever realm the tick runs in, and this is a single optional string with a
+ * safe default. Anything unrecognised means `tick`: the failure mode of a typo
+ * should be "the queue still drains", never "background work silently stopped".
+ */
+function resolveWorkerMode(): 'tick' | 'external' {
+  return process.env.RESPARKABLE_WORKER_MODE === 'external' ? 'external' : 'tick';
+}
+
+/** Re-exported so the worker entrypoint and the smoke script agree on the set. */
+export { RESPARKABLE_JOB_KINDS };

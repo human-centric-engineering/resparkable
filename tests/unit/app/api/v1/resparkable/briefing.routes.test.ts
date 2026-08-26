@@ -43,7 +43,7 @@ vi.mock('@/lib/framework/resparkable/services/briefing', () => ({
   getStoredBriefing: vi.fn(),
   BRIEFING_HORIZON: 'briefing',
 }));
-vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
+vi.mock('@/lib/framework/resparkable/repo/workflow-runs', () => ({
   queueResparkableWorkflowRun: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({
@@ -53,7 +53,7 @@ vi.mock('@/lib/framework/resparkable/services/space', () => ({
 import { GET } from '@/app/api/v1/resparkable/briefing/route';
 import { POST } from '@/app/api/v1/resparkable/briefing/regenerate/route';
 import { getStoredBriefing } from '@/lib/framework/resparkable/services/briefing';
-import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
+import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 
 const mockedStored = vi.mocked(getStoredBriefing);
