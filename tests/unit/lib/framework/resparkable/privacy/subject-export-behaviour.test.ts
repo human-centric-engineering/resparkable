@@ -10,11 +10,11 @@
  *
  * That is why the scoping assertion here is exhaustive rather than a spot-check.
  * `OwnerScope` makes an unscoped read hard to write, but `ownerWhere` still has
- * to actually be spread into each `where`, and seventeen near-identical fetches
+ * to actually be spread into each `where`, and nineteen near-identical fetches
  * is exactly the shape where one gets pasted wrong.
  *
  * Test Coverage:
- * - Every source filters on the scope's userId — all seventeen, by construction
+ * - Every source filters on the scope's userId — all nineteen, by construction
  * - The bundle carries one key per manifest section
  * - Rows come back under the section they belong to
  * - `ResparkableSpace.inboxToken` is omitted (a live bearer secret)
@@ -50,6 +50,8 @@ vi.mock('@/lib/db/client', () => ({
       'resparkableEvent',
       'resparkableCreditAccount',
       'resparkableCreditLedgerEntry',
+      'resparkableGrant',
+      'resparkableShareLink',
     ].map((model) => [model, { findMany: vi.fn() }])
   ),
 }));
@@ -74,6 +76,8 @@ const MODELS = [
   'resparkableEvent',
   'resparkableCreditAccount',
   'resparkableCreditLedgerEntry',
+  'resparkableGrant',
+  'resparkableShareLink',
 ] as const;
 
 import { prisma } from '@/lib/db/client';
@@ -168,11 +172,26 @@ describe('secrets', () => {
     // The inverse guard. `omit` is how a column is deliberately withheld, so a
     // stray one is how a column goes missing from the export without anyone
     // deciding it should — the quiet narrowing this whole file exists to stop.
+    //
+    // Stated as an exact map rather than "nowhere but the space": every entry
+    // here is a credential, and listing them makes adding a fourth a decision
+    // someone writes down instead of a diff nobody reads.
+    const WITHHELD: Record<string, Record<string, true>> = {
+      // A live bearer secret: anyone holding it can write into this inbox.
+      resparkableSpace: { inboxToken: true },
+      // The digest of a live invite credential.
+      resparkableGrant: { inviteTokenHash: true },
+      // The digest of a live public-link credential. `tokenPrefix` stays, so
+      // the subject can still tell their own links apart.
+      resparkableShareLink: { tokenHash: true },
+    };
+
     await collectResparkableSubjectData(SCOPE);
 
     for (const { model, findMany } of delegates()) {
-      if (model === 'resparkableSpace') continue;
-      expect(findMany.mock.calls[0]?.[0]?.omit, `${model} omits a column`).toBeUndefined();
+      expect(findMany.mock.calls[0]?.[0]?.omit, `${model} omits an unexpected column`).toEqual(
+        WITHHELD[model]
+      );
     }
   });
 

@@ -18,6 +18,27 @@ release process.
 
 ### Added
 
+- **Resparkable sharing: access resolution, and the two tables it reads.**
+  `ResparkableGrant` (named grants: one address, one item, `viewer` or
+  `commenter`) and `ResparkableShareLink` (public read-only links, token stored
+  as a sha256 digest and minted from 192 random bits rather than a cuid).
+  `lib/framework/resparkable/access/**` is the new **shared-query layer** and
+  the second of exactly two places in the tier allowed to reach Prisma —
+  `repo/**` answers owner queries and cannot express a cross-user read; this
+  answers shared queries and crosses a user only by following a grant or a
+  link, with an ESLint boundary forbidding `repo/**` from importing it (D5).
+  `resolveResparkableAccess` short-circuits to the owner before any grant or
+  link query; `resolveResparkableAccessMany` resolves a whole list in four
+  queries whatever its size; `resparkableVisibilityScope` answers "what is
+  shared with me" in one. `isShareActive` moved from
+  `lib/orchestration/access/conversation-access.ts` to
+  `lib/utils/share-window.ts` (re-exported from its old home) so the two
+  sharing systems cannot drift about what "still live" means. New drift probe
+  **B8** guards the hand-written `granteeUserId` FK — the Art. 17 half the
+  owner cascade does not reach. `ResparkableGrant` and `ResparkableShareLink`
+  are in the tier's subject-access manifest, with the two credential digests
+  omitted.
+
 - **`ResparkableEmbedding.sensitivity` — the vector layer can finally express
   the private/shareable distinction.** Denormalised from the source row at
   index time and kept true by `updateThought`, which writes it onto the

@@ -126,6 +126,11 @@ model ResparkableSpace {
   creditAccount       ResparkableCreditAccount?
   creditLedgerEntries ResparkableCreditLedgerEntry[]
 
+  /// Release 2: sharing. Both hang off the OWNER, never the grantee — see
+  /// `ResparkableGrant`'s header for why that is what preserves D1.
+  grants     ResparkableGrant[]
+  shareLinks ResparkableShareLink[]
+
   /// Phase 56: the job queue. One row per kind per owner; see `ResparkableJob`.
   ///
   /// `lastSweptAt` and its index used to sit here — the across-users rotation
@@ -1183,4 +1188,150 @@ model ResparkableJob {
   /// than silently dropping it, and it needs no drift probe.
   @@index([dueAt, leaseExpiresAt])
   @@map("framework_resparkable_job")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sharing (Release 2, §13). Two orthogonal facts, deliberately not merged:
+//
+//   • `visibility` on the entity — ONLY about the public-link surface, so the
+//     hot path never joins to find out whether a row is shared.
+//   • named grants — entirely in `ResparkableGrant` rows, never denormalised
+//     onto the entity or its children.
+//
+// Shareable: area, goal, project, review, board, task. NOT thought. The raw
+// capture inbox is the likeliest place for something you would be mortified to
+// leak, and making it unshareable is a feature, not a gap — promote a thought
+// to a task first, which is the workflow anyway.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A named grant: one person, one item, read-only or read-and-comment.
+///
+/// **`userId` is the OWNER, not the grantee.** That preserves D1 — the row
+/// cascades from `ResparkableSpace` like every other table here — and it keeps
+/// `WHERE userId = $1` meaning the same thing in this table as in all the
+/// others. The grantee is `granteeUserId` / `granteeEmail`, and reading this
+/// table by grantee is the one thing `repo/**` must never do: that is a shared
+/// query, and it lives in `lib/framework/resparkable/access/*` (D5).
+///
+/// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+/// `framework_resparkable_grant_granteeUserId_fkey` (→ `"user"("id") ON DELETE
+/// CASCADE`) is hand-written in the migration, for the same reason
+/// `ResparkableSpace`'s is: `User` lives in a Sunrise-owned file and this tier
+/// must not add a relation field there. **That FK is Art. 17 for the grantee.**
+/// Nothing cascades to this row when the grantee is erased — `userId` is the
+/// owner — and `SetNull` would leave a live grant addressed by `granteeEmail`:
+/// retained personal data belonging to an erased person, on a row they cannot
+/// reach. Probe B8 asserts the constraint and its ON DELETE action.
+///
+/// The unaccepted case (`granteeUserId IS NULL`) has no FK to hang off, so it
+/// is covered by an erasure `scrubInTransaction` hook matching `granteeEmail`
+/// instead. Both halves are needed; neither covers the other.
+model ResparkableGrant {
+  id     String @id @default(cuid())
+  userId String
+
+  /// area | goal | project | review | board | task. Never `thought`.
+  entityType String @db.VarChar(16)
+  entityId   String
+
+  /// Null until the invite is accepted. Hand-written FK — see the block above.
+  granteeUserId String?
+  /// Lower-cased at the boundary. The address the grant was issued to, which is
+  /// what makes an unaccepted invite addressable and revocable.
+  granteeEmail  String
+
+  /// viewer | commenter. `commenter` is what makes `ResparkableComment` mean
+  /// something; it never implies any write access to the item itself.
+  role String @default("viewer") @db.VarChar(16)
+
+  /// Include the shared item's own `notes` (and its cascaded tasks'). Default
+  /// off: a shared task exposes title, status and due date, and nothing else
+  /// (§13). Per-grant rather than per-item, because "show Bob the detail" and
+  /// "show the whole internet the detail" are different decisions.
+  includeTaskDetail Boolean @default(false)
+
+  /// sha256 of the invite token. The token grants nothing on its own — it only
+  /// binds an account to a grant that already exists — so a leaked invite email
+  /// is useless without that mailbox. Null once accepted, or for a grant issued
+  /// to an address that already has an account.
+  inviteTokenHash String?   @unique
+  inviteSentAt    DateTime?
+  acceptedAt      DateTime?
+
+  /// Defaults to 30 days at the boundary, max 365. `null` requires an explicit
+  /// "never expires" choice — see `isShareActive` (`lib/utils/share-window.ts`).
+  expiresAt DateTime?
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// D1: the cascade path for the OWNER. See the drift warning above for the
+  /// grantee's, which is a different FK to a different table.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  /// One grant per address per item. Re-granting is an update, not a second row
+  /// — two live grants with different roles would make "what can Bob do" a
+  /// question with two answers.
+  @@unique([entityType, entityId, granteeEmail])
+  /// The access layer's read: "which of this viewer's grants are live?"
+  @@index([granteeUserId, revokedAt])
+  @@index([granteeEmail, revokedAt])
+  /// The owner's read: "who can see this item?"
+  @@index([userId, entityType, entityId])
+  @@map("framework_resparkable_grant")
+}
+
+/// A public read-only link: a bearer credential to one item.
+///
+/// **The token is hashed, deviating from codebase precedent on purpose.**
+/// `AiAgentEmbedToken` and `AiAgentInviteToken` store plaintext cuids, which is
+/// fine for admin-issued, deployment-scoped tokens. A brain share link is a
+/// bearer credential to a private person's life: a database dump or a log leak
+/// must not hand over every user's notes. Mint with
+/// `randomBytes(24).toString('base64url')` — 192 bits, and deliberately **not**
+/// a cuid, which is timestamp-prefixed and monotonic, precisely the wrong shape
+/// for "unguessable".
+model ResparkableShareLink {
+  id     String @id @default(cuid())
+  userId String
+
+  /// area | goal | project | review | board | task. Never `thought`.
+  entityType String @db.VarChar(16)
+  entityId   String
+
+  /// sha256 hex of the token. The only copy that exists after minting.
+  tokenHash   String @unique
+  /// First few characters of the token, so the owner can tell two links apart
+  /// in the UI. Short enough to be useless on its own.
+  tokenPrefix String @db.VarChar(12)
+
+  /// Include the one-level typed cascade (project → its tasks, goal → its child
+  /// goals, board → its cards' tasks). Off means the link shows exactly one item.
+  includeChildren   Boolean @default(false)
+  /// As `ResparkableGrant.includeTaskDetail`, and the same default. A public
+  /// link is a document handed to strangers; the bar for `notes` is higher here
+  /// than for a named grant, not lower.
+  includeTaskDetail Boolean @default(false)
+
+  /// 30 days by default, 365 max. `null` requires an explicit "never expires".
+  expiresAt DateTime?
+  revokedAt DateTime?
+
+  /// Enough to answer "is anyone actually opening this?" without keeping a log
+  /// of who: no IP, no user agent, no per-view row. A reader of a public link is
+  /// a person with no account here, and the least that answers the owner's
+  /// question is the right amount to keep.
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// D1: the cascade path. Erasing the owner takes the link with it, which is
+  /// what makes "erase me" also mean "my links stop working".
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId, entityType, entityId])
+  @@map("framework_resparkable_share_link")
 }

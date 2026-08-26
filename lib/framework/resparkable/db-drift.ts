@@ -110,8 +110,8 @@ function columnHasType(tableName: string, columnName: string, udtName: string): 
  */
 
 /**
- * Register Resparkable's seven probes. Five assert an object EXISTS (B1, B2,
- * B4, B5, B6); B3 and B7 assert one does NOT (see `absent`). Idempotent per
+ * Register Resparkable's eight probes. Six assert an object EXISTS (B1, B2,
+ * B4, B5, B6, B8); B3 and B7 assert one does NOT (see `absent`). Idempotent per
  * process is NOT guaranteed —
  * `registerAppDriftProbe` throws on a duplicate name, which is deliberate: a
  * double registration means the host wired this up twice and should know.
@@ -214,5 +214,24 @@ export function registerResparkableDriftProbes(): void {
       'GIN index is back. hybridSearchRows computes ts_rank_cd over the userId-filtered set ' +
         'and carries no @@ predicate, so it is never consulted — see scale.md S3.'
     ),
+  });
+
+  // B8 — Art. 17 for the GRANTEE, and the reason it needs its own probe.
+  //
+  // B1 guards the owner cascade. This one guards the other direction, which the
+  // default gets wrong: `ResparkableGrant.userId` is the OWNER, so nothing
+  // cascades to a grant row when the *grantee* is erased. `ON DELETE SET NULL`
+  // — the shape a regenerated migration would most plausibly reach for — is
+  // worse than no constraint at all: it leaves a live grant addressed by
+  // `granteeEmail`, retained personal data belonging to an erased person, on a
+  // row they cannot reach.
+  //
+  // Like B1, it asserts the ACTION rather than mere existence, and for the same
+  // reason: this failure surfaces as a regulatory problem, not a stack trace.
+  registerAppDriftProbe({
+    name: 'B8 framework_resparkable_grant_granteeUserId_fkey (hand-written FK → user, grantee erasure)',
+    kind: 'FK constraint',
+    table: 'framework_resparkable_grant',
+    probe: constraintExists('framework_resparkable_grant_granteeUserId_fkey', 'ON DELETE CASCADE'),
   });
 }
