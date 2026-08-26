@@ -537,6 +537,26 @@ model ResparkableEmbedding {
 
   content String @db.Text
 
+  /// Denormalised from the source row, at write time (Release 1.5, phase 9e).
+  ///
+  /// **This is the only read path that could not otherwise express the
+  /// private/shareable distinction.** Every other read goes through a repo
+  /// function that can filter the source table; the vector pass ranks chunks
+  /// and never touches it, so before this column a `sensitive` thought was a
+  /// candidate for `resparkable-triage` (unattended, 03:00) and for
+  /// `resparkable-strategist`, which writes `ResparkableReview` bodies — and
+  /// reviews are on §13's shareable list. That is a private-to-shareable path,
+  /// and it existed before sharing did.
+  ///
+  /// Only `thought` rows can be anything but `'private'` today; every other
+  /// embedded type takes the default. Kept in sync by `updateThought`, which
+  /// writes here in the same transaction rather than waiting for a reindex — a
+  /// privacy control that takes effect at the next nightly pass is not a
+  /// privacy control. **Never part of `contentHash`**: sensitivity is not
+  /// semantic content, and folding it in would re-embed the corpus every time
+  /// someone reclassified a note.
+  sensitivity String @default("private") @db.VarChar(16)
+
   embedding    Unsupported("halfvec(1536)")?
   searchVector Unsupported("tsvector")?
 

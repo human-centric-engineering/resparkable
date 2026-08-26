@@ -294,7 +294,7 @@ describe('the archived corpus is keyword-only', () => {
       includeArchived: true,
     });
 
-    expect(keywordSummaries).toHaveBeenCalledWith(SCOPE, 'thought', 'old', 20, true);
+    expect(keywordSummaries).toHaveBeenCalledWith(SCOPE, 'thought', 'old', 20, true, false);
     expect(result.hits.map((hit) => hit.id)).toContain('t_old');
     expect(result.hits[0].matchedBy).toBe('keyword');
   });
@@ -327,5 +327,78 @@ describe('the archived corpus is keyword-only', () => {
     expect(result.hits).toHaveLength(1);
     expect(result.hits[0].score).toBeCloseTo(0.9);
     expect(result.hits[0].matchedBy).toBe('semantic');
+  });
+});
+
+describe('excludeSensitive reaches every pass (phase 9e)', () => {
+  it('defaults to false — the owner searching their own brain finds their own notes', async () => {
+    await searchResparkable({ scope: SCOPE, query: 'therapy', includeArchived: true });
+
+    expect(hybridSearchRows).toHaveBeenCalledWith(
+      SCOPE,
+      expect.objectContaining({ excludeSensitive: false })
+    );
+  });
+
+  it('reaches the vector pass, the hydration query AND the archived keyword pass', async () => {
+    // Three passes, three reasons. The vector CTE, so sensitive chunks never
+    // take result slots. The hydration query, as defence in depth on the one
+    // path where an id crosses back from raw SQL into the ORM. The archived
+    // keyword pass, which has no vectors to have been filtered in the first
+    // place — miss it and the whole control is bypassed by one query string.
+    hybridSearchRows.mockResolvedValue([
+      {
+        entityType: 'thought',
+        entityId: 't_1',
+        chunkIndex: 0,
+        content: 'a',
+        distance: 0.1,
+        vectorScore: 0.9,
+        keywordScore: 0,
+        finalScore: 0.9,
+      },
+    ]);
+
+    await searchResparkable({
+      scope: SCOPE,
+      query: 'therapy',
+      entityTypes: ['thought'],
+      includeArchived: true,
+      excludeSensitive: true,
+    });
+
+    expect(hybridSearchRows).toHaveBeenCalledWith(
+      SCOPE,
+      expect.objectContaining({ excludeSensitive: true })
+    );
+    expect(findSummaries).toHaveBeenCalledWith(SCOPE, 'thought', ['t_1'], true, true);
+    expect(keywordSummaries).toHaveBeenCalledWith(SCOPE, 'thought', 'therapy', 20, true, true);
+  });
+
+  it('a filtered-out thought drops from the results rather than rendering hollow', async () => {
+    // Hydration returning nothing is the same degradation an already-deleted
+    // row gets: never render an id that resolves to no current content.
+    hybridSearchRows.mockResolvedValue([
+      {
+        entityType: 'thought',
+        entityId: 't_sensitive',
+        chunkIndex: 0,
+        content: 'started therapy for anxiety this week',
+        distance: 0.05,
+        vectorScore: 0.95,
+        keywordScore: 0,
+        finalScore: 0.95,
+      },
+    ]);
+    findSummaries.mockResolvedValue([]);
+
+    const result = await searchResparkable({
+      scope: SCOPE,
+      query: 'therapy',
+      entityTypes: ['thought'],
+      excludeSensitive: true,
+    });
+
+    expect(result.hits).toEqual([]);
   });
 });

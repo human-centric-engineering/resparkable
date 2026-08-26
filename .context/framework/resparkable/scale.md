@@ -249,6 +249,7 @@ predictably and can follow.
 | S3  | Drop the unused HNSW and GIN indexes  | **DONE** 2026-08-25, same migration. Probes B3 and B7 now assert they stay dropped.            |
 | S6  | Queue and workers for background work | **DONE** 2026-08-26. Phase 56 — [`phase-56-plan.md`](./phase-56-plan.md).                      |
 | S7  | Demand-driven scheduled LLM work      | **DONE** 2026-08-26, inside S6. Pre-flight gate, so an idle brain costs zero rather than four. |
+| 9e  | Sensitivity reaches the vector layer  | **DONE** 2026-08-26. Not an S-decision — the last Release 1.5 row. Migration `20260826140000`. |
 | S5  | Hash-partition the embedding table    | Before ~10M rows                                                                               |
 | S4  | Per-user inner-CTE search tier        | Before the first 10k-chunk user                                                                |
 

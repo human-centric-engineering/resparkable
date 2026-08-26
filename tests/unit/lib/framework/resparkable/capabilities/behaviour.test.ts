@@ -242,6 +242,41 @@ describe('resparkable_search', () => {
   it('rejects a string boolean — a tool argument is JSON, not a query string', () => {
     expect(() => capability.validate({ query: 'x', includeArchived: 'true' })).toThrow();
   });
+
+  // ── Phase 9e: sensitivity is decided by attendance ───────────────────────
+  //
+  // The distinction is not "who may read this" — one brain, one owner — but
+  // "is the owner in the room". `resparkable-triage` runs at 03:00 and
+  // `resparkable-strategist` writes `ResparkableReview` bodies, which are on
+  // §13's shareable list: a private note reaching a shareable artefact with
+  // nobody watching. See `search/hybrid-search.ts`'s `excludeSensitive`.
+
+  it("the owner's own turn sees everything they wrote", async () => {
+    mocked(searchResparkable).mockResolvedValue({ hits: [], embedding: null });
+
+    await call(capability, { query: 'the therapy sessions' });
+
+    expect(searchResparkable).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeSensitive: false })
+    );
+  });
+
+  it('an unattended workflow run does not', async () => {
+    mocked(searchResparkable).mockResolvedValue({ hits: [], embedding: null });
+
+    const args = capability.validate({ query: 'the therapy sessions' }) as never;
+    await capability.execute(args, { ...ctx, workflowExecutionId: 'exec-1' });
+
+    expect(searchResparkable).toHaveBeenCalledWith(
+      expect.objectContaining({ excludeSensitive: true })
+    );
+  });
+
+  it('an agent cannot ask for the sensitive notes — the schema forbids the field', () => {
+    // `.strict()`, so this is a validation error rather than a negotiation.
+    // The flag is set from the run's shape, never from the model's request.
+    expect(() => capability.validate({ query: 'x', excludeSensitive: false })).toThrow();
+  });
 });
 
 describe('resparkable_list_tasks', () => {

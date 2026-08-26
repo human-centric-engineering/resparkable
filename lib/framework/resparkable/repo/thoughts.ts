@@ -15,6 +15,7 @@ import { prisma } from '@/lib/db/client';
 import {
   archiveAndDropVectors,
   deleteAndDropVectors,
+  embeddingSensitivityUpdateArgs,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
   liveOwnerWhere,
@@ -150,7 +151,7 @@ export async function updateThought(
   id: string,
   data: ThoughtUpdateData
 ): Promise<ResparkableThought | null> {
-  return nullOnMiss(() =>
+  const update = () =>
     prisma.resparkableThought.update({
       where: { id, ...ownerWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
@@ -158,8 +159,42 @@ export async function updateThought(
       // call, which is why every update can do it without knowing which fields
       // are semantic (see embedding/indexer.ts).
       data: { ...data, indexedHash: null },
-    })
-  );
+    });
+
+  // Reclassifying is the one edit the hash gate cannot carry (phase 9e).
+  // `sensitivity` is deliberately not semantic content, so nulling `indexedHash`
+  // above queues a comparison that will match and skip the chunk rewrite — the
+  // new classification would reach the vector layer never. So it is pushed onto
+  // the chunks here, in the same transaction as the row itself: a privacy
+  // control has to be true the moment it is set, not at 03:00 tomorrow.
+  const sensitivity = plainSensitivity(data.sensitivity);
+  if (sensitivity === undefined) return nullOnMiss(update);
+
+  return nullOnMiss(async () => {
+    const [updated] = await prisma.$transaction([
+      update(),
+      prisma.resparkableEmbedding.updateMany(
+        embeddingSensitivityUpdateArgs(scope, 'thought', id, sensitivity)
+      ),
+    ]);
+    return updated;
+  });
+}
+
+/**
+ * The literal behind a Prisma update field, or `undefined` if it isn't one.
+ *
+ * `UncheckedUpdateInput` lets a caller write either `'sensitive'` or
+ * `{ set: 'sensitive' }`, and every caller in the tier writes the first — but
+ * the type permits the second, and a denormalisation that silently skipped it
+ * would leave the chunks disagreeing with the row they came from. Anything
+ * neither shape (nothing produces one today) returns `undefined`, which skips
+ * the sync rather than writing a guess.
+ */
+function plainSensitivity(value: ThoughtUpdateData['sensitivity']): string | undefined {
+  if (typeof value === 'string') return value;
+  if (value && typeof value === 'object' && typeof value.set === 'string') return value.set;
+  return undefined;
 }
 
 export async function archiveThought(

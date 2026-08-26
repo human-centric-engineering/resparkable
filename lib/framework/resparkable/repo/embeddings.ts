@@ -81,6 +81,12 @@ export interface EmbeddingWriteRow {
   entityId: string;
   chunkIndex: number;
   content: string;
+  /**
+   * Denormalised from the source row (phase 9e). `'private'` for every type but
+   * `thought`, which is the only one carrying the column. **Never part of
+   * `contentHash`** — reclassifying a note is not an edit to what it says.
+   */
+  sensitivity: string;
   /** Hash of SEMANTIC CONTENT ONLY — see `embedding/canonical.ts`. */
   contentHash: string;
   embedding: number[];
@@ -154,16 +160,19 @@ export async function upsertEmbeddings(
       await tx.$executeRaw`
         INSERT INTO "framework_resparkable_embedding" (
           "id", "userId", "entityType", "entityId", "chunkIndex", "content",
-          "embedding", "contentHash", "embeddingModel", "embeddingProvider",
-          "embeddingDimension", "embeddedAt", "createdAt", "updatedAt"
+          "sensitivity", "embedding", "contentHash", "embeddingModel",
+          "embeddingProvider", "embeddingDimension", "embeddedAt",
+          "createdAt", "updatedAt"
         ) VALUES (
           gen_random_uuid()::text, ${scope.userId}, ${row.entityType}, ${row.entityId},
-          ${row.chunkIndex}, ${row.content}, ${toVectorLiteral(row.embedding)}::halfvec,
+          ${row.chunkIndex}, ${row.content}, ${row.sensitivity},
+          ${toVectorLiteral(row.embedding)}::halfvec,
           ${row.contentHash}, ${row.embeddingModel}, ${row.embeddingProvider},
           ${row.embeddingDimension}, ${row.embeddedAt}, NOW(), NOW()
         )
         ON CONFLICT ("userId", "entityType", "entityId", "chunkIndex") DO UPDATE SET
           "content" = EXCLUDED."content",
+          "sensitivity" = EXCLUDED."sensitivity",
           "embedding" = EXCLUDED."embedding",
           "contentHash" = EXCLUDED."contentHash",
           "embeddingModel" = EXCLUDED."embeddingModel",
@@ -193,6 +202,34 @@ export function embeddingDeleteArgs(
   entityId: string
 ): Prisma.ResparkableEmbeddingDeleteManyArgs {
   return { where: { ...ownerWhere(scope), entityType, entityId } };
+}
+
+/**
+ * The `updateMany` args that push a source row's new sensitivity onto its chunks.
+ *
+ * Returned rather than executed so the entity repo can splice it into the same
+ * `$transaction` as the row update (`repo/thoughts.ts`). **This is why the
+ * denormalisation is safe.** Sensitivity is deliberately not part of
+ * `contentHash` — reclassifying a note is not an edit to what it says — so the
+ * indexer's hash gate puts a reclassified thought in the `unchanged` bucket and
+ * never rewrites its chunks. Left to the nightly pass, "mark this sensitive"
+ * would take effect never. Written here, it takes effect in the same commit as
+ * the click.
+ *
+ * A no-op for entities with no chunks yet, which is the normal state for the
+ * first few seconds after capture; the indexer writes the current value when it
+ * gets there.
+ */
+export function embeddingSensitivityUpdateArgs(
+  scope: OwnerScope,
+  entityType: EmbeddedType,
+  entityId: string,
+  sensitivity: string
+): Prisma.ResparkableEmbeddingUpdateManyArgs {
+  return {
+    where: { ...ownerWhere(scope), entityType, entityId },
+    data: { sensitivity },
+  };
 }
 
 /**
@@ -326,6 +363,15 @@ export interface HybridSearchInput {
   limit: number;
   /** Cosine-distance ceiling. Candidates beyond it are not semantic matches. */
   maxDistance: number;
+  /**
+   * Drop chunks denormalised as `sensitivity: 'sensitive'` (phase 9e).
+   *
+   * Applied **in the candidate CTE, not after hydration.** Filtering afterwards
+   * would be correct and useless: the pass over-fetches `limit * 3` chunks, so
+   * sensitive rows would consume result slots and quietly shorten a background
+   * agent's answer instead of moving it down the corpus.
+   */
+  excludeSensitive: boolean;
 }
 
 /**
@@ -402,6 +448,7 @@ export async function hybridSearchRows(
       WHERE e."userId" = ${scope.userId}
         AND e."embedding" IS NOT NULL
         AND e."entityType" IN (${typeList(input.entityTypes)})
+        AND (${input.excludeSensitive} = FALSE OR e."sensitivity" <> 'sensitive')
         AND (e."embedding" <=> ${vector}::halfvec) < ${input.maxDistance}
     )
     SELECT

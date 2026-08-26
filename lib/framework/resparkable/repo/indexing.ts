@@ -30,6 +30,16 @@ export interface IndexCandidate extends CanonicalSource {
    * never counts as a change to what it says.
    */
   fileName?: string | null;
+  /**
+   * Thoughts only, and **not** a semantic field either — for the same reason
+   * and by the same mechanism (phase 9e). It is denormalised onto every chunk
+   * so the vector pass can filter on it, but reclassifying a note must not
+   * re-embed it, so it stays out of `CanonicalSource`.
+   *
+   * Absent for every other type, which is correct: none of them carries the
+   * column, and their chunks take the schema default.
+   */
+  sensitivity?: string | null;
 }
 
 /**
@@ -41,7 +51,7 @@ export interface IndexCandidate extends CanonicalSource {
  * file as the query that reads them.
  */
 const SELECTS = {
-  thought: { id: true, content: true },
+  thought: { id: true, content: true, sensitivity: true },
   project: { id: true, name: true, description: true },
   goal: { id: true, horizon: true, title: true, description: true },
   area: { id: true, name: true, description: true },

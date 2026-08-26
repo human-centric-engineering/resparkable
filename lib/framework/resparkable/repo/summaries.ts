@@ -227,7 +227,9 @@ export async function keywordSummaries(
   entityType: EmbeddedType,
   query: string,
   limit: number,
-  includeArchived: ArchiveVisibility = false
+  includeArchived: ArchiveVisibility = false,
+  /** Passed straight through to {@link findSummaries} — a no-op off `thought`. */
+  excludeSensitive = false
 ): Promise<EntitySummary[]> {
   const scoped = liveOwnerWhere(scope, includeArchived);
   const like = { contains: query, mode: 'insensitive' } as const;
@@ -244,7 +246,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'project': {
@@ -257,7 +260,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'goal': {
@@ -270,7 +274,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'area': {
@@ -283,7 +288,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'entity': {
@@ -296,7 +302,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'document': {
@@ -309,7 +316,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
   }

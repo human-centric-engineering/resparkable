@@ -12,7 +12,11 @@
  * only reason the weekly review is trustable without re-deriving it by hand.
  */
 
-import { ResparkableCapability, brainSources } from '@/lib/framework/resparkable/capabilities/base';
+import {
+  ResparkableCapability,
+  brainSources,
+  isUnattendedRun,
+} from '@/lib/framework/resparkable/capabilities/base';
 import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
@@ -22,6 +26,7 @@ import { searchResparkable } from '@/lib/framework/resparkable/search/hybrid-sea
 import { agentSearchSchema, type AgentSearchInput } from '@/lib/framework/resparkable/validations';
 import type { ProvenanceRedaction } from '@/lib/orchestration/capabilities/base-capability';
 import type {
+  CapabilityContext,
   CapabilityFunctionDefinition,
   CapabilityResult,
 } from '@/lib/orchestration/capabilities/types';
@@ -89,7 +94,8 @@ export class ResparkableSearchCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentSearchInput,
-    scope: OwnerScope
+    scope: OwnerScope,
+    context: CapabilityContext
   ): Promise<CapabilityResult<SearchData>> {
     const { hits } = await searchResparkable({
       scope,
@@ -97,6 +103,12 @@ export class ResparkableSearchCapability extends ResparkableCapability<
       ...(args.entityTypes ? { entityTypes: args.entityTypes } : {}),
       limit: args.limit,
       includeArchived: args.includeArchived,
+      // Phase 9e. Not a model-supplied argument, and it must never become one:
+      // `agentSearchSchema` is `.strict()`, so an LLM asking to see the
+      // sensitive notes is a validation error rather than a negotiation. The
+      // owner's own turn — chat, the HTTP route, MCP with their key — passes
+      // `false` and sees everything they wrote.
+      excludeSensitive: isUnattendedRun(context),
     });
 
     const rows: SearchResultRow[] = hits.map((hit) => ({

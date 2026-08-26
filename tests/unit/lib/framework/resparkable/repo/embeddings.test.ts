@@ -67,6 +67,7 @@ function embeddingRow(overrides: Partial<Record<string, unknown>> = {}) {
     entityId: 't_1',
     chunkIndex: 0,
     content: 'hello',
+    sensitivity: 'private',
     contentHash: 'hash_1',
     embedding: [0.1, 0.2],
     embeddingModel: 'text-embedding-3-small',

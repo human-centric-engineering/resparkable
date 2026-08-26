@@ -18,6 +18,20 @@ release process.
 
 ### Added
 
+- **`ResparkableEmbedding.sensitivity` — the vector layer can finally express
+  the private/shareable distinction.** Denormalised from the source row at
+  index time and kept true by `updateThought`, which writes it onto the
+  entity's chunks in the same transaction as the reclassification. It is
+  deliberately not part of `contentHash`, so marking a note sensitive does not
+  re-embed it (and a bulk reclassification does not re-embed the corpus).
+  `searchResparkable` gains `excludeSensitive`, applied inside the vector
+  candidate CTE rather than after ranking; `hybridSearchRows` and
+  `keywordSummaries` take the flag through, and `EmbeddingWriteRow` gains a
+  required `sensitivity` field. `resparkable_search` sets it from the new
+  `isUnattendedRun(context)` helper — the owner's own turn sees everything they
+  wrote, an unattended workflow run does not. Closes Release 1.5 phase 9e; see
+  [`plan.md`](./.context/framework/resparkable/plan.md) §15.
+
 - **One durable job queue owns every piece of per-user background work.**
   `ResparkableJob` (`framework_resparkable_job`) holds one row per owner per
   kind — `triage`, `briefing`, `weekly_review`, `horizon_check`, `sweep`,

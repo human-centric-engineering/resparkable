@@ -269,16 +269,33 @@ async function embedAndWrite(
 ): Promise<{ entities: number; chunks: number }> {
   // Flatten to chunks first, keeping each chunk's owning entity, so one batched
   // call covers everything and the results map back by index.
-  const pending: Array<{ entityId: string; hash: string; chunkIndex: number; content: string }> =
-    [];
+  const pending: Array<{
+    entityId: string;
+    hash: string;
+    chunkIndex: number;
+    content: string;
+    sensitivity: string;
+  }> = [];
 
   for (const row of changed) {
     // `fileName` picks the splitter, not the content — see `documents/chunking.ts`.
     // It is deliberately absent from the canonical fields, so it never affects the
     // hash: how a document was split is not part of what it means.
     const pieces = await splitForEmbedding(row.text, row.candidate.fileName);
+    // Denormalised onto every chunk of the entity, not just chunk 0: the vector
+    // pass ranks chunks, so a filter that only held on the first one would let
+    // paragraph two of a sensitive note through (phase 9e). `'private'` is the
+    // right fallback for the five types with no such column — it is the schema
+    // default and the value the whole tier treats as "ordinary".
+    const sensitivity = row.candidate.sensitivity ?? 'private';
     pieces.forEach((content, chunkIndex) => {
-      pending.push({ entityId: row.candidate.id, hash: row.hash, chunkIndex, content });
+      pending.push({
+        entityId: row.candidate.id,
+        hash: row.hash,
+        chunkIndex,
+        content,
+        sensitivity,
+      });
     });
   }
 
@@ -301,6 +318,7 @@ async function embedAndWrite(
     entityId: chunk.entityId,
     chunkIndex: chunk.chunkIndex,
     content: chunk.content,
+    sensitivity: chunk.sensitivity,
     contentHash: chunk.hash,
     embedding: embeddings[index],
     embeddingModel: provenance.model,
