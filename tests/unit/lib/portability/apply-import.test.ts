@@ -345,13 +345,10 @@ describe('applyImportPlan', () => {
       // `connectionStrengthFloor` is tuned against whichever embedding model
       // produced this brain's vectors, so it is re-learned rather than carried.
       await planAndApply({
-        ResparkableSpace: [{ ...SPACE, connectionStrengthFloor: 0.42, lastSweptAt: '2026-01-01' }],
+        ResparkableSpace: [{ ...SPACE, connectionStrengthFloor: 0.42 }],
       });
 
-      expect(created('resparkableSpace')[0]).toMatchObject({
-        connectionStrengthFloor: null,
-        lastSweptAt: null,
-      });
+      expect(created('resparkableSpace')[0]).toMatchObject({ connectionStrengthFloor: null });
     });
 
     it('never creates a person, even when nothing matched', async () => {

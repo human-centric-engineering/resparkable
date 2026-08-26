@@ -241,13 +241,21 @@ Release 2, because sharing adds a second background consumer to a layer that
 cannot serve the first. S4, S5 and S7 are real work but they degrade
 predictably and can follow.
 
-| #   | Decision                              | Urgency                                                                   |
-| --- | ------------------------------------- | ------------------------------------------------------------------------- |
-| S8  | Time-window the billing pass          | **Now.** Already leaking.                                                 |
-| S1  | `halfvec` instead of `vector`         | **Before the corpus grows.** DDL.                                         |
-| S2  | 1024 dimensions instead of 1536       | **Deferred.** Needs Resparkable to own its own embedding model row first. |
-| S3  | Drop the unused HNSW and GIN indexes  | With S1/S2, same migration                                                |
-| S6  | Queue and workers for background work | **Before Release 2**                                                      |
-| S7  | Demand-driven scheduled LLM work      | Before paid launch                                                        |
-| S5  | Hash-partition the embedding table    | Before ~10M rows                                                          |
-| S4  | Per-user inner-CTE search tier        | Before the first 10k-chunk user                                           |
+| #   | Decision                              | Status                                                                                         |
+| --- | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| S8  | Stop the billing pass losing rows     | **DONE** 2026-08-26, with S6. Anti-join against the ledger, not a time window — see below.     |
+| S1  | `halfvec` instead of `vector`         | **DONE** 2026-08-25. Migration `20260825120000_resparkable_halfvec_and_index_prune`.           |
+| S2  | 1024 dimensions instead of 1536       | **Deferred.** Needs Resparkable to own its own embedding model row first.                      |
+| S3  | Drop the unused HNSW and GIN indexes  | **DONE** 2026-08-25, same migration. Probes B3 and B7 now assert they stay dropped.            |
+| S6  | Queue and workers for background work | **DONE** 2026-08-26. Phase 56 — [`phase-56-plan.md`](./phase-56-plan.md).                      |
+| S7  | Demand-driven scheduled LLM work      | **DONE** 2026-08-26, inside S6. Pre-flight gate, so an idle brain costs zero rather than four. |
+| S5  | Hash-partition the embedding table    | Before ~10M rows                                                                               |
+| S4  | Per-user inner-CTE search tier        | Before the first 10k-chunk user                                                                |
+
+**S8 shipped as a different mechanism than this document proposed**, and the
+difference is worth recording. "Time-window the billing pass" would have widened
+the window; widening a window does not remove the failure, it moves it. The pass
+now selects terminal executions with **no ledger row**, oldest-first, so an
+execution leaves the candidate set the moment it is billed and the batch size is
+a per-pass bound rather than a horizon. There is no window left to be wrong
+about. `phase-56-plan.md`'s status box has the full reasoning.

@@ -19,6 +19,7 @@ import {
 } from '@/lib/framework/resparkable/repo/owner-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
+import { Prisma } from '@prisma/client';
 import type { ResparkableCreditAccount, ResparkableCreditLedgerEntry } from '@prisma/client';
 
 /** The ledger's `kind` discriminator; see the schema doc comment. */
@@ -118,34 +119,78 @@ export interface BillableWorkflowExecution {
 }
 
 /**
- * Recently terminal, resparkable-slug workflow executions: candidates for
- * the Site B billing pass.
+ * Terminal, resparkable-slug workflow executions that have **not yet been
+ * billed** — the candidates for the Site B billing pass.
  *
- * Ordered newest-first rather than by the oldest-swept-first cursor the rest
- * of this tier uses (`listSpacesDueSweep`): there is no cursor column to
- * stamp on a platform-owned table, and newest-first is self-correcting
- * without one. A fresh completion is always in the top `limit` rows, so it is
- * billed within one tick regardless of how much already-billed history
- * exists; a repeat `P2002` on an already-billed row is cheap and ages out of
- * the window on its own as newer completions push it down. Oldest-first would
- * risk exactly the stuck-cursor bug this file's own doc comments warn about:
- * the same `limit` oldest rows re-selected forever once billed history
- * exceeds it.
+ * ## The cursor this replaces, and why it lost rows
+ *
+ * This used to be `orderBy: { updatedAt: 'desc' }, take: 100`, on the argument
+ * that newest-first is self-correcting without a cursor column: a fresh
+ * completion is always in the top 100 rows, so it is billed within one tick
+ * however much billed history exists. That reasoning holds for one completion
+ * at a time and fails in exactly the case that matters. If more than `limit`
+ * executions reach a terminal state between two passes — a hundred and fifty
+ * nightly triages finishing inside one window, which is a hundred and fifty
+ * users, not a hundred and fifty thousand — the oldest of them fall off the
+ * bottom of the window and are **never billed at all**. Nothing errors. The
+ * platform simply eats the cost of the runs it lost, silently, and the effect
+ * grows with the install.
+ *
+ * Anti-joining against the ledger fixes it at the root: an execution leaves the
+ * candidate set the moment it is billed, permanently, so the set only ever
+ * shrinks. That is what makes oldest-first safe here where it would not be
+ * against a plain `take` — the stuck-cursor bug this file's doc comments warn
+ * about needs a *stable* set of un-consumed rows at the head of the ordering,
+ * and there is no longer one. Oldest-first is then the right way round, because
+ * a run that has waited longest to be billed should be billed first.
+ *
+ * The `limit` survives as a per-pass bound rather than as a window: rows it does
+ * not reach stay candidates and are picked up on the next drain.
+ *
+ * `totalCostUsd > 0` is part of the same argument rather than an optimisation.
+ * A zero-cost run can never produce a ledger entry — `recordAgentSpend` returns
+ * `null` below its own threshold — so leaving those rows in the candidate set
+ * would mean every pass re-fetched the same permanently-unbillable executions
+ * and the set would stop draining, which is the very failure the anti-join is
+ * here to remove.
+ *
+ * `ResparkableCreditLedgerEntry`'s `@@unique([kind, relatedWorkflowExecutionId])`
+ * is what the `NOT EXISTS` reads, and it stays the last line of defence — two
+ * workers racing the same execution still collide there rather than
+ * double-charging.
  */
-export async function findRecentTerminalResparkableExecutions(
+export async function findUnbilledTerminalResparkableExecutions(
   workflowSlugs: string[],
   terminalStatuses: string[],
   limit: number
 ): Promise<BillableWorkflowExecution[]> {
-  return prisma.aiWorkflowExecution.findMany({
-    where: {
-      status: { in: terminalStatuses },
-      workflow: { slug: { in: workflowSlugs } },
-    },
-    select: { id: true, userId: true, scope: true, totalCostUsd: true },
-    orderBy: { updatedAt: 'desc' },
-    take: limit,
-  });
+  if (workflowSlugs.length === 0 || terminalStatuses.length === 0) return [];
+
+  // Raw SQL, and not by preference. `relatedWorkflowExecutionId` is a **soft**
+  // reference with no FK — the tier-boundary pattern this schema uses
+  // everywhere it points at a platform-owned row — so there is no Prisma
+  // relation to express `NOT EXISTS` through. Two round trips would work and
+  // would reintroduce the window: whatever the first query fetches is the set
+  // the second can filter, so anything past `limit` is still lost.
+  //
+  // The anti-join goes straight down `@@unique([kind, relatedWorkflowExecutionId])`
+  // — `kind` is the leading column and it is a constant here — so it costs one
+  // index probe per candidate.
+  return prisma.$queryRaw<BillableWorkflowExecution[]>`
+    SELECT e."id", e."userId", e."scope", e."totalCostUsd"
+    FROM "ai_workflow_execution" e
+    JOIN "ai_workflow" w ON w."id" = e."workflowId"
+    WHERE e."status" IN (${Prisma.join(terminalStatuses)})
+      AND w."slug" IN (${Prisma.join(workflowSlugs)})
+      AND e."totalCostUsd" > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM "framework_resparkable_credit_ledger_entry" l
+        WHERE l."kind" = 'agent_spend'
+          AND l."relatedWorkflowExecutionId" = e."id"
+      )
+    ORDER BY e."updatedAt" ASC
+    LIMIT ${limit}
+  `;
 }
 
 // ─── Admin cross-user functions ────────────────────────────────────────────

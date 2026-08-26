@@ -883,7 +883,6 @@ describe('buildImportPlan', () => {
       const forced = modelPlan(plan, 'ResparkableSpace').notWritten.map((entry) => entry.column);
 
       expect(forced).toContain('connectionStrengthFloor');
-      expect(forced).toContain('lastSweptAt');
     });
 
     it('adds up the totals across every table', async () => {

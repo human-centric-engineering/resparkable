@@ -42,9 +42,12 @@ Namespaced _inside_ the tier, never at its root — so a project already running
 ## Status
 
 **Release 1 complete — all ten phases (0–9, plus 7b) landed.** The tier is wired, the data model exists, every core type has an owner-scoped CRUD API, tasks are ranked by a deterministic scorer, the brain is searchable by meaning, there is a UI (seventeen surfaces at `/resparkable`, including a kanban board), and **you can now talk to it**: nineteen capabilities, seven agents, the shared profile they inherit, a per-turn context block that means the agent already knows your goals, and a chat page at `/resparkable/chat`. Phase 7 added the background: four workflows on per-user schedules, the
-connection sweep as an app job, the morning briefing, and the tier's first
-erasure hook. Phase 8 added the lifecycle: retention on the same rotation, the
-stale digest, and the archive surface. Phase 7b took it **outside the app**:
+connection sweep as an app job and the morning briefing. Phase 8 added the
+lifecycle: retention on the same rotation, the stale digest, and the archive
+surface. **Phase 56 replaced the trigger under all of it** with one durable job
+queue — seven kinds per brain, claimed with `SKIP LOCKED`, storing a `dueAt`
+rather than a cron string, and skipping any run that could not produce anything
+(see [`phase-56-plan.md`](./phase-56-plan.md)). Phase 7b took it **outside the app**:
 eight tools and three prompts over MCP (zero code — see [`mcp.md`](./mcp.md)), an
 iOS Shortcut recipe, and a thirty-case triage benchmark with a deterministic
 grader ([`evaluations.md`](./evaluations.md)). **Phase 9 closed it out**: a PWA
@@ -77,10 +80,11 @@ path still ships on the wider `chat` scope, unchanged since phase 7b.
 | Admin nav                               | `lib/app/admin-nav.ts` → `registerResparkableAdminNav()`                                                                                                                                                                                                                                                                                                                       |
 | Drift probes                            | `lib/app/db-drift.ts` → `registerResparkableDriftProbes()` (six, B1 + B3–B7)                                                                                                                                                                                                                                                                                                   |
 | Protected nav                           | `lib/app/protected-nav.ts` spreads `RESPARKABLE_NAV_ITEM` — was a core-file edit until sunrise#473 landed 2026-07-31                                                                                                                                                                                                                                                           |
-| App jobs                                | `lib/app/jobs.ts` → `registerResparkableJobs()` — one rotation, three passes: connection sweep and schedule pass (7), retention (8)                                                                                                                                                                                                                                            |
-| Erasure hook                            | `initResparkable()` → `registerResparkableErasure()` — the tier's first, because phase 7 is the first time it writes to a table outside the cascade                                                                                                                                                                                                                            |
-| Workflows                               | `prisma/seeds/framework-resparkable/005-workflows.ts` — five: four on per-user schedules from `ensureResparkableSchedules()`, plus `resparkable-capture-intake` (phase 9), fired by the Postmark inbound trigger (`008-capture-intake-trigger.ts`) instead                                                                                                                     |
-| Schema                                  | 19 models in `prisma/schema/framework-resparkable.prisma`                                                                                                                                                                                                                                                                                                                      |
+| App jobs                                | `lib/app/jobs.ts` → `registerResparkableJobs()` — a 60s tick that bills completed runs and drains the queue (56). `npm run framework:resparkable:worker` is the same drain in a loop, for scaled installs                                                                                                                                                                      |
+| Job queue                               | `framework_resparkable_job` — seven kinds per brain: `triage`, `briefing`, `weekly_review`, `horizon_check`, `sweep`, `retention`, `reindex`. `queue/kinds.ts` holds the cadences                                                                                                                                                                                              |
+| Erasure                                 | The `ResparkableSpace` cascade, and nothing else. The tier had an erasure hook from phase 7 until phase 56 removed the `AiWorkflowSchedule` rows it existed for                                                                                                                                                                                                                |
+| Workflows                               | `prisma/seeds/framework-resparkable/005-workflows.ts` — five: four fired by the job queue, plus `resparkable-capture-intake` (phase 9), fired by the Postmark inbound trigger (`008-capture-intake-trigger.ts`) instead                                                                                                                                                        |
+| Schema                                  | 23 models in `prisma/schema/framework-resparkable.prisma`                                                                                                                                                                                                                                                                                                                      |
 | Migrations                              | `add_second_brain`, `resparkable_space_cascade`, `resparkable_document_originals`, `resparkable_sweep_cursor`, `resparkable_document_hash_unique`, `resparkable_connection_floor`, `resparkable_space_sweep_cursor` — all hand-edited, never regenerate                                                                                                                        |
 | Repo layer                              | `lib/framework/resparkable/repo/*` — `OwnerScope`, 26 modules (`retention` and `stale` in phase 8)                                                                                                                                                                                                                                                                             |
 | Capabilities                            | `lib/app/capabilities.ts` → `registerResparkableCapabilities()` (twenty-three; fourteen in 6b, three in 7, the stale digest in 8, capture-for-token in 9, capture-context and get-context-digest in Release 8 phase 39, the time-block upsert for the Plan page's chat/form create)                                                                                            |
@@ -244,9 +248,9 @@ every mutation in the tier records an event. `reprioritiseTasks` is the one
 exception and invalidates directly: it records no event, and it is precisely what
 reorders the block's task list.
 
-**Phase 7 has landed** — four workflows on per-user schedules, the connection
-sweep as an app job, the morning briefing and `workStyle`, all created by
-`ensureResparkableSchedules()`.
+**Phase 7 has landed** — four workflows, the connection sweep, the morning
+briefing and `workStyle`. Their trigger moved to the job queue in phase 56; the
+workflows themselves are unchanged.
 
 **Phase 8 has landed** — the lifecycle. One line decides its whole shape:
 **nothing a human wrote is ever deleted by a clock.** Notes, tasks, projects,

@@ -106,6 +106,7 @@ const HANDLED_OUTSIDE_MANIFEST = new Map([
       'ResparkableEvent',
       'ResparkableCreditAccount',
       'ResparkableCreditLedgerEntry',
+      'ResparkableJob',
     ] as const
   ).map(
     (model) =>

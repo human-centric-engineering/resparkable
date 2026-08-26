@@ -96,20 +96,6 @@ model ResparkableSpace {
   /// invisible rather than adjustable.
   connectionStrengthFloor Float?
 
-  /// When the connection sweep last examined this brain — the **across-users**
-  /// cursor for `lib/app/jobs.ts` (phase 7).
-  ///
-  /// `registerAppJob` fires one process-wide callback while `sweepConnections`
-  /// takes an `OwnerScope`, so the job has to choose whose brain to sweep.
-  /// "The first N spaces" would re-sweep the same N for ever — which is exactly
-  /// the bug the sweep's own per-type `sweptAt` cursor exists to prevent,
-  /// reappearing one level up and just as silently. Ordering by this column
-  /// (nulls first) and stamping as it goes makes the rotation cover everyone.
-  ///
-  /// Nullable and unset means "never swept", which sorts first: a brand-new
-  /// brain is picked up on the next tick rather than after everyone else.
-  lastSweptAt DateTime?
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -140,10 +126,16 @@ model ResparkableSpace {
   creditAccount       ResparkableCreditAccount?
   creditLedgerEntries ResparkableCreditLedgerEntry[]
 
-  /// The sweep job's rotation order. Not `[userId, …]` like every other index
-  /// here, because this is the one query in the tier that is deliberately
-  /// **not** owner-scoped: it picks which owner to work on next.
-  @@index([lastSweptAt])
+  /// Phase 56: the job queue. One row per kind per owner; see `ResparkableJob`.
+  ///
+  /// `lastSweptAt` and its index used to sit here — the across-users rotation
+  /// cursor the connection sweep paged through. It is gone, because the queue
+  /// replaces it: a `dueAt` per kind says when each piece of work is next
+  /// owed, which is a strictly better answer than "who was worked on longest
+  /// ago" and does not force every kind onto one shared rotation. Keeping both
+  /// would have left two answers to "when was this brain last worked on".
+  jobs ResparkableJob[]
+
   @@map("framework_resparkable_space")
 }
 
@@ -1050,4 +1042,99 @@ model ResparkableBillingSettings {
   updatedAt                 DateTime @updatedAt
 
   @@map("framework_resparkable_billing_settings")
+}
+
+/// The one queue. Every piece of per-user background work is a row here.
+///
+/// **One row per owner per kind, not one per occurrence.** `dueAt` moves
+/// forward on completion, so the table is bounded at (brains × kinds) and a
+/// backlog makes rows LATE, never numerous. At 100k users × 7 kinds that is
+/// 700k rows, which is small, indexed, and does not grow when the workers fall
+/// behind. That invariant is the one that distinguishes this design from what
+/// it replaces: a fixed-batch drain under backlog grows a queue, this one grows
+/// a *latency*. The first is invisible until it is fatal, the second shows up
+/// on a graph.
+///
+/// Contrast `AiWorkflowSchedule`, which this replaces for Resparkable's own
+/// work. That table stores a cron string per row and therefore needs a
+/// correction pass after every DST change — Resparkable paid for one, plus the
+/// row-per-user-per-workflow creation and deletion around it. `dueAt` is
+/// recomputed from the owner's timezone every time the work completes, so it is
+/// always calculated against the offset in force, and there is nothing to
+/// correct. Deleting that correction pass is the whole reason this column is a
+/// timestamp rather than an expression.
+///
+/// See `.context/framework/resparkable/phase-56-plan.md`.
+model ResparkableJob {
+  id String @id @default(cuid())
+
+  /// **Keyed on the OWNER, not the space.** Today those are the same thing, so
+  /// this costs nothing. Under `plan.md` §24 (Workspaces) they diverge, and W2
+  /// requires the row count to stay invariant as a person acquires workspaces:
+  /// one `triage` job per person whose run fans out over their live spaces, not
+  /// one per space. Keying on the space would put the largest queue in the
+  /// system on the wrong side of that requirement and force a second migration.
+  ///
+  /// Renamed by §23's phase 45 with the other satellites: it relates to the
+  /// space today because a space is an owner; afterwards it relates to
+  /// `ownerUserId`.
+  userId String
+
+  /// triage | briefing | weekly_review | horizon_check | sweep | retention | reindex
+  ///
+  /// The vocabulary lives in `lib/framework/resparkable/queue/kinds.ts`, which
+  /// also carries each kind's cadence and whether it is demand-gated. A string
+  /// rather than an enum for the reason every other `kind` column in this
+  /// schema is one: adding a kind should be a code change and a backfill, not a
+  /// type migration that has to be deployed before the code that uses it.
+  kind String @db.VarChar(24)
+
+  /// The next moment this work is due. The queue is `dueAt <= now()`.
+  dueAt DateTime
+
+  /// Lease, not a boolean flag. A worker that dies mid-job must not pin the row
+  /// for ever, so reclaim is `leaseExpiresAt < now()` rather than a separate
+  /// reaper deciding what "stuck" means. `leasedBy` is checked on settle, so a
+  /// worker whose lease expired mid-run cannot clobber the row that has since
+  /// been re-claimed by someone else.
+  leasedBy       String?   @db.VarChar(64)
+  leaseExpiresAt DateTime?
+
+  /// Consecutive failures. Feeds exponential backoff on `dueAt` and, past the
+  /// cap, marks the row dormant rather than retrying for ever at cost. Reset to
+  /// zero by any successful run.
+  attempts  Int       @default(0)
+  lastRunAt DateTime?
+  lastError String?   @db.Text
+
+  /// Demand gating (`scale.md` S7 / `plan.md` §24 W3). Set when a run was
+  /// skipped because nothing had changed in this brain since `lastRunAt`;
+  /// cleared by the next write. A dormant row is still claimed, just far less
+  /// often — never deleted, because a deleted row is one that never comes back
+  /// when the person returns.
+  ///
+  /// It doubles as the backoff clock: the wait is however long the row has
+  /// already been dormant, floored at the kind's normal cadence and capped at a
+  /// week. So a brain quiet for three hours is re-checked in three hours and
+  /// one quiet for a month is re-checked weekly, with no counter column.
+  dormantSince DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// D1: the cascade path. Erasing a user removes the space row, which removes
+  /// every row here. Verified by scripts/framework/resparkable/smoke-isolation.ts.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  /// Idempotent enqueue: "make sure this owner has a triage job" is an
+  /// `ON CONFLICT DO NOTHING`. Owner-keyed, so it stays one row per kind
+  /// however many workspaces they hold (§24 W2).
+  @@unique([userId, kind])
+  /// The claim query, and the only index it needs. Ordinary and composite
+  /// rather than partial: the claim's predicate is `now()`-relative, so there
+  /// is no time-independent subset to index on, and an ordinary index is one
+  /// Prisma can model — which means `prisma migrate dev` recreates it rather
+  /// than silently dropping it, and it needs no drift probe.
+  @@index([dueAt, leaseExpiresAt])
+  @@map("framework_resparkable_job")
 }

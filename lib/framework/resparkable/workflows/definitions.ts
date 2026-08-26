@@ -3,11 +3,19 @@
  *
  * ## What runs where, and why
  *
- * Four workflows on per-user cron rows (`schedules/ensure.ts`), plus the
- * connection sweep as an app job (`jobs.ts`). The split is not arbitrary: these
- * four are calendar events — "9am on the 2nd", "Friday at 16:00" — and a cron
- * expression says that exactly. The sweep is a continuous pass with a rotation
- * cursor, which a cron field expresses badly.
+ * Four workflows, each fired by its own kind of row on the job queue
+ * (`queue/kinds.ts`), plus `resparkable-capture-intake` which is fired by the
+ * Postmark inbound trigger instead.
+ *
+ * They were on per-user `AiWorkflowSchedule` cron rows until phase 56, and the
+ * argument for that was sound as far as it went: these four are calendar
+ * events — "9am on the 2nd", "Friday at 16:00" — and a cron expression says
+ * that exactly. What it says badly is *whose* 9am, because the schedule row has
+ * no timezone column, so the offset had to be folded into the expression and
+ * corrected twice a year. The queue stores the next moment instead. **Nothing
+ * in this file changed**: the workflows, their agents and their steps are
+ * identical, and a job queues the same `PENDING` execution the scheduler used
+ * to write.
  *
  * ## Every step is a tool call or an agent call
  *
@@ -39,7 +47,7 @@
 
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabilities/catalogue';
-import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/schedules/ensure';
+import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import type { WorkflowDefinition } from '@/types/orchestration';
 
 const C = RESPARKABLE_CAPABILITY_SLUGS;

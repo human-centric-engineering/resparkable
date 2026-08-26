@@ -145,7 +145,10 @@ describe('exclusions', () => {
   it('excludes the derived-vector table and nothing else', () => {
     // Kept tight on purpose: the moment "excluded" becomes a habit, the export
     // starts shrinking without anyone deciding that it should.
-    expect([...excluded]).toEqual(['ResparkableEmbedding']);
+    // Both entries are derived state — vectors computed from exported text,
+    // and worker scheduling computed from an exported timezone and an exported
+    // event log. Neither is a table somebody chose not to think about.
+    expect([...excluded].sort()).toEqual(['ResparkableEmbedding', 'ResparkableJob']);
   });
 });
 

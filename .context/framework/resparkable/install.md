@@ -19,9 +19,10 @@ every upgrade.
 > ingestion), the UI (fourteen surfaces including the kanban board and chat),
 > the agent layer (eighteen capabilities, six agents, five seeds, the per-turn
 > context block and the app-owned chat route), the background (four scheduled
-> workflows, the connection sweep as an app job, the morning briefing and the
-> erasure hook) and the lifecycle (retention on the same rotation, the stale
-> digest, the archive surface) exist — §§1–8 are real and installable today.
+> workflows, the connection sweep, the morning briefing — all seven kinds of
+> per-user work on one durable queue since phase 56) and the lifecycle
+> (retention, the stale digest, the archive surface) exist — §§1–8 are real and
+> installable today.
 > Steps still marked _(phase N)_ are listed so the checklist grows in place
 > rather than being reconstructed later. This file is updated by every phase.
 >
@@ -330,11 +331,9 @@ The contributor itself reads `request.userId` and **ignores the `id` argument**.
 render one person's goals into another person's prompt and then serve the cached
 answer. If you write your own contributor for a different type, copy that rule.
 
-### 2.10 Recurring jobs — `lib/app/jobs.ts` _(phase 7)_
+### 2.10 Recurring jobs — `lib/app/jobs.ts` _(phase 7, rewritten in phase 56)_
 
-The per-brain rotation registers here, via the seam Resparkable landed for [#469] on
-2026-07-31. One import, one call, three passes: the connection sweep and the
-schedule pass (phase 7), and retention (phase 8, as promised here).
+One import, one call, via the seam Resparkable landed for [#469] on 2026-07-31.
 
 ```ts
 import { registerResparkableJobs } from '@/lib/framework/resparkable/jobs';
@@ -344,63 +343,110 @@ export function initAppJobs(): void {
 }
 ```
 
-**Why these are jobs and the other four are schedules.** Resparkable's nightly
-triage, morning briefing, weekly review and horizon check are calendar events —
-"9am on the 2nd", "Friday at 16:00" — and live on per-user `AiWorkflowSchedule`
-rows created by `ensureResparkableSchedules()`. The connection sweep is a continuous
-per-user pass with its own rotation cursor, which a cron field expresses badly.
+**What that registers changed completely in phase 56, and the wiring did not.**
+It used to be a rotation: one callback paging through spaces oldest-swept-first,
+sweeping four brains every six hours and carrying a schedule-correction pass and
+a retention pass along with them. It is now a 60-second tick that bills
+completed runs and drains a few jobs off `framework_resparkable_job`. If you
+already have the two lines above, you need no change.
 
-Retention is the same shape, and joined the rotation in phase 8 against a plan
-that had put it in the nightly workflow. Nothing about it is a moment: no user
-cares whether a 400-day-old event is deleted at 02:00 or 14:00, only that it
-eventually is. `plan.md` §11 has been corrected to match.
+#### What is on the queue
 
-**What retention will do to your data, stated plainly**, because this is the pass
-that removes things. Notes, tasks, projects, goals and reviews **archive** — they
-are hidden from every list, search and prompt, stay readable, and restore with one
-click, for ever. Nothing a user wrote is ever deleted by a clock. Only derived and
-log data is deleted: connection suggestions nobody looked at, the activity log
-past its window, past planning blocks, and board cards pointing at archived tasks.
-Windows are per-user, default to the §11 table, and are editable at
-`/resparkable/settings` — seven of the eight are, at least. `staleEntityDays` is in the
-policy but read by nothing and not rendered on the card: there is no entity
-retention rule, because §11 says a person or company is never auto-archived, and a
-control that changed nothing while its own row said "then deleted" was worse than
-its absence. Entities are raised by the stale digest instead, whose windows are
-constants. Every rule caps at 500 rows per brain per pass — including the
-closed-project cascade, which archives its batch of tasks and leaves the projects
-for the next rotation rather than stamping them over tasks it has not reached — so
-a first run over an old corpus drains across several rotations rather than in one
-tick.
+Seven kinds per brain, one row each. Four fire the background workflows the tier
+has always had; three are the maintenance passes:
 
-**The sweep's rotation also carries the schedule pass**, and that is not
-incidental. `ensureResparkableSchedules()` is idempotent and self-correcting, but
-`ensureResparkableSpace` only calls it when a space is _created_ — so without a
-second call site it never runs twice for anybody, and both corrections it exists
-to make (a cron that no longer matches the user's UTC offset after a DST change;
-an `inputTemplate` written by an older version, which fails its workflow on every
-run) would be unreachable. Running it once per brain per rotation is what lets a
-fix to schedule-writing reach rows that already exist — in your install, not just
-the one where the bug was found. If you register these jobs, you get that; if you
-skip `lib/app/jobs.ts` entirely, be aware that you are also skipping it.
+| Kind                                                       | When                                        | Costs credits |
+| ---------------------------------------------------------- | ------------------------------------------- | ------------- |
+| `triage`, `briefing`, `weekly_review`, `horizon_check`     | local 03:15 / 04:30 / Fri 16:00 / 2nd 09:00 | yes           |
+| `sweep` — connection suggestions from stored vectors       | every 6 hours                               | no            |
+| `retention` — archive and prune per the windows below      | local 02:00                                 | no            |
+| `reindex` — drain `indexedHash` so new content is findable | every 15 minutes                            | no            |
+
+The four workflows still run as workflows. The job writes a `PENDING`
+`AiWorkflowExecution` and `processPendingExecutions` runs it exactly as before —
+**phase 56 replaced the trigger, not the executor.** There are no
+`AiWorkflowSchedule` rows any more; the migration deleted them, and nothing
+creates more.
+
+#### Demand gating — what an idle brain costs
+
+Nothing. Before a gated kind runs, it asks one indexed question: has anything
+happened in this brain since the last run? If not, the run is **skipped
+entirely** — no model call, no debit — the row is marked dormant and its next
+due time is pushed out on a backoff that floors at about a week. Any write to
+the brain clears the flag and pulls the due times back in, so someone returning
+after three months costs one cycle rather than thirteen.
+
+This is a billing rule rather than a budget lever, and the difference decides
+where it applies. Scheduled runs are debited against the owner's credit balance,
+so a nightly triage over an inbox with nothing new in it reads the same notes,
+calls the same model, writes the same "nothing to process" summary and charges
+for it. That is not a cheap run, it is a worthless one. **Retention is the
+deliberate exception**: it is driven by the calendar rather than by activity, so
+gating it would stop it working for exactly the dormant brains whose data most
+needs ageing out — and it costs nothing but indexed deletes anyway.
+
+#### When to run a worker, and how many
+
+The tick drains a few jobs a minute, which is what a single-container install
+lives on and is correct up to a few thousand brains. Above that, run the
+standalone loop:
+
+```bash
+npm run framework:resparkable:worker
+```
+
+It is the same `drainResparkableJobs` function with a larger budget, looping
+until the queue is empty. Run one container per few thousand active brains and
+set **`RESPARKABLE_WORKER_MODE=external` on the web containers** so the tick
+stops draining and leaves the queue to the workers.
+
+Both settings are correct; only one is faster. The lease that makes concurrent
+draining safe lives in the database — the claim is
+`SELECT … FOR UPDATE SKIP LOCKED`, so N workers take N disjoint batches — which
+means leaving the variable unset on a scaled install costs contention, never
+double runs. Set it on the workers by mistake and nothing breaks either; they do
+not read it.
+
+**What to watch.** Queue _depth_, not queue length. One row per kind per brain is
+an invariant, so the table does not grow when the workers fall behind — a
+backlog shows up as `dueAt` ageing, which is a rising line rather than a cliff.
+The worker logs `stillDue` after every pass for exactly this.
+
+#### Retention — what it will do to your data, stated plainly
+
+Because this is the pass that removes things. Notes, tasks, projects, goals and
+reviews **archive** — hidden from every list, search and prompt, still readable,
+and restorable with one click, for ever. Nothing a user wrote is ever deleted by
+a clock. Only derived and log data is deleted: connection suggestions nobody
+looked at, the activity log past its window, past planning blocks, and board
+cards pointing at archived tasks. Windows are per-user, default to the §11 table,
+and are editable at `/resparkable/settings` — seven of the eight are, at least.
+`staleEntityDays` is in the policy but read by nothing and not rendered on the
+card: there is no entity retention rule, because §11 says a person or company is
+never auto-archived, and a control that changed nothing while its own row said
+"then deleted" was worse than its absence. Entities are raised by the stale
+digest instead, whose windows are constants. Every rule caps at 500 rows per
+brain per pass — including the closed-project cascade, which archives its batch
+of tasks and leaves the projects for the next pass rather than stamping them over
+tasks it has not reached — so a first run over an old corpus drains across
+several days rather than in one tick.
+
+#### The seam's semantics, which still matter
 
 Note it is `registerAppJob({ name, intervalMs, run })` and not the
 `registerAppMaintenanceTask` name `plan.md` originally proposed — the plan named
 a seam that did not exist yet, and the one that shipped is shaped slightly
 differently.
 
-**Read the semantics before relying on it.** `intervalMs` is a _minimum gap_, not
-a schedule, and last-run times live in process memory — so a multi-instance
-deployment runs each job roughly once per instance per interval, and a restart
-re-arms everything. Write Resparkable's sweeps idempotent (they already claim rows
-with `SKIP LOCKED` and stamp `nextSyncAt` before working, which is what makes
-that safe). A job still in flight is skipped rather than started twice; a throw
-is contained and folded into the tick's summary.
-
-**The sweep also carries a cleanup that is not really a sweep.** It deletes
-Resparkable schedules whose owner has been erased. That belongs to the erasure hook
-(§2.13) and is duplicated here on purpose — see that section for why the hook
-alone cannot be relied on.
+`intervalMs` is a _minimum gap_, not a schedule, and last-run times live in
+process memory — so a multi-instance deployment runs each job roughly once per
+instance per interval, and a restart re-arms everything. **The queue does not
+rely on that for correctness**, which is the bar anything else you register here
+has to clear: two ticks racing claim disjoint batches from the database, and the
+billing pass is idempotent through a unique constraint. A job still in flight is
+skipped rather than started twice; a throw is contained and folded into the
+tick's summary.
 
 [#469]: https://github.com/human-centric-engineering/sunrise/issues/469
 
@@ -467,41 +513,37 @@ copies wholesale. None of them is a Resparkable file, and none needs registering
 | Docs          | `.context/framework/resparkable/**`                        |
 | Smoke scripts | `scripts/framework/resparkable/**`                         |
 
-### 2.13 Erasure — automatic, but read this _(phase 7)_
+### 2.13 Erasure — automatic, and now genuinely nothing to wire _(phase 7, simplified in phase 56)_
 
-Resparkable registers its own erasure cleanup hook from `initResparkable()`, so there is
-**nothing to wire**. It is documented because of what it cleans up and why it
-cannot be fully trusted.
+Every `framework_resparkable_*` table hangs off `ResparkableSpace`, whose FK to
+`"user"` is `ON DELETE CASCADE`. Deleting the user deletes the brain, with no
+app code involved and nothing for you to register.
 
 > Its sibling, the **subject-access export** (Art. 15), **is not automatic** and
 > must be wired by hand — see [§2.15](#215-subject-access-export--libappdata-exportts-required-resparkable--080).
 
-Every `framework_resparkable_*` table hangs off `ResparkableSpace`, whose FK to `"user"`
-is `ON DELETE CASCADE` — deleting the user deletes the brain, with no app code
-involved. Phase 7 is the first time Resparkable writes to a table it does not own:
-`AiWorkflowSchedule`, whose `createdBy` is **`onDelete: SetNull`**. Those rows
-therefore outlive the account, enabled and with a live `nextRunAt`, unless
-something deletes them.
+**There used to be an exception, and phase 56 removed it.** Phase 7 was the first
+time Resparkable wrote to a table it did not own: `AiWorkflowSchedule`, whose
+`createdBy` is `onDelete: SetNull`. Those rows outlived the account, enabled and
+with a live `nextRunAt`, so the tier registered an erasure cleanup hook to delete
+them — and then a safety net in the sweep job underneath the hook, because
+`registerErasureCleanupHook` writes into a plain module-scope `Map` that
+`eraseUser()` reads without lazily initialising any `lib/app/*` seam first. A
+hook registered at boot might simply not be there in the erasure request's realm
+([resparkable#462]).
 
-**The hook that deletes them may not be registered when erasure runs.**
-`registerErasureCleanupHook` writes into a plain module-scope `Map`, and
-`eraseUser()` reads it without lazily initialising any `lib/app/*` seam first —
-unlike capabilities, context contributors and jobs, each of which core
-re-initialises in the consuming realm. That is the same instrumentation/route
-module split as [resparkable#462], for a registry that was not in its sweep.
-
-So the sweep job (§2.10) also deletes Resparkable schedules whose `createdBy` is
-`null`. A null owner on an Resparkable schedule can only mean the FK was nulled by
-the cascade, so it is an unambiguous tombstone. **Both paths are deliberate**: the
-hook is correct and immediate when it fires, and the job catches the case where
-it did not — including schedules orphaned before this code existed.
+Two mechanisms, one of them existing only because the other could not be
+trusted. Both are gone: the queue owns per-user scheduling now, `ResparkableJob`
+is inside the cascade like every other satellite table, and there are no
+`AiWorkflowSchedule` rows left to orphan. Erasure is one foreign key again.
 
 [resparkable#462]: https://github.com/human-centric-engineering/sunrise/issues/462
 
 ### 2.14 External cron — **required in production** _(phase 7)_
 
-Everything in §2.10 — the schedules, the sweep, the briefing — is driven by one
-endpoint being hit on a timer. Development gets that free from the in-process 60s
+Everything in §2.10 — the queue drain, the billing pass, and the
+`processPendingExecutions` step that actually runs the workflows a job queues —
+is driven by one endpoint being hit on a timer. Development gets that free from the in-process 60s
 ticker in `instrumentation.ts`. **Production has no ticker at all.** Point an
 external scheduler at the maintenance tick:
 
@@ -509,9 +551,10 @@ external scheduler at the maintenance tick:
 POST /api/v1/admin/orchestration/maintenance/tick
 ```
 
-Every five minutes is a sensible default; the schedules resolve their own due
-times, so the tick only has to be frequent enough that "9am" means 9am rather
-than 9:55. See [`.context/orchestration/scheduling.md`](../../orchestration/scheduling.md)
+Every five minutes is a sensible default; jobs carry their own due times, so the
+tick only has to be frequent enough that "9am" means 9am rather than 9:55. **If
+you run standalone workers this is still required** — they drain the queue, but
+the workflow executions those jobs queue are run by the tick, and so is billing. See [`.context/orchestration/scheduling.md`](../../orchestration/scheduling.md)
 for auth and the platform-specific recipes.
 
 **This was an optional footnote until phase 7 and is not one now.** Before it,
@@ -900,15 +943,21 @@ a probe or block added straight to the leaf seam still fails, which is the
 intent the original test was protecting. Resparkable's own copies of both do this;
 copy them.
 
-**Then prove the background actually runs** (phase 7). Nothing above touches it:
-the unit suite asserts the workflows are seeded and the schedules are computed,
-which is not the same as a tick firing them.
+**Then prove the background actually runs** (phase 7, rewired in phase 56).
+Nothing above touches it: the unit suite asserts the workflows are seeded and
+the due times are computed, which is not the same as a tick firing them.
 
 1. Sign in once as a new user — `ensureResparkableSpace()` creates the space and
-   `ensureResparkableSchedules()` writes four `AiWorkflowSchedule` rows against it.
-2. Temporarily set one of them to `* * * * *` and let the tick run (or `POST` to
+   enqueues seven rows in `framework_resparkable_job`, one per kind.
+2. Pull one forward:
+   `UPDATE "framework_resparkable_job" SET "dueAt" = now() WHERE "kind" = 'briefing'`,
+   then let the tick run (or `POST` to
    `/api/v1/admin/orchestration/maintenance/tick` yourself). An execution should
-   appear under `/admin/orchestration/executions` within the minute.
+   appear under `/admin/orchestration/executions` within the minute, and the job
+   row's `dueAt` should have moved to tomorrow's 04:30 in that user's timezone.
+   `npm run framework:resparkable:smoke-queue` covers the properties a click
+   cannot: disjoint claims under ten concurrent workers, lease reclaim, backlog
+   invariance and the erasure cascade.
 3. Press **Regenerate** on Today's briefing card, then press it again inside the
    staleness window. **The second press must make no LLM call** — check
    `/admin/orchestration/costs` or the provider's own dashboard. A briefing that

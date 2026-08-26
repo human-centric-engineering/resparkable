@@ -29,7 +29,7 @@ import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
-import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/schedules';
+import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {

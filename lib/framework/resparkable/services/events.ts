@@ -10,9 +10,10 @@
  * That asymmetry is deliberate and worth stating: this is the one place in
  * Resparkable where a failed DB write is swallowed.
  *
- * It is also where the chat context block is invalidated (phase 6c). Every
- * mutation in the tier records an event, so doing it here means no service can
- * forget — including ones written after this file. See `context/invalidate.ts`.
+ * It is also where the chat context block is invalidated (phase 6c) and where a
+ * dormant brain is woken (phase 56). Every mutation in the tier records an
+ * event, so doing both here means no service can forget — including ones
+ * written after this file. See `context/invalidate.ts` and `queue/enqueue.ts`.
  */
 
 import { logger } from '@/lib/logging';
@@ -23,6 +24,7 @@ import {
   type RecordEventInput,
 } from '@/lib/framework/resparkable/repo/events';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { wakeResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 
 export type { ResparkableEventKind };
 
@@ -55,6 +57,23 @@ export async function recordResparkableEvent(
       error: error instanceof Error ? error.message : String(error),
     });
   }
+
+  // Phase 56's demand gate: background work on a brain nobody has touched backs
+  // off to weekly, and **any write pulls it straight back in**. This is that
+  // write, which is why the wake lives here rather than in each of the twenty
+  // services that mutate something — the event log is the one thing they all
+  // already go through.
+  //
+  // On an active brain it is a single indexed UPDATE that matches zero rows, so
+  // the cost on the common path is one index probe. Awaited for the same reason
+  // the insert above is: a floating promise on serverless is simply lost when
+  // the response returns, and a wake that silently did not happen leaves
+  // somebody's first day back without a briefing.
+  //
+  // After the insert, not before. Waking on the strength of an event that then
+  // failed to write would pull every due time forward for a change the demand
+  // gate will never be able to see.
+  await wakeResparkableJobs(scope.userId);
 }
 
 /**

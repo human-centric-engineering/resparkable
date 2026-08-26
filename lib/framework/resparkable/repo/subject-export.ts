@@ -41,7 +41,8 @@
  * than shipping a short answer to a data subject.
  *
  * @see lib/app/data-export.ts — the seam this fills
- * @see lib/framework/resparkable/erasure.ts — the Art. 17 half
+ * @see .context/framework/resparkable/phase-56-plan.md §8 — the Art. 17 half is
+ *      the `ResparkableSpace` cascade (D1); the tier has no erasure hook.
  * @see .context/privacy/data-export.md — core's guide
  */
 
@@ -224,11 +225,17 @@ export interface ResparkableExcludedModel {
 /**
  * Tables deliberately left out, and why.
  *
- * Kept to the case core itself excludes — derived vectors — so that "excluded"
- * never quietly becomes the easy answer for a table someone did not want to
- * think about.
+ * Kept deliberately short, so that "excluded" never quietly becomes the easy
+ * answer for a table someone did not want to think about. Both entries here are
+ * derived state: rows this installation computed *about* the subject's data
+ * rather than anything the subject put into it.
  */
 export const RESPARKABLE_EXCLUDED_MODELS: ResparkableExcludedModel[] = [
+  {
+    model: 'ResparkableJob',
+    reason:
+      'Scheduling state for this installation’s background workers: when each kind of work is next due for this brain, which worker holds the lease, how many times it has failed, and whether it has gone dormant. It is derived twice over — the due times come from the `timezone` on the space, which is exported, and the dormancy flag from `ResparkableEvent`, which is exported in full — so it tells a data subject nothing the activity log does not already tell them, in a form nobody outside this codebase could read. It is also the only Resparkable table whose contents change with no user action at all, which is what makes it operational rather than personal.',
+  },
   {
     model: 'ResparkableEmbedding',
     reason:

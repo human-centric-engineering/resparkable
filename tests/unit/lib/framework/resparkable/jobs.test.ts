@@ -1,575 +1,254 @@
 /**
- * Unit Tests: the connection-sweep app job.
+ * Unit Tests: the maintenance tick — bill, repair, drain.
  *
- * `registerAppJob` fires one process-wide callback while `sweepConnections`
- * takes an `OwnerScope`, so this job's real job is **choosing whose brain to
- * sweep**. Everything that can go wrong with it is invisible from the outside:
- * a rotation that never advances, a brain that wedges the queue, or a cleanup
- * that silently does nothing all look exactly like a system with nothing to do.
+ * ## The regression this file is mostly about
  *
- * Three properties, each the reason a specific bug cannot recur:
+ * The billing pass used to fetch the **newest 100** terminal executions, on the
+ * argument that a fresh completion is always in the top 100 rows so newest-first
+ * is self-correcting without a cursor column. That holds for one completion at a
+ * time and fails in exactly the case that matters. If more than a hundred
+ * executions reach a terminal state between two passes — a hundred and fifty
+ * nightly triages finishing inside one window, which is a hundred and fifty
+ * users, not a hundred and fifty thousand — the oldest fall off the bottom and
+ * are **never billed at all**. Nothing errors. The platform eats the cost of the
+ * runs it lost, silently, and the effect grows with the install.
  *
- * **The cursor always advances.** Including past a brain whose sweep threw. The
- * codebase already met the not-advancing version of this bug one level down —
- * candidates ordered most-recently-embedded first re-examined the same 200 rows
- * every run and left a corpus 78% unreachable, while the log said only that it
- * had stopped early. A per-user rotation that stalls on one bad brain is the
- * same failure with a bigger blast radius.
+ * The candidate set is now an anti-join against the ledger, so an execution
+ * leaves it the moment it is billed and the set only ever shrinks. `limit`
+ * survives as a per-pass bound rather than as a window: rows this pass does not
+ * reach are still candidates on the next one.
  *
- * **One brain's failure does not stop the batch.** A dimension mismatch after a
- * model swap is per-corpus, and it must not cost everyone else their sweep.
+ * ## And the composition
  *
- * **The orphan cleanup runs even on an idle tick.** It is the safety net under
- * an erasure hook that may never have been registered in the erasure request's
- * realm, so making it conditional on there being brains to sweep would put the
- * net behind the thing it is catching.
- *
- * The rotation carries a second passenger: `ensureResparkableSchedules`. It is the
- * only place it runs for an *existing* brain — `ensureResparkableSpace` calls it on
- * the create branch alone — so if it is dropped from here, the pass that exists
- * to correct DST drift and stale `inputTemplate` rows silently never runs, and
- * every symptom of that is a background job quietly not producing anything. The
- * two passes are failure-isolated in both directions, because they share only a
- * turn in the queue.
- *
- * The rotation carries a third passenger from phase 8: `enforceResparkableRetention`.
- * It is the only pass here that removes anything, which is why it runs last in
- * each brain's turn and why its isolation is asserted in both directions too.
+ * The tick does three things in a fixed order and none of them may cost the
+ * others their turn. Billing is not per-user work and runs regardless of
+ * `RESPARKABLE_WORKER_MODE`; the backfill net is caught separately so a brain
+ * missing its rows costs one more tick rather than the whole drain.
  *
  * Test Coverage:
- * - Reads a bounded batch and sweeps each brain under its own scope
- * - Stamps every id in the batch, including ones that threw
- * - A throwing brain is counted, logged, and does not stop the others
- * - Created counts are summed across the batch
- * - An empty batch still runs the orphan cleanup, and stamps nothing
- * - Orphaned schedules are reported in the result
- * - Every brain in the batch gets the schedule pass, in its own timezone
- * - A failing schedule pass costs the brain neither its sweep nor its turn
- * - A failing sweep does not skip the schedule pass
- * - Every brain gets the retention pass, on the tick's clock, never as a dry run
- * - Archived/pruned counts sum across the batch; a capped pass is reported
- * - A failing retention pass costs the brain neither its sweep nor its turn
+ * - Billing runs even when the tick is not draining
+ * - Every unbilled execution is attributed and debited
+ * - A system-owned legacy row is billed through its scope key
+ * - An unattributable execution is skipped, not billed to somebody
+ * - A duplicate ledger write is swallowed, not logged as an error
+ * - One failed ledger write does not stop the rest of the batch
+ * - A failing backfill does not stop the drain
  *
  * @see lib/framework/resparkable/jobs.ts
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-vi.mock('@/lib/framework/resparkable/repo/space', () => ({
-  listSpacesDueSweep: vi.fn(),
-  markSpacesSwept: vi.fn(),
-}));
-vi.mock('@/lib/framework/resparkable/repo/schedules', () => ({
-  deleteOrphanedResparkableSchedules: vi.fn(),
-}));
-vi.mock('@/lib/framework/resparkable/search/connections', () => ({ sweepConnections: vi.fn() }));
-vi.mock('@/lib/framework/resparkable/schedules/ensure', () => ({
-  ensureResparkableSchedules: vi.fn(),
-  // Real values, not mocked — jobs.ts reads this at module scope
-  // (`Object.values(...)`), and the pass under test filters on it.
-  RESPARKABLE_SCHEDULED_WORKFLOWS: {
-    nightlyTriage: 'resparkable-nightly-triage',
-    morningBriefing: 'resparkable-morning-briefing',
-    weeklyReview: 'resparkable-weekly-review',
-    horizonCheck: 'resparkable-horizon-check',
-  },
-}));
-vi.mock('@/lib/framework/resparkable/services/retention', () => ({
-  enforceResparkableRetention: vi.fn(),
-}));
 vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
-  findRecentTerminalResparkableExecutions: vi.fn(),
+  findUnbilledTerminalResparkableExecutions: vi.fn(),
 }));
-vi.mock('@/lib/framework/resparkable/services/billing', () => ({ recordAgentSpend: vi.fn() }));
-vi.mock('@/lib/logging', () => ({
-  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({
+  recordAgentSpend: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/queue/drain', () => ({
+  drainResparkableJobs: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/queue/enqueue', () => ({
+  backfillMissingResparkableJobs: vi.fn(),
 }));
 
-import { runResparkableSweepJob } from '@/lib/framework/resparkable/jobs';
-import { findRecentTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
-import { deleteOrphanedResparkableSchedules } from '@/lib/framework/resparkable/repo/schedules';
-import { listSpacesDueSweep, markSpacesSwept } from '@/lib/framework/resparkable/repo/space';
-import { ensureResparkableSchedules } from '@/lib/framework/resparkable/schedules/ensure';
-import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
+import { runResparkableTick } from '@/lib/framework/resparkable/jobs';
+import { drainResparkableJobs } from '@/lib/framework/resparkable/queue/drain';
+import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
+import { findUnbilledTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
+import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
-import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
-import { logger } from '@/lib/logging';
+import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
+import { WorkflowStatus } from '@/types/orchestration';
 
-const mockedList = vi.mocked(listSpacesDueSweep);
-const mockedMark = vi.mocked(markSpacesSwept);
-const mockedOrphans = vi.mocked(deleteOrphanedResparkableSchedules);
-const mockedSweep = vi.mocked(sweepConnections);
-const mockedEnsure = vi.mocked(ensureResparkableSchedules);
-const mockedRetention = vi.mocked(enforceResparkableRetention);
-const mockedFindExecutions = vi.mocked(findRecentTerminalResparkableExecutions);
-const mockedRecordSpend = vi.mocked(recordAgentSpend);
-const mockedLoggerError = vi.mocked(logger.error);
+const EMPTY_DRAIN = {
+  settled: 0,
+  skippedDormant: 0,
+  skippedNoCredit: 0,
+  failed: 0,
+  queueEmpty: true,
+  outcome: {
+    executionsQueued: 0,
+    connectionsCreated: 0,
+    retentionArchived: 0,
+    retentionPruned: 0,
+    reindexEmbedded: 0,
+    reindexChunks: 0,
+    incomplete: false,
+  },
+};
 
-const NOW = new Date('2026-08-04T09:00:00.000Z');
-
-function sweepResult(created: number) {
-  return { examined: 10, candidates: 5, created, cappedTypes: [] };
-}
-
-/** A brain's turn in the rotation. The zone matters — the cron is built from it. */
-function due(userId: string, timezone = 'UTC') {
-  return { userId, timezone };
-}
-
-function ensureResult(created: string[] = [], corrected: string[] = []) {
-  return { created, corrected, missing: [] };
-}
-
-function retentionResult(archived = 0, pruned = 0, capped = false) {
-  return {
-    rules: {} as never,
-    archived,
-    pruned,
-    capped,
-    dryRun: false,
-  };
+function execution(overrides: Record<string, unknown> = {}) {
+  return { id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.12, ...overrides };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedList.mockResolvedValue([]);
-  mockedMark.mockResolvedValue(0);
-  mockedOrphans.mockResolvedValue(0);
-  mockedSweep.mockResolvedValue(sweepResult(0));
-  mockedEnsure.mockResolvedValue(ensureResult());
-  mockedRetention.mockResolvedValue(retentionResult());
-  mockedFindExecutions.mockResolvedValue([]);
-  mockedRecordSpend.mockResolvedValue(null);
+  vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([]);
+  vi.mocked(backfillMissingResparkableJobs).mockResolvedValue(0);
+  vi.mocked(drainResparkableJobs).mockResolvedValue({ ...EMPTY_DRAIN });
+  vi.mocked(recordAgentSpend).mockResolvedValue({ id: 'ledger_1' } as never);
 });
 
-describe('runResparkableSweepJob', () => {
-  it('reads a bounded batch rather than every brain', async () => {
-    await runResparkableSweepJob(NOW);
+describe('the billing pass', () => {
+  it('asks for the unbilled set, not the newest N', async () => {
+    // The whole point. A window loses rows under a spike; an anti-join cannot.
+    await runResparkableTick();
 
-    expect(mockedList).toHaveBeenCalledTimes(1);
-    const [limit] = mockedList.mock.calls[0];
+    const [slugs, statuses, limit] = vi.mocked(findUnbilledTerminalResparkableExecutions).mock
+      .calls[0];
+
+    expect(slugs).toEqual(expect.arrayContaining(Object.values(RESPARKABLE_SCHEDULED_WORKFLOWS)));
+    expect(statuses).toEqual(
+      expect.arrayContaining([
+        WorkflowStatus.COMPLETED,
+        WorkflowStatus.FAILED,
+        WorkflowStatus.CANCELLED,
+      ])
+    );
     expect(limit).toBeGreaterThan(0);
-    expect(limit).toBeLessThanOrEqual(10);
   });
 
-  it('sweeps each brain under its own scope', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-
-    await runResparkableSweepJob(NOW);
-
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    expect(mockedSweep.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
-    expect(mockedSweep.mock.calls[1]?.[0]).toMatchObject({ userId: 'user_b' });
+  it('bills a failed run as well as a completed one', async () => {
+    // A run that failed halfway still spent whatever it spent getting there.
+    // Billing only completions would leave that cost with the platform.
+    await runResparkableTick();
+    const statuses = vi.mocked(findUnbilledTerminalResparkableExecutions).mock.calls[0]?.[1];
+    expect(statuses).toContain(WorkflowStatus.FAILED);
   });
 
-  it('sums what the batch created', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-    mockedSweep.mockResolvedValueOnce(sweepResult(3)).mockResolvedValueOnce(sweepResult(2));
+  it('debits the real cost against the execution’s owner', async () => {
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([execution()] as never);
 
-    const result = await runResparkableSweepJob(NOW);
+    const result = await runResparkableTick();
 
-    expect(result).toMatchObject({ swept: 2, created: 5, failed: 0 });
-  });
-
-  it('advances the cursor past a brain that threw, and keeps sweeping the rest', async () => {
-    mockedList.mockResolvedValue([due('user_bad'), due('user_good')]);
-    mockedSweep
-      .mockRejectedValueOnce(new Error('stored vector dimension mismatch'))
-      .mockResolvedValueOnce(sweepResult(4));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result).toMatchObject({ swept: 2, created: 4, failed: 1 });
-    // The second brain was still swept — one bad corpus must not cost everyone
-    // else their turn.
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    // And BOTH ids are stamped. Skipping the failure would park it at the head
-    // of the queue for ever and starve everybody behind it.
-    expect(mockedMark).toHaveBeenCalledWith(['user_bad', 'user_good'], NOW);
-  });
-
-  it('handles a sweep rejection that is not an Error instance', async () => {
-    // A thrown string or a rejected promise carrying a plain object is exactly
-    // the case naive `error.message` handling blows up on — and that would
-    // take the rest of the batch down with it, which is the one thing this
-    // job exists to prevent.
-    mockedList.mockResolvedValue([due('user_bad'), due('user_good')]);
-    mockedSweep
-      .mockRejectedValueOnce('vector store unreachable')
-      .mockResolvedValueOnce(sweepResult(4));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result).toMatchObject({ swept: 2, created: 4, failed: 1 });
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    expect(mockedMark).toHaveBeenCalledWith(['user_bad', 'user_good'], NOW);
-    expect(mockedLoggerError).toHaveBeenCalledWith(
-      'Resparkable connection sweep failed for one brain',
-      expect.objectContaining({ userId: 'user_bad', error: 'vector store unreachable' })
+    expect(recordAgentSpend).toHaveBeenCalledWith(
+      { userId: 'user_a' },
+      { tokenCostUsd: 0.12, relatedWorkflowExecutionId: 'exec_1' }
     );
-  });
-
-  it('stamps the whole batch even when every brain fails', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-    mockedSweep.mockRejectedValue(new Error('down'));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.failed).toBe(2);
-    expect(mockedMark).toHaveBeenCalledWith(['user_a', 'user_b'], NOW);
-  });
-
-  it('cleans up orphaned schedules even on a tick with nothing to sweep', async () => {
-    mockedList.mockResolvedValue([]);
-    mockedOrphans.mockResolvedValue(3);
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedOrphans).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      swept: 0,
-      created: 0,
-      failed: 0,
-      orphanedSchedules: 3,
-      schedulesCreated: 0,
-      schedulesCorrected: 0,
-      retentionArchived: 0,
-      retentionPruned: 0,
-      retentionCapped: false,
-      executionsBilled: 0,
-      executionsSkipped: 0,
-    });
-    // Nothing was swept, so nothing should be stamped — and with no brain due,
-    // there is nobody to run a schedule pass or a retention pass for.
-    expect(mockedMark).not.toHaveBeenCalled();
-    expect(mockedEnsure).not.toHaveBeenCalled();
-    expect(mockedRetention).not.toHaveBeenCalled();
-  });
-
-  it('reports the orphan count alongside a normal sweep', async () => {
-    mockedList.mockResolvedValue([due('user_a')]);
-    mockedOrphans.mockResolvedValue(1);
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.orphanedSchedules).toBe(1);
-    expect(result.swept).toBe(1);
-  });
-});
-
-describe('runResparkableSweepJob — the schedule pass', () => {
-  it('runs for every brain in the batch, in that brain’s own timezone', async () => {
-    // This is the only place the pass runs for an existing brain. Drop it and
-    // the DST rewrite and the stale-template clear both become unreachable code
-    // whose absence looks exactly like a system with nothing to correct.
-    mockedList.mockResolvedValue([
-      due('user_a', 'Europe/London'),
-      due('user_b', 'Pacific/Auckland'),
-    ]);
-
-    await runResparkableSweepJob(NOW);
-
-    expect(mockedEnsure).toHaveBeenCalledTimes(2);
-    expect(mockedEnsure).toHaveBeenNthCalledWith(1, 'user_a', 'Europe/London', NOW);
-    // The server's zone is not the user's, and a cron built in the wrong one
-    // delivers the briefing at the wrong hour.
-    expect(mockedEnsure).toHaveBeenNthCalledWith(2, 'user_b', 'Pacific/Auckland', NOW);
-  });
-
-  it('reports what it created and corrected', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-    mockedEnsure
-      .mockResolvedValueOnce(ensureResult(['resparkable-nightly-triage'], []))
-      .mockResolvedValueOnce(
-        ensureResult([], ['resparkable-morning-briefing', 'resparkable-weekly-review'])
-      );
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.schedulesCreated).toBe(1);
-    expect(result.schedulesCorrected).toBe(2);
-  });
-
-  it('does not let a failing schedule pass cost the brain its sweep or its turn', async () => {
-    mockedList.mockResolvedValue([due('user_bad'), due('user_good')]);
-    mockedEnsure.mockRejectedValueOnce(new Error('schedule table unavailable'));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    // Both brains still swept, both still stamped. The schedule pass is a
-    // passenger on this rotation, not a gate on it.
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    expect(mockedMark).toHaveBeenCalledWith(['user_bad', 'user_good'], NOW);
-    // `failed` counts connection sweeps. Folding a schedule failure into it
-    // would make one number mean two things.
-    expect(result.failed).toBe(0);
-    expect(result.schedulesCorrected).toBe(0);
-  });
-
-  it('handles a schedule-pass rejection that is not an Error instance', async () => {
-    // Same fallback, other catch block. A thrown string here must not cost the
-    // brain its connection sweep — the two passes are failure-isolated in both
-    // directions, and `error.message` on a string is `undefined`.
-    mockedList.mockResolvedValue([due('user_bad'), due('user_good')]);
-    mockedEnsure.mockRejectedValueOnce({ reason: 'schedule table unavailable' });
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    expect(mockedMark).toHaveBeenCalledWith(['user_bad', 'user_good'], NOW);
-    expect(result.failed).toBe(0);
-    expect(mockedLoggerError).toHaveBeenCalledWith(
-      'Resparkable schedule pass failed for one brain',
-      expect.objectContaining({ userId: 'user_bad', error: '[object Object]' })
-    );
-  });
-
-  it('still runs the schedule pass for a brain whose sweep throws', async () => {
-    // Isolation in the other direction. A corpus that cannot be swept — a
-    // dimension mismatch after a model swap — says nothing about whether that
-    // user's briefing is scheduled correctly.
-    mockedList.mockResolvedValue([due('user_bad')]);
-    mockedSweep.mockRejectedValue(new Error('stored vector dimension mismatch'));
-    mockedEnsure.mockResolvedValue(ensureResult([], ['resparkable-morning-briefing']));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedEnsure).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ failed: 1, schedulesCorrected: 1 });
-  });
-});
-
-describe('runResparkableSweepJob — the retention pass', () => {
-  it('runs for every brain in the batch, under its own scope and the tick’s clock', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-
-    await runResparkableSweepJob(NOW);
-
-    expect(mockedRetention).toHaveBeenCalledTimes(2);
-    expect(mockedRetention.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
-    expect(mockedRetention.mock.calls[1]?.[0]).toMatchObject({ userId: 'user_b' });
-    // The tick's instant, not each rule calling `new Date()` for itself. Every
-    // window in the pass has to be measured from one moment, or a batch that
-    // straddles midnight applies two different cutoffs.
-    expect(mockedRetention.mock.calls[0]?.[1]).toEqual({ now: NOW });
-  });
-
-  it('never runs as a dry run from the job', async () => {
-    // The dry-run switch exists for the operator-facing preview. A job that
-    // passed it would report plausible counts for ever and delete nothing,
-    // which reads as a working retention pass until the database fills up.
-    mockedList.mockResolvedValue([due('user_a')]);
-
-    await runResparkableSweepJob(NOW);
-
-    expect(mockedRetention.mock.calls[0]?.[1]).not.toMatchObject({ dryRun: true });
-  });
-
-  it('sums what it archived and pruned across the batch', async () => {
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-    mockedRetention
-      .mockResolvedValueOnce(retentionResult(3, 40))
-      .mockResolvedValueOnce(retentionResult(1, 2));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.retentionArchived).toBe(4);
-    expect(result.retentionPruned).toBe(42);
-  });
-
-  it('reports a capped pass, so a partial run is not read as a complete one', async () => {
-    // The same property the sweep's `cappedTypes` protects: a rule that stopped
-    // at its batch limit and a rule that found everything produce identical
-    // logs unless one of them says so.
-    mockedList.mockResolvedValue([due('user_a'), due('user_b')]);
-    mockedRetention
-      .mockResolvedValueOnce(retentionResult(500, 0, true))
-      .mockResolvedValueOnce(retentionResult(0, 0, false));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.retentionCapped).toBe(true);
-  });
-
-  it('does not let a failing retention pass cost the brain its sweep or its turn', async () => {
-    mockedList.mockResolvedValue([due('user_bad'), due('user_good')]);
-    mockedRetention.mockRejectedValueOnce(new Error('deadlock detected'));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedSweep).toHaveBeenCalledTimes(2);
-    expect(mockedMark).toHaveBeenCalledWith(['user_bad', 'user_good'], NOW);
-    expect(result.failed).toBe(0);
-    expect(mockedLoggerError).toHaveBeenCalledWith(
-      'Resparkable retention pass failed for one brain',
-      expect.objectContaining({ userId: 'user_bad', error: 'deadlock detected' })
-    );
-  });
-
-  it('handles a retention rejection that is not an Error instance', async () => {
-    mockedList.mockResolvedValue([due('user_bad')]);
-    mockedRetention.mockRejectedValueOnce('deadlock detected');
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(result.retentionArchived).toBe(0);
-    expect(mockedLoggerError).toHaveBeenCalledWith(
-      'Resparkable retention pass failed for one brain',
-      expect.objectContaining({ userId: 'user_bad', error: 'deadlock detected' })
-    );
-  });
-
-  it('still runs retention for a brain whose sweep threw', async () => {
-    // Isolation in the third direction. A corpus that cannot be swept still
-    // accumulates 400-day-old events, and refusing to clean them up because an
-    // unrelated pass failed is how a table grows without bound.
-    mockedList.mockResolvedValue([due('user_bad')]);
-    mockedSweep.mockRejectedValue(new Error('stored vector dimension mismatch'));
-    mockedRetention.mockResolvedValue(retentionResult(0, 12));
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedRetention).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ failed: 1, retentionPruned: 12 });
-  });
-});
-
-/**
- * Phase 29's billing pass: `billResparkableWorkflowExecutions`, exercised
- * through the tick it rides on. Unconditional (runs even with nothing due to
- * sweep) and independent of the per-user rotation. See `jobs.ts`.
- */
-describe('runResparkableSweepJob — the billing pass', () => {
-  interface FakeExecution {
-    id: string;
-    userId: string | null;
-    scope: unknown;
-    totalCostUsd: number;
-  }
-
-  function execution(overrides: Partial<FakeExecution> = {}): FakeExecution {
-    return {
-      id: 'exec_1',
-      userId: 'user_a',
-      scope: null,
-      totalCostUsd: 0.5,
-      ...overrides,
-    };
-  }
-
-  it('runs even on a tick with nothing due to sweep', async () => {
-    mockedList.mockResolvedValue([]);
-    mockedFindExecutions.mockResolvedValue([execution()]);
-    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedFindExecutions).toHaveBeenCalledTimes(1);
     expect(result.executionsBilled).toBe(1);
   });
 
-  /**
-   * REGRESSION. `queueResparkableWorkflowRun()` is the only way a
-   * resparkable-slug `AiWorkflowExecution` gets created, and it queues the
-   * context-digest workflow (`/summarize`) as well as the four calendar
-   * schedules — a slug missing from this list bills nothing for that
-   * workflow, silently, no matter how many times it runs.
-   */
-  it('includes the context-digest slug alongside the four scheduled workflows', async () => {
-    mockedFindExecutions.mockResolvedValue([]);
+  it('bills a legacy system-owned run through its scope key', async () => {
+    // Executions fired by the platform scheduler before the cutover are
+    // `userId: null` and carry the owner in `scope` (resparkable#502). Nothing
+    // creates those any more, but the ones already in the table still have to
+    // be billed rather than dropped.
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
+      execution({ userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user_b' } }),
+    ] as never);
 
-    await runResparkableSweepJob(NOW);
+    await runResparkableTick();
 
-    const slugs = mockedFindExecutions.mock.calls[0]?.[0];
-    expect(slugs).toEqual(
-      expect.arrayContaining([
-        'resparkable-nightly-triage',
-        'resparkable-morning-briefing',
-        'resparkable-weekly-review',
-        'resparkable-horizon-check',
-        'resparkable-context-digest',
-      ])
-    );
-    expect(slugs).toHaveLength(5);
+    expect(vi.mocked(recordAgentSpend).mock.calls[0]?.[0]).toEqual({ userId: 'user_b' });
   });
 
-  it('bills a queued execution using its own userId', async () => {
-    mockedFindExecutions.mockResolvedValue([execution({ userId: 'user_a', totalCostUsd: 1.2 })]);
-    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
+  it('skips an execution it cannot attribute rather than billing somebody', async () => {
+    // An org-level run, or a Resparkable-slug row written by something outside
+    // this tier. Guessing an owner here debits a real person for a run that was
+    // not theirs.
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
+      execution({ userId: null, scope: { somethingElse: 'user_b' } }),
+    ] as never);
 
-    await runResparkableSweepJob(NOW);
+    const result = await runResparkableTick();
 
-    expect(mockedRecordSpend).toHaveBeenCalledTimes(1);
-    expect(mockedRecordSpend.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
-    expect(mockedRecordSpend.mock.calls[0]?.[1]).toMatchObject({
-      tokenCostUsd: 1.2,
-      relatedWorkflowExecutionId: 'exec_1',
-    });
-  });
-
-  it('bills a cron-fired execution (userId: null) using scope[resparkableUserId]', async () => {
-    mockedFindExecutions.mockResolvedValue([
-      execution({ userId: null, scope: { resparkableUserId: 'user_scoped' } }),
-    ]);
-    mockedRecordSpend.mockResolvedValue({ id: 'ledger_1' } as never);
-
-    await runResparkableSweepJob(NOW);
-
-    expect(mockedRecordSpend.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_scoped' });
-  });
-
-  it('skips (does not bill) an execution with neither userId nor a scoped owner', async () => {
-    mockedFindExecutions.mockResolvedValue([execution({ userId: null, scope: null })]);
-
-    const result = await runResparkableSweepJob(NOW);
-
-    expect(mockedRecordSpend).not.toHaveBeenCalled();
+    expect(recordAgentSpend).not.toHaveBeenCalled();
     expect(result.executionsSkipped).toBe(1);
     expect(result.executionsBilled).toBe(0);
   });
 
-  it('skips a zero-cost execution without writing a ledger row', async () => {
-    mockedFindExecutions.mockResolvedValue([execution({ totalCostUsd: 0 })]);
+  it('treats a malformed scope as unattributable', async () => {
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
+      execution({ userId: null, scope: 'user_b' }),
+      execution({ id: 'exec_2', userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 42 } }),
+    ] as never);
 
-    await runResparkableSweepJob(NOW);
+    const result = await runResparkableTick();
 
-    expect(mockedRecordSpend).not.toHaveBeenCalled();
+    expect(result.executionsSkipped).toBe(2);
   });
 
-  /**
-   * REGRESSION: idempotency. A repeat pass over an already-billed execution
-   * must be a silent no-op, not an error: the ledger's own
-   * `@@unique([kind, relatedWorkflowExecutionId])` constraint is what makes a
-   * second tick over the same completed execution safe.
-   */
-  it('treats a P2002 from an already-billed execution as a silent skip, not an error', async () => {
-    mockedFindExecutions.mockResolvedValue([execution()]);
-    mockedRecordSpend.mockRejectedValueOnce({ code: 'P2002' });
+  it('swallows a duplicate ledger write instead of logging an error', async () => {
+    // Two workers racing the same execution collide on
+    // `@@unique([kind, relatedWorkflowExecutionId])`. That is the constraint
+    // doing its job, not a fault.
+    const duplicate = Object.assign(new Error('Unique constraint failed'), { code: 'P2002' });
+    vi.mocked(recordAgentSpend).mockRejectedValue(duplicate);
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([execution()] as never);
 
-    const result = await runResparkableSweepJob(NOW);
+    const result = await runResparkableTick();
 
     expect(result.executionsBilled).toBe(0);
-    expect(mockedLoggerError).not.toHaveBeenCalledWith(
-      'Resparkable workflow-execution billing failed for one run',
-      expect.anything()
-    );
+    expect(result.executionsSkipped).toBe(0);
   });
 
-  it('logs and continues past a genuine billing failure, without stopping the batch', async () => {
-    mockedFindExecutions.mockResolvedValue([
-      execution({ id: 'exec_bad' }),
-      execution({ id: 'exec_good' }),
-    ]);
-    mockedRecordSpend
-      .mockRejectedValueOnce(new Error('ledger write failed'))
-      .mockResolvedValueOnce({ id: 'ledger_1' } as never);
+  it('does not let one bad ledger write cost the rest of the batch', async () => {
+    vi.mocked(recordAgentSpend)
+      .mockRejectedValueOnce(new Error('pool exhausted'))
+      .mockResolvedValue({ id: 'ledger_2' } as never);
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
+      execution(),
+      execution({ id: 'exec_2', userId: 'user_b' }),
+    ] as never);
 
-    const result = await runResparkableSweepJob(NOW);
+    const result = await runResparkableTick();
 
     expect(result.executionsBilled).toBe(1);
-    expect(mockedLoggerError).toHaveBeenCalledWith(
-      'Resparkable workflow-execution billing failed for one run',
-      expect.objectContaining({ executionId: 'exec_bad', error: 'ledger write failed' })
-    );
+  });
+
+  it('runs even when this process is not draining', async () => {
+    // Billing is not per-user work and does not belong to any worker. On an
+    // install with `RESPARKABLE_WORKER_MODE=external` the web containers still
+    // have to do it, or nobody does.
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([execution()] as never);
+
+    const result = await runResparkableTick({ drain: false });
+
+    expect(result.executionsBilled).toBe(1);
+    expect(drainResparkableJobs).not.toHaveBeenCalled();
+  });
+});
+
+describe('composition', () => {
+  it('drains with a budget that fits inside a 60-second tick', async () => {
+    await runResparkableTick();
+
+    const budget = vi.mocked(drainResparkableJobs).mock.calls[0]?.[0];
+    expect(budget?.maxJobs).toBeGreaterThan(0);
+    expect(budget?.maxWallClockMs).toBeLessThan(60_000);
+  });
+
+  it('does not let a failing backfill cost the drain its turn', async () => {
+    // The net under the enqueue. A brain missing its rows stays missing for one
+    // more tick, which is the same order of delay the net already tolerates —
+    // and far better than skipping everyone else's background work over it.
+    vi.mocked(backfillMissingResparkableJobs).mockRejectedValue(new Error('deadlock'));
+
+    const result = await runResparkableTick();
+
+    expect(result.jobsBackfilled).toBe(0);
+    expect(drainResparkableJobs).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the drain’s counters alongside its own', async () => {
+    vi.mocked(drainResparkableJobs).mockResolvedValue({
+      ...EMPTY_DRAIN,
+      settled: 4,
+      skippedDormant: 2,
+      queueEmpty: false,
+      outcome: { ...EMPTY_DRAIN.outcome, executionsQueued: 2 },
+    });
+    vi.mocked(backfillMissingResparkableJobs).mockResolvedValue(7);
+
+    const result = await runResparkableTick();
+
+    expect(result).toMatchObject({
+      settled: 4,
+      skippedDormant: 2,
+      jobsBackfilled: 7,
+      executionsBilled: 0,
+    });
+    expect(result.outcome.executionsQueued).toBe(2);
   });
 });

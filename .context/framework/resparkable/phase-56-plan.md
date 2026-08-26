@@ -1,9 +1,65 @@
 # Phase 56 — the job queue
 
-**Status: scoped, 2026-08-25. Not yet built.** This is the working doc for
+**Status: BUILT, 2026-08-26.** Scoped 2026-08-25; this is the working doc for
 decision **S6** in [`scale.md`](./scale.md), the largest item in Release 1.5
-(`plan.md` §15). It resolves the question that blocked Release 1.5 from being
+(`plan.md` §15). It resolved the question that blocked Release 1.5 from being
 buildable: **who owns per-user scheduled work.**
+
+> ## What shipped, and the three places it does not match this document
+>
+> The design below is what was built, with three deliberate departures. They are
+> recorded here rather than quietly folded in, because each one is a correction
+> to an argument this document makes, and a reader who trusts §7 or §6 without
+> reading this box will be wrong about how the system behaves.
+>
+> **1. The demand gate is asked BEFORE the run, not on completion (§7).** As
+> written, the gate costs one billed do-nothing run per dormant period per
+> brain: the run happens, discovers nothing had changed, and only _then_ defers
+> the next one. At weekly backoff that is roughly four worthless charges a month
+> per idle brain — and it fails this document's own assertion 5, which asks for
+> **zero** LLM calls across a simulated month. The pre-flight version asks the
+> identical question against the identical index and spends nothing. It is the
+> only version under which §7's own rule ("never debit a person's balance for a
+> run that cannot produce anything") is actually true.
+>
+> **2. S8 is an anti-join, not a completion hook (§6).** "The run that spent the
+> money is the thing that bills for it" cannot be implemented as written,
+> because the job does not run the workflow — it writes a `PENDING`
+> `AiWorkflowExecution` and returns, and the engine runs it minutes later on the
+> tick. The job has no cost to report at the moment it completes. What the
+> phrase was reaching for is "no cursor to fall behind", and that is achieved
+> instead by selecting terminal executions with **no ledger row**, oldest-first:
+> an execution leaves the candidate set the moment it is billed, permanently, so
+> the set only ever shrinks and `limit` becomes a per-pass bound rather than a
+> window. The 150-completions-in-one-window regression (assertion 6) is fixed;
+> the mechanism is different.
+>
+> **3. No new drift probe (§8).** The plan asks for a probe on "the partial
+> index backing the claim query". The claim's predicate is `now()`-relative, so
+> there is no time-independent subset to make partial — the index that shipped
+> is an ordinary composite `(dueAt, leaseExpiresAt)`, which Prisma _can_ model.
+> That inverts the reasoning: drift probes exist for objects that
+> `prisma migrate dev` would silently drop because it cannot represent them, and
+> this one it would recreate. Adding a probe for it would be a probe that cannot fail.
+>
+> Two smaller decisions worth knowing: `retention` is deliberately **not**
+> demand-gated (the calendar drives it, not activity, so gating it would stop it
+> working for exactly the dormant brains whose data most needs ageing out), and
+> `reindex` runs every **fifteen minutes** rather than nightly, because it is
+> what makes a captured thought findable by meaning and an overnight gap is one
+> a person notices.
+>
+> Assertion 10 (row count invariant under workspace creation) is not yet
+> testable: `plan.md` §24 is not built. The table is owner-keyed up front
+> precisely so it will pass without a migration when §24 arrives.
+>
+> **Where it lives.** `queue/kinds.ts` (vocabulary, cadence, gating),
+> `repo/jobs.ts` (the `SKIP LOCKED` claim and the settles), `queue/handlers.ts`
+> (what each kind does), `queue/drain.ts` (claim → gate → run → settle),
+> `queue/enqueue.ts` (enqueue, wake, backfill net), `jobs.ts` (the tick),
+> `scripts/framework/resparkable/worker.ts` (the standalone loop). Migration
+> `20260826090000_resparkable_job_queue`. Verified by
+> `npm run framework:resparkable:smoke-queue`.
 
 Phase 56's deliverable: **one durable job queue for every piece of per-user
 background work, drained by parallel workers until empty, with the worker loop
