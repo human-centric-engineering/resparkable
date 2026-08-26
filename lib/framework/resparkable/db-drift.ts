@@ -1,5 +1,5 @@
 /**
- * Resparkable drift probes — the six Postgres objects Prisma cannot model.
+ * Resparkable drift probes — the seven Postgres objects Prisma cannot model.
  *
  * **This is the highest-value regression guard in the build** (plan §2, §17
  * risk 1). `prisma migrate dev` computes desired state from the schema and
@@ -23,7 +23,34 @@ import {
   constraintExists,
   generatedColumnExists,
   indexExists,
+  type Probe,
 } from '@/lib/db/drift-probes';
+
+/**
+ * Invert an existence probe into a **forbidden-object** probe.
+ *
+ * Two of these probes changed sides on 2026-08-25 (scale.md S3): the HNSW and
+ * GIN indexes on `framework_resparkable_embedding` were dropped because no query
+ * can use them, and the thing that now needs guarding is that nobody puts them
+ * back. That is not a hypothetical: `prisma migrate dev` computes desired state
+ * from the schema, cannot represent either index, and a well-meaning
+ * "restore the missing index" migration is exactly what a reviewer would wave
+ * through.
+ *
+ * A forbidden-object probe is worth as much as an existence one here, because
+ * both failures are silent. A missing index that should exist costs latency; an
+ * index that should not exist costs roughly the size of the largest table in the
+ * database plus a graph traversal on every insert, and nothing anywhere errors.
+ *
+ * `note` carries the reason, so the check output explains itself rather than
+ * saying only that an index it has never heard of is present.
+ */
+function absent(probe: Probe, why: string): Probe {
+  return async () => {
+    const result = await probe();
+    return result.ok ? { ok: false, note: why } : { ok: true };
+  };
+}
 
 /**
  * `generatedColumnExists` was a local copy here until Resparkable shipped it in
@@ -39,7 +66,8 @@ import {
  */
 
 /**
- * Register Resparkable's six probes. Idempotent per process is NOT guaranteed —
+ * Register Resparkable's seven probes. Five assert an object EXISTS; B3 and B7
+ * assert one does NOT (see `absent`). Idempotent per process is NOT guaranteed —
  * `registerAppDriftProbe` throws on a duplicate name, which is deliberate: a
  * double registration means the host wired this up twice and should know.
  */
@@ -55,12 +83,26 @@ export function registerResparkableDriftProbes(): void {
     probe: constraintExists('framework_resparkable_space_userId_fkey', 'ON DELETE CASCADE'),
   });
 
-  // B3 — the one vector index for the whole brain (D2). Silent on drop.
+  // B3 — INVERTED 2026-08-25. This index must NOT exist (scale.md S3).
+  //
+  // It was registered as a required object for a year on the belief that vector
+  // search used it. It never did: `hybridSearchRows`'s distance pre-filter and
+  // its blended `ORDER BY final_score` each independently defeat pgvector's
+  // index path, which that query's own doc comment has said all along. pgvector
+  // HNSW stores a full copy of every vector, so at the target scale this index
+  // cost roughly as much as the table it indexed, for nothing.
+  //
+  // It comes back only with the inner-CTE rewrite (S4), which changes recall
+  // semantics and so arrives as a decision rather than a restoration.
   registerAppDriftProbe({
-    name: 'B3 idx_framework_resparkable_embedding_hnsw (HNSW, vector_cosine_ops)',
-    kind: 'HNSW index',
+    name: 'B3 idx_framework_resparkable_embedding_hnsw (MUST NOT EXIST)',
+    kind: 'forbidden index',
     table: 'framework_resparkable_embedding',
-    probe: indexExists('idx_framework_resparkable_embedding_hnsw'),
+    probe: absent(
+      indexExists('idx_framework_resparkable_embedding_hnsw'),
+      'HNSW index is back. No query can use it (hybrid-search.ts blends and pre-filters), ' +
+        'and it costs roughly the size of the table. Drop it, or land S4 first — see scale.md S3.'
+    ),
   });
 
   // B4 — tasks are deliberately not embedded (plan §1), so this tsvector IS
@@ -89,11 +131,21 @@ export function registerResparkableDriftProbes(): void {
     probe: generatedColumnExists('framework_resparkable_embedding', 'searchVector'),
   });
 
-  // B7 — GIN over B6.
+  // B7 — INVERTED 2026-08-25, same reasoning as B3 (scale.md S3).
+  //
+  // B6's generated column stays and is still required: `hybridSearchRows` reads
+  // `searchVector` for the BM25 half of the blend. What it never does is match
+  // against it with `@@`, so the GIN index is not consulted. Note this is NOT
+  // B5 (`idx_framework_resparkable_task_search_vector`), which IS used, by
+  // `searchTaskKeywords`, and remains a required object above.
   registerAppDriftProbe({
-    name: 'B7 idx_framework_resparkable_embedding_search_vector (GIN)',
-    kind: 'GIN index',
+    name: 'B7 idx_framework_resparkable_embedding_search_vector (MUST NOT EXIST)',
+    kind: 'forbidden index',
     table: 'framework_resparkable_embedding',
-    probe: indexExists('idx_framework_resparkable_embedding_search_vector'),
+    probe: absent(
+      indexExists('idx_framework_resparkable_embedding_search_vector'),
+      'GIN index is back. hybridSearchRows computes ts_rank_cd over the userId-filtered set ' +
+        'and carries no @@ predicate, so it is never consulted — see scale.md S3.'
+    ),
   });
 }

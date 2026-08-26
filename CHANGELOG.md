@@ -208,6 +208,16 @@ release process.
 
 ### Changed
 
+- **`ResparkableEmbedding.embedding` is `halfvec(1536)`, not `vector(1536)`.**
+  Two bytes per dimension instead of four, for a recall difference that does not
+  show up on normalised embeddings. At the target scale set in
+  [`scale.md`](./.context/framework/resparkable/scale.md) this table is the
+  largest object in the database, so the change is worth roughly half of it.
+  Migration `20260825120000_resparkable_halfvec_and_index_prune` casts in place;
+  `contentHash` is untouched, so no re-embed is triggered and no cost is
+  incurred. Forks with their own raw SQL against this column must change
+  `::vector` casts to `::halfvec`; column-to-column comparisons are unaffected.
+
 - **Editing an Area, Goal or Project offers chat as well as a form.**
   `EntityFormDialog`'s edit branch now renders `EntityEditorPanel` (bound to
   `resparkable-companion`, which holds the `resparkable_upsert_*` capabilities)
@@ -817,7 +827,22 @@ release process.
   archived corpus is keyword-searchable but not vector-searchable.
 
 
+
 ### Removed
+
+- **Two unused indexes on `framework_resparkable_embedding` are dropped, and
+  drift probes B3 and B7 now assert they stay dropped.** The HNSW index
+  (`idx_framework_resparkable_embedding_hnsw`) and the GIN index over
+  `searchVector` (`idx_framework_resparkable_embedding_search_vector`) were
+  never used by any query: `hybridSearchRows` defeats the vector index path with
+  its distance pre-filter and blended `ORDER BY`, and carries no `@@` predicate
+  for the GIN index. pgvector HNSW stores a full copy of every vector, so the
+  pair cost roughly the size of the table plus a graph traversal per insert for
+  no benefit. B3 and B7 changed from existence probes to **forbidden-object**
+  probes, so `npm run db:drift-check` now fails if either is recreated. They
+  return only with the inner-CTE search rewrite (scale.md S4), which changes
+  recall semantics. `idx_framework_resparkable_task_search_vector` (B5) is a
+  different index, is genuinely used by `searchTaskKeywords`, and is unchanged.
 
 - **`components/resparkable/layout/resparkable-nav.tsx` and
   `components/resparkable/layout/resparkable-sidekick.tsx`** — the pre-cutover

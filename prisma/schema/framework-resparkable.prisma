@@ -495,23 +495,43 @@ model ResparkableLink {
 }
 
 /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
-/// THREE Postgres objects on this model are raw SQL in the migration:
+/// TWO Postgres objects on this model are raw SQL in the migration:
 ///
-///   1. `embedding vector(1536)` — the pgvector column type. Probe B2 asserts
+///   1. `embedding halfvec(1536)` — the pgvector column type. Probe B2 asserts
 ///      the column exists.
-///   2. HNSW index `idx_framework_resparkable_embedding_hnsw`
-///      (vector_cosine_ops, m=16, ef_construction=64). Probe B3. A drop here
-///      is SILENT — search keeps working, just as a sequential scan.
-///   3. `GENERATED ALWAYS AS (...) STORED` on `searchVector` + its GIN index
-///      `idx_framework_resparkable_embedding_search_vector`. Probe B6.
+///   2. `GENERATED ALWAYS AS (...) STORED` on `searchVector`. Probe B6.
 ///
-/// ONE vector table for all entity types (D2) — one column, one HNSW index,
-/// one re-embed path, one search query. That cuts the pgvector drift surface
-/// roughly five-fold versus a vector column per entity table.
+/// `halfvec`, not `vector`, since 2026-08-25 (scale.md S1). Half the bytes per
+/// dimension for a recall difference that does not show up on normalised
+/// embeddings, and at the target scale the table is the single largest object
+/// in the database: 800 GB of `vector(1536)` is 400 GB of `halfvec(1536)` at
+/// 100k users. The narrowing to 1024 dimensions (S2) is a further third and is
+/// blocked on Resparkable owning its own `AiProviderModel` row, because the
+/// platform knowledge base shares the active model and its own column is
+/// `vector(1536) NOT NULL`.
 ///
-/// Archiving DELETES the rows here rather than filtering them at query time:
-/// HNSW is approximate, so a post-filter over a mostly-archived corpus returns
-/// fewer rows than asked for, silently, degrading as history grows (§11).
+/// TWO INDEXES WERE DELIBERATELY REMOVED and probes B3 and B7 now assert they
+/// stay gone (scale.md S3). Do not "restore" them:
+///
+///   - HNSW `idx_framework_resparkable_embedding_hnsw` — `hybridSearchRows`
+///     cannot use it. The distance pre-filter and the blended `ORDER BY
+///     final_score` both defeat it, which the query's own doc comment has said
+///     since it was written. pgvector's HNSW stores a full copy of every vector,
+///     so it cost roughly the size of the table plus a graph traversal on every
+///     insert, in exchange for nothing.
+///   - GIN `idx_framework_resparkable_embedding_search_vector` — same story.
+///     The query computes `ts_rank_cd` over the already-`userId`-filtered set
+///     and carries no `@@` predicate, so the index is never consulted.
+///
+/// Both come back with the inner-CTE rewrite (S4) and not before. That rewrite
+/// changes recall semantics, so it is a decision, not a tidy-up.
+///
+/// ONE vector table for all entity types (D2) — one column, one re-embed path,
+/// one search query. That cuts the pgvector drift surface roughly five-fold
+/// versus a vector column per entity table.
+///
+/// Archiving DELETES the rows here rather than filtering them at query time
+/// (§11, §17 risk 5b).
 model ResparkableEmbedding {
   id     String @id @default(cuid())
   userId String
@@ -523,7 +543,7 @@ model ResparkableEmbedding {
 
   content String @db.Text
 
-  embedding    Unsupported("vector(1536)")?
+  embedding    Unsupported("halfvec(1536)")?
   searchVector Unsupported("tsvector")?
 
   /// Hash of SEMANTIC CONTENT ONLY — never rendered markdown, or every
