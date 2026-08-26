@@ -23,7 +23,7 @@
  * Because a fork installing Resparkable for a team of thirty should not have to
  * run a second process to get a briefing. `drainResparkableJobs` is a bounded
  * call, so the tick can take a few jobs and twenty seconds of it and stop;
- * `npm run resparkable:worker` calls the identical function with a large budget
+ * `npm run framework:resparkable:worker` calls the identical function with a large budget
  * in a loop. Nothing about the queue's correctness depends on which one is
  * running, because the lease lives in the database rather than in
  * `registerAppJob`'s process memory.
@@ -133,8 +133,18 @@ export interface ResparkableTickResult extends DrainResult {
  */
 function resolveExecutionOwner(execution: BillableWorkflowExecution): string | null {
   if (execution.userId) return execution.userId;
-  const scope = execution.scope as Record<string, unknown> | null;
-  const scoped = scope?.[RESPARKABLE_SCHEDULE_OWNER_KEY];
+
+  // Untrusted JSON from a platform-owned column, so every non-object shape is
+  // rejected before anything is read out of it — an array is an object to
+  // `typeof` and a bare string indexes to `undefined` rather than throwing, so
+  // neither would error, they would just quietly resolve to "no owner". The
+  // strict version of this check used to live in `repo/schedules.ts`'s
+  // `carriesOwnerScope`, which phase 56 deleted along with the rows it read;
+  // this is that check, kept.
+  const scope: unknown = execution.scope;
+  if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
+
+  const scoped = (scope as Record<string, unknown>)[RESPARKABLE_SCHEDULE_OWNER_KEY];
   return typeof scoped === 'string' && scoped.length > 0 ? scoped : null;
 }
 
@@ -216,14 +226,7 @@ export async function runResparkableTick(
 
   const drained =
     options.drain === false
-      ? {
-          settled: 0,
-          skippedDormant: 0,
-          skippedNoCredit: 0,
-          failed: 0,
-          queueEmpty: true,
-          outcome: EMPTY_DRAIN_OUTCOME,
-        }
+      ? emptyDrain()
       : await drainResparkableJobs({
           maxJobs: TICK_MAX_JOBS,
           maxWallClockMs: TICK_MAX_WALL_CLOCK_MS,
@@ -233,15 +236,34 @@ export async function runResparkableTick(
   return { ...drained, executionsBilled, executionsSkipped, jobsBackfilled };
 }
 
-const EMPTY_DRAIN_OUTCOME = {
-  executionsQueued: 0,
-  connectionsCreated: 0,
-  retentionArchived: 0,
-  retentionPruned: 0,
-  reindexEmbedded: 0,
-  reindexChunks: 0,
-  incomplete: false,
-};
+/**
+ * What a tick that did not drain reports.
+ *
+ * A function rather than a shared constant: `applyOutcome` in `drain.ts`
+ * accumulates into `result.outcome` with `+=`, so handing every caller the same
+ * object identity is one refactor away from a tick silently summing into a
+ * module-level singleton and reporting the whole process's history as this
+ * minute's work.
+ */
+function emptyDrain(): DrainResult {
+  return {
+    settled: 0,
+    skippedDormant: 0,
+    skippedNoCredit: 0,
+    skippedUnknown: 0,
+    failed: 0,
+    queueEmpty: true,
+    outcome: {
+      executionsQueued: 0,
+      connectionsCreated: 0,
+      retentionArchived: 0,
+      retentionPruned: 0,
+      reindexEmbedded: 0,
+      reindexChunks: 0,
+      incomplete: false,
+    },
+  };
+}
 
 /**
  * Register the tick job. Called from `lib/app/jobs.ts`.

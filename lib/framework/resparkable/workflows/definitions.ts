@@ -186,7 +186,7 @@ const morningBriefing: ResparkableWorkflowSpec = {
         //
         // Omitting the key lets the override through. The scheduled path is
         // safe because the schedule's `inputTemplate` is `{}` (see
-        // `repo/schedules.ts`), which the capability's strict schema accepts.
+        // `repo/workflow-runs.ts`), which the capability's strict schema accepts.
         config: { capabilitySlug: C.getBriefingInputs },
         nextSteps: [{ targetStepId: 'write_briefing' }],
       },

@@ -135,8 +135,8 @@ partition operation rather than a mass delete. Every query already leads with
 against a 60-second external cron. That is 72,000 executions per day for the
 entire deployment.
 
-Resparkable gives every user **four cron rows**
-(`lib/framework/resparkable/schedules/ensure.ts`). At 100,000 users that is
+Resparkable gave every user **four cron rows** (`schedules/ensure.ts`, deleted
+by phase 56 along with the rows it wrote). At 100,000 users that is
 400,000 rows in `AiWorkflowSchedule` and a demand of 400,000 executions per
 day, against a supply of 72,000.
 

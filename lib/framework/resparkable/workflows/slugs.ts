@@ -18,8 +18,8 @@
  *
  * The `resparkable-` prefix is load-bearing rather than cosmetic: it is the only
  * thing distinguishing a workflow this tier owns from a host project's own in a
- * shared table, and `repo/schedules.ts` and the phase-56 migration both filter
- * on it.
+ * shared table, and `repo/workflow-runs.ts` and the phase-56 migration both
+ * filter on it.
  */
 export const RESPARKABLE_SCHEDULED_WORKFLOWS = {
   nightlyTriage: 'resparkable-nightly-triage',

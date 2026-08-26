@@ -36,6 +36,17 @@ release process.
   replaced the trigger, not the executor. See
   [`phase-56-plan.md`](./.context/framework/resparkable/phase-56-plan.md).
 
+- **Drift probe B2 — `framework_resparkable_embedding.embedding` must be
+  `halfvec`, not merely present.** The schema had claimed "Probe B2 asserts the
+  column exists" since the table was written and B2 was the one probe in the
+  series with no implementation, so the tier's largest column was the one
+  Prisma-unmodellable object nothing guarded. It asserts the column's **type**
+  rather than its presence, because presence was never the risk: Prisma models
+  it as `Unsupported`, so a regenerated migration re-emits it as *something*,
+  and a column of that name holding `vector` doubles the largest object in the
+  database while every query keeps working. `registerResparkableDriftProbes()`
+  now registers seven, not six.
+
 - **`RESPARKABLE_WORKER_MODE`** (`tick` | `external`, default `tick`) in
   `resparkableEnvSchema`. Both values are correct; only one is faster. The lease
   lives in the database, so leaving it unset on a scaled install costs
@@ -47,6 +58,19 @@ release process.
   reclaim on expiry and not before, queue depth invariant under a day of
   backlog, and erasure taking the job rows with it.
 
+- **`ResparkableEvent.source` (`user` | `system`), and the authorship context
+  behind it.** The demand gate below is only meaningful if an event can say who
+  wrote it. `ResparkableCapability.execute` marks a call as system-authored when
+  `CapabilityContext.workflowExecutionId` is set — which core already provides
+  for every capability dispatched from a workflow step — and
+  `recordResparkableEvent` reads that ambient mark
+  (`lib/framework/resparkable/services/authorship.ts`, `AsyncLocalStorage`).
+  Retention marks its own rows, since it writes through the repo rather than the
+  service. Existing rows default to `user`. **Forks reading
+  `framework_resparkable_event` directly should filter on `source` wherever they
+  mean "what the person did"**; a new index `(userId, source, createdAt DESC)`
+  serves that.
+
 - **Scheduled work no longer bills for runs that cannot produce anything.**
   Before a demand-gated kind runs, it asks one indexed question against
   `ResparkableEvent` — has anything changed in this brain since the last run? If
@@ -55,6 +79,15 @@ release process.
   write clears the flag and pulls due times back in with `LEAST`, so returning
   after three months costs one cycle rather than thirteen. `retention` is
   deliberately exempt: the calendar drives it, not activity.
+
+  **The gate counts only what the person did.** Asked against every event it
+  could never answer "no", because the background runs write events themselves —
+  all four workflows finish by recording a `review`, nightly triage records the
+  thoughts it promotes and the tasks it creates, and retention records what it
+  archived. Each run produced the evidence authorising the next one, on a brain
+  nobody had touched, and the wake on the same path cleared `dormantSince` for
+  every other kind too. So the gate reads `source = 'user'`, and a system write
+  does not wake a dormant brain.
 
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains

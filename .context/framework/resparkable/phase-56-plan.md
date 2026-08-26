@@ -42,6 +42,28 @@ buildable: **who owns per-user scheduled work.**
 > `prisma migrate dev` would silently drop because it cannot represent them, and
 > this one it would recreate. Adding a probe for it would be a probe that cannot fail.
 >
+> **4. The gate needed an authorship column that this document does not
+> mention, and without it the gate is decorative.** §7 says the job asks whether
+> anything has happened in the brain. Implemented literally, that question can
+> never answer "no": every one of the four workflows finishes by calling
+> `resparkable_write_review`, which records a `ResparkableEvent`; nightly triage
+> also records each thought it promotes and task it creates; retention records
+> what it archived. Each run writes the evidence that authorises the next one,
+> on a brain nobody has touched — and `wakeResparkableJobs` sits on the same
+> path, so those writes also cleared `dormantSince` for every _other_ kind. The
+> gate did not merely fail to fire, it re-armed the whole set, and the only
+> symptom was a bill.
+>
+> The question had to become **"has the person done anything?"**, which needs
+> the row to know who wrote it. `ResparkableEvent.source` (`user` | `system`)
+> is set at one chokepoint — `ResparkableCapability.execute`, from
+> `CapabilityContext.workflowExecutionId`, which core already sets for any
+> capability dispatched from a workflow step — and read at one chokepoint,
+> `recordResparkableEvent`. A denylist over event shapes was the cheaper
+> alternative and cannot work: "retention archived this" and "the owner archived
+> this" are the same row. Migration
+> `20260826110000_resparkable_event_source`.
+>
 > Two smaller decisions worth knowing: `retention` is deliberately **not**
 > demand-gated (the calendar drives it, not activity, so gating it would stop it
 > working for exactly the dormant brains whose data most needs ageing out), and
@@ -263,10 +285,10 @@ drainResparkableJobs({ maxJobs, maxWallClockMs, concurrency }): Promise<DrainRes
 
 It is called from **two** places, and they are the same code:
 
-| Caller                                                                 | Budget                          | For                                                                           |
-| ---------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------- |
-| `registerAppJob` on the 60s maintenance tick                           | small (a few jobs, ~20s)        | single-container installs, dev, and any deployment under a few thousand users |
-| `npm run resparkable:worker` — a standalone Node entrypoint that loops | large, until the queue is empty | scaled installs running N worker containers                                   |
+| Caller                                                                           | Budget                          | For                                                                           |
+| -------------------------------------------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------- |
+| `registerAppJob` on the 60s maintenance tick                                     | small (a few jobs, ~20s)        | single-container installs, dev, and any deployment under a few thousand users |
+| `npm run framework:resparkable:worker` — a standalone Node entrypoint that loops | large, until the queue is empty | scaled installs running N worker containers                                   |
 
 **Deployment topology becomes the operator's choice rather than the module's
 requirement.** A fork that installs Resparkable for a team of thirty runs

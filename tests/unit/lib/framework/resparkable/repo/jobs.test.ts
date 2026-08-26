@@ -253,15 +253,39 @@ describe('the reads behind the gates', () => {
     expect(sql).not.toContain('count(');
   });
 
+  it('counts only what the PERSON did, not the system', async () => {
+    // Without this predicate the gate can never answer "nothing changed": every
+    // background run writes events of its own, so each run produces the
+    // evidence authorising the next one and an idle brain is billed nightly,
+    // silently, for ever.
+    await hasResparkableActivitySince('user_a', NOW);
+
+    expect(lastSql(vi.mocked(prisma.$queryRaw))).toContain('"source" = \'user\'');
+  });
+
   it('reports no activity when the probe comes back empty', async () => {
     vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
     expect(await hasResparkableActivitySince('user_a', NOW)).toBe(false);
   });
 
-  it('finds brains with no job rows by anti-join', async () => {
+  it('finds brains missing ANY kind, not only brains with none', async () => {
+    // `kind` is a plain string precisely so the vocabulary can grow by code
+    // change plus a backfill. An existence probe would see a brain holding
+    // seven of eight rows as fully provisioned, so every existing user would
+    // silently never receive a newly added kind — and nothing anywhere would
+    // say so. Counting against what this build expects catches both the
+    // brand-new brain and the one a deploy left short.
     await listSpacesWithoutJobs(5);
 
-    expect(lastSql(vi.mocked(prisma.$queryRaw))).toContain('WHERE NOT EXISTS');
+    const sql = lastSql(vi.mocked(prisma.$queryRaw));
+    expect(sql).toContain('HAVING count(j."id") <');
+    expect(sql).not.toContain('NOT EXISTS');
+  });
+
+  it('compares against the number of kinds this build knows about', async () => {
+    await listSpacesWithoutJobs(5);
+
+    expect(lastValues(vi.mocked(prisma.$queryRaw))).toContain(RESPARKABLE_JOB_KINDS.length);
   });
 
   it('counts only the rows a worker could actually claim', async () => {

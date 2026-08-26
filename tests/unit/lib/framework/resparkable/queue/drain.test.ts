@@ -176,7 +176,35 @@ describe('the demand gate — the billing rule, not a budget lever', () => {
     await drainResparkableJobs({ now: NOW, maxJobs: 5 });
 
     const dueAt = vi.mocked(completeResparkableJob).mock.calls[0]?.[2]?.dueAt;
-    expect(dueAt.toISOString()).toBe('2026-06-18T04:30:00.000Z');
+    expect(dueAt?.toISOString()).toBe('2026-06-18T04:30:00.000Z');
+  });
+
+  it('lets an interval kind reach the weekly ceiling too', async () => {
+    // `reindex` runs every fifteen minutes. An earlier version computed the
+    // dormant due time by WALKING the cadence with a step cap, which silently
+    // floored the backoff at `steps × period` — about ten hours for this kind,
+    // however long the brain had been quiet. That is 2.3 polls a day instead of
+    // one a week: seventeen times the intended background load at 100k brains,
+    // while `kinds.ts` claimed an idle brain stops being polled at all.
+    vi.mocked(hasResparkableActivitySince).mockResolvedValue(false);
+    claimOnce([job({ kind: 'reindex', dormantSince: new Date('2026-03-15T12:00:00.000Z') })]);
+
+    await drainResparkableJobs({ now: NOW, maxJobs: 5 });
+
+    const dueAt = vi.mocked(completeResparkableJob).mock.calls[0]?.[2]?.dueAt;
+    expect(dueAt?.toISOString()).toBe('2026-06-22T12:00:00.000Z');
+  });
+
+  it('backs an interval kind off by exactly how long it has been quiet', async () => {
+    // Two days dormant, so two days' wait — not the 15-minute cadence, and not
+    // the week-long ceiling either.
+    vi.mocked(hasResparkableActivitySince).mockResolvedValue(false);
+    claimOnce([job({ kind: 'reindex', dormantSince: new Date('2026-06-13T12:00:00.000Z') })]);
+
+    await drainResparkableJobs({ now: NOW, maxJobs: 5 });
+
+    const dueAt = vi.mocked(completeResparkableJob).mock.calls[0]?.[2]?.dueAt;
+    expect(dueAt?.toISOString()).toBe('2026-06-17T12:00:00.000Z');
   });
 
   it('caps the backoff at a week', async () => {
@@ -190,7 +218,7 @@ describe('the demand gate — the billing rule, not a budget lever', () => {
     await drainResparkableJobs({ now: NOW, maxJobs: 5 });
 
     const dueAt = vi.mocked(completeResparkableJob).mock.calls[0]?.[2]?.dueAt;
-    expect(dueAt.toISOString()).toBe('2026-06-23T04:30:00.000Z');
+    expect(dueAt?.toISOString()).toBe('2026-06-23T04:30:00.000Z');
   });
 
   it('runs an ungated kind even when nothing has changed', async () => {
@@ -372,6 +400,12 @@ describe('an unrecognised kind', () => {
     expect(failResparkableJob).not.toHaveBeenCalled();
     expect(runResparkableJob).not.toHaveBeenCalled();
     expect(result.failed).toBe(0);
+    // Counted apart from the demand gate. Folding it into `skippedDormant`
+    // would inflate "the gate skipped N" during a rolling deploy — hiding the
+    // one condition an operator wants to see behind the one they expect to see
+    // all the time.
+    expect(result.skippedUnknown).toBe(1);
+    expect(result.skippedDormant).toBe(0);
     const settled = vi.mocked(completeResparkableJob).mock.calls[0]?.[2];
     expect(settled?.dueAt?.toISOString()).toBe('2026-06-16T12:00:00.000Z');
   });

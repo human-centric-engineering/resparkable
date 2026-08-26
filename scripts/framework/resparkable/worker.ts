@@ -1,5 +1,5 @@
 /**
- * `npm run resparkable:worker` — the standalone drain loop.
+ * `npm run framework:resparkable:worker` — the standalone drain loop.
  *
  * ## Why this exists, and why it is optional
  *
@@ -40,6 +40,8 @@
  * should not cost either.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { drainResparkableJobs } from '@/lib/framework/resparkable/queue/drain';
 import { countDueResparkableJobs } from '@/lib/framework/resparkable/repo/jobs';
 import { logger } from '@/lib/logging';
@@ -78,18 +80,53 @@ function stop(signal: string): void {
 process.on('SIGTERM', () => stop('SIGTERM'));
 process.on('SIGINT', () => stop('SIGINT'));
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    // Do not hold the process open on a sleep we are about to abandon.
-    timer.unref?.();
-  });
+/**
+ * The idle wait. Deliberately **not** `unref`'d.
+ *
+ * An `unref`'d timer does not hold the event loop open, so once the queue is
+ * empty and this sleep is the only pending work, whether the process survives
+ * depends on something else happening to keep the loop referenced — signal
+ * handlers do not, and a Prisma client sitting idle is not a guarantee either.
+ * The failure that buys you is a worker container that exits 0 the first time
+ * it finds nothing to do and gets restart-looped by its supervisor, which reads
+ * as a crashing worker rather than an idle one.
+ *
+ * It could not be reproduced in this environment, which is precisely the
+ * argument for removing it: correctness here should not rest on which other
+ * handle happens to be open. Shutdown does not need it — `stop()` sets
+ * `running`, and the loop exits after at most one idle interval.
+ */
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * A lease token, fresh for every pass.
+ *
+ * **Not a stable per-process id**, and the difference is the whole point of the
+ * `leasedBy` guard on the settle. `repo/jobs.ts` matches on it so that a worker
+ * whose lease lapsed mid-run cannot clear the lease of whoever holds the row
+ * now — and a *stable* id defeats exactly that, because two identities can
+ * collide. `worker-${pid}-${HOSTNAME}` looks unique and is not: in a container
+ * the main process is PID 1, and an image that does not set `HOSTNAME` gives
+ * every replica `worker-1-local`. Two such workers can settle each other's
+ * rows, which lets a third claim a job that is still running.
+ *
+ * A random token per pass costs nothing and makes the guard mean what it says.
+ * The pid and host stay in it because a lease that cannot be traced back to a
+ * container is a lease nobody can debug.
+ */
+function leaseToken(): string {
+  return `w-${process.pid}-${process.env.HOSTNAME ?? 'local'}-${randomUUID().slice(0, 8)}`.slice(
+    0,
+    64
+  );
+}
 
 async function main(): Promise<void> {
-  const workerId = `worker-${process.pid}-${process.env.HOSTNAME ?? 'local'}`.slice(0, 64);
-  logger.info('Resparkable worker started', { workerId, concurrency: CONCURRENCY });
+  const label = `worker-${process.pid}`;
+  logger.info('Resparkable worker started', { worker: label, concurrency: CONCURRENCY });
 
   while (running) {
+    const workerId = leaseToken();
     const result = await drainResparkableJobs({
       workerId,
       maxJobs: MAX_JOBS_PER_PASS,
@@ -105,7 +142,8 @@ async function main(): Promise<void> {
       // behind, and it shows it as a rising line rather than as a cliff.
       const due = await countDueResparkableJobs(new Date());
       logger.info('Resparkable worker pass complete', {
-        workerId,
+        worker: label,
+        lease: workerId,
         settled: result.settled,
         skippedDormant: result.skippedDormant,
         skippedNoCredit: result.skippedNoCredit,

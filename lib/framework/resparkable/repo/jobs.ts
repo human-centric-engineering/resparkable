@@ -199,6 +199,15 @@ export async function failResparkableJob(
  * what makes "the enqueue failed on signup" a recoverable condition rather than
  * a brain that never gets a briefing.
  *
+ * **Ids come from `gen_random_uuid()::text`, not from `@default(cuid())`.**
+ * Prisma generates a cuid client-side, and this insert never goes through the
+ * client's data mapper — so the column needs a database-side default of its
+ * own or the `INSERT` has nothing to put there. The result is that job ids are
+ * uuid-shaped while the rest of the tier is cuid-shaped. Nothing reads a job id
+ * for meaning and nothing parses its format, so the mix is cosmetic; it is
+ * called out because a reader comparing the schema to this file would otherwise
+ * be right to wonder which one wins.
+ *
  * Deliberately does NOT update `dueAt` on an existing row. A repeat call is
  * asking "does this owner have these jobs", not "reschedule them" — and pulling
  * a due time forward from a hot read path is how you build a nightly workflow
@@ -278,7 +287,8 @@ export async function pullResparkableJobsForward(
 }
 
 /**
- * Brains with no job rows at all — the safety net under the enqueue on signup.
+ * Brains missing any of their job rows — the safety net under the enqueue on
+ * signup, and the only thing that carries a NEW KIND to existing brains.
  *
  * The enqueue in `ensureResparkableSpace` is fire-and-forget and never allowed
  * to fail a new user's first page load, so it can miss. Before this phase the
@@ -286,40 +296,68 @@ export async function pullResparkableJobsForward(
  * replacement, a brain that missed its enqueue would have no background work
  * for ever and nothing anywhere would say so.
  *
- * A `NOT EXISTS` anti-join rather than a `LEFT JOIN … IS NULL`: Postgres can
- * stop at the first matching job row per space, and the correlated lookup goes
- * straight down the `(userId, kind)` unique index. Bounded by `limit` because
- * this runs on a tick.
+ * **Counted, not merely probed for existence**, and that is the difference
+ * between a net and a formality. `kind` is a plain string precisely so the
+ * vocabulary can grow by code change plus a backfill — but a brain that already
+ * has seven of eight rows satisfies a `NOT EXISTS (… j."userId" = s."userId")`
+ * and is invisible to it, so every existing user would silently never get the
+ * new kind. Comparing the count against what this build expects catches both
+ * the brand-new brain and the one a deploy left a kind short.
+ *
+ * `ensureResparkableJobs` is `ON CONFLICT DO NOTHING`, so re-running it against
+ * a partial set writes only what is missing and leaves existing due times
+ * alone. Bounded by `limit` because this runs on a tick.
  */
 export async function listSpacesWithoutJobs(
-  limit: number
+  limit: number,
+  expectedKinds: number = RESPARKABLE_JOB_KINDS.length
 ): Promise<Array<{ userId: string; timezone: string }>> {
   return prisma.$queryRaw<Array<{ userId: string; timezone: string }>>`
     SELECT s."userId", s."timezone"
     FROM "framework_resparkable_space" s
-    WHERE NOT EXISTS (
-      SELECT 1 FROM "framework_resparkable_job" j WHERE j."userId" = s."userId"
-    )
+    LEFT JOIN "framework_resparkable_job" j ON j."userId" = s."userId"
+    GROUP BY s."userId", s."timezone", s."createdAt"
+    HAVING count(j."id") < ${expectedKinds}
     ORDER BY s."createdAt" ASC
     LIMIT ${limit}
   `;
 }
 
 /**
- * Has anything happened in this brain since `since`? The demand gate's one
- * question.
+ * Has **the person** done anything in this brain since `since`? The demand
+ * gate's one question.
  *
- * `ResparkableEvent` is the append-only log of every meaningful mutation, and
- * `@@index([userId, createdAt(sort: Desc)])` already exists for the weekly
- * review — so this is an index-only probe that stops at the first row, not a
- * count. `EXISTS` rather than `count(*)` for exactly that reason: the answer is
- * a boolean and a brain with fifty thousand events should not pay to learn it.
+ * ## `source = 'user'` is the whole question, not a refinement of it
+ *
+ * The obvious version of this query — any event since `since` — can never
+ * answer "no", because the background runs write events too. All four workflows
+ * finish by recording a `review`, nightly triage records every thought it
+ * promotes and every task it creates, and retention records what it archived.
+ * Each run therefore produces the evidence that authorises the next one, on a
+ * brain nobody has touched, and the gate becomes decorative: an idle brain is
+ * billed nightly, silently, for ever. `services/authorship.ts` has the full
+ * account and how the marking is applied.
+ *
+ * ## Why `EXISTS` over a count, and why the dedicated index
+ *
+ * The answer is a boolean, so `EXISTS` stops at the first matching row and a
+ * brain with fifty thousand events does not pay to learn it.
+ *
+ * It reads `@@index([userId, source, createdAt(sort: Desc)])` rather than the
+ * older `(userId, createdAt DESC)`, which cannot serve this: `source` sits
+ * between the two columns and a b-tree cannot skip a middle one. That matters
+ * most in exactly the case worth optimising — on a dormant brain every event
+ * since the last run is system-authored, so the wrong index would walk all of
+ * them to reach "no", making the one answer that saves money the most expensive
+ * to compute.
  */
 export async function hasResparkableActivitySince(userId: string, since: Date): Promise<boolean> {
   const rows = await prisma.$queryRaw<Array<{ present: boolean }>>`
     SELECT EXISTS (
       SELECT 1 FROM "framework_resparkable_event"
-      WHERE "userId" = ${userId} AND "createdAt" > ${since}
+      WHERE "userId" = ${userId}
+        AND "source" = 'user'
+        AND "createdAt" > ${since}
     ) AS present
   `;
   return rows[0]?.present === true;

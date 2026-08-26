@@ -76,6 +76,7 @@ describe('registerResparkableJobs', () => {
       settled: 0,
       skippedDormant: 0,
       skippedNoCredit: 0,
+      skippedUnknown: 0,
       failed: 0,
       queueEmpty: true,
       outcome: {

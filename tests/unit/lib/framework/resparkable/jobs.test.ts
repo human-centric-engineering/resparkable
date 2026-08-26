@@ -65,6 +65,7 @@ const EMPTY_DRAIN = {
   settled: 0,
   skippedDormant: 0,
   skippedNoCredit: 0,
+  skippedUnknown: 0,
   failed: 0,
   queueEmpty: true,
   outcome: {
@@ -158,15 +159,25 @@ describe('the billing pass', () => {
     expect(result.executionsBilled).toBe(0);
   });
 
-  it('treats a malformed scope as unattributable', async () => {
+  it('treats every malformed scope shape as unattributable', async () => {
+    // Untrusted JSON from a platform-owned column. None of these throws — a
+    // bare string indexes to `undefined`, an array is an object to `typeof` —
+    // so without the shape check they would all resolve quietly to "no owner"
+    // by accident rather than by decision, and a future reader would have no
+    // way to tell which.
     vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
       execution({ userId: null, scope: 'user_b' }),
       execution({ id: 'exec_2', userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 42 } }),
+      execution({ id: 'exec_3', userId: null, scope: [RESPARKABLE_SCHEDULE_OWNER_KEY, 'user_b'] }),
+      execution({ id: 'exec_4', userId: null, scope: 42 }),
+      execution({ id: 'exec_5', userId: null, scope: null }),
+      execution({ id: 'exec_6', userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: '' } }),
     ] as never);
 
     const result = await runResparkableTick();
 
-    expect(result.executionsSkipped).toBe(2);
+    expect(result.executionsSkipped).toBe(6);
+    expect(recordAgentSpend).not.toHaveBeenCalled();
   });
 
   it('swallows a duplicate ledger write instead of logging an error', async () => {

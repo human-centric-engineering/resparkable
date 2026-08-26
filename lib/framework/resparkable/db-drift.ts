@@ -18,6 +18,7 @@
  * `prisma/migrations/20260728222816_add_second_brain/migration.sql`.
  */
 
+import { prisma } from '@/lib/db/client';
 import {
   registerAppDriftProbe,
   constraintExists,
@@ -53,6 +54,49 @@ function absent(probe: Probe, why: string): Probe {
 }
 
 /**
+ * Assert a column's underlying Postgres type by name.
+ *
+ * Core has `columnExists` and `generatedColumnExists`; neither can say what
+ * *type* a column is, and for a pgvector column that is the only thing worth
+ * asserting. `framework_resparkable_embedding.embedding` is
+ * `halfvec(1536)` — a type Prisma models as `Unsupported`, which means
+ * `prisma migrate dev` cannot represent it and will emit something wrong for it
+ * given the chance. `columnExists` would report green the whole time, because a
+ * column of that name would still be there.
+ *
+ * `information_schema.columns.data_type` reads `USER-DEFINED` for every
+ * extension type, so it distinguishes nothing. `udt_name` is the actual type
+ * name (`halfvec`, `vector`, `tsvector`) and is standard enough to rely on.
+ *
+ * Pinned to `current_schema()`. Without it a database carrying the same table
+ * name in a second visible schema answers from whichever row comes back first,
+ * and an unordered single-row read is a probe that reports on the wrong object
+ * — green or red, both meaningless.
+ *
+ * Local rather than upstream because it is one query and this is the only
+ * caller; if a second fork needs it, it belongs in `lib/db/drift-probes.ts`
+ * next to its three siblings and is worth an ask.
+ */
+function columnHasType(tableName: string, columnName: string, udtName: string): Probe {
+  return async () => {
+    const rows = await prisma.$queryRaw<Array<{ udt_name: string | null }>>`
+      SELECT udt_name
+      FROM information_schema.columns
+      WHERE table_name = ${tableName}
+        AND column_name = ${columnName}
+        AND table_schema = current_schema()
+    `;
+    const actual = rows[0]?.udt_name;
+    if (!actual)
+      return { ok: false, note: `column ${tableName}.${columnName} is missing entirely` };
+    if (actual !== udtName) {
+      return { ok: false, note: `expected ${udtName}, found ${actual}` };
+    }
+    return { ok: true };
+  };
+}
+
+/**
  * `generatedColumnExists` was a local copy here until Resparkable shipped it in
  * response to ask #10 (resparkable#481) — core's own A1 probe had the same blind
  * spot the copy was written to close, and now uses this too.
@@ -66,8 +110,9 @@ function absent(probe: Probe, why: string): Probe {
  */
 
 /**
- * Register Resparkable's seven probes. Five assert an object EXISTS; B3 and B7
- * assert one does NOT (see `absent`). Idempotent per process is NOT guaranteed —
+ * Register Resparkable's seven probes. Five assert an object EXISTS (B1, B2,
+ * B4, B5, B6); B3 and B7 assert one does NOT (see `absent`). Idempotent per
+ * process is NOT guaranteed —
  * `registerAppDriftProbe` throws on a duplicate name, which is deliberate: a
  * double registration means the host wired this up twice and should know.
  */
@@ -81,6 +126,28 @@ export function registerResparkableDriftProbes(): void {
     kind: 'FK constraint',
     table: 'framework_resparkable_space',
     probe: constraintExists('framework_resparkable_space_userId_fkey', 'ON DELETE CASCADE'),
+  });
+
+  // B2 — the pgvector column itself, asserted by TYPE rather than by presence.
+  //
+  // The schema file has claimed "Probe B2 asserts the column exists" since the
+  // table was written, and until 2026-08-26 it did not: B2 was the one probe in
+  // the series with no implementation, so the tier's largest column was the one
+  // unmodellable object nothing guarded. Nobody noticed, which is exactly the
+  // failure mode the probes exist for.
+  //
+  // Type rather than presence, because presence was never the risk. Prisma
+  // models this as `Unsupported("halfvec(1536)")`, so a regenerated migration
+  // will re-emit it as *something* — and a column called `embedding` holding
+  // `vector` instead of `halfvec` doubles the largest object in the database
+  // (scale.md S1) while every query keeps working. `repo/embeddings.ts` casts
+  // to `::halfvec` explicitly, and Postgres will happily coerce, so there is no
+  // error anywhere.
+  registerAppDriftProbe({
+    name: 'B2 framework_resparkable_embedding.embedding (halfvec(1536), not vector)',
+    kind: 'pgvector column type',
+    table: 'framework_resparkable_embedding',
+    probe: columnHasType('framework_resparkable_embedding', 'embedding', 'halfvec'),
   });
 
   // B3 — INVERTED 2026-08-25. This index must NOT exist (scale.md S3).

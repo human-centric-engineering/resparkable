@@ -17,6 +17,7 @@ import {
   ownerWhere,
   type OwnerScope,
 } from '@/lib/framework/resparkable/repo/owner-scope';
+import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
 import { Prisma } from '@prisma/client';
@@ -147,12 +148,37 @@ export interface BillableWorkflowExecution {
  * The `limit` survives as a per-pass bound rather than as a window: rows it does
  * not reach stay candidates and are picked up on the next drain.
  *
- * `totalCostUsd > 0` is part of the same argument rather than an optimisation.
- * A zero-cost run can never produce a ledger entry — `recordAgentSpend` returns
- * `null` below its own threshold — so leaving those rows in the candidate set
- * would mean every pass re-fetched the same permanently-unbillable executions
- * and the set would stop draining, which is the very failure the anti-join is
- * here to remove.
+ * ## What must be excluded, or oldest-first becomes its own trap
+ *
+ * Oldest-first is only safe while every candidate can eventually *leave* the
+ * set. A row that can never be billed stays a candidate for ever — and because
+ * it is old, it sits at the head of the ordering by construction. Accumulate
+ * `limit` of them and the pass returns nothing but sediment on every tick,
+ * billing stops entirely, and `executionsBilled: 0` looks exactly like a quiet
+ * install. Newest-first was immune to that and lost rows under a spike instead;
+ * this query has to be immune to both, so it excludes each unbillable class in
+ * SQL rather than letting the caller skip them in a loop.
+ *
+ * **`totalCostUsd > 0`** — `recordAgentSpend` returns `null` below its own
+ * threshold, so a zero-cost run can never acquire a ledger row. (It also drops
+ * a `NaN` cost, which `> 0` is false for: an unmapped model in the provider's
+ * cost table would otherwise be permanent sediment.)
+ *
+ * **The owner must still have a brain.** `resolveExecutionOwner` reads
+ * `userId`, falling back to the legacy `scope` key for runs the platform
+ * scheduler fired before the cutover. Two shapes never resolve to a billable
+ * owner: a system-owned row with no scope key at all, and — the one that
+ * accumulates — a scope key naming a user who has since been erased. The
+ * second is invisible to erasure's cascade, because `AiWorkflowExecution.userId`
+ * is `onDelete: Cascade` and a system-owned row has `userId: null`, so the row
+ * survives its owner with their id still in its `scope`. Handing that to
+ * `recordAgentSpend` makes `ensureCreditAccount` fail its FK into
+ * `ResparkableSpace` — a `P2003`, not the `P2002` the caller swallows — so it
+ * logs an error and re-fetches the same row on the next tick, for ever.
+ *
+ * Excluding it here is not merely a drainage fix, it is the correct answer:
+ * **there is nobody to bill.** The brain is gone, the credit account went with
+ * it, and a debit against an erased person is not a thing that can be right.
  *
  * `ResparkableCreditLedgerEntry`'s `@@unique([kind, relatedWorkflowExecutionId])`
  * is what the `NOT EXISTS` reads, and it stays the last line of defence — two
@@ -187,6 +213,10 @@ export async function findUnbilledTerminalResparkableExecutions(
         SELECT 1 FROM "framework_resparkable_credit_ledger_entry" l
         WHERE l."kind" = 'agent_spend'
           AND l."relatedWorkflowExecutionId" = e."id"
+      )
+      AND EXISTS (
+        SELECT 1 FROM "framework_resparkable_space" s
+        WHERE s."userId" = COALESCE(e."userId", e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY})
       )
     ORDER BY e."updatedAt" ASC
     LIMIT ${limit}

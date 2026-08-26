@@ -490,7 +490,9 @@ model ResparkableLink {
 /// TWO Postgres objects on this model are raw SQL in the migration:
 ///
 ///   1. `embedding halfvec(1536)` — the pgvector column type. Probe B2 asserts
-///      the column exists.
+///      the column is `halfvec` and not merely present: `columnExists` cannot
+///      tell the two apart, and a column of this name holding `vector` doubles
+///      the largest object in the database while every query keeps working.
 ///   2. `GENERATED ALWAYS AS (...) STORED` on `searchVector`. Probe B6.
 ///
 /// `halfvec`, not `vector`, since 2026-08-25 (scale.md S1). Half the bytes per
@@ -920,6 +922,23 @@ model ResparkableEvent {
 
   metadata Json?
 
+  /// user | system — who wrote this, and the only thing the demand gate reads.
+  ///
+  /// `system` means the row was written from inside a workflow execution: a
+  /// background run's own output, not something the owner did. The distinction
+  /// is load-bearing rather than descriptive. Without it every background run
+  /// writes the evidence that authorises the next one — all four workflows
+  /// finish by recording a `review` event, and triage also records the
+  /// promotions and tasks it creates — so the gate can never answer "nothing
+  /// changed" and an idle brain is billed nightly, silently, for ever.
+  ///
+  /// Set at one chokepoint (`ResparkableCapability.execute`, from
+  /// `CapabilityContext.workflowExecutionId`) rather than by each writer, so a
+  /// background writer added later is marked without anyone remembering to.
+  /// A denylist over `kind`/`entityType` was the alternative and cannot work:
+  /// "retention archived this" and "the owner archived this" are the same row.
+  source String @default("user") @db.VarChar(8)
+
   createdAt DateTime @default(now())
 
   /// D1: the cascade path. Erasing a user removes the space row, which
@@ -929,6 +948,13 @@ model ResparkableEvent {
   @@index([userId, kind, createdAt(sort: Desc)])
   @@index([userId, createdAt(sort: Desc)])
   @@index([userId, entityType, entityId])
+  /// The demand gate. `source` sits BETWEEN the two columns of the index above,
+  /// and a b-tree cannot skip a middle column — so that index cannot serve this
+  /// query however similar it looks. On a dormant brain every event since the
+  /// last run is system-authored, so without this the `EXISTS` walks all of
+  /// them to answer "no": the one answer that saves money would be the most
+  /// expensive to reach.
+  @@index([userId, source, createdAt(sort: Desc)])
   @@map("framework_resparkable_event")
 }
 

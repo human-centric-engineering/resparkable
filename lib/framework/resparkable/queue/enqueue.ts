@@ -93,12 +93,17 @@ export async function wakeResparkableJobs(userId: string, now: Date = new Date()
     // from throwing on a path that must never fail a user's mutation.
     const timezone = (await findSpaceByUserId(userId))?.timezone ?? 'UTC';
 
-    const revived = woken
-      .filter((row) => isResparkableJobKind(row.kind))
-      .map((row) => ({
-        kind: row.kind,
-        dueAt: nextDueAt(row.kind as ResparkableJobKind, timezone, now),
-      }));
+    // `flatMap` rather than `filter().map()`, so the narrowing survives into the
+    // body. `isResparkableJobKind` IS a type predicate, but it is applied to
+    // `row.kind` rather than to `row`, so a `filter` cannot narrow the element
+    // type and the `map` after it needed a cast — a cast standing exactly where
+    // a real check had just happened, which is the shape that later gets copied
+    // somewhere the check has not.
+    const revived = woken.flatMap((row) =>
+      isResparkableJobKind(row.kind)
+        ? [{ kind: row.kind, dueAt: nextDueAt(row.kind, timezone, now) }]
+        : []
+    );
 
     await pullResparkableJobsForward(userId, revived, now);
 

@@ -10,10 +10,11 @@
  * That asymmetry is deliberate and worth stating: this is the one place in
  * Resparkable where a failed DB write is swallowed.
  *
- * It is also where the chat context block is invalidated (phase 6c) and where a
- * dormant brain is woken (phase 56). Every mutation in the tier records an
- * event, so doing both here means no service can forget — including ones
- * written after this file. See `context/invalidate.ts` and `queue/enqueue.ts`.
+ * It is also where the chat context block is invalidated (phase 6c), where an
+ * event's **authorship** is resolved, and where a dormant brain is woken
+ * (phase 56). Every mutation in the tier records an event, so doing all three
+ * here means no service can forget — including ones written after this file.
+ * See `context/invalidate.ts`, `services/authorship.ts` and `queue/enqueue.ts`.
  */
 
 import { logger } from '@/lib/logging';
@@ -24,6 +25,7 @@ import {
   type RecordEventInput,
 } from '@/lib/framework/resparkable/repo/events';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { currentEventSource } from '@/lib/framework/resparkable/services/authorship';
 import { wakeResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 
 export type { ResparkableEventKind };
@@ -47,8 +49,13 @@ export async function recordResparkableEvent(
   // synchronous `Map.delete` — there is nothing to fail and nothing to await.
   invalidateResparkableContext(scope.userId);
 
+  // Resolved here rather than taken from the caller: authorship is a property
+  // of how this call arrived, and every service between the entry point and
+  // this line would only be passing it along unchanged. See `authorship.ts`.
+  const source = currentEventSource();
+
   try {
-    await insertEvent(scope, input);
+    await insertEvent(scope, { ...input, source });
   } catch (error) {
     logger.warn('Resparkable event write failed', {
       kind: input.kind,
@@ -56,6 +63,13 @@ export async function recordResparkableEvent(
       entityId: input.entityId,
       error: error instanceof Error ? error.message : String(error),
     });
+    // Return rather than fall through. The wake below pulls every due time
+    // forward on the strength of this event — and an event that failed to write
+    // is one the demand gate will never be able to see, so waking on it would
+    // schedule work to look for a change that is not recorded anywhere. The
+    // comment below used to claim this ordering while the code ran the wake
+    // unconditionally.
+    return;
   }
 
   // Phase 56's demand gate: background work on a brain nobody has touched backs
@@ -70,10 +84,14 @@ export async function recordResparkableEvent(
   // the response returns, and a wake that silently did not happen leaves
   // somebody's first day back without a briefing.
   //
-  // After the insert, not before. Waking on the strength of an event that then
-  // failed to write would pull every due time forward for a change the demand
-  // gate will never be able to see.
-  await wakeResparkableJobs(scope.userId);
+  // After a SUCCESSFUL insert — see the early return above.
+  //
+  // **Only for the person's own writes.** A background run recording its own
+  // output must not pull every due time forward and clear `dormantSince`: that
+  // is the run authorising its own successor, and it re-arms every OTHER kind
+  // as well. Waking is the mirror of the demand gate and has to read the same
+  // signal, or a brain nobody has touched never goes quiet.
+  if (source === 'user') await wakeResparkableJobs(scope.userId);
 }
 
 /**

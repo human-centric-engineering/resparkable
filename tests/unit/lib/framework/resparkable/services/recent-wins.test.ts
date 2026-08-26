@@ -57,6 +57,9 @@ function event(overrides: Partial<ResparkableEvent> = {}): ResparkableEvent {
     kind: 'completed',
     entityType: 'task',
     entityId: 'task_1',
+    // The person's own completions — which is what "recent wins" means, and
+    // what the demand gate counts as activity (`services/authorship.ts`).
+    source: 'user',
     metadata: null,
     createdAt: new Date('2026-08-03T12:00:00.000Z'),
     ...overrides,

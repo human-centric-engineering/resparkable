@@ -184,17 +184,32 @@ export function registerAppDriftProbes(): void {
 }
 ```
 
-Six probes (B1, B3–B7) cover the Postgres objects Prisma cannot see: the
-hand-written `framework_resparkable_space → user` FK **with its `ON DELETE CASCADE`
-asserted**, the HNSW vector index, two `GENERATED ALWAYS` tsvector columns and
-their GIN indexes. Without them a later `migrate dev` can drop one silently — a
-dropped HNSW index doesn't error, it just turns vector search into a sequential
-scan whose only symptom is latency that grows with the corpus.
+Seven probes (B1–B7) cover the Postgres objects Prisma cannot see: the
+hand-written `framework_resparkable_space → user` FK **with its `ON DELETE
+CASCADE` asserted**, the `halfvec` embedding column, two `GENERATED ALWAYS`
+tsvector columns, and the task GIN index. Without them a later `migrate dev` can
+drop or change one silently.
 
-The `GENERATED` probes assert `is_generated = 'ALWAYS'`, not merely that the
-column exists: a migration that recreated it as a plain `tsvector` would leave
-a column that is never populated, so search would quietly return nothing for
-every row written afterwards.
+**Three of them do not assert mere presence, and each explains why.**
+
+- **B2 asserts the embedding column's TYPE**, not that a column of that name
+  exists. Prisma models it as `Unsupported("halfvec(1536)")`, so a regenerated
+  migration will re-emit it as _something_ — and a column called `embedding`
+  holding `vector` instead of `halfvec` doubles the largest object in the
+  database while every query keeps working, because `repo/embeddings.ts` casts
+  explicitly and Postgres coerces.
+- **B4 and B6 assert `is_generated = 'ALWAYS'`**, not merely that the column
+  exists: a migration that recreated one as a plain `tsvector` would leave a
+  column that is never populated, so search would quietly return nothing for
+  every row written afterwards.
+- **B3 and B7 are inverted — they assert an index is GONE.** The HNSW index and
+  the GIN index over the embedding tsvector were dropped in August 2026 because
+  no query can use them (`hybridSearchRows` defeats the vector index path twice
+  over and carries no `@@` predicate), and pgvector's HNSW holds a full copy of
+  every vector. `migrate dev` cannot represent either and will offer to restore
+  both; these probes fail the build if it does. They come back only with the
+  inner-CTE search rewrite (`scale.md` S4). Note B5 is a _different_ GIN index,
+  on the task tsvector, and it is genuinely used — it stays required.
 
 ### 2.6 Rate limits — `lib/app/rate-limit.ts`
 
@@ -370,12 +385,24 @@ creates more.
 
 #### Demand gating — what an idle brain costs
 
-Nothing. Before a gated kind runs, it asks one indexed question: has anything
-happened in this brain since the last run? If not, the run is **skipped
-entirely** — no model call, no debit — the row is marked dormant and its next
-due time is pushed out on a backoff that floors at about a week. Any write to
-the brain clears the flag and pulls the due times back in, so someone returning
-after three months costs one cycle rather than thirteen.
+Nothing. Before a gated kind runs, it asks one indexed question: **has the
+person done anything in this brain since the last run?** If not, the run is
+**skipped entirely** — no model call, no debit — the row is marked dormant and
+its next due time is pushed out on a backoff that floors at about a week. Any
+write by the owner clears the flag and pulls the due times back in, so someone
+returning after three months costs one cycle rather than thirteen.
+
+**"The person" is doing real work in that sentence.** Asked against every event
+the gate can never answer "no", because the background runs write events
+themselves: all four workflows finish by recording a `review`, nightly triage
+records every thought it promotes and task it creates, and retention records
+what it archived. Each run would produce the evidence authorising the next one.
+So `ResparkableEvent` carries a `source` column, set automatically at one
+chokepoint — `ResparkableCapability.execute` marks the call when
+`CapabilityContext.workflowExecutionId` is present — and the gate reads
+`source = 'user'`. **A fork adding a background writer gets this for free**; a
+fork querying that table directly should filter on `source` wherever it means
+"what the person did".
 
 This is a billing rule rather than a budget lever, and the difference decides
 where it applies. Scheduled runs are debited against the owner's credit balance,

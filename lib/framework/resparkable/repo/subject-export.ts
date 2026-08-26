@@ -1,7 +1,7 @@
 /**
  * Subject-access export (GDPR Art. 15) for the brain.
  *
- * The counterpart to `repo/schedules.ts`'s erasure half. Resparkable already had
+ * The counterpart to the erasure half. Resparkable already had
  * Art. 17 covered — every `framework_resparkable_*` table cascades from
  * `ResparkableSpace`, whose FK to `"user"` is `ON DELETE CASCADE` — but until
  * Resparkable 0.8.0 there was no seam through which a fork could answer Art. 15 at

@@ -10,7 +10,7 @@
  * | Caller                                     | Budget                          |
  * | ------------------------------------------ | ------------------------------- |
  * | `registerAppJob`, on the 60s tick          | small — a few jobs, ~20 seconds |
- * | `npm run resparkable:worker`, in a loop    | large — until the queue is empty |
+ * | `npm run framework:resparkable:worker`, in a loop    | large — until the queue is empty |
  *
  * That is what keeps the module installable by checklist. A fork running
  * Resparkable for a team of thirty runs no extra process and is correct; a fork
@@ -127,6 +127,15 @@ export interface DrainResult {
   skippedDormant: number;
   /** Skipped because the owner has no credits left to spend. */
   skippedNoCredit: number;
+  /**
+   * Deferred because this build has no handler for the row's `kind`.
+   *
+   * Counted apart from `skippedDormant` deliberately. Folding it in would
+   * inflate "the demand gate skipped N" during a rolling deploy — hiding the
+   * one condition an operator would actually want to see, behind the one they
+   * expect to see all the time.
+   */
+  skippedUnknown: number;
   /** Jobs whose handler threw. */
   failed: number;
   /** True when a claim came back empty, i.e. nothing is due right now. */
@@ -163,6 +172,7 @@ export async function drainResparkableJobs(budget: DrainBudget = {}): Promise<Dr
     settled: 0,
     skippedDormant: 0,
     skippedNoCredit: 0,
+    skippedUnknown: 0,
     failed: 0,
     queueEmpty: false,
     outcome: { ...EMPTY_OUTCOME },
@@ -208,6 +218,7 @@ type SettledJob =
   | { kind: 'ran'; outcome: JobRunOutcome }
   | { kind: 'dormant' }
   | { kind: 'no-credit' }
+  | { kind: 'unknown-kind' }
   | { kind: 'failed' };
 
 /**
@@ -239,7 +250,7 @@ async function settleOne(
       { dueAt: new Date(now.getTime() + 24 * 60 * 60_000), lastRunAt: null },
       now
     );
-    return { kind: 'dormant' };
+    return { kind: 'unknown-kind' };
   }
 
   const kind: ResparkableJobKind = job.kind;
@@ -282,6 +293,16 @@ async function settleOne(
   // find them. Queueing anyway would put a budget failure in their run history
   // at 03:15 for something they could not have fixed.
   if (spec.spendsCredits && !(await hasPositiveBalance(scope))) {
+    // Logged, because `hasPositiveBalance` cannot tell "spent their credits"
+    // from "never got a credit account". `ensureResparkableSpace` mints the
+    // grant fire-and-forget, so a brain whose mint failed reads as a zero
+    // balance for ever — and without this line it would lose all four
+    // background workflows silently, with nothing anywhere naming the user.
+    logger.info('Resparkable job skipped — no credit balance', {
+      jobId: job.id,
+      kind,
+      userId: job.userId,
+    });
     await completeResparkableJob(
       job.id,
       workerId,
@@ -359,11 +380,23 @@ function dormantDueAt(
   const elapsed = Math.max(0, now.getTime() - dormantSince.getTime());
   const notBefore = new Date(now.getTime() + Math.min(elapsed, DORMANT_CEILING_MS));
 
+  // Interval kinds are answered directly rather than by walking the cadence.
+  //
+  // Walking looks harmless and silently caps the backoff at `steps × period`,
+  // which for `reindex` at fifteen minutes is about ten hours however long the
+  // brain has been quiet — so the documented weekly floor was unreachable for
+  // the shortest-period kind, and an idle brain was polled 2.3 times a day
+  // instead of once a week. At 100k brains that is seventeen times the
+  // background load the design claims. A wall-clock kind has to keep its local
+  // hour and so must walk; an interval kind has no hour to keep.
+  if (RESPARKABLE_JOB_SPECS[kind].cadence.shape === 'interval') return notBefore;
+
   let candidate = nextDueAt(kind, timeZone, now);
-  // Bounded rather than `while (true)`: a week's ceiling over a monthly cadence
-  // settles in one step, and the guard means a cadence added later that somehow
-  // fails to advance produces a late job rather than a hung worker.
-  for (let step = 0; step < 40 && candidate < notBefore; step++) {
+  // Bounded rather than `while (true)`: a week's ceiling over a daily cadence
+  // settles in seven steps and over a monthly one in a single step, so ten is
+  // slack rather than a limit — and the guard means a cadence added later that
+  // somehow fails to advance produces a late job rather than a hung worker.
+  for (let step = 0; step < 10 && candidate < notBefore; step++) {
     candidate = nextDueAt(kind, timeZone, candidate);
   }
   return candidate;
@@ -373,6 +406,9 @@ function applyOutcome(result: DrainResult, settled: SettledJob): void {
   switch (settled.kind) {
     case 'dormant':
       result.skippedDormant++;
+      return;
+    case 'unknown-kind':
+      result.skippedUnknown++;
       return;
     case 'no-credit':
       result.skippedNoCredit++;
