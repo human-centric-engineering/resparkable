@@ -16,6 +16,10 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 
 > **Added 2026-08-08: Situations (§21).** A fourth thing sits alongside the second brain, sharing and Obsidian: **Situations** — describe or upload a life question, problem or piece of raw material (a transcript, a thread), and work it through four deliberate stages — framing → perspectives → tensions → resolution — that draw on your own brain, on collaborators who've shared with you, and on the model's own read of what hasn't been considered yet. The name **Resparkable** is literally about this: old captured sparks (`ResparkableThought`), reignited against fresh references. Full spec at §21; phased as Release 7 in §15.
 
+> **Added 2026-08-25: Groups (§23).** The requirements line above says "multi-user-safe from day one but no team UI", and that is now half-superseded. A **group** becomes a principal that owns a Resparkable workspace exactly as an individual owns one today, with a group admin, group-to-group sharing built by generalising §13's grants rather than by adding a second mechanism, and a digest of the group's own activity that is deliberately never a ranking of its members. The "multi-user-safe from day one" half of that line is what makes it affordable: `OwnerScope` was built to grow a tenant field, and D1 put the whole cascade behind one satellite table. Full spec at §23; phased as Release 9 in §15, prerequisite Release 2.
+
+> **Added 2026-08-25: Workspaces (§24).** A person or a group may hold **several** workspaces, each a separate brain with its own items, connections and vectors, and no implicit read between them. This is deliberately cheap to leave open and expensive to retrofit: once §23 makes `spaceId` the partition key, the constraint forbidding a second workspace is a single `@unique` on a single column, so Release 9 phase 45 drops it and adds the columns multiplicity needs, and the tier's largest tables are never migrated twice. The product surface is Release 10. The one genuinely expensive consequence is background compute, which multiplies one for one with workspace count unless scheduled work becomes per owner (W2) and idle workspaces cost nothing (W3): §24.3 has the arithmetic.
+
 > **Landed, 2026-08-19 through 2026-08-20: the three-pane shell.** The UI/UX
 > redesign scoped below as an experiment has since shipped, across the
 > "Workspace shell" Phases 0–9 (`components/resparkable/shell/workspace-shell.tsx`'s
@@ -32,6 +36,19 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 > launcher grid — see [`ui.md`](./ui.md) §§10–14, not the design-stage detail
 > in §9 below, which is retained as the original scoping note rather than
 > updated to match.
+
+> **Ambition set, 2026-08-25: hundreds of thousands of users.** Resparkable is
+> built to reach **100,000 to 500,000 users on one deployment**. Not millions:
+> past that the answer is different infrastructure, and getting there would be a
+> good problem to have. But every foundation laid from here on must survive that
+> number without being rebuilt. The foundations already laid have been audited
+> against it in [`scale.md`](./scale.md), which records eight decisions (S1–S8)
+> and where each current ceiling sits. The headline: **the per-user data model
+> scales; the per-user scheduled-compute model does not.** Three fixed-size
+> batches draining per-user queues on one serial tick fail at ~100 users
+> (billing), ~5,000 (the scheduler under timezone clustering) and already today
+> (the sweep rotation). D7 below is the architectural decision that follows, and
+> §15 sequences the work as Release 1.5, before Sharing.
 
 ### The Obsidian question, answered
 
@@ -140,6 +157,8 @@ Roughly a day of extra plumbing, all in phases 0–1, plus the discipline of nev
 
 **D1 — One satellite table, everything else hangs off it.** `ResparkableSpace` carries `userId String @unique` with a hand-written FK to `"user"("id") ON DELETE CASCADE`. Every other `framework_resparkable_*` table carries `userId` relating to `ResparkableSpace.userId` with `onDelete: Cascade`. One unmodelled FK to drift-probe instead of a dozen; `userId` natively on every row for scoped queries; erasure cascades transitively. Never add columns to `User` (CLAUDE.md).
 
+> **Revised by §23 (Groups), scoped 2026-08-25.** The shape survives; the key changes meaning. `ResparkableSpace` stays the one satellite table and everything still cascades from it, but its key column is renamed `spaceId` and the hand-written FK to `"user"` moves to a new nullable `ownerUserId`, so a space can be owned by a group instead of a person. A group space has `ownerUserId IS NULL` and is therefore, correctly, not reachable by the personal cascade at all. The migration rewrites no rows: see §23.2 for why, and phase 45 in §15 for the commit it ships in. That same phase leaves `ownerUserId` non-unique, which is what makes several workspaces per owner possible later without a second pass over 21 tables (§24).
+
 **D2 — Typed entity tables + one polymorphic edge table + one polymorphic embedding table.** Tasks/projects/goals have different required fields and different query shapes, so no generic node graph. But _connections_ are polymorphic (`ResparkableLink`) and _embeddings_ are polymorphic (`ResparkableEmbedding`) — which means one `vector(1536)` column, one HNSW index, one re-embed path, one search query. Cuts the pgvector migration-drift surface ~5×.
 
 **D3 — Prioritisation is deterministic code, not an LLM.** Pure function in `lib/framework/resparkable/priority/score.ts`, persisted to `priorityScore`, so list endpoints are one indexed `ORDER BY` with zero per-request compute. The LLM chooses among the top ~10 and writes rationales; it never produces a number that lands in the column.
@@ -148,7 +167,11 @@ Roughly a day of extra plumbing, all in phases 0–1, plus the discipline of nev
 
 **D5 — Every brain query is either an owner query or a shared query. There is no third kind.** Owner queries are `WHERE userId = $1` with no joins and no resolution. Shared queries opt in explicitly and go through `resolveResparkableAccess`. Enforced structurally: `lib/framework/resparkable/repo/*` takes an `OwnerScope` and _cannot express_ a cross-user read; cross-user code lives in `lib/framework/resparkable/access/*`. **Adopt this before sync or sharing exist** — retrofitting it is what causes leaks. Cross-Pollination (§18) does not add a third kind, and D6 is the reason why.
 
+> **Restated by §23 (Groups), scoped 2026-08-25.** "Owner query" becomes "space query" and the count stays at two. Membership is resolved **once**, where the scope is minted, and never inside a query: `SpaceScope` carries `actorUserId` for attribution and role checks, and no function in `repo/**` may filter on it. A group space having no per-item privacy tier (§23.4) is what keeps that true, and is the reason it is a rule rather than a v1 simplification.
+
 **D6 — The pool is a separate store behind a one-way valve.** Cross-Pollination (§18) never reads a `framework_resparkable_*` brain table across users. It has its own tables (`framework_resparkable_pool_*`), its own vector table (`ResparkableFacetEmbedding`), and its own code directory (`lib/framework/resparkable/pool/**`). The only thing that ever moves from a brain into the pool is a **facet** — text the owner has read and approved. Enforced structurally: `pool/store/**` becomes the second and last directory permitted to reach Prisma in `lib/framework/eslint.config.mjs`, and `pool/**` may not import `repo/**` or `access/**`, nor they it.
+
+**D7 — No background pass may be a fixed-size batch on a shared serial tick.** Every per-user background job drains a queue with parallel workers until the queue is empty or a budget is spent; it never processes "the first N" and then stops. The three constants that violate this today (`take: 50` in the platform scheduler, `SWEEP_BATCH = 4`, `BILLING_BATCH = 100`) are the system's three scale ceilings, and they are the same mistake at three different orders of magnitude. Adopt this **before Release 2** — sharing adds a second consumer to a background layer that cannot yet serve the first. Full audit and the S1–S8 decisions: [`scale.md`](./scale.md).
 
 **D5 is therefore untouched, not weakened.** A pooled query is not a third kind of _brain_ query, because it reads no brain rows. That is the whole reason the pool gets its own store rather than a `visibility: 'pool'` column — a column would have put cross-user reads onto the highest-cardinality tables in the system, and every one of the ~40 owner-scoped list endpoints would have become a potential leak.
 
@@ -1115,6 +1138,40 @@ Everything you asked for except vault sync and sharing. Usable daily on its own.
 
 **Phase 8 is deliberately inside Release 1**, not deferred with the rest of the "nice to have" work. Retention windows have to be columns in the first migration regardless, and both later releases need to know what "archived" means — which folder a file moves to, whether a shared link still resolves. Bolting lifecycle on afterwards means revisiting both.
 
+### Release 1.5 — scale foundations (before Sharing)
+
+Set by the hundreds-of-thousands-of-users ambition (banner at the top of this
+document) and D7. The full audit, the numbers behind each ceiling and the
+sequencing rationale are in [`scale.md`](./scale.md); this table is the phase
+list only.
+
+| #   | Deliverable                                                                                                                                                                                                                                                                                                | Verifiable by                                                                               |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 56  | **S6** — one durable job queue for every piece of per-user background work, drained by `SKIP LOCKED` workers until empty. The three fixed-size batches and the missing reindex drain all become consumers of it. **Absorbs 9a and 9c, and §24's W3.** Designed in [`phase-56-plan.md`](./phase-56-plan.md) | 5,000 seeded brains complete a full rotation of every kind inside an hour                   |
+| 9b  | **S1 + S2 + S3** — `halfvec(1024)` migration; drop the unused HNSW and GIN indexes; flip probes B3/B6/B7 to forbidden-object probes                                                                                                                                                                        | row size falls ~3×; `smoke-search` recall unchanged on the same corpus                      |
+| 9a  | **S8** — bill on job completion instead of a 100-row cursor. The one ceiling already crossed, at ~100 users. _Folded into phase 56 §6._                                                                                                                                                                    | 150 terminal executions in one window all produce a ledger entry                            |
+| 9c  | **Drain the embedding queue.** §6's nightly reindex step was never built, so `indexedHash` is nulled by every write and drained by nothing but a manual `POST /reindex`. _Folded into phase 56 as `kind: 'reindex'`._                                                                                      | capture a thought, wait one interval, find it by meaning with no manual call                |
+| 9e  | **Sensitivity reaches the vector layer** — denormalise `sensitivity` onto `ResparkableEmbedding` at write time; `searchResparkable` gains `excludeSensitive`; background agents pass it                                                                                                                    | a `sensitive` thought is absent from a background agent's search and present in the owner's |
+
+**9e is here rather than in Release 2 on purpose.** `ResparkableEmbedding`
+carries no sensitivity marker, so the vector path is the one read path that
+_cannot_ express the private/shareable distinction. `resparkable_search` is
+bound to `resparkable-triage` (unattended, 3am) and to `resparkable-strategist`,
+which writes `ResparkableReview` bodies — and reviews are on §13's shareable
+list. That is a private-to-shareable path that exists before sharing does.
+Same argument as D5: adopt it before the thing it protects against exists.
+
+**9b before 56.** 9b is DDL and gets more expensive with every row written, and
+phase 56 is what finally puts rows there in volume, so the column types want to
+be right first.
+
+**Three rows collapsed into one phase.** Billing, the reindex drain and the
+queue are the same mechanism seen from three sides, which is why the queue
+became phase 56 and absorbed the other two. §24's **W3** (demand-driven
+per-workspace background work) is that same idea again, reached from the
+workspace side rather than the cost side; it lands in phase 56 §7 rather than
+waiting for Release 9.
+
 ### Release 2 — sharing
 
 | #   | Deliverable                                                                                                             | Verifiable by       |
@@ -1128,6 +1185,8 @@ Everything you asked for except vault sync and sharing. Usable daily on its own.
 Cheap — 4–5 days — because `conversation-access.ts`, `invitation-token.ts`, `emails/invitation.tsx`, `visitor-id.ts` and `registerErasureCleanupHook` are all correct existing precedents. The expensive part is the test matrix, and it should be.
 
 Note `visibility` and the `OwnerScope` repo boundary land in Release 1 phases 1–2 even though nothing uses them yet. Retrofitting either onto rows people have already created is what causes leaks.
+
+**Release 2 does not start until Release 1.5 is done.** Sharing adds a second consumer (access resolution on list endpoints, public-reader traffic, grant expiry sweeps) to a background and search layer that cannot yet serve the first one at target scale. D7.
 
 ### Release 3 — markdown export and managed vault
 
@@ -1229,6 +1288,66 @@ Requires Releases 1 and 2. **Independent of Releases 3 and 4** — it can ship s
 
 **No periodic sweep.** §15's other releases mostly ship a scheduled variant of their on-request feature; this one doesn't — the summariser runs only from `POST .../[id]/summarize`, which the panel calls and then polls a few times for the result (there is no push channel for a queued workflow execution). A scheduled `resparkable-context-digest` tick, proposing summaries for entities with newly-accepted thought-links, is the natural phase 44 if this proves worth automating — deferred rather than spec'd here.
 
+### Release 9: Groups (§23)
+
+**Requires Releases 1, 1.5 and 2.** Release 2 is a hard prerequisite rather than
+a convenience: 23.7 generalises `ResparkableGrant` and `resolveResparkableAccess`
+rather than building a second sharing mechanism, and there is nothing to
+generalise until they exist. Release 1.5 comes along for the ride as Release 2's
+own prerequisite, and **D7 matters here in its own right**: phase 50's digest
+adds a third consumer to the background layer, and a per-group job that drains a
+queue is the shape D7 asks for anyway. Independent of Releases 3, 4, 5 and 6.
+
+**Phase numbering starts at 45**, leaving 44 to the deferred context-digest tick
+noted at the end of Release 8.
+
+| #   | Deliverable                                                                                                                                                                                                                                                                                                                                                                                                                                    | Verifiable by                                                                                                                                    |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 45  | **The key migration, alone in its own reviewed commit.** `userId` → `spaceId` across `ResparkableSpace` and all 21 satellites, `kind` + `ownerUserId` (indexed, **not** unique), `isDefault` + `name` + `slug` + `archivedAt` + the partial unique index (§24.1), the schedule scope key rewritten to `resparkableSpaceId` (§24.2), the hand-written FK moved, `SpaceScope` replacing `OwnerScope`, ESLint boundary and drift probes rewritten | `db:drift-check` green; the whole existing test suite passes unchanged; **zero rows rewritten**, asserted by row-count and checksum before/after |
+| 46  | `ResparkableGroup` + `ResparkableGroupMember` + migration + roles + invite flow reusing §13's token shape + membership CRUD routes + `SUBJECT_DATA_SOURCES` rows + `transfer/policy.ts` dispositions                                                                                                                                                                                                                                           | last-admin rules; an invite grants nothing until accepted; export manifest test passes without deleting a row                                    |
+| 47  | UI: space switcher in the shell header, an explicit space target on **every** capture path (quick capture, PWA share target, email token, voice, image, Sparkey composer), group Launcher, per-space workspace tab state                                                                                                                                                                                                                       | capture defaults to personal on every one of the six paths, asserted per path                                                                    |
+| 48  | Erasure and isolation: member-erased hook, admin succession, group deletion with typed confirmation + member notification, Art. 15 predicate export, probe B1 extended                                                                                                                                                                                                                                                                         | tests 13a–13e                                                                                                                                    |
+| 49  | Group-to-group sharing: `ResparkableGrant` re-keyed space-to-space, `resolveResparkableAccess` extended, `/shared-with-me` becomes per-space, share dialog names the grantee group and its member count                                                                                                                                                                                                                                        | tests 13f–13g; §13's tests 3–4 still pass unchanged                                                                                              |
+| 50  | Group digest: `ResparkableReview{horizon: 'group_digest'}`, workflow on the group's schedule, `createdByUserId` backfill-free activity feed in the Activity pane, `actorUserId` on the credit ledger                                                                                                                                                                                                                                           | test 13h, the one that asserts the digest is non-comparative                                                                                     |
+
+**Phase 45 ships behind no flag and changes no behaviour.** It is a rename plus
+some nullable columns, deliberately separated from every user-visible part of
+the release, because it touches every table in the tier and a review that is
+also reading UI work will not read it properly. Nothing about groups is
+reachable until phase 46.
+
+**It also carries Release 10's schema**, which is the whole point of §24: the
+constraint that forbids a second workspace is one `@unique`, and the migration
+that would add or remove it is the migration over 21 tables. Doing both at once
+means the brain's largest tables are migrated once, ever. Multiplicity is
+therefore structurally true from phase 45 and invisible in the product until
+Release 10 creates the second workspace.
+
+---
+
+### Release 10: Workspaces (§24)
+
+**Requires Release 9 phase 45 for the schema, and Release 1.5 / D7 as a hard
+gate.** W1 is not a preference: several workspaces per owner is the fastest way
+to reach the ceilings `scale.md` describes, because it raises the background
+multiplier without adding a single user. Independent of Releases 3, 4, 5 and 6,
+and it does **not** require the rest of Release 9: a person can hold several
+personal workspaces without groups existing at all.
+
+| #   | Deliverable                                                                                                                                                                                              | Verifiable by                                                                                     |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| 51  | **W2**: scheduled work becomes per owner with a fan-out over that owner's live workspaces. Four schedule rows per person regardless of workspace count; briefing names the workspace each item came from | schedule-row count is invariant under workspace creation, asserted directly                       |
+| 52  | Workspace CRUD: create, rename, set default, archive, delete, the per-owner cap, and the partial-unique default rule with its drift probe                                                                | tests 14a–14c                                                                                     |
+| 53  | Resolution at every entry point (§24.2's table): default-workspace resolution at the nine `ensureResparkableSpace` call sites, `AiApiKey` and MCP keys naming one workspace, per-workspace inbox tokens  | test 14d, one assertion per entry point                                                           |
+| 54  | UI: workspace switcher in the shell header, workspace-qualified capture confirmation, per-workspace tab state, export shaped one section per workspace                                                   | test 14e; a capture with no workspace named lands in the default and says so                      |
+| 55  | **W3**: demand-driven per-workspace background work, so an unopened workspace is not triaged nightly                                                                                                     | an idle workspace consumes no LLM calls across a simulated month, asserted by provider-call count |
+
+**Billing moves in phase 52, not later.** §24.4 re-keys `ResparkableCreditAccount`
+from the space to the owner, with `spaceId` on the ledger entry. Doing it
+alongside workspace creation is the cheap moment: doing it after people hold
+three workspaces means reconciling three balances into one, which is a data
+migration with a customer-support tail.
+
 ---
 
 ## 16. Verification
@@ -1275,6 +1394,22 @@ Requires Releases 1 and 2. **Independent of Releases 3 and 4** — it can ship s
     12l. **The dials.** Depth is the 18.3 band under another name — a `deep` cast and the `orthogonal` stance select the same band, asserted directly so the two cannot drift apart. **Eligibility is the intersection of both parties' bands, never the union**: a deep caster and a shallow caster match only on the overlap, and a deep cast cannot reach someone fishing shallow. `estimateCastCost` moves when any dial moves, and the dialog warns when the estimate exceeds the resolved cap.
     12m. **Nibbles leak nothing.** Counts render as buckets, never integers; `nearbyDomainTags` is withheld below 5 distinct contributing facets; no nibble produces a push notification; no surface ranks one user's facet against another's. A zero-nibble cast produces the rewrite-and-recast suggestion rather than an empty state.
     12n. **Allowance, not rank.** A fusion delivered to two payers decrements both allowances; one payer plus one free user decrements only the payer's and both still receive it; neither having allowance means Stage A never selects the pair. And the one that matters — **a free user's facet at salience 0.9 is selected over a payer's at 0.7**, asserted directly, because this is risk 6i and it is the kind of thing an optimisation quietly reverses.
+13. **Groups (§23).** The migration first, because everything else is downstream of it.
+    13a. **The key migration is lossless.** Row counts and a content checksum per satellite table are identical before and after phase 45; every pre-existing test passes with no edit beyond the `OwnerScope` → `SpaceScope` rename; `db:drift-check` is green and probe B1 finds the hand-written FK on `ownerUserId`.
+    13b. **A group space is not reachable by the personal cascade.** Every `kind: 'group'` space has `ownerUserId IS NULL`, asserted as a schema-level invariant rather than only in a test fixture. Erase a member of a group: their memberships are gone, their `createdByUserId` values are null, the group's rows are all still there, and their email appears in no row anywhere. This is the group analogue of test 6 and it is the single most important assertion in the release.
+    13c. **Membership is resolved once.** No function in `repo/**` filters on `actorUserId`, asserted by an enumeration over the module rather than by reading it. A member of group A cannot mint a scope for group B's space; a `viewer` cannot reach any write path; a removed member 404s on the next request, not the next session.
+    13d. **Last-admin rules.** The last admin cannot leave, be demoted, or be removed. Erasing the last admin transfers the role to the longest-standing remaining member rather than orphaning the group. A group with no members at all is deleted rather than left as an unreachable space holding rows.
+    13e. **Capture defaults to personal, on all six paths.** Quick capture, PWA share target, email inbox token, voice, image and the Sparkey composer each land in the actor's personal space when no space is named. Tested per path, not once, because each has its own entry point and the failure is silent and mortifying.
+    13f. **Group-to-group grants.** Every §13 assertion (tests 3 and 4) still passes unchanged with a personal grantor and grantee. With a group grantee: the item is readable by every current member, a member added afterwards can read it, a member removed afterwards cannot, and revocation is immediate for all of them. A grant to a group puts **zero** rows in that group's `ResparkableEmbedding`, asserted by query inspection rather than by mocking.
+    13g. **Nothing crosses spaces implicitly.** A member of three spaces gets three separate lists, three separate searches and three separate context blocks. `searchResparkable` returns rows from exactly one space per call, and the built context for a group turn contains no row from the actor's personal space.
+    13h. **The digest is non-comparative.** Given a group where one member wrote thirty items and another wrote one, the generated digest contains no per-member count, no ranking, no superlative about a member, and no phrasing that frames a member as behind. Asserted against the rendered output with the model stubbed to be maximally unhelpful, which is what proves the constraint lives in the gather step and the guardrails rather than in the prompt's manners. A group of thirty produces one digest run, not thirty.
+14. **Workspaces (§24).** Every assertion here needs a fixture with **two or more** workspaces per owner. A one-workspace fixture passes all of them vacuously, which is exactly how this would ship broken.
+    14a. **Two brains, no bleed.** One user, two workspaces. An item in A never appears in B's lists, search, graph, connections, briefing or context block, **including when A's row is the better vector match**. This is test 2 (cross-user isolation) re-run within a single account, and it is the assertion the whole section rests on: the isolation that used to be between people is now also between one person's own brains.
+    14b. **The default is singular and always present.** The partial unique index rejects a second live default at the database, not only in the service. Archiving the default promotes exactly one successor. A user cannot reach a state with zero live workspaces or two defaults, attempted concurrently as well as serially.
+    14c. **The cap holds and the tokens are distinct.** Creation past the per-owner cap is refused; each workspace mints its own `inboxToken` and email to one token never lands in another workspace.
+    14d. **Every entry point names its workspace.** One assertion per row of §24.2's table: a session, an email token, a share-target capture, a voice capture, an image capture, an `AiApiKey` request, an MCP tool call and a scheduled run each land in exactly the intended workspace, and an `AiApiKey` naming workspace A **cannot** read workspace B even though the same person owns both. The scheduled-run case asserts the scope key is `resparkableSpaceId` and that a pre-migration row carrying `resparkableUserId` still resolves.
+    14e. **Cost does not scale with workspace count.** Creating a second and third workspace adds **zero** `AiWorkflowSchedule` rows (W2), and an unopened workspace consumes zero LLM calls across a simulated month (W3), asserted by counting provider calls rather than by inspecting configuration. The briefing that fans out over three workspaces is one briefing and names the source workspace per item.
+    14f. **Erasure and export cover the plural case.** Erase a user holding three workspaces: all three cascade, and no `framework_resparkable_*` row survives. Their Art. 15 export contains three labelled sections rather than one concatenated brain. An account transfer into an account that already holds a workspace of the same name creates a second workspace rather than merging the two, which is test 7's lesson in a new place.
 
 ---
 
@@ -1836,3 +1971,534 @@ Sparkey's approach to content selection, its decision-making within a presentati
 ### 22.4 Open questions
 
 Not designed yet, flagged rather than guessed at: how a generated slide is rendered (a Workspace view? a distinct full-screen mode?), what "a slide" is as a data shape, whether a presentation is a first-class persisted entity or an ephemeral session, and how this intersects with the Workspace's split/tab/lock model (§9) if at all. A follow-up technical design pass is needed before this gets a Release slot in §15.
+
+---
+
+## 23. Groups: a workspace owned by more than one person
+
+**Scoped 2026-08-25, design-stage. Phased as Release 9 in §15.** This is the
+largest structural change the plan has taken on, because it revises **D1** and
+restates **D5**. Everything else in this document assumes one brain has exactly
+one human owner and that `userId` is both the owner's identity and the row's
+partition key. A group workspace breaks that identity, and the section is mostly
+about breaking it once, deliberately, rather than a dozen times by accident.
+
+**The requirement**, in the words it was given in: a group can own a Resparkable
+workspace exactly as an individual user owns one today; a group's workspace can
+be shared with other groups; a group has an admin; a group gets summaries of its
+own activity.
+
+### 23.1 A Group is not a Circle, and not a grant
+
+Three things in this plan now involve more than one person, and they are
+separate features rather than three phases of one. Stating that here is cheaper
+than un-merging them later, which is the same reason §22 opens by distinguishing
+Present from Cross-Pollination.
+
+| Thing              | What it is                                              | What it carries                                           |
+| ------------------ | ------------------------------------------------------- | --------------------------------------------------------- |
+| **Grant** (§13)    | One person letting another **read** one item of theirs  | A single entity, read-only, redacted, revocable           |
+| **Circle** (§18.2) | A named audience a **facet** can be cast to             | Abstracted, redacted, human-approved projections. No rows |
+| **Group** (§23)    | A **principal that owns a workspace**, like a user does | The whole brain: capture, write access, agents, billing   |
+
+A Group is the only one of the three that owns rows. That is the distinction
+everything below follows from.
+
+### 23.2 The owner key: `spaceId`, not `userId`
+
+**D1 is revised, not abandoned.** `ResparkableSpace` remains the one satellite
+table and every other `framework_resparkable_*` table still hangs off it with
+`onDelete: Cascade`. What changes is what the key on those tables _means_:
+
+- `ResparkableSpace.userId` is renamed to **`spaceId`** (still `@unique`, still
+  the FK target for all 21 satellite tables), and every satellite's `userId`
+  column is renamed to `spaceId` in the same migration.
+- `ResparkableSpace` gains **`kind: 'personal' | 'group'`** and
+  **`ownerUserId String?`**, and the hand-written
+  `→ "user"("id") ON DELETE CASCADE` FK moves from the old `userId` column to
+  `ownerUserId`. A personal space has `ownerUserId` set; a group space has it
+  `null` and points at `groupId` instead.
+- **`ownerUserId` is indexed but deliberately not `@unique`**, which is what
+  leaves the door open to several workspaces per owner. §24 is the section that
+  walks through it, and phase 45 lands the columns it needs (`isDefault`, `name`,
+  `slug`, `archivedAt`, the partial unique index) in this same migration
+  precisely so the tier's largest tables are never migrated twice.
+
+**The migration rewrites no rows.** This is the whole reason to shape it this
+way rather than re-pointing the satellites at `ResparkableSpace.id`. Today every
+satellite FK references `ResparkableSpace.userId` and **nothing anywhere
+references `ResparkableSpace.id`** (verified: `ResparkableCreditAccount` and
+`ResparkableCreditLedgerEntry`, the two most recently added, both relate on
+`[userId] → [userId]`). So a personal space keeps its existing key value, which
+happens to be a user id, and a group space gets a cuid. The values in 21 tables
+are untouched; only column names and one FK move. Re-pointing at `id` would have
+meant an `UPDATE` over every row in the brain, on a table set that is by design
+the largest thing in the database.
+
+Per §2 this migration is **hand-edited**. Prisma renders column renames as
+drop-then-add, which here would silently empty the brain, and the six raw-SQL
+objects the schema header warns about are all in the blast radius. `npm run
+db:drift-check` after it is not optional, and probe B1 is rewritten in the same
+commit to assert the FK on its new column.
+
+**`OwnerScope` becomes `SpaceScope`**, which the type was already built for:
+`lib/framework/resparkable/repo/owner-scope.ts` says in its own comment that
+carrying a scope object rather than a raw id "leaves room for the fields a later
+release needs (an impersonating admin, a tenant) without touching every repo
+signature again". That room is now spent:
+
+```ts
+interface SpaceScope {
+  readonly spaceId: string; // the partition key: what every WHERE uses
+  readonly actorUserId: string; // who is acting: attribution and audit, never a filter
+  readonly role: SpaceRole; // owner | admin | member | viewer
+}
+```
+
+`actorUserId` is deliberately **not** a query filter anywhere in `repo/**`. The
+moment it becomes one, a group space has a per-row ACL and `WHERE spaceId = $1`
+stops being the whole story, which is the failure 23.4 exists to prevent.
+
+**D5 is restated, unchanged in force:** every brain query is either a space query
+or a shared query, and there is no third kind. Membership resolution happens
+**once**, at the trust boundary where `spaceScope()` is minted, and never again
+inside a query. `rg 'spaceScope\('` stays the complete list of those boundaries,
+just as `rg 'ownerScope\('` is today.
+
+### 23.3 Membership, and what an admin is for
+
+Two new tables, both `framework_resparkable_`-prefixed and both outside the D1
+cascade, because they describe the _relationship_ rather than the brain:
+
+- **`ResparkableGroup`**: `id`, `name`, `slug @unique`, `description`,
+  `spaceId @unique` (its workspace), `createdAt`. One group, one space, and no
+  route by which a group acquires a second one.
+- **`ResparkableGroupMember`**: `groupId`, `userId`, `role`, `invitedByUserId`,
+  `joinedAt`, `@@unique([groupId, userId])`. `userId` is a **new `User` relation
+  and therefore carries both obligations from CLAUDE.md**: `onDelete: Cascade`
+  (losing your account removes your memberships, not the groups), and a row in
+  `SUBJECT_DATA_SOURCES` so a data subject's export says which groups they
+  belonged to. Both are landed in the same phase as the model, not after.
+
+Roles are `admin | member | viewer`. Admin can invite, remove, change roles,
+configure the space, and delete the group; member can read and write brain
+content; viewer can read. Invites reuse the **shape** of §13's grant invites
+(sha256 `inviteTokenHash`, expiry discipline, identical response whether or not
+the email has an account, never `Verification`), because a second invite
+mechanism is exactly what §18 forbids itself and the reasoning does not change
+here.
+
+**Admin is plural, and enforced plural.** A group with one admin is one
+resignation or one erasure away from a workspace nobody can administer, holding
+content nobody can export. The last admin cannot leave or be demoted without
+naming a successor, and when the last admin is _erased_ the role transfers
+automatically to the longest-standing remaining member. That is not a new
+policy: §18's erasure rule already says a circle whose owner is erased
+"transfers to its longest-standing member rather than vanishing", and a group
+deserves the same treatment for the same reason.
+
+### 23.4 A group space has no private tier
+
+**Everything in a group space is visible to every member of that group. There is
+no per-item privacy inside a space, and there will not be one.** This is the
+load-bearing rule of the whole section, and it is a design decision rather than
+a v1 shortcut.
+
+The alternative is a per-row ACL, which would put a membership join on the hot
+path of roughly forty list endpoints, defeat `priorityScore`'s single indexed
+`ORDER BY`, and make every one of those endpoints a potential leak. §13 already
+declined to mix shared-in items into the owner's lists for precisely these
+reasons, and the arithmetic is worse here because a group space's lists are the
+member's primary surface rather than a secondary one.
+
+Two consequences follow, and both are UI obligations rather than schema ones:
+
+- **Capture always names its target space, and the default is always personal.**
+  Quick capture, the PWA share target, the email inbox token, voice, image, and
+  the Sparkey composer each gain an explicit space selector. A thought landing in
+  the group brain because the last-used space was sticky is the mortifying
+  failure mode this feature has, and it is the same failure §13 designs against
+  when it makes `thought` unshareable outright.
+- **`ResparkableThought.sensitivity` (Release 8, phase 39) does not mean
+  "hidden" in a group space.** The classifier still runs and still marks
+  `private` and `sensitive`, but there it is a _warning at the point of capture_
+  ("this looks personal, are you sure it belongs in Study Group B?") rather than
+  a filter. Repurposing it as an access control would build the per-row ACL
+  through a side door.
+
+### 23.5 Rows remember who wrote them
+
+Every satellite table gains **`createdByUserId String?`**, FK to `"user"("id")`
+`ON DELETE SetNull`. In a personal space it is redundant with the space owner and
+costs a column; in a group space it is what makes attribution, the activity feed,
+and 23.8's digest possible at all.
+
+`SetNull` rather than `Cascade` is the whole point: when a member is erased their
+_authorship_ disappears but the group's content stays, because that content is
+the group's. A `Cascade` here would let one departing member silently delete a
+term's worth of shared revision material, which is a data-loss complaint with no
+recovery path. This is the same reasoning `AiAdminAuditLog.userId` uses in core,
+and the same trade §13 refuses for `ResparkableComment.authorUserId` (free text
+the erased person wrote, so that one genuinely cascades). Note the asymmetry
+deliberately: **authored rows in a group space survive erasure, comment bodies do
+not**, because one is the group's record and the other is the person's words.
+
+### 23.6 Erasure and export
+
+The case that gets got wrong here is not "delete a group", it is "erase a member
+of one".
+
+- **A member is erased.** Their `ResparkableGroupMember` rows cascade away, their
+  `createdByUserId` values null out, and **the group space is untouched**,
+  because a group space has `ownerUserId = null` and is therefore not reachable
+  by the hand-written cascade at all. That is the design working, but it is
+  invisible in the schema, so probe B1 is extended to assert both halves: the FK
+  exists with `ON DELETE CASCADE` on `ownerUserId`, **and** every `kind: 'group'`
+  space has `ownerUserId IS NULL`. A group space that acquires an `ownerUserId`
+  through some future convenience is a whole shared workspace that vanishes when
+  one person closes their account.
+- **A personal space owner is erased.** Unchanged from today, transitively, via
+  the same FK.
+- **A group is deleted.** Admin-only, and it cascades the space and everything in
+  it. Because that is unrecoverable and affects people who are not the actor, it
+  is gated behind the same explicitness §13 demands for a never-expiring share
+  link: a typed confirmation naming the group, plus a notification to every
+  member. It is not offered as a menu item next to "leave group".
+- **Art. 15 export.** `exportUserData()` must not hand a departing member the
+  group's whole brain, and must not silently omit their contribution to it
+  either. The rule: a subject's export contains their personal spaces in full,
+  plus their group memberships, plus **rows in group spaces where
+  `createdByUserId` is them**. Stated here because `SUBJECT_DATA_SOURCES` is a
+  flat per-model manifest and this is the first model in the tier whose correct
+  disposition is a _predicate_ rather than "all rows for this user".
+- **Account transfer.** `transfer/policy.ts` classifies every brain table for
+  account export/import. Group spaces are **not transferable with an account**:
+  taking your account elsewhere does not take a shared workspace with you. The
+  two new tables get explicit dispositions in the same phase rather than
+  inheriting a default.
+
+### 23.7 Group-to-group sharing
+
+§13's grant model generalises rather than gaining a parallel mechanism.
+`ResparkableGrant` today is keyed `userId` (the owner) plus
+`granteeEmail`/`granteeUserId`. It becomes keyed **space to space**:
+`grantorSpaceId` and `granteeSpaceId`, with the email-invite path retained as
+the way an _unaccepted_ grant addresses a person who does not yet have a space
+to receive it. A personal-to-personal grant is then the special case it always
+was, and `resolveResparkableAccess` gains one lookup rather than a second
+resolver.
+
+Three rules from §13 carry over untouched, and they are the ones that matter
+most for the study-group case that prompted this section:
+
+- **The shareable set is unchanged.** `area`, `goal`, `project`, `review`,
+  `board`, `task`. Not `thought`. `document` is still absent, and if group
+  workspaces are meant to make a shared document shelf work, that is an explicit
+  extension to §13's list with its own redaction and cascade rules, not something
+  a group grant quietly implies.
+- **Shared-in material stays out of the recipient's AI.** A grant to a group
+  makes the item readable on that group's `/shared-with-me`, and does **not**
+  put it in the group's embeddings, context block, prioritisation, or background
+  workflows. The reasoning is unchanged and gets stronger with groups: a naive
+  union would let one group's material silently steer another group's agent.
+  Wanting a genuinely pooled, jointly-queryable corpus is a legitimate ask and a
+  **different feature**, because it needs the embedding path to become
+  multi-space and that is a new isolation plane rather than a phase.
+- **The dynamic-filter trap is worse here.** §13's warning about sharing a
+  `membership: 'filter'` board applies with more force when the grantee is a
+  group whose roll changes: the set of people who can see next Tuesday's matching
+  task is itself a moving target. The share dialog names the grantee group and
+  its current member count, and the snapshot option is the recommended default
+  for a cross-group share rather than merely the safer one.
+
+### 23.8 Group summaries of activity
+
+Reuses two things that already exist rather than adding a reporting layer:
+`ResparkableEvent` (already written on every meaningful mutation, already
+space-scoped) and `ResparkableReview` (already the persisted-artefact table, with
+a `horizon` discriminator). A group digest is a
+`ResparkableReview{horizon: 'group_digest'}` produced by a workflow on the
+**group's** schedule, deterministic gather first and one LLM call at the end, in
+the same shape as the morning briefing (§6) and the context digest (Release 8,
+phase 42).
+
+Its content: what moved, what stalled, what arrived, what connections the sweep
+proposed across the group's material, and what nobody has picked up. Its
+rendering: the Activity pane and a digest surface in the Workspace, not an email
+by default.
+
+**It never ranks members against each other, and it never frames a person as
+behind.** No per-member counts, no leaderboards, no "most active", no "X has not
+contributed since". Three separate parts of this plan already say some version of
+this and they agree for the same reason: `design-principles.md` is explicit that
+Resparkable is a reflection tool rather than an optimisation one, §10 keeps
+`snoozeCount` out of the scorer so that hesitation is never punished, and §18.1
+makes nibble counts bucketed and non-comparative so nobody writes for a score.
+An activity digest over a group is the single most natural place in the product
+for surveillance to arrive wearing a helpful face, so the rule is stated as a
+rule, asserted in the digest's tests, and written into the agent's guardrails
+rather than left to the prompt's good manners.
+
+One structural nicety: per-group scheduled work is **cheaper** than per-user, not
+more expensive, because a group of thirty produces one digest run rather than
+thirty. That runs with the grain of `scale.md`'s S7 rather than against it. It
+does not exempt the digest from **D7**: it is a per-space background pass, so it
+drains a queue until the queue is empty, and `GROUP_DIGEST_BATCH = 50` is exactly
+the constant D7 exists to forbid.
+
+### 23.9 Agents, context and billing in a group space
+
+- **The context contributor keys on the space, not the actor.** `loadResparkableContext`
+  currently ignores `id` and reads `request.userId`, specifically so a shared
+  cache partition cannot leak another user's goals. It reads the **space** id
+  instead, which is the correct partition once a space has several members, and
+  the same guarantee holds by the same mechanism.
+- **Capability guards resolve the space, then the role.** `requireResparkableUser`
+  becomes `requireResparkableSpace`, and write capabilities refuse a `viewer`.
+  No capability accepts a `spaceId` as an LLM-supplied argument, for exactly the
+  reason no capability accepts a `userId` today.
+- **A member's text can now reach another member's agent turn.** This is a new
+  prompt-injection surface and it is the group analogue of §13's rule that a
+  grantee's comments must not enter the owner's embeddings. Inside one group it
+  is accepted rather than eliminated (a shared brain whose contents the shared
+  agent cannot read is not a shared brain), so the mitigation is the one §18.7
+  already uses: the agents that read group content have no destructive
+  capabilities bound, and the group's content is scoped to the group.
+- **Billing comes almost free.** `ResparkableCreditAccount` and
+  `ResparkableCreditLedgerEntry` (phase 29) are already keyed on the space, so a
+  group space gets its own account the moment the key generalises. The ledger
+  entry gains `actorUserId` so a group admin can see who spent what, which is a
+  legitimate cost question and not the member-ranking 23.8 refuses, and the
+  distinction is worth keeping visible: an admin sees spend, and nobody sees
+  productivity.
+
+### 23.10 Open questions
+
+Flagged rather than guessed at, on the §22 precedent:
+
+1. **Personal-to-group promotion.** Moving a project from your brain into the
+   group's is the obvious first thing anyone will try. It is a cross-space write,
+   which D5 has no category for, and copy-versus-move has different answers for
+   the item, its embeddings, its links to non-shared items, and its history.
+2. **Cross-space search for a member of several spaces.** "Search everything I
+   can see" is an obviously wanted feature and a direct assault on
+   `WHERE spaceId = $1`. §24.6 makes this more pressing rather than less, since
+   multiplicity means a person hits it without joining a single group. The likely shape is a fan-out over the member's spaces
+   with results grouped by space and never merged into one ranked list, but that
+   needs measuring before it is specified.
+3. **A group casting facets (§18).** A group is a plausible Cross-Pollination
+   participant, but "the human who approves the facet" is a specific person in a
+   design that assumes one, and consent by committee needs its own thinking.
+4. **Whether a group can own a Circle**, and whether that is different from a
+   group being one.
+5. **Scale.** `scale.md`'s S4 makes exact per-space vector search a tier decision
+   sized on a personal corpus. A group brain is larger than a personal one by
+   roughly its member count, so a group space crosses that threshold sooner and
+   the tiering needs to be per space rather than per user.
+
+---
+
+## 24. Workspaces: more than one brain per owner
+
+**Scoped 2026-08-25, design-stage. Structurally enabled by Release 9 phase 45;
+the product surface is phased as Release 10 in §15.**
+
+**The requirement:** a person or a group can hold several workspaces, each a
+separate brain with its own items, its own connections and its own vectors, and
+the platform should be left open to that now rather than retrofitted to it later.
+
+### 24.1 Multiplicity costs one `@unique`, and that is not a coincidence
+
+§23 did the expensive part. Once `spaceId` is the partition key on all 21
+satellite tables, "how many spaces may one owner have" is a constraint on a
+single column of a single table, not a property of the data model. Concretely,
+the whole schema-level change is:
+
+- **`ResparkableSpace.ownerUserId` is deliberately NOT `@unique`.** It carries a
+  plain index instead. That absence is the feature, and it is called out here so
+  nobody later adds the constraint as a tidy-up, reasoning that one user
+  obviously has one brain.
+- `ResparkableSpace` gains **`isDefault Boolean @default(false)`**, `name`,
+  `slug`, and `archivedAt`, with a partial unique index enforcing **at most one
+  default per owner** (`WHERE "isDefault" AND "archivedAt" IS NULL`). Partial
+  unique indexes are not expressible in Prisma, so this joins the six raw-SQL
+  objects the schema header already warns about and gets its own drift probe.
+  The alternative, a `defaultSpaceId` pointer on the owner, would mean a column
+  on `User`, which CLAUDE.md forbids outright.
+- `ResparkableGroup.spaceId @unique` **loses its uniqueness too**, for the same
+  reason and at the same time. A group with a workspace per client, per cohort
+  or per term is the same shape as a person with one per life area.
+
+**Phase 45 lands all of this**, in the same reviewed commit as the key rename,
+even though nothing in the product creates a second workspace until Release 10.
+That is the point of the request: the migration that touches every table in the
+tier happens once. Everything after it is application code and UI, and none of
+it needs a second pass over the brain's largest tables.
+
+**Every workspace is already its own vector space.** `ResparkableEmbedding` is
+partitioned by the same key as everything else, `searchResparkable` has
+`spaceId` as its mandatory first `WHERE` condition, and the connection sweep
+runs inside one scope. So "a completely new vector for each new workspace" is
+not a feature to build: it falls out of D5, and it would take deliberate work to
+break. What needs building is everything around it.
+
+### 24.2 What is not free: knowing which workspace
+
+The real cost of multiplicity is that **`userId` stops being enough to identify
+a brain**, at nine call sites that currently assume it is. `ensureResparkableSpace()`
+resolves a user to their space today; with several it must resolve a user to
+their **default** space, and every entry point that cannot ask a human which one
+to use needs an explicit answer:
+
+| Entry point                             | Today                                                  | With several workspaces                                                                             |
+| --------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| Web session                             | `session.user.id` implies the space                    | The active workspace, held in the shell and in the URL, never in a cookie alone                     |
+| Email capture                           | `inboxToken` on the space                              | **Already correct.** The token is per space, so a second workspace gets a second address            |
+| PWA share target, voice, image          | Implicit                                               | Route to the default workspace, and show which one caught it in the confirmation                    |
+| `AiApiKey` with the `resparkable` scope | Key owner implies the space                            | The key names one workspace and can reach no other. A key is a credential for a brain, not a person |
+| MCP tools                               | Key owner implies the space                            | Same rule. `resparkable_search` over an unnamed workspace is the wrong default                      |
+| Scheduled runs                          | `RESPARKABLE_SCHEDULE_OWNER_KEY = 'resparkableUserId'` | Becomes `resparkableSpaceId`. A per-user key cannot name which of three brains a 04:30 run is for   |
+
+That last row is a concrete migration, not a note: `AiWorkflowSchedule.scope` is
+a `Json?` column read by `resolvePersistedScope`, so changing the key means
+rewriting existing schedule rows. It is cheap while every user has one space and
+the mapping is the identity, and it is a data-repair job afterwards. **Do it in
+phase 45 with everything else**, not when the second workspace ships.
+
+**The default workspace is a real setting, not a fallback.** It is what unnamed
+capture lands in, what the API-key default resolves to, and what the app opens
+on. A user may change it; a user may not have none. Deleting or archiving the
+default promotes the next-created live workspace and says so out loud.
+
+### 24.3 The background-compute multiplier
+
+This is the honest cost, and it is the one thing in this section that is
+genuinely expensive rather than merely fiddly.
+
+`ensureResparkableSpace()` calls `ensureResparkableSchedules()`, which creates
+**four `AiWorkflowSchedule` rows per space** (nightly triage, morning briefing,
+weekly review, horizon check). Multiplying workspaces multiplies those rows and
+the runs behind them one for one. `scale.md` puts the scheduler's saturation
+around 18,000 users on a `take: 50` serial tick; **a mean of three workspaces
+per user moves that ceiling to roughly 6,000 users**, and the failure mode is
+the one D7 names: a fixed-size batch on a shared tick silently stops serving the
+tail.
+
+Three decisions follow, and they are what makes multiplicity affordable rather
+than merely possible:
+
+- **W1: D7 is a hard prerequisite for Release 10, not a neighbour.** Multiple
+  workspaces are the fastest way to reach the scale ceilings `scale.md`
+  describes, because they raise the multiplier without adding a single user.
+  Release 10 does not ship before the queue does.
+- **W2: Scheduled work is per owner, fanning out over workspaces, never per
+  workspace.** One morning briefing job for a person covers their three brains
+  and produces one briefing that names which workspace each item came from. Four
+  schedule rows per person stays four whatever their workspace count, and the
+  briefing gets better rather than worse: three separate 07:00 emails about three
+  brains is a worse product than one.
+- **W3: A workspace beyond the first is created on demand and idles cheaply.**
+  Per-space background work is demand-driven per `scale.md`'s S7: a workspace
+  nobody has opened in a month is not triaged nightly. Idle workspaces must cost
+  approximately nothing, or the feature's cost scales with how many people
+  _made_ rather than how many people _use_.
+
+W2 is a deliberate departure from the shape §23.8 chose for group digests, where
+the job genuinely is per space. The difference is who the audience is: a group
+digest has one audience per space, a person's briefing has one audience across
+all of theirs.
+
+### 24.4 Billing
+
+`ResparkableCreditAccount` and `ResparkableCreditLedgerEntry` are keyed on the
+space, so multiplying workspaces multiplies accounts. That is right for groups
+and wrong for a person: nobody wants to top up three balances, and a briefing
+that fans out over three brains (W2) cannot charge a per-brain account without
+inventing a split.
+
+**Decision:** the credit account belongs to the **owner**, not the space. Keyed
+on `ownerUserId` for a personal workspace and on `groupId` for a group one, with
+`spaceId` recorded on the **ledger entry** so spend is still attributable per
+workspace. That is a smaller change than it sounds, because the ledger is
+already the place per-item detail lives, and it makes "which of my workspaces is
+expensive" answerable without making it billable separately.
+
+Add **a cap on workspaces per owner**, defaulting low (five feels right for a
+person) and configurable by an operator, for the ordinary reason: each workspace
+mints an inbox token, which is a bearer credential into the brain (§17 risk 8),
+and unbounded creation is unbounded token minting.
+
+### 24.5 Erasure, export and transfer
+
+Mostly unchanged, and where it changes it gets simpler:
+
+- **Erasure.** `ownerUserId` keeps `ON DELETE CASCADE` and merely stops being
+  unique, so erasing a user removes all of their personal workspaces
+  transitively. The existing probe covers it; what changes is the test, which
+  must use a user with **two** spaces or it asserts nothing about the case that
+  is new.
+- **Export (Art. 15).** A subject receives all of their personal workspaces, each
+  labelled, plus §23.6's predicate for group ones. The manifest in
+  `SUBJECT_DATA_SOURCES` does not change, because it is per model and the models
+  do not change. The **shape** of the export does: it becomes one section per
+  workspace rather than one flat brain, and an export that silently concatenated
+  three workspaces would be a worse answer than one that separates them.
+- **Transfer.** `transfer/policy.ts` already classifies every table. Personal
+  workspaces travel with the account, all of them; group workspaces do not
+  (§23.6). The merge keys need a workspace qualifier so importing into an account
+  that already has a "Work" workspace does not silently fuse two brains, which is
+  the vault-sync lesson (§16 test 7) arriving through a different door.
+
+### 24.6 What stays forbidden
+
+The rules that make one workspace safe are exactly the rules that make several
+workspaces coherent, so none of them relax:
+
+- **No implicit cross-workspace read.** Every query names one `spaceId`. A brain
+  is not a filter over a larger brain.
+- **No cross-workspace embedding or context.** The context contributor keys on
+  the active workspace. An agent turn in "Consulting" does not know what is in
+  "Novel", and that separation is most of why someone would want two.
+- **No cross-workspace links.** `ResparkableLink` stays inside one space. A
+  connection between two brains is a §13 grant or a §18 facet, not an edge.
+- **Cross-workspace search remains the open question** it is in §23.10, now more
+  pressing, with the same likely answer: a fan-out that groups results by
+  workspace and never merges them into one ranked list, because a merged ranking
+  would need a cross-space scorer and there is no meaningful shared scale.
+
+### 24.7 What this makes possible
+
+Recorded because it is the argument for doing it at all, and because two of
+these are asks that arrived before the feature did:
+
+- **A workspace per context.** Work and personal separated at the brain level
+  rather than by tags and discipline, which is the separation people actually
+  want and the one tags never deliver.
+- **A workspace per engagement.** A consultant's client, an agency's account. The
+  brain ends when the engagement does, and archiving or exporting it is one
+  action over a coherent thing.
+- **A workspace per course or module**, which is the study-cohort case that
+  prompted §23: a group per cohort, a workspace per subject inside it, and a
+  clean line between last year's revision material and this year's.
+- **A cheap experiment.** A brain you can start, fill for a fortnight, and
+  archive without contaminating the one you rely on. That is only true if idle
+  workspaces cost nothing, which is W3.
+
+### 24.8 Open questions
+
+1. **Moving an item between workspaces.** The same cross-space write problem as
+   §23.10's first question, and the same answer is likely to serve both: one
+   mechanism for "promote this into another space", used by personal-to-group and
+   workspace-to-workspace alike, rather than two.
+2. **Workspace templates.** A new workspace starts empty, which is honest and
+   also a cliff. Whether seeding it from a template (areas, tags, board columns)
+   is a feature or a way of making three shallow brains instead of one good one
+   is a product question, not a technical one.
+3. **Whether a personal workspace can be converted to a group one** by handing it
+   to a group. Mechanically it is a `kind` flip and an `ownerUserId` clear;
+   whether it is safe depends on 23.4, because everything in it becomes visible to
+   every member at the moment of the flip.
+4. **The switcher's cost to the shell.** The three-pane shell holds tab state per
+   surface; whether that state is per workspace, or reset on switch, changes what
+   "switching" feels like, and getting it wrong makes several workspaces feel
+   like several logins.
