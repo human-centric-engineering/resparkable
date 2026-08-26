@@ -16,43 +16,25 @@
  */
 
 /**
- * The six shareable types.
+ * The six shareable types, and the narrowing guard.
  *
- * **`thought` is deliberately absent, and that is a feature.** The raw capture
- * inbox is the likeliest place in the product for something its owner would be
- * mortified to leak — the half-formed, the unfair, the frightened. Want to
- * share a thought? Promote it to a task first, which is the workflow anyway.
+ * **Declared in `validations.ts`, re-exported here.** It is vocabulary rather
+ * than resolution, and `repo/**` needs the union to type a column — while the
+ * ESLint boundary rightly forbids the repo layer from importing this directory
+ * at all. Re-exporting means the sharing code reads as though it owns its own
+ * words while the boundary stays strict.
  *
- * `task` is on the list after an explicit reversal. An earlier draft excluded
- * it, on the grounds that a task's meaning is its parent project and that
- * sharing tasks doubles the access-check surface on the highest-cardinality
- * table. The kanban requirement (§12) overrides that: a board is worthless if
- * you cannot hand someone a single card. The cost is real and stands —
- * {@link resolveResparkableAccessMany} must be genuinely batched on task lists,
- * never per row.
+ * `thought` is deliberately absent; see the declaration for why that is a
+ * feature rather than a gap, and why `task` was put back on the list.
  */
-export const RESPARKABLE_SHAREABLE_TYPES = [
-  'area',
-  'goal',
-  'project',
-  'review',
-  'board',
-  'task',
-] as const;
+import {
+  RESPARKABLE_SHAREABLE_TYPES,
+  isResparkableShareableType,
+  type ResparkableShareableType,
+} from '@/lib/framework/resparkable/validations';
 
-export type ResparkableShareableType = (typeof RESPARKABLE_SHAREABLE_TYPES)[number];
-
-/**
- * Narrow an arbitrary string to a shareable type.
- *
- * Route params and grant rows both carry `entityType` as free text, so this is
- * the boundary that keeps `'thought'` — or a typo — out of the resolver. It
- * returns `false` rather than throwing: an unshareable type is a denial, and a
- * denial and a not-found must look identical from outside.
- */
-export function isResparkableShareableType(value: string): value is ResparkableShareableType {
-  return (RESPARKABLE_SHAREABLE_TYPES as readonly string[]).includes(value);
-}
+export { RESPARKABLE_SHAREABLE_TYPES, isResparkableShareableType };
+export type { ResparkableShareableType };
 
 /** One item, addressed the way every row in this layer addresses one. */
 export interface ResparkableEntityRef {

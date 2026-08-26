@@ -4,7 +4,7 @@ How Resparkable answers **"may this viewer see this row?"**, and why the answer 
 
 This is the Release 2 companion to [`plan.md`](./plan.md) §13, which is the specification. This document is what a person reading the code needs: the boundary, the entry points, what each basis permits, and the four places the implementation deviates from the plan on purpose.
 
-Status: **phase 10 landed** (access resolution, the two tables, the ESLint boundary). Phases 11–14 — public-link routes and the reader, named-grant routes and `/shared-with-me`, invites and comments, the erasure hooks — are still to come.
+Status: **phases 10 and 11 landed** — access resolution, the two tables, the ESLint boundary, and public share links end to end. Phases 12–14 — named-grant routes and `/shared-with-me`, invites and comments, the erasure hooks — are still to come.
 
 ---
 
@@ -166,6 +166,67 @@ Recorded here rather than quietly diverging.
 
 ---
 
+## Public links, end to end
+
+### Minting
+
+`POST /api/v1/resparkable/share-links` → `services/sharing.ts` → `repo/share-links.ts`.
+
+The token exists in memory for one function call. `mintShareLink` generates it, hashes it, stores the digest, and returns the plaintext to the route, which puts it in the 201 body. **Nothing in the system can produce it again** — not the owner's own link list, not the Art. 15 export, not a database dump. A lost link is re-minted, not recovered, and the UI has to say so.
+
+Expiry is a tagged union rather than a nullable number:
+
+```ts
+expiry: { kind: 'days', days: 30 }   // the default
+expiry: { kind: 'never' }            // has to be typed out
+```
+
+An `expiresInDays: number | null` field would satisfy §13's "null requires an explicit never-expires choice" on paper and miss the point: `null` is what an empty form field serialises to, so the strictest setting would be the one a client reaches by omission.
+
+### `visibility` is a cache, maintained transactionally
+
+Minting flips the item to `visibility: 'link'`; revoking the last live link flips it back to `'private'`. Both happen in the same transaction as the link write, because `visibility` exists so a list can render a "shared" badge **without joining to the link table** — which makes it a cache, and a cache updated in a second statement goes wrong the first time a request dies between the two.
+
+The sibling count in `revokeShareLink` is taken **inside** the transaction. Two people revoking the last two links at once would otherwise each see the other's link as still live, and neither would flip the badge.
+
+### The reader
+
+| Surface                                 | What it is                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------- |
+| `app/(public)/s/[token]/page.tsx`       | The page. Server component; calls the service directly, no HTTP hop       |
+| `app/api/v1/resparkable/public/[token]` | The JSON, for anything that wants it without the page                     |
+| `repo/shared-view.ts`                   | The projection — an **allowlist**, and the only place in the tier that is |
+
+**Every failure is the same failure.** Unknown token, malformed token, revoked link, expired link, and a link whose item has since been deleted all return the same 404 with the same body and the same headers. Anything distinguishable turns the response into an oracle telling a stranger which tokens once existed, and roughly when.
+
+**Three headers, on the miss as well as the hit:**
+
+- `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet` — `robots.txt` is advisory and does not remove an already-indexed URL. Crawlers fetch APIs directly, so the header is set here as well as in the page's metadata.
+- `Referrer-Policy: no-referrer` — the token is in the _path_. The deployment-wide `strict-origin-when-cross-origin` already strips the path from cross-origin requests, so the token does not leak by default; this sends nothing at all, including the origin. On the page the same thing is done with `metadata.referrer`, because a page cannot set response headers in the App Router — and that needs no core edit.
+- `Cache-Control: private, no-store` — a revoked link must stop working immediately, and it cannot if a proxy is still serving the last 200.
+
+**Remote images are click-to-load.** The CSP allows `img-src https:`, so a tracking pixel in a note would fire for every reader the moment the page rendered. On the owner's own surfaces that is self-inflicted; here it is not — the reader never agreed to it and cannot see it happening. Same-origin and `data:` images render normally. Tightening `img-src` globally would break every legitimate image on the owner's surfaces to close a hole that exists only here.
+
+**Archived items still resolve.** The owner retired the thinking; they did not revoke the link. A reader following a URL they were given should see what it points at rather than a 404 they cannot explain — and the page marks it as archived so they know they are looking at something set aside. Revocation is the gesture that closes a link.
+
+### The projection is an allowlist, and that inversion is deliberate
+
+Everywhere else in this tier the rule is `omit`, not `select`: a column added tomorrow should be _exported_ by default rather than silently dropped from a subject-access bundle. `repo/shared-view.ts` inverts it. A column added to `ResparkableTask` next month must not appear on a public page because nobody remembered to exclude it.
+
+`tests/unit/lib/framework/resparkable/repo/shared-view.test.ts` asserts the `select` objects handed to Prisma against a forbidden-column list, rather than the returned shape — a value that is never fetched cannot be leaked by a serialiser downstream, and one that _is_ fetched can be, by any of them.
+
+Never fetched: `priorityScore`, `priorityFactors`, `manualBoost*`, `snoozeCount`, `deferUntil`, `energy`, `estimateMinutes`, `contextTag`, `lastActivityAt`, `slug`, `rev`, `indexedHash`, `visibility`, every foreign key, a board's `filter`, a review's `payload`, and the whole of `ResparkableEvent`.
+
+**A board's children come from `services/board-view.ts`**, not from the repo. A filter-backed board is a live query, and resolving its membership anywhere but the module that renders it would be a second copy of the filter predicate — where the disagreement shows up as a shared board displaying different cards from the owner's.
+
+### Rate limiting
+
+A new `resparkable-public` tier: **60/hour per IP**, registered for both `/api/v1/resparkable/public/**` and `/s/**`. Two rules because the page calls the service directly rather than fetching its own API, so the API rule never fires for a browser.
+
+Keyed on IP because there is nothing else to key on — which means a shared office NAT shares a budget, which is why the cap is sixty rather than ten. The token is 192 bits, so this is not what stops an attacker guessing; what it stops is a script burning database lookups for free.
+
+---
+
 ## Shared-in items get their own surface
 
 They do **not** appear in the viewer's own lists or search. Three reasons, in weight order:
@@ -192,4 +253,10 @@ They do **not** appear in the viewer's own lists or search. Three reasons, in we
 | Behaviour tests                          | `tests/unit/lib/framework/resparkable/access/resolve.test.ts`            |
 | Query-shape tests                        | `tests/unit/lib/framework/resparkable/access/store-isolation.test.ts`    |
 | The D5 boundary, run as ESLint           | `tests/unit/lib/framework/resparkable/access/eslint-d5-boundary.test.ts` |
+| Minting, revoking, the public payload    | `lib/framework/resparkable/services/sharing.ts`                          |
+| The owner's side of a link               | `lib/framework/resparkable/repo/share-links.ts`                          |
+| The reader's projection (allowlist)      | `lib/framework/resparkable/repo/shared-view.ts`                          |
+| The reader page                          | `app/(public)/s/[token]/page.tsx`                                        |
+| The reader's JSON, and its headers       | `app/api/v1/resparkable/public/[token]/route.ts`                         |
+| Crawler exclusion (fork seam)            | `lib/app/robots.ts`, spread by `app/robots.ts`                           |
 | The specification                        | [`plan.md`](./plan.md) §13, §16                                          |

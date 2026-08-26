@@ -18,6 +18,26 @@ release process.
 
 ### Added
 
+- **Resparkable public share links, and the `/s/[token]` reader.**
+  `POST /api/v1/resparkable/share-links` mints a link and returns the plaintext
+  token **once** — a 192-bit `base64url` value, stored only as a sha256 digest,
+  so a lost link is re-minted rather than recovered. `GET` lists the owner's
+  links (prefix only, never the token or the digest); `DELETE /[id]` revokes one
+  and, if it was the last live link on the item, flips `visibility` back to
+  `private` inside the same transaction. Expiry is a tagged union
+  (`{ kind: 'days', days }` | `{ kind: 'never' }`) defaulting to 30 days and
+  capped at 365, so "never expires" cannot be reached by omitting a field.
+  `GET /api/v1/resparkable/public/[token]` is the tier's only unauthenticated
+  route: unknown, malformed, revoked and expired tokens all return the same 404
+  with the same body **and the same headers**, and every response carries
+  `X-Robots-Tag`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+  The reader page sets `noindex` metadata, renders markdown with no raw HTML,
+  and defers remote images behind a click so a shared note cannot ping a third
+  party on every reader's behalf. New `resparkable-public` rate-limit tier,
+  60/hour per IP, on both the API and the page. New fork seam
+  `lib/app/robots.ts` (`appDisallowedPaths`), which `app/robots.ts` spreads into
+  its disallow list — filed upstream as ask #41.
+
 - **Resparkable sharing: access resolution, and the two tables it reads.**
   `ResparkableGrant` (named grants: one address, one item, `viewer` or
   `commenter`) and `ResparkableShareLink` (public read-only links, token stored

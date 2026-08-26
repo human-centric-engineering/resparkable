@@ -6,13 +6,16 @@
  * expensive rather than cheap. Two properties are worth holding, and neither is
  * visible from the app:
  *
- *   1. **Every matcher stays inside `/api/v1/resparkable/`.** `registerRateLimitRule`
- *      throws if a matcher could shadow a Resparkable-protected surface, so a
- *      careless prefix fails at boot — but only if something actually calls the
- *      registrar. This test is that call.
- *   2. **Every rule is keyed on the session user, not the IP.** IP keying would
- *      make one household share a search budget, and this is authenticated
- *      per-person work.
+ *   1. **Every matcher stays inside Resparkable's own namespace.**
+ *      `registerRateLimitRule` throws if a matcher could shadow a
+ *      Resparkable-protected surface, so a careless prefix fails at boot — but
+ *      only if something actually calls the registrar. This test is that call.
+ *      Two namespaces, since Release 2: `/api/v1/resparkable/` and `/s/`, the
+ *      public share reader.
+ *   2. **Every AUTHENTICATED rule is keyed on the session user, not the IP.**
+ *      IP keying would make one household share a search budget. The two public
+ *      share rules are the deliberate exception and are keyed on IP, because a
+ *      reader holding a link has no session to key on.
  *
  * The registrar is also idempotent by necessity: Next re-evaluates the
  * middleware module on every hot reload in dev, so a registrar that appended on
@@ -52,7 +55,16 @@ const EXPECTED: Array<{ path: string; tier: string }> = [
   // a trailing path, so this only lands on the right tier if the image rule is
   // registered — and therefore evaluated — before the audio one.
   { path: '/api/v1/resparkable/transcribe/image', tier: 'resparkable-image' },
+  // The public reader, both halves: the JSON endpoint and the page. The page is
+  // a server component that calls the service directly rather than fetching its
+  // own API, so the API rule never fires for a browser — without the `/s/` rule
+  // the reader would be uncapped.
+  { path: '/api/v1/resparkable/public/abc', tier: 'resparkable-public' },
+  { path: '/s/abc', tier: 'resparkable-public' },
 ];
+
+/** The paths whose rules are keyed on IP rather than the session. */
+const IP_KEYED = ['/api/v1/resparkable/public/abc', '/s/abc'];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -71,6 +83,7 @@ describe('registerResparkableRateLimits', () => {
         'resparkable-ideate',
         'resparkable-audio',
         'resparkable-image',
+        'resparkable-public',
       ])
     );
   });
@@ -89,17 +102,24 @@ describe('registerResparkableRateLimits', () => {
     }
   });
 
-  it('keys every rule on the session user, never the IP', () => {
-    // IP keying would make one household share a search budget. This is
-    // authenticated, per-person work.
+  it('keys the authenticated rules on the session user, and only the public ones on IP', () => {
+    // IP keying would make one household share a search budget, so every
+    // authenticated cap is per-person. The public share reader is the one place
+    // there is no session to key on — a reader holding a link has no account —
+    // and it is the one place the exception is allowed.
     registerResparkableRateLimits();
 
     for (const [rule] of mockedRule.mock.calls) {
-      expect(rule.key).toBe('session-user');
+      const isPublic = IP_KEYED.some((path) =>
+        rule.match instanceof RegExp ? rule.match.test(path) : false
+      );
+      expect(rule.key, `${String(rule.match)} is keyed wrongly`).toBe(
+        isPublic ? 'ip' : 'session-user'
+      );
     }
   });
 
-  it('scopes every matcher inside /api/v1/resparkable/', () => {
+  it("scopes every matcher inside Resparkable's own namespaces", () => {
     // The registrar throws on a matcher that could shadow a Resparkable surface, but
     // only for the probes it knows about. Asserting the namespace directly means
     // a matcher that merely *could* widen is caught here rather than at boot.
@@ -110,6 +130,11 @@ describe('registerResparkableRateLimits', () => {
       '/api/v1/auth/sign-in',
       '/api/v1/chat/stream',
       '/api/v1/users/me',
+      // The `/s/` rule is a short prefix on the site root, which is exactly the
+      // shape that shadows things by accident. These are the near misses.
+      '/settings',
+      '/signup',
+      '/search',
     ];
 
     for (const [rule] of mockedRule.mock.calls) {

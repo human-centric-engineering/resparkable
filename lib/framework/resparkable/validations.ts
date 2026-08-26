@@ -36,6 +36,50 @@ export const PROJECT_STATUSES = ['idea', 'active', 'paused', 'done', 'abandoned'
 export const GOAL_HORIZONS = ['life', 'year', 'quarter', 'month', 'week'] as const;
 export const GOAL_STATUSES = ['active', 'achieved', 'dropped'] as const;
 export const THOUGHT_STATUSES = ['inbox', 'promoted', 'dropped'] as const;
+
+/**
+ * The six shareable types (§13).
+ *
+ * Here rather than in `access/types.ts` because it is **vocabulary, not
+ * resolution**: `repo/**` needs the union to type a column, and the ESLint
+ * boundary rightly forbids the repo layer from importing the access layer at
+ * all. `access/types.ts` re-exports it, so the sharing code still reads as
+ * though it owns its own words.
+ *
+ * **`thought` is deliberately absent, and that is a feature.** The raw capture
+ * inbox is the likeliest place in the product for something its owner would be
+ * mortified to leak — the half-formed, the unfair, the frightened. Want to
+ * share a thought? Promote it to a task first, which is the workflow anyway.
+ *
+ * `task` is on the list after an explicit reversal. An earlier draft excluded
+ * it, on the grounds that a task's meaning is its parent project and that
+ * sharing tasks doubles the access-check surface on the highest-cardinality
+ * table. The kanban requirement (§12) overrides that: a board is worthless if
+ * you cannot hand someone a single card. The cost is real and stands —
+ * `resolveResparkableAccessMany` must be genuinely batched on task lists.
+ */
+export const RESPARKABLE_SHAREABLE_TYPES = [
+  'area',
+  'goal',
+  'project',
+  'review',
+  'board',
+  'task',
+] as const;
+
+export type ResparkableShareableType = (typeof RESPARKABLE_SHAREABLE_TYPES)[number];
+
+/**
+ * Narrow an arbitrary string to a shareable type.
+ *
+ * Route params and grant rows both carry `entityType` as free text, so this is
+ * the boundary that keeps `'thought'` — or a typo — out of the resolver. It
+ * returns `false` rather than throwing: an unshareable type is a denial, and a
+ * denial and a not-found must look identical from outside.
+ */
+export function isResparkableShareableType(value: string): value is ResparkableShareableType {
+  return (RESPARKABLE_SHAREABLE_TYPES as readonly string[]).includes(value);
+}
 /**
  * `public` is never auto-assigned by `classifyThoughtSensitivity` — it exists
  * so a person can explicitly downgrade a thought later. `private` is the safe
@@ -1645,3 +1689,80 @@ export const vaultImportSchema = z
   .strict();
 
 export type VaultImportInput = z.infer<typeof vaultImportSchema>;
+
+// ─── Sharing (Release 2, §13) ────────────────────────────────────────────────
+
+/**
+ * How long a public link lives, as a **choice** rather than a nullable number.
+ *
+ * §13 asks for a 30-day default, a 365-day maximum, and "never expires" only on
+ * an explicit request. A `expiresInDays: number | null` field would satisfy the
+ * letter of that and miss the point: `null` is what an empty form field
+ * serialises to, so the strictest setting would be the one a client reaches by
+ * omission. A tagged union cannot be reached by accident — `{ kind: 'never' }`
+ * has to be typed out.
+ *
+ * The default is the union's, not a field's, so a body with no `expiry` at all
+ * gets thirty days rather than forever.
+ */
+export const shareLinkExpirySchema = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('days'), days: z.number().int().min(1).max(365) }).strict(),
+    z.object({ kind: z.literal('never') }).strict(),
+  ])
+  .default({ kind: 'days', days: 30 });
+
+/**
+ * Mint a public link.
+ *
+ * `entityType` is the shareable list, which does **not** include `thought` —
+ * so an attempt to publish the raw capture inbox is a 400 rather than a
+ * permission check somewhere deeper (§13).
+ *
+ * Both toggles default to off, and both widen what a stranger sees:
+ * `includeChildren` turns one item into a subtree, `includeTaskDetail` opens
+ * `notes`. Defaults that had to be turned OFF would be the wrong way round.
+ */
+export const createShareLinkSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    includeChildren: z.boolean().default(false),
+    includeTaskDetail: z.boolean().default(false),
+    expiry: shareLinkExpirySchema,
+  })
+  .strict();
+
+export type CreateShareLinkInput = z.infer<typeof createShareLinkSchema>;
+
+/** Filter the owner's own link list. Both optional: no filter lists them all. */
+export const shareLinkListQuerySchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES).optional(),
+    entityId: cuidSchema.optional(),
+    /**
+     * Include links already revoked or expired. Off by default.
+     *
+     * The `'true' | 'false'` enum rather than `z.coerce.boolean()`, for the
+     * reason every other query flag in this file spells out: `Boolean('false')`
+     * is `true`, so coercion turns the safe default into the wide one.
+     */
+    includeInactive: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+  })
+  .strict();
+
+export type ShareLinkListQuery = z.infer<typeof shareLinkListQuerySchema>;
+
+/**
+ * A public-link token, as it arrives in a URL path segment.
+ *
+ * `base64url` of 24 random bytes is exactly 32 characters from the alphabet
+ * `[A-Za-z0-9_-]`. Pinning the shape here means a malformed token is rejected
+ * before it reaches a database lookup — which matters less for correctness
+ * than for cost: `/s/<anything>` is an unauthenticated endpoint, and a
+ * length-checked reject is cheaper than an indexed miss.
+ */
+export const shareTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not a share token');

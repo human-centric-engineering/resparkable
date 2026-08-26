@@ -398,6 +398,21 @@ written against the un-renamed original will fail the same way.
 
 ---
 
+### Found by Release 2 phase 11 — public share links (2026-08-26)
+
+| #   | Ask                                                                                                                                                                                              | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Priority                                                                                                                                                          | Issue     |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| 41  | **`app/robots.ts` has no fork seam** — a fork that adds a route which must not be crawled has to edit a Sunrise-owned file. Mirror `appProtectedRoutes`: a fork-owned `appDisallowedPaths` array | Resparkable's public share links live at `/s/[token]`, and each URL is a bearer credential to one item of one person's brain. It must be in `robots.txt` — that is the only one of the three anti-indexing measures that stops a crawler _discovering_ the URL rather than merely declining to index it after the fetch. There was no way to add it without editing `app/robots.ts`, which breaks the tier's first rule (zero Sunrise-owned files). The seam is four lines and identical in shape to the one `proxy.ts` already has for protected routes, including the normalisation that drops an entry which would disallow the whole site | Low effort, and the shape is already established upstream by `appProtectedRoutes`. Same family as #480/#525/#533/#40: a hardcoded core list with no per-fork seam | Not filed |
+
+**Downstream status (#41):** implemented as the seam rather than as a bare
+edit, so the core diff is the two lines that spread it. `lib/app/robots.ts`
+exports `appDisallowedPaths` (fork-owned, ships holding `/s/`) and
+`app/robots.ts` spreads it into the core disallow list, normalising the same way
+`proxy.ts` normalises `appProtectedRoutes` — anything that is not a non-empty
+`/`-prefixed path is dropped, so a stray `''` cannot become a site-wide
+disallow. Covered by `tests/unit/app/robots.test.ts`. If upstream adopts it,
+this fork keeps `lib/app/robots.ts` unchanged and drops nothing.
+
 ## State at the Sunrise 0.9.0 merge (2026-08-19)
 
 Checked with the two commands §6 of [The process](#the-process) prescribes, run

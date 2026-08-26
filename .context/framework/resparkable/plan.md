@@ -1201,15 +1201,19 @@ waiting for Release 9.
 
 ### Release 2 — sharing
 
-| #   | Deliverable                                                                                                             | Verifiable by       |
-| --- | ----------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| 10  | Access resolution + `resparkableVisibilityScope` + owner short-circuit + eslint boundary                                | isolation tests 1–4 |
-| 11  | Public share links: token minting, `/s/[token]` reader, robots + `X-Robots-Tag` + `Referrer-Policy`, revocation, expiry | tests 14–18         |
-| 12  | Named grants + cascade + redaction + `/shared-with-me`                                                                  | tests 5–9           |
-| 13  | Invite flow + `emails/resparkable-share-invite.tsx` + rate limit; then comments + commenter role                        | tests 10–13         |
-| 14  | Erasure hook + drift probes + grantee-email scrub                                                                       | tests 22–24         |
+| #   | Deliverable                                                                                                                                  | Verifiable by       |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| 10  | Access resolution + `resparkableVisibilityScope` + owner short-circuit + eslint boundary. **DONE 2026-08-26**                                | isolation tests 1–4 |
+| 11  | Public share links: token minting, `/s/[token]` reader, robots + `X-Robots-Tag` + `Referrer-Policy`, revocation, expiry. **DONE 2026-08-26** | tests 14–18         |
+| 12  | Named grants + cascade + redaction + `/shared-with-me`                                                                                       | tests 5–9           |
+| 13  | Invite flow + `emails/resparkable-share-invite.tsx` + rate limit; then comments + commenter role                                             | tests 10–13         |
+| 14  | Erasure hook + drift probes + grantee-email scrub                                                                                            | tests 22–24         |
 
 Cheap — 4–5 days — because `conversation-access.ts`, `invitation-token.ts`, `emails/invitation.tsx`, `visitor-id.ts` and `registerErasureCleanupHook` are all correct existing precedents. The expensive part is the test matrix, and it should be.
+
+**Phases 10 and 11 landed 2026-08-26.** The implementation notes, the four
+deliberate deviations from §13 below, and the reader's header/redaction contract
+are in [`sharing.md`](./sharing.md); this section stays the specification.
 
 Note `visibility` and the `OwnerScope` repo boundary land in Release 1 phases 1–2 even though nothing uses them yet. Retrofitting either onto rows people have already created is what causes leaks.
 

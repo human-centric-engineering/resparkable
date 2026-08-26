@@ -19,6 +19,7 @@ export {
   resolveResparkableShareLinkChild,
   resparkableVisibilityScope,
   shareLinkAccess,
+  sharedOwnerScope,
 } from '@/lib/framework/resparkable/access/resolve';
 
 export {

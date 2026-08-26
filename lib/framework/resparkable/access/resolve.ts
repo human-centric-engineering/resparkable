@@ -67,6 +67,7 @@ import {
   type ResparkableViewer,
   type ResparkableVisibilityScope,
 } from '@/lib/framework/resparkable/access/types';
+import { ownerScope, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import { createHash } from 'crypto';
 
 export interface ResolveAccessInput {
@@ -377,6 +378,34 @@ export async function resparkableVisibilityScope(
   }
 
   return { viewer, grants, directRefsByType };
+}
+
+/**
+ * Mint an `OwnerScope` from a **positive** access result.
+ *
+ * The fourth and last legitimate source of a scope, alongside the session, the
+ * capability context and a scheduled run's scope key (`repo/owner-scope.ts`
+ * enumerates the other three). It is the one that reads a stranger's request
+ * and still produces an owner identity, so it is worth being explicit about
+ * what makes it safe:
+ *
+ *   • The id comes from a database row, never from the request. The caller
+ *     supplies a token or a session; the database answers who owns the item.
+ *   • It is unreachable without a positive resolution. `ok: false` throws
+ *     rather than returning a scope — a denial that produced a usable scope
+ *     would be the largest possible failure in this layer, so it fails loudly
+ *     rather than returning null and letting a caller forget to check.
+ *
+ * What the scope then buys is deliberately narrow: `repo/shared-view.ts`'s
+ * allowlisted projection. It is an owner scope, so it *could* read anything of
+ * the owner's — which is exactly why the projection is an allowlist and why
+ * `rg 'sharedOwnerScope\('` should stay short enough to read.
+ */
+export function sharedOwnerScope(result: ResparkableAccessResult): OwnerScope {
+  if (!result.ok || !result.ownerId) {
+    throw new Error('sharedOwnerScope: refused — access was not granted');
+  }
+  return ownerScope(result.ownerId);
 }
 
 // ─── Public links ────────────────────────────────────────────────────────────

@@ -69,6 +69,7 @@ import { initAppGuardFloorContributors } from '@/lib/app/guard-floor-contributor
 import { initAppGuardEventContributors } from '@/lib/app/guard-event-contributors';
 import { appAgentFields } from '@/lib/app/agent-fields';
 import { appProtectedRoutes } from '@/lib/app/protected-routes';
+import { appDisallowedPaths } from '@/lib/app/robots';
 import { appEnvSchema } from '@/lib/app/env';
 import appEslintConfig from '@/lib/app/eslint.config.mjs';
 import { initLeafApp } from '@/lib/app/leaf-bootstrap';
@@ -122,9 +123,10 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // `/transcribe/image` one photo to a vision model; `/vault`
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
-    // connection open for a tool loop). Asserting the exact set keeps the
-    // original intent: a stray rule still fails, and so does one that escapes
-    // the namespace.
+    // connection open for a tool loop; and the two public share-reader rules,
+    // which are the exception to everything else in this list — see below).
+    // Asserting the exact set keeps the original intent: a stray rule still
+    // fails, and so does one that escapes the namespace.
     //
     // The order matters and is the registration order in
     // `lib/framework/resparkable/rate-limit.ts` — a rule spliced in the wrong place
@@ -139,6 +141,13 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       const appRules = effective.filter((rule) => !RATE_LIMIT_POLICY.includes(rule));
 
       expect(appRules.map((rule) => String(rule.match))).toEqual([
+        // The public share reader, both halves, registered first so neither can
+        // be shadowed by a later prefix. `/s/` is the one matcher in this list
+        // outside `/api/v1/resparkable/` — the reader page is a server
+        // component that calls the service directly rather than fetching its
+        // own API, so without it a browser would be uncapped.
+        String(/^\/api\/v1\/resparkable\/public(?:\/|$)/),
+        String(/^\/s\//),
         String(/^\/api\/v1\/resparkable\/search(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),
@@ -151,10 +160,24 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         String(/^\/api\/v1\/resparkable\/briefing\/regenerate(?:\/|$)/),
       ]);
 
-      // Every Resparkable rule is keyed on the session user, not the IP: this is
-      // authenticated per-person work, and IP keying would make one household
-      // share a search budget.
-      expect(appRules.every((rule) => rule.key === 'session-user')).toBe(true);
+      // Every AUTHENTICATED Resparkable rule is keyed on the session user, not
+      // the IP: that is per-person work, and IP keying would make one household
+      // share a search budget. The two public share rules are the deliberate
+      // exception — a reader holding a link has no session to key on — and
+      // naming them here rather than loosening the check means a third IP-keyed
+      // rule appearing without a reason still fails.
+      const publicRules = appRules.filter((rule) =>
+        [/^\/api\/v1\/resparkable\/public(?:\/|$)/, /^\/s\//].some(
+          (matcher) => String(rule.match) === String(matcher)
+        )
+      );
+      expect(publicRules).toHaveLength(2);
+      expect(publicRules.every((rule) => rule.key === 'ip')).toBe(true);
+      expect(
+        appRules
+          .filter((rule) => !publicRules.includes(rule))
+          .every((r) => r.key === 'session-user')
+      ).toBe(true);
 
       // The catch-all must stay last — app rules are spliced in just ahead of
       // it, and a rule after it would never match.
@@ -349,6 +372,21 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // one prefix — `/s/*` public share links (Release 2) must never appear here,
     // and a stray entry would put a marketing page behind login.
     assert: () => expect(appProtectedRoutes).toEqual(['/resparkable']),
+  },
+  {
+    seam: 'lib/app/robots.ts',
+    risk: 'a stray path would de-index a public route on every install',
+    // FORK (Resparkable): Sunrise ships this empty. Resparkable fills it with
+    // exactly one prefix — `/s/`, the public share reader, where every URL is a
+    // bearer credential to one item of one person's brain.
+    //
+    // Pinned to the exact list rather than asserted non-empty. The failure this
+    // guards is silent and total: an entry of `''` or a lone `/` would disallow
+    // the entire deployment, and nothing about the generated `robots.txt` would
+    // look wrong at a glance. `app/robots.ts` normalises both away, and
+    // `tests/unit/app/robots.test.ts` asserts that; this asserts the list a
+    // reviewer would have to have agreed to in the first place.
+    assert: () => expect(appDisallowedPaths).toEqual(['/s/']),
   },
   {
     seam: 'lib/app/env.ts',
