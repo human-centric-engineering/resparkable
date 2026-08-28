@@ -25,6 +25,7 @@
 
 import * as React from 'react';
 
+import { CommentThread } from '@/components/resparkable/share/comment-thread';
 import { SharedMarkdown } from '@/components/resparkable/share/shared-markdown';
 import { Badge } from '@/components/ui/badge';
 import { ClientDate } from '@/components/ui/client-date';
@@ -123,6 +124,18 @@ export function SharedItemDetail({ detail }: { detail: SharedItemDetailWire }): 
       {!detail.includeTaskDetail && item.entityType !== 'area' && (
         <p className="text-muted-foreground text-xs">Task notes are not included in this share.</p>
       )}
+
+      {/* Renders nothing when the basis carries no comments — a cascaded
+          grant, which was never chosen for sharing by its owner, and a public
+          link, which is a document rather than a relationship. The component
+          asks and hides itself rather than this page re-deriving the rule the
+          resolver already applied. */}
+      <CommentThread
+        entityType={item.entityType}
+        entityId={item.id}
+        canComment={detail.canComment}
+        isOwner={false}
+      />
 
       {children.length > 0 && (
         <section className="space-y-2">

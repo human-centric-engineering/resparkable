@@ -275,3 +275,96 @@ export async function findAccountIdForEmail(email: string): Promise<string | nul
   });
   return user?.id ?? null;
 }
+
+/**
+ * Stamp an invite token onto a grant, and record that it was sent.
+ *
+ * The digest, never the plaintext — the same discipline as the share link, and
+ * for a weaker but still real version of the same reason: an invite token grants
+ * nothing on its own, but a database dump full of live ones would still let
+ * somebody bind their account to every pending grant whose mailbox they could
+ * reach.
+ *
+ * `inviteSentAt` moves each time, so re-sending replaces the token rather than
+ * accumulating them. There is exactly one live invite per grant, which is what
+ * `@unique` on `inviteTokenHash` already forces at the database.
+ */
+export async function stampInviteToken(
+  scope: OwnerScope,
+  id: string,
+  tokenHash: string,
+  now: Date = new Date()
+): Promise<boolean> {
+  const result = await prisma.resparkableGrant.updateMany({
+    where: { ...ownerWhere(scope), id, revokedAt: null },
+    data: { inviteTokenHash: tokenHash, inviteSentAt: now },
+  });
+  return result.count > 0;
+}
+
+/**
+ * Find a grant by the sha256 of its invite token.
+ *
+ * **The one read in this file with no owner in the `where`**, and the reason is
+ * that the caller has no owner to supply: an invitee following a link from their
+ * mailbox knows nothing but the token. It is safe because of what a match buys —
+ * the row, and then a case-insensitive comparison of its `granteeEmail` against
+ * the *session's* address, which the caller performs. **Holding the token is not
+ * access**; holding the token and the mailbox is.
+ *
+ * `findUnique` on an indexed digest, so a wrong token is one indexed miss.
+ * Revoked grants are excluded here rather than by the caller, so an accepted
+ * revocation cannot be undone by an old email.
+ */
+export async function findGrantByInviteTokenHash(
+  tokenHash: string
+): Promise<ResparkableGrant | null> {
+  const grant = await prisma.resparkableGrant.findUnique({ where: { inviteTokenHash: tokenHash } });
+  if (!grant || grant.revokedAt !== null) return null;
+  return grant;
+}
+
+/**
+ * Bind an account to a grant, and clear the token.
+ *
+ * **The token is cleared on acceptance**, so it is single-use. It has done its
+ * one job — connecting an account to a relationship that already existed — and
+ * a token that stayed live afterwards would be a standing credential for
+ * whoever else received a forward of that email.
+ *
+ * **`acceptedAt` is only ever set once**, which is why this is a transaction
+ * rather than one statement: Prisma cannot express "set this column if it is
+ * null" in an update, and doing it unconditionally would move the date every
+ * time somebody re-opened an old email. A person who accepted, was revoked and
+ * was re-granted keeps their original acceptance, because that is when the
+ * relationship began — re-sharing is an amendment, not a new introduction.
+ *
+ * No `OwnerScope`, for the same reason as the lookup above: the accepting party
+ * is not the owner. The `where` carries the grant's own id, which the caller got
+ * by matching a token digest *and* an address.
+ */
+export async function acceptGrant(
+  grantId: string,
+  granteeUserId: string,
+  now: Date = new Date()
+): Promise<ResparkableGrant | null> {
+  return prisma.$transaction(async (tx) => {
+    const grant = await tx.resparkableGrant.findUnique({ where: { id: grantId } });
+    // Revoked between the email being opened and this running. The same answer
+    // as an unknown token, so an old link cannot tell its holder that the grant
+    // once existed.
+    if (!grant || grant.revokedAt !== null) return null;
+
+    return tx.resparkableGrant.update({
+      where: { id: grantId },
+      data: {
+        granteeUserId,
+        // Single-use. It has done its one job — connecting an account to a
+        // relationship that already existed — and a token still live afterwards
+        // would be a standing credential for whoever received a forward.
+        inviteTokenHash: null,
+        acceptedAt: grant.acceptedAt ?? now,
+      },
+    });
+  });
+}

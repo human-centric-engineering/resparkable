@@ -76,6 +76,20 @@ export const RESPARKABLE_ROUTES = {
     `${BASE}/shared/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
 
   /**
+   * Where a share-invite email lands (§13, phase 13).
+   *
+   * Under `/resparkable`, so it is behind the session gate `proxy.ts` applies by
+   * pathname prefix — a signed-out invitee is sent to sign in and returned here.
+   * That is the whole authentication design of the accept flow: the token names
+   * a grant, and the **session** proves the address, so there is nothing for an
+   * unauthenticated visitor to do on this page.
+   *
+   * Deliberately NOT under `/s/`, which is the unauthenticated reader and must
+   * stay the one path in the product that has no session at all.
+   */
+  invite: (token: string): string => `${BASE}/invite/${encodeURIComponent(token)}`,
+
+  /**
    * Archived items, and what has gone quiet (§11, phase 8).
    *
    * **Deliberately not in the main nav.** §11 is explicit that the archived list

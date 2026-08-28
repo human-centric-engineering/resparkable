@@ -18,6 +18,37 @@ release process.
 
 ### Added
 
+- **Resparkable share invites, and comments.** `POST
+  /api/v1/resparkable/grants/[id]/invite` emails the person a grant was issued
+  to — a **separate call from creating the grant**, so a mail-provider outage
+  leaves working access rather than a person told they have access and does
+  not, and so "send it again" is a button rather than a second grant. **The
+  invite token grants nothing on its own**: the grant is already live for the
+  address it names, and the token only binds an *account* to it, so a forwarded
+  email is useless without that mailbox. The email names the kind of thing
+  shared and never its title, because a subject line lands in a preview pane and
+  a mail provider's index. New `resparkable-invite` rate-limit tier, **20/day
+  per user** — the only daily cap in the tier, and the only one about somebody
+  else's inbox rather than this deployment's bill.
+  `POST /api/v1/resparkable/invites/accept` binds the account: the token names
+  the grant and the **session proves the address**, so a different signed-in
+  person gets a masked address and a refusal, while unknown, malformed, revoked,
+  expired and already-spent tokens all give the same 404. New page at
+  `/resparkable/invite/[token]`, behind the session gate by design.
+  New `ResparkableComment` model and `/api/v1/resparkable/comments`, which is
+  what `role: 'commenter'` means and the only write path in the tier a non-owner
+  can reach. `POST` asks the resolver for `need: 'comment'` rather than checking
+  a role, so a viewer grant, a **cascaded** grant of any role and a public link
+  are all refused by one answer. **Editing is the author's alone; deleting is
+  the author's or the owner's** — both enforced in `where` clauses, not in prior
+  checks. Comments are excluded from embeddings, context and background
+  workflows structurally, because third-party text inside the owner's data is a
+  prompt-injection vector aimed at the owner's own agent. New drift probe **B9**
+  guards the hand-written `authorUserId` FK (`ON DELETE CASCADE`), the sibling
+  of B8; `ResparkableComment` joins the tier's subject-access manifest.
+  `BoardViewPayload.filterSummary` is optional on the wire, so a rolling deploy
+  cannot break a board tab.
+
 - **Resparkable named grants, and `/shared-with-me`.** `POST
   /api/v1/resparkable/grants` shares an item with an email address; it is an
   **upsert** on `(entityType, entityId, granteeEmail)`, so re-sharing amends the

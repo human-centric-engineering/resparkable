@@ -110,8 +110,8 @@ function columnHasType(tableName: string, columnName: string, udtName: string): 
  */
 
 /**
- * Register Resparkable's eight probes. Six assert an object EXISTS (B1, B2,
- * B4, B5, B6, B8); B3 and B7 assert one does NOT (see `absent`). Idempotent per
+ * Register Resparkable's nine probes. Seven assert an object EXISTS (B1, B2,
+ * B4, B5, B6, B8, B9); B3 and B7 assert one does NOT (see `absent`). Idempotent per
  * process is NOT guaranteed —
  * `registerAppDriftProbe` throws on a duplicate name, which is deliberate: a
  * double registration means the host wired this up twice and should know.
@@ -233,5 +233,24 @@ export function registerResparkableDriftProbes(): void {
     kind: 'FK constraint',
     table: 'framework_resparkable_grant',
     probe: constraintExists('framework_resparkable_grant_granteeUserId_fkey', 'ON DELETE CASCADE'),
+  });
+
+  // B9 — Art. 17 for the person who wrote a comment.
+  //
+  // The sibling of B8, one table over and for the same reason: `userId` on a
+  // comment is the OWNER of the item it sits on, so the owner cascade does not
+  // reach the author. What differs is what `SET NULL` would leave behind —
+  // B8's case is a live grant addressed by an erased person's email, this one
+  // is free text an erased person WROTE, often about themselves, standing on
+  // somebody else's row under an author nobody can name.
+  //
+  // Asserts the ACTION rather than mere existence, like B1 and B8: a migration
+  // recreating this as SET NULL breaks nothing a test would notice, and
+  // surfaces as a regulatory problem rather than a stack trace.
+  registerAppDriftProbe({
+    name: 'B9 framework_resparkable_comment_authorUserId_fkey (hand-written FK → user, author erasure)',
+    kind: 'FK constraint',
+    table: 'framework_resparkable_comment',
+    probe: constraintExists('framework_resparkable_comment_authorUserId_fkey', 'ON DELETE CASCADE'),
   });
 }

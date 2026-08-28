@@ -767,6 +767,19 @@ export type GrantWire = z.infer<typeof grantSchema>;
 
 export const grantsSchema = z.array(grantSchema);
 
+/** What `POST /resparkable/grants` answers. The grant, and nothing beside it. */
+export const createdGrantSchema = z.object({ grant: grantSchema });
+
+/**
+ * What `POST /resparkable/grants/[id]/invite` answers.
+ *
+ * One boolean, and deliberately only one. It says whether an email left the
+ * building — the owner's own question about their own action — and nothing
+ * about whether the address has an account, which is the answer §13 keeps out
+ * of every response on this surface.
+ */
+export const inviteSentSchema = z.object({ sent: z.boolean() });
+
 /**
  * A public link, as its owner sees it.
  *
@@ -809,3 +822,48 @@ export const mintedShareLinkSchema = z.object({
 });
 
 export type MintedShareLinkWire = z.infer<typeof mintedShareLinkSchema>;
+
+/**
+ * What `POST /resparkable/invites/accept` answers.
+ *
+ * A flat shape with everything optional rather than a discriminated union,
+ * because the union's two arms are already discriminated by `accepted` and Zod
+ * would need the wire to carry a second tag to model that. The page reads
+ * `accepted` first and nothing else matters until it has.
+ *
+ * `expectedEmail` arrives **masked** (`a***@e***.com`) and there is no unmasked
+ * form of this field anywhere: the reader needs to recognise which of their own
+ * mailboxes to use, and a stranger holding a forwarded email must not be handed
+ * a working address.
+ */
+export const acceptInviteResponseSchema = z.object({
+  accepted: z.boolean(),
+  entityType: z.string().optional(),
+  entityId: z.string().optional(),
+  /** True when this account was already bound — a re-opened email. */
+  alreadyAccepted: z.boolean().optional(),
+  reason: z.string().optional(),
+  expectedEmail: z.string().optional(),
+});
+
+export type AcceptInviteResponse = z.infer<typeof acceptInviteResponseSchema>;
+
+/** One comment on a shared item. Author names only — never addresses. */
+export const commentSchema = z.object({
+  id: z.string(),
+  body: z.string(),
+  author: z.object({
+    id: z.string(),
+    name: z.string().nullable(),
+    /** Whether the writer is the person whose item this sits on. */
+    isOwner: z.boolean(),
+  }),
+  /** True for the reader's own comment, so the UI can offer edit and delete. */
+  mine: z.boolean(),
+  editedAt: isoDate.nullable(),
+  createdAt: isoDate,
+});
+
+export type CommentWire = z.infer<typeof commentSchema>;
+
+export const commentsSchema = z.array(commentSchema);

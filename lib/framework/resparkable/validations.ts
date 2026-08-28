@@ -1902,3 +1902,68 @@ export const sharedSearchQuerySchema = z
   .strict();
 
 export type SharedSearchQuery = z.infer<typeof sharedSearchQuerySchema>;
+
+/**
+ * Write a comment.
+ *
+ * **Plain text, not markdown**, which the schema cannot enforce and the
+ * renderer does — but the length can, and 4000 characters is the shape of the
+ * decision. A comment is a sentence or a paragraph, the thing a commenter grant
+ * promises: a way to say something back, not a document. Anything longer
+ * belongs in the item, which the commenter cannot write to, which is the point.
+ *
+ * `entityType` and `entityId` are in the body rather than the path because the
+ * thread is addressed by the pair — the six shareable tables have separate id
+ * spaces, and the access layer treats a bare id with no type predicate as the
+ * shape of a leak.
+ */
+export const createCommentSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    body: z.string().trim().min(1, 'Write something first').max(4000),
+  })
+  .strict();
+
+export type CreateCommentInput = z.infer<typeof createCommentSchema>;
+
+/** Edit one's own comment. The author is the session, never the body. */
+export const updateCommentSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    body: z.string().trim().min(1, 'Write something first').max(4000),
+  })
+  .strict();
+
+export type UpdateCommentInput = z.infer<typeof updateCommentSchema>;
+
+/** Read or delete a thread, addressed the way every row in this layer is. */
+export const commentRefQuerySchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+  })
+  .strict();
+
+export type CommentRefQuery = z.infer<typeof commentRefQuerySchema>;
+
+/**
+ * Accept a share invite.
+ *
+ * The token is 32 base64url characters, the same shape and the same 192 bits as
+ * a share-link token — but it does something entirely different, and the
+ * difference is worth stating where the schema is read. **A share link is a
+ * bearer credential: holding it is access.** An invite token grants nothing on
+ * its own; it only binds an account to a grant that already exists, and the
+ * grant is already live for the address it was issued to. A leaked invite email
+ * is therefore useless without that mailbox, which is exactly the property a
+ * bearer credential does not have.
+ */
+export const acceptInviteSchema = z
+  .object({
+    token: z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not an invite token'),
+  })
+  .strict();
+
+export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;

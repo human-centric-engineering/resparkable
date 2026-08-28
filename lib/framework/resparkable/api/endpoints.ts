@@ -178,6 +178,34 @@ export const RESPARKABLE_API = {
    */
   GRANTS: '/api/v1/resparkable/grants',
   grant: (id: string): string => `/api/v1/resparkable/grants/${id}`,
+  /**
+   * Email the person a grant was issued to.
+   *
+   * Separate from creating the grant, so a mail outage leaves working access
+   * rather than a person told they have access and does not — and so "send it
+   * again" is a button rather than a second grant. Capped at 20/day per user:
+   * the invite costs this deployment nothing and lands in somebody else's
+   * inbox, which is a different kind of limit from every other one in the tier.
+   */
+  grantInvite: (id: string): string => `/api/v1/resparkable/grants/${id}/invite`,
+  /**
+   * Bind my account to a share somebody made to my address.
+   *
+   * Not "grant me access" — the grant is already live for the address it names.
+   * The token names the grant and the **session proves the address**, which is
+   * what makes a forwarded invite email useless.
+   */
+  ACCEPT_INVITE: '/api/v1/resparkable/invites/accept',
+
+  /**
+   * Comments — the only write path in the tier a non-owner can reach, and the
+   * only thing `role: 'commenter'` means.
+   *
+   * Addressed by `?entityType=&entityId=`, because access is resolved against
+   * the item rather than the comment.
+   */
+  COMMENTS: '/api/v1/resparkable/comments',
+  comment: (id: string): string => `/api/v1/resparkable/comments/${id}`,
 
   /**
    * What other people have shared with me — the grantee's side, and the only

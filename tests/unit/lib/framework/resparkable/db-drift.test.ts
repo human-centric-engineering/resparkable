@@ -97,21 +97,25 @@ beforeEach(() => {
 });
 
 describe('registration', () => {
-  it('registers eight probes', () => {
-    expect(getAppDriftProbes()).toHaveLength(8);
+  it('registers nine probes', () => {
+    expect(getAppDriftProbes()).toHaveLength(9);
   });
 
-  it('guards BOTH hand-written FKs into "user", not just the owner one', () => {
-    // B1 is the owner cascade; B8 is the grantee's. They are different
-    // constraints on different tables solving different halves of Art. 17, and
-    // the second is the one the default gets wrong — `ResparkableGrant.userId`
-    // is the OWNER, so nothing cascades to a grant row when the GRANTEE is
-    // erased. Both assert the ON DELETE action rather than mere existence,
-    // because both failures surface as regulatory problems rather than as
-    // stack traces.
+  it('guards ALL THREE hand-written FKs into "user", not just the owner one', () => {
+    // B1 is the owner cascade. B8 and B9 are the two the default gets wrong,
+    // and they get it wrong the same way: `userId` on a grant and on a comment
+    // is the OWNER of the item, so nothing cascades to either row when the
+    // *other* person — the grantee, the author — is erased. What `SET NULL`
+    // would leave behind differs (a live grant addressed by an erased person's
+    // email; free text an erased person wrote), and both are Art. 17
+    // violations. All three assert the ON DELETE action rather than mere
+    // existence, because all three surface as regulatory problems rather than
+    // as stack traces.
     expect(probe('B1').kind).toBe('FK constraint');
     expect(probe('B8').kind).toBe('FK constraint');
     expect(probe('B8').table).toBe('framework_resparkable_grant');
+    expect(probe('B9').kind).toBe('FK constraint');
+    expect(probe('B9').table).toBe('framework_resparkable_comment');
   });
 
   it('refuses a duplicate registration', () => {

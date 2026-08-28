@@ -235,6 +235,22 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
         orderBy: CHRONOLOGICAL,
       }),
   },
+  ResparkableComment: {
+    section: 'commentsOnMyItems',
+    holds:
+      'Comments left on items they shared, including who wrote each one. Third-party text standing in their brain, which is exactly why they are owed sight of it.',
+    // Owner-scoped, so this is the comments *on their items* — including ones
+    // other people wrote. The mirror — comments THEY wrote on somebody else's
+    // shared item, which are keyed on `authorUserId` — is the same
+    // cross-boundary read `ResparkableGrant` above defers, and lands with it in
+    // phase 14. Half-answering it here would put one direction of a two-way
+    // relationship in the bundle and leave a reader believing it was both.
+    //
+    // Nothing is omitted. A comment is a body, an author and two timestamps;
+    // there is no credential on the row and no derived column.
+    fetch: (scope) =>
+      prisma.resparkableComment.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+  },
   ResparkableShareLink: {
     section: 'shareLinks',
     holds:

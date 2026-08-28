@@ -51,6 +51,7 @@ vi.mock('@/lib/db/client', () => ({
       'resparkableCreditAccount',
       'resparkableCreditLedgerEntry',
       'resparkableGrant',
+      'resparkableComment',
       'resparkableShareLink',
     ].map((model) => [model, { findMany: vi.fn() }])
   ),
@@ -77,6 +78,7 @@ const MODELS = [
   'resparkableCreditAccount',
   'resparkableCreditLedgerEntry',
   'resparkableGrant',
+  'resparkableComment',
   'resparkableShareLink',
 ] as const;
 

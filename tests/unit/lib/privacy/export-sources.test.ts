@@ -108,6 +108,7 @@ const HANDLED_OUTSIDE_MANIFEST = new Map([
       'ResparkableCreditLedgerEntry',
       'ResparkableJob',
       'ResparkableGrant',
+      'ResparkableComment',
       'ResparkableShareLink',
     ] as const
   ).map(

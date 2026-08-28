@@ -40,7 +40,7 @@
  */
 
 import * as React from 'react';
-import { Check, Copy, Link2, Trash2, UserPlus } from 'lucide-react';
+import { Check, Copy, Link2, Send, Trash2, UserPlus } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -66,7 +66,9 @@ import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
+  createdGrantSchema,
   grantsSchema,
+  inviteSentSchema,
   mintedShareLinkSchema,
   shareLinksSchema,
   type GrantWire,
@@ -227,6 +229,7 @@ function PeoplePanel({
   const [includeTaskDetail, setIncludeTaskDetail] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
 
   const load = React.useCallback(async () => {
     const url = `${RESPARKABLE_API.GRANTS}?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
@@ -239,10 +242,33 @@ function PeoplePanel({
     void load();
   }, [load]);
 
+  /**
+   * Email the person a grant was issued to.
+   *
+   * Its own call, because the grant is a database fact before it is a message:
+   * a mail-provider failure has to leave working access rather than nothing.
+   * That is why every failure path here sets a notice rather than an error —
+   * the person already has access either way.
+   */
+  const sendInvite = async (grantId: string): Promise<boolean> => {
+    try {
+      const response = await fetch(RESPARKABLE_API.grantInvite(grantId), { method: 'POST' });
+      if (!response.ok) return false;
+      const payload: unknown = await response.json();
+      if (!isSuccess(payload)) return false;
+      const parsed = inviteSentSchema.safeParse(payload.data);
+      return parsed.success && parsed.data.sent;
+    } catch {
+      return false;
+    }
+  };
+
   const share = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
+    setNotice(null);
+    const address = email;
     try {
       const response = await fetch(RESPARKABLE_API.GRANTS, {
         method: 'POST',
@@ -250,15 +276,29 @@ function PeoplePanel({
         body: JSON.stringify({
           entityType,
           entityId,
-          granteeEmail: email,
+          granteeEmail: address,
           role,
           includeTaskDetail,
         }),
       });
-      if (!response.ok) {
+      const payload: unknown = await response.json();
+      if (!response.ok || !isSuccess(payload)) {
         setError('Could not share this. Check the email address and try again.');
         return;
       }
+      const parsed = createdGrantSchema.safeParse(payload.data);
+      if (!parsed.success) {
+        setError('Shared, but the response could not be read. Reload to see it.');
+        return;
+      }
+
+      const sent = await sendInvite(parsed.data.grant.id);
+      setNotice(
+        sent
+          ? `Shared. ${address} has been emailed.`
+          : 'Shared. The email could not be sent, but they can still open it. Try sending again.'
+      );
+
       setEmail('');
       await load();
     } catch {
@@ -338,6 +378,12 @@ function PeoplePanel({
         </p>
       )}
 
+      {notice !== null && (
+        <p aria-live="polite" className="text-muted-foreground text-sm">
+          {notice}
+        </p>
+      )}
+
       {grants !== null && grants.length > 0 && (
         <ul className="space-y-2">
           {grants.map((grant) => (
@@ -370,8 +416,18 @@ function PeoplePanel({
                 variant="ghost"
                 size="sm"
                 className="ml-auto"
-                onClick={() => void revoke(grant.id)}
+                onClick={() => {
+                  void sendInvite(grant.id).then((sent) =>
+                    setNotice(
+                      sent ? 'Email sent again.' : 'The email could not be sent. Try again later.'
+                    )
+                  );
+                }}
               >
+                <Send className="h-4 w-4" aria-hidden="true" />
+                <span className="sr-only">Email {grant.granteeEmail} again</span>
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onClick={() => void revoke(grant.id)}>
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
                 <span className="sr-only">Stop sharing with {grant.granteeEmail}</span>
               </Button>
