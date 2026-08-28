@@ -1,0 +1,268 @@
+# Sharing — the access layer
+
+How Resparkable answers **"may this viewer see this row?"**, and why the answer lives where it does.
+
+This is the Release 2 companion to [`plan.md`](./plan.md) §13, which is the specification. This document is what a person reading the code needs: the boundary, the entry points, what each basis permits, and the four places the implementation deviates from the plan on purpose.
+
+Status: **phases 10 and 11 landed** — access resolution, the two tables, the ESLint boundary, and public share links end to end. Phases 12–14 — named-grant routes and `/shared-with-me`, invites and comments, the erasure hooks — are still to come.
+
+---
+
+## The one rule
+
+> Every brain query is either an **owner query** or a **shared query**. There is no third kind.
+
+That is decision D5, and after phase 10 it is two directories rather than one rule:
+
+| Layer                                 | Answers        | Takes        | Can it cross a user?                |
+| ------------------------------------- | -------------- | ------------ | ----------------------------------- |
+| `lib/framework/resparkable/repo/**`   | owner queries  | `OwnerScope` | **No** — not expressible            |
+| `lib/framework/resparkable/access/**` | shared queries | a viewer     | Only by following a grant or a link |
+
+Everything else in the tier — services, routes, capabilities, workflows — goes through one of the two and cannot reach Prisma at all. Three things hold that up, in decreasing order of strength:
+
+1. **`OwnerScope` is a branded type.** A route param, a request body field or an LLM tool argument does not satisfy it. `rg 'ownerScope\('` is the complete list of trust boundaries in the brain.
+2. **ESLint.** `lib/framework/eslint.config.mjs` bans `@/lib/db/client` everywhere in the tier except those two directories, and separately bans `repo/**` from importing `access/**` — so the two cannot collapse back into one layer that does both. Run as behaviour, not read as config: `tests/unit/lib/framework/resparkable/access/eslint-d5-boundary.test.ts` pulls the real rule entries out of the shipped file and lints fixtures through them.
+3. **Naming.** Every function in `access/store.ts` is named for the grant or link it follows.
+
+---
+
+## The two tables
+
+Two orthogonal facts, deliberately not merged.
+
+**`visibility` on the entity** (`private | link`) is **only** about the public-link surface. It is never a filter on an owner read — the owner's own agent sees all of the owner's items regardless of it — and keeping it off the hot path is why the resolver short-circuits before anything looks at it.
+
+**Named grants live entirely in `ResparkableGrant` rows.** Nothing is denormalised onto the entity or its children. See "the cascade" below for why.
+
+| Table                              | Holds                                         | Key details                                                                                  |
+| ---------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `framework_resparkable_grant`      | One person, one item, `viewer` or `commenter` | `userId` is the **owner**. Grantee is `granteeUserId` (null until accepted) + `granteeEmail` |
+| `framework_resparkable_share_link` | A public read-only link                       | `tokenHash` is sha256 of a 192-bit `base64url` token. The plaintext is never stored          |
+
+### Two things about these tables that are easy to get wrong
+
+**`userId` is the owner, not the grantee.** That is what preserves D1: the row cascades from `ResparkableSpace` like every other table in the tier, and `WHERE userId = $1` means the same thing here as everywhere else. Reading this table _by grantee_ is the one thing `repo/**` must never do.
+
+**The grantee needs its own foreign key, and it is hand-written.** Nothing cascades to a grant row when the **grantee** is erased, because `userId` is the owner. `ON DELETE SET NULL` would be worse than no constraint at all: it leaves a live grant addressed by `granteeEmail` — retained personal data belonging to an erased person, on a row they cannot reach. So `framework_resparkable_grant_granteeUserId_fkey` is `ON DELETE CASCADE`, written by hand in the migration because `User` lives in a Sunrise-owned file, and guarded by **drift probe B8** (the sibling of B1, which guards the owner cascade).
+
+That FK covers accepted grants. **Unaccepted invites have no `granteeUserId` to hang off**, and are covered by an erasure `scrubInTransaction` hook matching `granteeEmail` — phase 14. Both halves are needed; neither covers the other.
+
+### Why the token is hashed
+
+`AiAgentEmbedToken` and `AiAgentInviteToken` store plaintext cuids. That is fine for admin-issued, deployment-scoped tokens. A brain share link is a bearer credential to a private person's life: a database dump or a log leak must not hand over every user's notes.
+
+Mint with `randomBytes(24).toString('base64url')` — 192 bits, and deliberately **not** a cuid. Cuids are timestamp-prefixed and monotonic, precisely the wrong shape for "unguessable".
+
+---
+
+## Entry points
+
+```ts
+resolveResparkableAccess({ viewer, entityType, entityId, need }); // one item
+resolveResparkableAccessMany({ viewer, refs, need }); // a list
+resparkableVisibilityScope(viewer); // "what is shared with me"
+
+resolveResparkableShareLink(token); // the public reader
+shareLinkAccess(link);
+resolveResparkableShareLinkChild(link, child);
+```
+
+All from `@/lib/framework/resparkable/access`. Routes import the barrel; nothing outside the directory reaches into `store.ts`.
+
+### The owner short-circuit
+
+Almost every call is someone reading their own brain. That path is **one indexed lookup of a single column** and then a string comparison — no grant query, no link query, no cascade.
+
+It is not only about speed. Short-circuiting before anything consults `visibility` is what makes "the owner's own agent sees all of the owner's items" structurally true rather than a comment somebody later contradicts by adding `visibility: 'private'` to an agent query.
+
+### Query cost
+
+| Call                           | Queries                                                                           |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| Owner reading their own item   | 1                                                                                 |
+| Grantee, direct grant          | 2                                                                                 |
+| Grantee, cascaded              | 3–5 (skipped entirely for types with no parent type)                              |
+| `resolveResparkableAccessMany` | **4, whatever the list size** — owners, direct grants, cascade parents, inherited |
+
+The batched form is not an optimisation, it is a requirement. `task` is the highest-cardinality shareable type and a shared board is a list of them; a per-row resolver would make a fifty-card board a two-hundred-query page load. That cost is what §13 explicitly accepted when it reversed its earlier decision and put `task` back on the shareable list.
+
+### Two things `resolveResparkableAccess` deliberately does not do
+
+**It never consults a share link.** `ResparkableViewer` has no token field, so there is nothing for it to consult — which is how "a public link grants no access to the authenticated route" stays true without twenty routes remembering a rule. The public reader uses `resolveResparkableShareLink`.
+
+**It is not cached beyond a request.** Revocation must be immediate: a grantee who has been cut off 404s on their _next_ request, not after a TTL.
+
+---
+
+## What each basis permits
+
+`redact` is a list of field names the caller **must** strip before serialising. It is computed as _what a basis removes from `ALL_REDACTIONS`_, never as what it allows — so a redaction added tomorrow applies to every basis until somebody decides otherwise. Failing closed on a field nobody has thought about yet is the only safe default.
+
+| Basis           | Reads | Comments | Sees owner identity | Sees `notes`                |
+| --------------- | ----- | -------- | ------------------- | --------------------------- |
+| `owner`         | ✅    | ✅       | (their own)         | ✅ — nothing is redacted    |
+| `grant`         | ✅    | ✅\*     | ✅                  | only if `includeTaskDetail` |
+| `grant-cascade` | ✅    | ❌       | ✅                  | only if `includeTaskDetail` |
+| `link`          | ✅    | ❌       | ❌                  | only if `includeTaskDetail` |
+| `link-cascade`  | ✅    | ❌       | ❌                  | only if `includeTaskDetail` |
+
+\* `role: 'commenter'` only.
+
+Nobody but the owner ever sees `priorityScore`, `manualBoostReason`, the event history, or the parent an item hangs off.
+
+**The line between a link and a grant is the product's own: a public link is a _document_, a named grant is a _relationship_.** A stranger holding a URL gets the content and nothing about the person. Someone the owner named gets to know who shared it and to say something back.
+
+**A cascaded item cannot be commented on, even with a commenter grant on its parent.** It was never chosen for sharing by its owner; commenting is something you do to the thing that was actually handed over.
+
+### `links` is the subtle redaction
+
+Links from a shared item to a non-shared item are **omitted entirely, not rendered redacted**. "Project X blocks [redacted]" is itself a leak: it discloses that a hidden thing exists, is blocked, and is related to this one.
+
+---
+
+## The cascade
+
+Computed at read time from the parent grant, **never denormalised into child rows**. Denormalising would mean every task insert and every task move had to fix up grant rows — and a missed fix-up is a leak: a task dragged out of a shared project that keeps its inherited grant is a document still being handed to someone the owner stopped sharing with, with nothing anywhere saying so.
+
+```
+project → its tasks
+goal    → its child goals
+board   → its cards' tasks   (explicit membership AND filter membership)
+area    → nothing automatically
+review  → nothing
+task    → nothing
+```
+
+Declared as data (`RESPARKABLE_CASCADE` in `access/cascade.ts`), so the whole cascade is one thing to read and a test can assert its shape directly rather than probing for absences one call at a time.
+
+**Sharing a project DOES include its tasks.** A project without its tasks is a title and a paragraph, and people work around that by pasting task lists into descriptions — strictly worse, because a paste goes stale, carries no redaction, and is invisible to revocation.
+
+### The dynamic-filter trap
+
+A board with `membership: 'filter'` is a live query. Sharing it does not share a fixed set of cards — it shares **every task matching the filter, including ones created later**. That is what people expect from "share my board", and it is also a standing leak: a task created next Tuesday that happens to match becomes visible to that grantee with no further action from the owner.
+
+The code implements this faithfully rather than quietly narrowing it, and `resolve.test.ts` asserts it directly so it can never become an accident. Three mitigations belong in the share dialog, all required:
+
+- **State the filter in plain English** — "Anyone with this link sees tasks matching: project = Acme Redesign, status is not done. This includes tasks you add later."
+- **Show a live count** of currently-matching tasks before confirming.
+- **Offer "share a snapshot instead"**, which flips the board to `membership: 'explicit'` and materialises today's matches. For anything leaving your organisation this is the safer choice, and the UI should say so.
+
+An explicit-membership board has no such problem: its contents are exactly the rows you put in it.
+
+---
+
+## Five deliberate deviations from the plan
+
+Recorded here rather than quietly diverging.
+
+**1. There is no `goal → project` cascade.** §13 describes the goal cascade as reaching "child goals and projects (and their tasks)". The schema has no such edge: a `ResparkableProject` hangs off an `areaId`, and its relationship to a goal is a user-authored `ResparkableLink` row. Following links would make the cascade transitive _and_ user-editable, which is exactly what "one level and typed" forbids; inventing an FK would change the data model to fit a cascade rule. So the goal cascade reaches child goals, and a project is shared by sharing the project.
+
+**2. The ESLint boundary lives in `lib/framework/eslint.config.mjs`, not `lib/app/`.** The plan named the leaf-tier config. The framework tier is the right home: the rule is about framework-tier paths, and putting it in the leaf tier would mean every fork inherited a rule about a directory it does not own.
+
+**3. `access/**` may import Prisma.** The plan's phrasing ("the repo layer is the only place that talks to the database") predates the shared-query layer existing. Routing shared queries through `repo/**` would mean giving that layer a way to say "not my rows" — precisely the capability it exists not to have. The boundary is not "one layer touches the database"; it is "each layer is named for the kind of query it may write".
+
+**4. `boardFilterMatches` fails closed where `loadFilteredCards` fails open.** When a board's stored `filter` JSON does not parse, the render path (`services/board-view.ts`) falls back to an empty filter and shows everything live. Doing the same in the access layer would be fail-open in an authorisation path: a corrupt column would widen a shared board to the owner's entire task list. So it denies, and the resulting mismatch runs in the safe direction: the grantee sees fewer cards than the owner, never more.
+
+**5. The cascade does not mirror a filter board's 300-card cap.** `loadFilteredCards` asks for `take: CARD_LIMIT` (300) ordered by `priorityScore desc`, so a filter board with more matches than that renders the top 300. The cascade applies no such cap, which means a task ranked 301st is granted by `resolveResparkableAccess` while the shared board never displays it.
+
+This one is left standing rather than fixed, and the reason is that the fix is worse than the gap. Mirroring the cap means running a scored ranking query on the authorisation path, and it means access to a row depending on `priorityScore`, a number that moves on its own: a task could become readable or stop being readable overnight because something else was re-prioritised, with no gesture from the owner and nothing to point at in an audit. A ceiling on how many rows a board can display is a rendering decision; letting it silently become an access-control decision is the larger mistake.
+
+Two related over-grants in the same family were **not** left standing, because neither had that objection. Archived rows are now excluded from the cascade (`findTaskFacts`, `findGoalParents`), since every render path already excludes them. And `findBoardsPinningTasks` now matches only boards still on `membership: 'explicit'`, so a board curated, shared and later flipped to a filter stops granting the tasks it was once pinned with. That second one is the one worth remembering: unlike an archived row, it never healed on its own.
+
+---
+
+## Public links, end to end
+
+### Minting
+
+`POST /api/v1/resparkable/share-links` → `services/sharing.ts` → `repo/share-links.ts`.
+
+The token exists in memory for one function call. `mintShareLink` generates it, hashes it, stores the digest, and returns the plaintext to the route, which puts it in the 201 body. **Nothing in the system can produce it again** — not the owner's own link list, not the Art. 15 export, not a database dump. A lost link is re-minted, not recovered, and the UI has to say so.
+
+Expiry is a tagged union rather than a nullable number:
+
+```ts
+expiry: { kind: 'days', days: 30 }   // the default
+expiry: { kind: 'never' }            // has to be typed out
+```
+
+An `expiresInDays: number | null` field would satisfy §13's "null requires an explicit never-expires choice" on paper and miss the point: `null` is what an empty form field serialises to, so the strictest setting would be the one a client reaches by omission.
+
+### `visibility` is a cache, maintained transactionally
+
+Minting flips the item to `visibility: 'link'`; revoking the last live link flips it back to `'private'`. Both happen in the same transaction as the link write, because `visibility` exists so a list can render a "shared" badge **without joining to the link table** — which makes it a cache, and a cache updated in a second statement goes wrong the first time a request dies between the two.
+
+The sibling count in `revokeShareLink` is taken **inside** the transaction. Two people revoking the last two links at once would otherwise each see the other's link as still live, and neither would flip the badge.
+
+### The reader
+
+| Surface                                 | What it is                                                                |
+| --------------------------------------- | ------------------------------------------------------------------------- |
+| `app/(public)/s/[token]/page.tsx`       | The page. Server component; calls the service directly, no HTTP hop       |
+| `app/api/v1/resparkable/public/[token]` | The JSON, for anything that wants it without the page                     |
+| `repo/shared-view.ts`                   | The projection — an **allowlist**, and the only place in the tier that is |
+
+**Every failure is the same failure.** Unknown token, malformed token, revoked link, expired link, and a link whose item has since been deleted all return the same 404 with the same body and the same headers. Anything distinguishable turns the response into an oracle telling a stranger which tokens once existed, and roughly when.
+
+**Three headers, on the miss as well as the hit:**
+
+- `X-Robots-Tag: noindex, nofollow, noarchive, nosnippet` — `robots.txt` is advisory and does not remove an already-indexed URL. Crawlers fetch APIs directly, so the header is set here as well as in the page's metadata.
+- `Referrer-Policy: no-referrer` — the token is in the _path_. The deployment-wide `strict-origin-when-cross-origin` already strips the path from cross-origin requests, so the token does not leak by default; this sends nothing at all, including the origin. On the page the same thing is done with `metadata.referrer`, because a page cannot set response headers in the App Router — and that needs no core edit.
+- `Cache-Control: private, no-store` — a revoked link must stop working immediately, and it cannot if a proxy is still serving the last 200.
+
+**Remote images are click-to-load.** The CSP allows `img-src https:`, so a tracking pixel in a note would fire for every reader the moment the page rendered. On the owner's own surfaces that is self-inflicted; here it is not — the reader never agreed to it and cannot see it happening. Same-origin and `data:` images render normally. Tightening `img-src` globally would break every legitimate image on the owner's surfaces to close a hole that exists only here.
+
+**Archived items still resolve.** The owner retired the thinking; they did not revoke the link. A reader following a URL they were given should see what it points at rather than a 404 they cannot explain — and the page marks it as archived so they know they are looking at something set aside. Revocation is the gesture that closes a link.
+
+### The projection is an allowlist, and that inversion is deliberate
+
+Everywhere else in this tier the rule is `omit`, not `select`: a column added tomorrow should be _exported_ by default rather than silently dropped from a subject-access bundle. `repo/shared-view.ts` inverts it. A column added to `ResparkableTask` next month must not appear on a public page because nobody remembered to exclude it.
+
+`tests/unit/lib/framework/resparkable/repo/shared-view.test.ts` asserts the `select` objects handed to Prisma against a forbidden-column list, rather than the returned shape — a value that is never fetched cannot be leaked by a serialiser downstream, and one that _is_ fetched can be, by any of them.
+
+Never fetched: `priorityScore`, `priorityFactors`, `manualBoost*`, `snoozeCount`, `deferUntil`, `energy`, `estimateMinutes`, `contextTag`, `lastActivityAt`, `slug`, `rev`, `indexedHash`, `visibility`, every foreign key, a board's `filter`, a review's `payload`, and the whole of `ResparkableEvent`.
+
+**A board's children come from `services/board-view.ts`**, not from the repo. A filter-backed board is a live query, and resolving its membership anywhere but the module that renders it would be a second copy of the filter predicate — where the disagreement shows up as a shared board displaying different cards from the owner's.
+
+### Rate limiting
+
+A new `resparkable-public` tier: **60/hour per IP**, registered for both `/api/v1/resparkable/public/**` and `/s/**`. Two rules because the page calls the service directly rather than fetching its own API, so the API rule never fires for a browser.
+
+Keyed on IP because there is nothing else to key on — which means a shared office NAT shares a budget, which is why the cap is sixty rather than ten. The token is 192 bits, so this is not what stops an attacker guessing; what it stops is a script burning database lookups for free.
+
+---
+
+## Shared-in items get their own surface
+
+They do **not** appear in the viewer's own lists or search. Three reasons, in weight order:
+
+1. It preserves `WHERE userId = $1` as an unconditional invariant on every list, search and embedding query in the tier.
+2. A second brain's lists are a **planning** surface. Someone else's project sitting in "my projects" corrupts prioritisation and your own sense of what you have committed to.
+3. Mixing them in would make ~40 list endpoints potential leaks, rather than the ~6 that have to be got right.
+
+`/shared-with-me` (phase 12) gets its own routes under `/api/v1/resparkable/shared/*`, its own search that explicitly does **not** touch `ResparkableEmbedding`, and no write paths.
+
+**Shared-in items are excluded from everything of the owner's** — embeddings, context, prioritisation, background workflows. No exceptions. The subtle failure is a naive union of cascaded tasks, which both corrupts "what should I do now" and leaks another person's deadlines into an LLM prompt.
+
+---
+
+## Where to look
+
+| Thing                                    | File                                                                     |
+| ---------------------------------------- | ------------------------------------------------------------------------ |
+| Types, the shareable list, redaction set | `lib/framework/resparkable/access/types.ts`                              |
+| Every database read the layer makes      | `lib/framework/resparkable/access/store.ts`                              |
+| The cascade, and the board-filter match  | `lib/framework/resparkable/access/cascade.ts`                            |
+| The resolver and the public-link path    | `lib/framework/resparkable/access/resolve.ts`                            |
+| "Is this share still live?"              | `lib/utils/share-window.ts` (shared with admin conversation shares)      |
+| Behaviour tests                          | `tests/unit/lib/framework/resparkable/access/resolve.test.ts`            |
+| Query-shape tests                        | `tests/unit/lib/framework/resparkable/access/store-isolation.test.ts`    |
+| The D5 boundary, run as ESLint           | `tests/unit/lib/framework/resparkable/access/eslint-d5-boundary.test.ts` |
+| Minting, revoking, the public payload    | `lib/framework/resparkable/services/sharing.ts`                          |
+| The owner's side of a link               | `lib/framework/resparkable/repo/share-links.ts`                          |
+| The reader's projection (allowlist)      | `lib/framework/resparkable/repo/shared-view.ts`                          |
+| The reader page                          | `app/(public)/s/[token]/page.tsx`                                        |
+| The reader's JSON, and its headers       | `app/api/v1/resparkable/public/[token]/route.ts`                         |
+| Crawler exclusion (fork seam)            | `lib/app/robots.ts`, spread by `app/robots.ts`                           |
+| The specification                        | [`plan.md`](./plan.md) §13, §16                                          |

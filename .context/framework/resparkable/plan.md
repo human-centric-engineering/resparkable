@@ -55,6 +55,9 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 > durable queue claimed with `SKIP LOCKED`, drained by however many workers the
 > operator chooses to run, and billing selects unbilled executions rather than
 > the newest hundred. See [`phase-56-plan.md`](./phase-56-plan.md).
+> **Release 1.5 closed on 2026-08-26** with phase 9e, which put a denormalised
+> `sensitivity` on `ResparkableEmbedding` so the vector pass can be told what an
+> unattended run may not read. Release 2 (sharing) is unblocked.
 
 ### The Obsidian question, answered
 
@@ -1163,7 +1166,19 @@ list only.
 | 9b  | **S1 + S2 + S3** — `halfvec(1024)` migration; drop the unused HNSW and GIN indexes; flip probes B3/B6/B7 to forbidden-object probes                                                                                                                                                                        | row size falls ~3×; `smoke-search` recall unchanged on the same corpus                      |
 | 9a  | **S8** — bill on job completion instead of a 100-row cursor. The one ceiling already crossed, at ~100 users. _Folded into phase 56 §6._                                                                                                                                                                    | 150 terminal executions in one window all produce a ledger entry                            |
 | 9c  | **Drain the embedding queue.** §6's nightly reindex step was never built, so `indexedHash` is nulled by every write and drained by nothing but a manual `POST /reindex`. _Folded into phase 56 as `kind: 'reindex'`._                                                                                      | capture a thought, wait one interval, find it by meaning with no manual call                |
-| 9e  | **Sensitivity reaches the vector layer** — denormalise `sensitivity` onto `ResparkableEmbedding` at write time; `searchResparkable` gains `excludeSensitive`; background agents pass it                                                                                                                    | a `sensitive` thought is absent from a background agent's search and present in the owner's |
+| 9e  | **Sensitivity reaches the vector layer** — denormalise `sensitivity` onto `ResparkableEmbedding` at write time; `searchResparkable` gains `excludeSensitive`; background agents pass it. **DONE 2026-08-26**                                                                                               | a `sensitive` thought is absent from a background agent's search and present in the owner's |
+
+**Release 1.5 is complete.** 9b, 56 and 9e have all landed; 9a and 9c were
+absorbed into 56. Release 2 is unblocked.
+
+The one thing 9e decided that the table above does not say: **the discriminator
+is attendance, not agency.** A capability invoked from chat is the person acting
+_through_ an agent, and must still see their own notes about their health, their
+money and the people around them — a second brain that hides half of itself from
+its owner is not a second brain. A capability invoked beneath a workflow step is
+a 03:00 cron with nobody in the room. `isUnattendedRun(context)`
+(`capabilities/base.ts`) is the single predicate, shared with the demand gate's
+authorship wrap so the two cannot drift apart about what "background" means.
 
 **9e is here rather than in Release 2 on purpose.** `ResparkableEmbedding`
 carries no sensitivity marker, so the vector path is the one read path that
@@ -1186,15 +1201,19 @@ waiting for Release 9.
 
 ### Release 2 — sharing
 
-| #   | Deliverable                                                                                                             | Verifiable by       |
-| --- | ----------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| 10  | Access resolution + `resparkableVisibilityScope` + owner short-circuit + eslint boundary                                | isolation tests 1–4 |
-| 11  | Public share links: token minting, `/s/[token]` reader, robots + `X-Robots-Tag` + `Referrer-Policy`, revocation, expiry | tests 14–18         |
-| 12  | Named grants + cascade + redaction + `/shared-with-me`                                                                  | tests 5–9           |
-| 13  | Invite flow + `emails/resparkable-share-invite.tsx` + rate limit; then comments + commenter role                        | tests 10–13         |
-| 14  | Erasure hook + drift probes + grantee-email scrub                                                                       | tests 22–24         |
+| #   | Deliverable                                                                                                                                  | Verifiable by       |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| 10  | Access resolution + `resparkableVisibilityScope` + owner short-circuit + eslint boundary. **DONE 2026-08-26**                                | isolation tests 1–4 |
+| 11  | Public share links: token minting, `/s/[token]` reader, robots + `X-Robots-Tag` + `Referrer-Policy`, revocation, expiry. **DONE 2026-08-26** | tests 14–18         |
+| 12  | Named grants + cascade + redaction + `/shared-with-me`                                                                                       | tests 5–9           |
+| 13  | Invite flow + `emails/resparkable-share-invite.tsx` + rate limit; then comments + commenter role                                             | tests 10–13         |
+| 14  | Erasure hook + drift probes + grantee-email scrub                                                                                            | tests 22–24         |
 
 Cheap — 4–5 days — because `conversation-access.ts`, `invitation-token.ts`, `emails/invitation.tsx`, `visitor-id.ts` and `registerErasureCleanupHook` are all correct existing precedents. The expensive part is the test matrix, and it should be.
+
+**Phases 10 and 11 landed 2026-08-26.** The implementation notes, the four
+deliberate deviations from §13 below, and the reader's header/redaction contract
+are in [`sharing.md`](./sharing.md); this section stays the specification.
 
 Note `visibility` and the `OwnerScope` repo boundary land in Release 1 phases 1–2 even though nothing uses them yet. Retrofitting either onto rows people have already created is what causes leaks.
 

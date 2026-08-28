@@ -503,6 +503,68 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'userId — so it is never rewritten to the importer’s own id.',
       },
     },
+
+    // Both sharing tables sit in the `brain` group rather than a `sharing` one:
+    // `TransferGroup` is a closed core type (`lib/portability/policy.ts`) and a
+    // fork must not widen it for a label. `brain` is the closest true member —
+    // a grant is a decision about a brain item — and both rows are
+    // export-only, so the group only ever affects how the bundle reads.
+    {
+      ...BRAIN,
+      model: 'ResparkableGrant',
+      disposition: 'export-only',
+      note:
+        'Who you have shared items with, on what terms, and when. Included so ' +
+        'the record is yours, but never written back: a grant names a person ' +
+        'by the email address they use HERE. Replayed into another ' +
+        'installation it would be a live grant addressed to someone who may ' +
+        'have no account there, or worse, to a different person who happens to ' +
+        'hold that address on the far side — an import that silently starts ' +
+        'sharing the brain it just moved. Sharing is a decision made in the ' +
+        'place it applies, and it is remade there.',
+      ownerColumn: 'userId',
+      redact: ['inviteTokenHash'],
+      softRefsIgnored: {
+        entityId:
+          'Identifies whichever row the grant covers, across six tables in the ' +
+          'tier. Kept verbatim because the grant is never replayed — it is ' +
+          'read against the installation that wrote it, same as ' +
+          'ResparkableEvent.entityId.',
+        granteeUserId:
+          'The grantee’s account id in THIS installation, meaningless in ' +
+          'another. Kept verbatim rather than rewritten, for the same reason ' +
+          'the row is never imported at all.',
+      },
+    },
+    {
+      ...BRAIN,
+      model: 'ResparkableShareLink',
+      disposition: 'export-only',
+      note:
+        'The public links you have minted: what each points at, when it ' +
+        'expires, whether you revoked it, how often it was opened. Included so ' +
+        'the record is yours, but never written back — a link is a URL other ' +
+        'people are holding, and it points at the installation that issued it. ' +
+        'Importing one would create a live public link on a different ' +
+        'deployment that nobody was ever given, whose token exists nowhere.',
+      ownerColumn: 'userId',
+      // The digest of a live bearer credential. Absent from the bundle for the
+      // same reason `inboxToken` is: an export is a file that gets emailed and
+      // synced, and the row is never imported, so nothing needs it.
+      redact: ['tokenHash'],
+      secretReviewed: {
+        tokenPrefix:
+          'The first few characters of a token, kept so you can tell two of ' +
+          'your own links apart in the UI. Far too short to guess the rest of ' +
+          'a 192-bit value from, and useless without the digest, which is ' +
+          'redacted above.',
+      },
+      softRefsIgnored: {
+        entityId:
+          'Identifies whichever row the link points at. Kept verbatim, never ' +
+          'replayed — same as the grant above.',
+      },
+    },
   ],
 
   excluded: [

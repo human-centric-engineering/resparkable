@@ -154,6 +154,26 @@ const resparkableImageLimiter = createRateLimiter({
 });
 
 /**
+ * The public share reader: 60/hour per IP.
+ *
+ * The only unauthenticated surface in the tier, and the only one where the
+ * interesting thing to do without a credential is **guess**. The token is 192
+ * bits, so guessing is hopeless on the arithmetic alone — this is not what
+ * stops an attacker, and it is not meant to be. What it stops is the cheap
+ * version: a script pointed at `/s/` burning database lookups for free.
+ *
+ * Keyed on IP because there is nothing else to key on. That means a shared
+ * office NAT shares a budget, which is why the cap is sixty rather than ten —
+ * a genuine reader opens a link once or twice, and a roomful of them opening
+ * the same roadmap still fits.
+ */
+const resparkablePublicLimiter = createRateLimiter({
+  interval: HOUR,
+  maxRequests: 60,
+  uniqueTokenPerInterval: 5000,
+});
+
+/**
  * Register Resparkable's tiers and rules.
  *
  * Idempotent: both registrars dedupe (by identical limiter instance and by rule
@@ -169,9 +189,28 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitTier('resparkable-audio', resparkableAudioLimiter);
   registerRateLimitTier('resparkable-image', resparkableImageLimiter);
   registerRateLimitTier('resparkable-vault', resparkableVaultLimiter);
+  registerRateLimitTier('resparkable-public', resparkablePublicLimiter);
 
   // Keyed on the session user, not the IP: this is authenticated, per-person
   // work, and IP keying would make one household share a search budget.
+  // Keyed on IP, unlike everything else here: the public reader has no session
+  // to key on. Registered first so it cannot be shadowed by a later prefix.
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/public(?:\/|$)/,
+    tier: 'resparkable-public',
+    key: 'ip',
+  });
+
+  // The page, not the API. `/s/[token]` is a server component that calls the
+  // service directly rather than fetching its own endpoint, so the API rule
+  // above never fires for it — and the proxy runs on page requests too, so this
+  // is where the cap actually lands for a browser.
+  registerRateLimitRule({
+    match: /^\/s\//,
+    tier: 'resparkable-public',
+    key: 'ip',
+  });
+
   registerRateLimitRule({
     match: /^\/api\/v1\/resparkable\/search(?:\/|$)/,
     tier: 'resparkable-search',

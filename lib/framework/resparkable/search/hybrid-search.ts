@@ -64,6 +64,25 @@ export interface SearchResparkableInput {
   maxDistance?: number;
   /** Opt in explicitly — see the keyword pass note above. */
   includeArchived?: boolean;
+  /**
+   * Hide thoughts the capture-time classifier (or the owner) marked
+   * `sensitivity: 'sensitive'`. **Unattended callers pass `true`.**
+   *
+   * Defaults to `false`, and that default is the owner's: a person searching
+   * their own brain must find their own notes, including the ones about their
+   * health, their money and the people around them. The distinction this draws
+   * is not "who may read this" — it is one brain, one owner — but **"is the
+   * owner in the room"**. `resparkable-triage` runs at 03:00 and
+   * `resparkable-strategist` writes `ResparkableReview` bodies, and reviews are
+   * on §13's shareable list; that is a path from a private note to a shareable
+   * artefact with nobody watching, and it existed before sharing did.
+   *
+   * The filter runs in three places for one reason each: the vector CTE, so
+   * sensitive chunks never take result slots; the hydration query, as defence in
+   * depth where an id crosses back from raw SQL into the ORM; and the archived
+   * keyword pass, which has no vectors to have been filtered.
+   */
+  excludeSensitive?: boolean;
 }
 
 export interface SearchHit extends EntitySummary {
@@ -96,6 +115,7 @@ export async function searchResparkable(
   const limit = input.limit ?? DEFAULT_LIMIT;
   const maxDistance = input.maxDistance ?? DEFAULT_MAX_DISTANCE;
   const includeArchived = input.includeArchived ?? false;
+  const excludeSensitive = input.excludeSensitive ?? false;
   const requested = input.entityTypes ?? SEARCHABLE_TYPES;
 
   const embeddedTypes = requested.filter((type): type is EmbeddedType => type !== 'task');
@@ -128,11 +148,12 @@ export async function searchResparkable(
       // fetching exactly `limit` chunks can yield far fewer than `limit` items.
       limit: limit * 3,
       maxDistance,
+      excludeSensitive,
     });
 
     const byType = groupIdsByType(rows.map((row) => ({ ...row, type: row.entityType })));
 
-    const summaries = await hydrate(input.scope, byType, includeArchived);
+    const summaries = await hydrate(input.scope, byType, includeArchived, excludeSensitive);
 
     for (const row of rows) {
       const key = `${row.entityType}:${row.entityId}`;
@@ -183,7 +204,14 @@ export async function searchResparkable(
   // ── Pass 3: the archived corpus, keyword-only ──────────────────────────────
   if (includeArchived && embeddedTypes.length > 0) {
     for (const entityType of embeddedTypes) {
-      const rows = await keywordSummaries(input.scope, entityType, query, limit, true);
+      const rows = await keywordSummaries(
+        input.scope,
+        entityType,
+        query,
+        limit,
+        true,
+        excludeSensitive
+      );
       for (const summary of rows) {
         const key = `${entityType}:${summary.id}`;
         if (merged.has(key)) continue;
@@ -206,6 +234,7 @@ export async function searchResparkable(
     queryLength: query.length,
     types: requested.length,
     includeArchived,
+    excludeSensitive,
     hits: hits.length,
   });
 
@@ -233,12 +262,19 @@ function groupIdsByType(
 async function hydrate(
   scope: OwnerScope,
   byType: Map<EmbeddedType, string[]>,
-  includeArchived: boolean
+  includeArchived: boolean,
+  excludeSensitive: boolean
 ): Promise<Map<string, EntitySummary>> {
   const keyed = new Map<string, EntitySummary>();
 
   for (const [entityType, ids] of byType) {
-    const summaries = await findSummaries(scope, entityType, ids, includeArchived);
+    const summaries = await findSummaries(
+      scope,
+      entityType,
+      ids,
+      includeArchived,
+      excludeSensitive
+    );
     for (const summary of summaries) {
       keyed.set(`${entityType}:${summary.id}`, summary);
     }

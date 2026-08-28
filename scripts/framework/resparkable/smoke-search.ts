@@ -178,6 +178,7 @@ async function seedSyntheticVectors(
     content: row.text,
     // The real hash, from the real canonicaliser — so the hash gate behaves
     // identically to a provider-backed run.
+    sensitivity: 'private',
     contentHash: canonicalise(entityType, { content: row.text, title: row.text }).hash,
     embedding: syntheticVector(row.topic, index),
     embeddingModel: 'synthetic-smoke',
@@ -334,6 +335,7 @@ async function main(): Promise<void> {
             entityTypes: ['thought', 'project', 'goal', 'area', 'entity', 'document'],
             limit: 30,
             maxDistance: 0.8,
+            excludeSensitive: false,
           })
         ).map((row) => ({ entityType: row.entityType, entityId: row.entityId }));
 
@@ -370,6 +372,7 @@ async function main(): Promise<void> {
             entityTypes: ['thought', 'project', 'goal', 'area', 'entity', 'document'],
             limit: 30,
             maxDistance: 0.8,
+            excludeSensitive: false,
           })
         ).map((row) => row.entityId);
 
@@ -528,6 +531,7 @@ async function main(): Promise<void> {
       entityTypes: ['thought'],
       limit: 30,
       maxDistance: 0.8,
+      excludeSensitive: false,
     });
     check(
       !afterArchive.some((row) => row.entityId === targetId),

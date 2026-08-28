@@ -271,6 +271,7 @@ const RAW_SQL_CALLS: Array<[string, () => Promise<unknown>]> = [
         entityTypes: ['thought', 'project'],
         limit: 10,
         maxDistance: 0.8,
+        excludeSensitive: false,
       }),
   ],
   [

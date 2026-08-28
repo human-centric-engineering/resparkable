@@ -47,6 +47,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { isShareActive } from '@/lib/utils/share-window';
 
 export type AccessBasis = 'owner' | 'shared' | 'system';
 
@@ -118,13 +119,11 @@ export async function adminCanViewConversation(
 /**
  * Active share predicate.
  *
- * A share is active when it has not been revoked AND has either no
- * expiry or an expiry in the future. Exported for use by routes that
- * need to surface "is this conversation currently shared?" in their
- * UI (e.g. the admin list view's `shared` badge).
+ * Re-exported rather than defined here since Resparkable's sharing layer
+ * (`lib/framework/resparkable/access/*`) needed the same predicate and a second
+ * copy of it would eventually disagree with this one about expiry. The
+ * definition now lives in `lib/utils/share-window.ts`; this export stays so the
+ * routes that surface "is this conversation currently shared?" in their UI
+ * (e.g. the admin list view's `shared` badge) keep their import.
  */
-export function isShareActive(share: { revokedAt: Date | null; expiresAt: Date | null }): boolean {
-  if (share.revokedAt !== null) return false;
-  if (share.expiresAt !== null && share.expiresAt <= new Date()) return false;
-  return true;
-}
+export { isShareActive };

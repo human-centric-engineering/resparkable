@@ -18,6 +18,61 @@ release process.
 
 ### Added
 
+- **Resparkable public share links, and the `/s/[token]` reader.**
+  `POST /api/v1/resparkable/share-links` mints a link and returns the plaintext
+  token **once** — a 192-bit `base64url` value, stored only as a sha256 digest,
+  so a lost link is re-minted rather than recovered. `GET` lists the owner's
+  links (prefix only, never the token or the digest); `DELETE /[id]` revokes one
+  and, if it was the last live link on the item, flips `visibility` back to
+  `private` inside the same transaction. Expiry is a tagged union
+  (`{ kind: 'days', days }` | `{ kind: 'never' }`) defaulting to 30 days and
+  capped at 365, so "never expires" cannot be reached by omitting a field.
+  `GET /api/v1/resparkable/public/[token]` is the tier's only unauthenticated
+  route: unknown, malformed, revoked and expired tokens all return the same 404
+  with the same body **and the same headers**, and every response carries
+  `X-Robots-Tag`, `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+  The reader page sets `noindex` metadata, renders markdown with no raw HTML,
+  and defers remote images behind a click so a shared note cannot ping a third
+  party on every reader's behalf. New `resparkable-public` rate-limit tier,
+  60/hour per IP, on both the API and the page. New fork seam
+  `lib/app/robots.ts` (`appDisallowedPaths`), which `app/robots.ts` spreads into
+  its disallow list — filed upstream as ask #41.
+
+- **Resparkable sharing: access resolution, and the two tables it reads.**
+  `ResparkableGrant` (named grants: one address, one item, `viewer` or
+  `commenter`) and `ResparkableShareLink` (public read-only links, token stored
+  as a sha256 digest and minted from 192 random bits rather than a cuid).
+  `lib/framework/resparkable/access/**` is the new **shared-query layer** and
+  the second of exactly two places in the tier allowed to reach Prisma —
+  `repo/**` answers owner queries and cannot express a cross-user read; this
+  answers shared queries and crosses a user only by following a grant or a
+  link, with an ESLint boundary forbidding `repo/**` from importing it (D5).
+  `resolveResparkableAccess` short-circuits to the owner before any grant or
+  link query; `resolveResparkableAccessMany` resolves a whole list in four
+  queries whatever its size; `resparkableVisibilityScope` answers "what is
+  shared with me" in one. `isShareActive` moved from
+  `lib/orchestration/access/conversation-access.ts` to
+  `lib/utils/share-window.ts` (re-exported from its old home) so the two
+  sharing systems cannot drift about what "still live" means. New drift probe
+  **B8** guards the hand-written `granteeUserId` FK — the Art. 17 half the
+  owner cascade does not reach. `ResparkableGrant` and `ResparkableShareLink`
+  are in the tier's subject-access manifest, with the two credential digests
+  omitted.
+
+- **`ResparkableEmbedding.sensitivity` — the vector layer can finally express
+  the private/shareable distinction.** Denormalised from the source row at
+  index time and kept true by `updateThought`, which writes it onto the
+  entity's chunks in the same transaction as the reclassification. It is
+  deliberately not part of `contentHash`, so marking a note sensitive does not
+  re-embed it (and a bulk reclassification does not re-embed the corpus).
+  `searchResparkable` gains `excludeSensitive`, applied inside the vector
+  candidate CTE rather than after ranking; `hybridSearchRows` and
+  `keywordSummaries` take the flag through, and `EmbeddingWriteRow` gains a
+  required `sensitivity` field. `resparkable_search` sets it from the new
+  `isUnattendedRun(context)` helper — the owner's own turn sees everything they
+  wrote, an unattended workflow run does not. Closes Release 1.5 phase 9e; see
+  [`plan.md`](./.context/framework/resparkable/plan.md) §15.
+
 - **One durable job queue owns every piece of per-user background work.**
   `ResparkableJob` (`framework_resparkable_job`) holds one row per owner per
   kind — `triage`, `briefing`, `weekly_review`, `horizon_check`, `sweep`,

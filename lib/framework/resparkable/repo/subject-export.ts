@@ -214,6 +214,43 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
         orderBy: CHRONOLOGICAL,
       }),
   },
+  ResparkableGrant: {
+    section: 'sharedByMe',
+    holds:
+      'Who they have shared items with, on what terms, and when — including invitations never accepted. Their own record of a decision they made about their own data.',
+    // Owner-scoped, like every other source here: `userId` on this table is the
+    // OWNER. The mirror question — "what has been shared WITH me?" — is a read
+    // across a boundary this repo layer cannot express by construction (D5),
+    // and it is answered in Release 2 phase 14 alongside the grantee erasure
+    // hook, where the cross-subject question gets decided once rather than
+    // half-answered here.
+    //
+    // `inviteTokenHash` is omitted: it is the digest of a live credential, and
+    // exporting it tells the subject nothing they cannot see from
+    // `inviteSentAt` and `acceptedAt` beside it.
+    fetch: (scope) =>
+      prisma.resparkableGrant.findMany({
+        where: ownerWhere(scope),
+        omit: { inviteTokenHash: true },
+        orderBy: CHRONOLOGICAL,
+      }),
+  },
+  ResparkableShareLink: {
+    section: 'shareLinks',
+    holds:
+      'The public links they have minted: what each points at, when it expires, whether it was revoked, and how many times it has been opened.',
+    // `tokenHash` is omitted for the same reason `Session.token` is omitted from
+    // core's export: it is the credential. The digest is not reversible, but a
+    // reader gains nothing from it and an export bundle is a file that gets
+    // emailed around. `tokenPrefix` stays — it is what lets the subject tell
+    // two of their own links apart, which is the point of the section.
+    fetch: (scope) =>
+      prisma.resparkableShareLink.findMany({
+        where: ownerWhere(scope),
+        omit: { tokenHash: true },
+        orderBy: CHRONOLOGICAL,
+      }),
+  },
 };
 
 /** A table left out of the export, and the reason a reader is owed. */

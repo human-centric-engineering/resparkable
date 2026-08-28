@@ -87,6 +87,27 @@ export function requireResparkableUser(context: CapabilityContext): OwnerScope {
 }
 
 /**
+ * Is this call happening with nobody watching?
+ *
+ * **`workflowExecutionId` is the discriminator, not "is there an agent".** A
+ * capability invoked from chat is the person acting *through* an agent — they
+ * typed the question and are reading the answer — while a capability invoked
+ * beneath a workflow step is a 03:00 cron with an LLM on the other end and no
+ * owner in the room.
+ *
+ * The same predicate governs two unrelated things, and that is deliberate: the
+ * authorship wrap in {@link ResparkableCapability.execute} (so a background run's
+ * own output cannot wake the demand gate) and `excludeSensitive` on
+ * `searchResparkable` (so a background run cannot read a note about someone's
+ * health into a `ResparkableReview` body, which is shareable — plan §13). Two
+ * copies of `Boolean(context.workflowExecutionId)` would eventually disagree
+ * about what "background" means, and one of the two disagreements is a leak.
+ */
+export function isUnattendedRun(context: CapabilityContext): boolean {
+  return Boolean(context.workflowExecutionId);
+}
+
+/**
  * The entity types a brain source can point at. Matches the tier's own
  * vocabulary rather than importing from validations — a provenance reference is
  * a display string, and coupling it to the Zod enum would make widening one a
@@ -227,7 +248,7 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
       );
     }
 
-    if (context.workflowExecutionId) {
+    if (isUnattendedRun(context)) {
       return runAsSystemAuthored(() => this.run(args, scope, context));
     }
     return this.run(args, scope, context);

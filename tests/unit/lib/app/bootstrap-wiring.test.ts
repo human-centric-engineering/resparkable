@@ -101,10 +101,19 @@ describe('rate-limit auto-wire (lib/app/rate-limit.ts → middleware realm)', ()
     // The count is deliberately loose about *which* rules exist — the exact set
     // is asserted once, in `defaults.test.ts`. What this file protects is the
     // namespace property below, so it only needs to know the seam is filled.
-    expect(appRules).toHaveLength(10);
+    // Ten authenticated sub-caps plus the two public share-reader rules
+    // (Release 2 phase 11), which are the only IP-keyed ones and the only ones
+    // whose matcher sits outside `/api/v1/resparkable/`.
+    expect(appRules).toHaveLength(12);
+    // Every rule stays inside one of Resparkable's two namespaces. The second
+    // one, `/s/`, is a short prefix on the site root — exactly the shape that
+    // shadows things by accident — so it is spelled out here rather than
+    // covered by a looser predicate, and the negative half is asserted below.
     expect(
       appRules.every(
-        (rule) => rule.match instanceof RegExp && String(rule.match).includes('resparkable')
+        (rule) =>
+          rule.match instanceof RegExp &&
+          (String(rule.match).includes('resparkable') || String(rule.match) === String(/^\/s\//))
       )
     ).toBe(true);
 
@@ -122,6 +131,11 @@ describe('rate-limit auto-wire (lib/app/rate-limit.ts → middleware realm)', ()
       '/api/v1/auth/sign-in',
       '/api/v1/mcp',
       '/api/v1/chat/stream',
+      // The near misses for the `/s/` prefix. It requires the trailing slash
+      // precisely so these three keep their own rules.
+      '/settings',
+      '/signup',
+      '/search',
     ]) {
       const rule = findRateLimitRule(path, eff);
       expect(appRules.includes(rule!), `${path} must not match an Resparkable rule`).toBe(false);

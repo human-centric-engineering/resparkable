@@ -77,11 +77,20 @@ export const RESPARKABLE_SCHEDULE_OWNER_KEY = 'resparkableUserId';
  *
  * The id must come from the session (`withAuth`'s `session.user.id`), from
  * `CapabilityContext.userId` (which the engine populates from the session or the
- * MCP API key's owner), or from `CapabilityContext.scope`'s
- * {@link RESPARKABLE_SCHEDULE_OWNER_KEY} on a scheduled run — never from a request
- * body, a route param, a vault file's `resparkable-id`, or an LLM-supplied tool
+ * MCP API key's owner), from `CapabilityContext.scope`'s
+ * {@link RESPARKABLE_SCHEDULE_OWNER_KEY} on a scheduled run, or — since Release 2
+ * — from a **positive** `ResparkableAccessResult` via `sharedOwnerScope()`
+ * (`lib/framework/resparkable/access/resolve.ts`). Never from a request body, a
+ * route param, a vault file's `resparkable-id`, or an LLM-supplied tool
  * argument. Those are the four documented ways a user id gets
  * attacker-influenced (plan §17 risks 6d, 8, 9).
+ *
+ * The fourth source is the one that reads a stranger's request and still
+ * produces an owner identity, so it is worth naming what makes it different in
+ * kind rather than in degree: the caller supplies a token, and the **database**
+ * answers who owns the item. The id never travelled through the request. What
+ * the resulting scope buys is narrowed on the other side, by the allowlisted
+ * projection in `repo/shared-view.ts`.
  *
  * This function cannot check that for you. What it can do is make every place
  * a scope is created greppable: `rg 'ownerScope\('` is the complete list of

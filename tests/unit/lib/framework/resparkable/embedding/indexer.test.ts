@@ -313,6 +313,59 @@ describe('ordering and safety', () => {
       embeddingDimension: 1536,
     });
   });
+
+  // ── Phase 9e: the denormalised sensitivity ────────────────────────────────
+
+  it("stamps the source row's sensitivity onto every chunk", async () => {
+    listUnindexed.mockResolvedValue([{ ...THOUGHT, sensitivity: 'sensitive' }]);
+    findStoredContentHashes.mockResolvedValue(new Map());
+    splitForEmbedding.mockResolvedValue(['first half', 'second half']);
+    embedBatch.mockResolvedValue({
+      embeddings: [
+        [0.1, 0.2, 0.3],
+        [0.4, 0.5, 0.6],
+      ],
+      provenance: {
+        model: 'text-embedding-3-small',
+        provider: 'openai',
+        dimensions: 1536,
+        embeddedAt: new Date('2026-07-29T00:00:00Z'),
+      },
+    });
+
+    await reindexType(SCOPE, 'thought');
+
+    // EVERY chunk, not just chunk 0: the vector pass ranks chunks, so a marker
+    // on the first one alone would let paragraph two of a sensitive note
+    // through the filter that phase 9e exists to apply.
+    const written = upsertEmbeddings.mock.calls[0][1] as Array<{ sensitivity: string }>;
+    expect(written).toHaveLength(2);
+    expect(written.every((row) => row.sensitivity === 'sensitive')).toBe(true);
+  });
+
+  it("falls back to 'private' for the five types that have no such column", async () => {
+    listUnindexed.mockResolvedValue([{ id: 'p_1', entityType: 'project', name: 'Acme' }]);
+    findStoredContentHashes.mockResolvedValue(new Map());
+
+    await reindexType(SCOPE, 'project');
+
+    expect(upsertEmbeddings.mock.calls[0][1][0].sensitivity).toBe('private');
+  });
+
+  it('reclassifying alone does not re-embed — sensitivity is not semantic content', async () => {
+    // The hash covers what a note SAYS. If sensitivity entered it, marking one
+    // note sensitive would re-embed it, and a bulk reclassification would
+    // re-embed the corpus. That is why `updateThought` pushes the value onto
+    // the chunks directly instead of relying on this pass.
+    listUnindexed.mockResolvedValue([{ ...THOUGHT, sensitivity: 'sensitive' }]);
+    findStoredContentHashes.mockResolvedValue(new Map([['t_1', THOUGHT_HASH]]));
+
+    const result = await reindexType(SCOPE, 'thought');
+
+    expect(result.unchanged).toBe(1);
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(upsertEmbeddings).not.toHaveBeenCalled();
+  });
 });
 
 describe('enqueueReindex is safe to fire and forget', () => {

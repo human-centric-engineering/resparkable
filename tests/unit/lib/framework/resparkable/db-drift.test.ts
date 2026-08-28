@@ -97,8 +97,21 @@ beforeEach(() => {
 });
 
 describe('registration', () => {
-  it('registers seven probes', () => {
-    expect(getAppDriftProbes()).toHaveLength(7);
+  it('registers eight probes', () => {
+    expect(getAppDriftProbes()).toHaveLength(8);
+  });
+
+  it('guards BOTH hand-written FKs into "user", not just the owner one', () => {
+    // B1 is the owner cascade; B8 is the grantee's. They are different
+    // constraints on different tables solving different halves of Art. 17, and
+    // the second is the one the default gets wrong — `ResparkableGrant.userId`
+    // is the OWNER, so nothing cascades to a grant row when the GRANTEE is
+    // erased. Both assert the ON DELETE action rather than mere existence,
+    // because both failures surface as regulatory problems rather than as
+    // stack traces.
+    expect(probe('B1').kind).toBe('FK constraint');
+    expect(probe('B8').kind).toBe('FK constraint');
+    expect(probe('B8').table).toBe('framework_resparkable_grant');
   });
 
   it('refuses a duplicate registration', () => {

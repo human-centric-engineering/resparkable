@@ -227,7 +227,9 @@ export async function keywordSummaries(
   entityType: EmbeddedType,
   query: string,
   limit: number,
-  includeArchived: ArchiveVisibility = false
+  includeArchived: ArchiveVisibility = false,
+  /** Passed straight through to {@link findSummaries} — a no-op off `thought`. */
+  excludeSensitive = false
 ): Promise<EntitySummary[]> {
   const scoped = liveOwnerWhere(scope, includeArchived);
   const like = { contains: query, mode: 'insensitive' } as const;
@@ -236,7 +238,15 @@ export async function keywordSummaries(
   switch (entityType) {
     case 'thought': {
       const rows = await prisma.resparkableThought.findMany({
-        where: { ...scoped, content: like },
+        // The sensitivity predicate belongs in THIS query, not only in the
+        // `findSummaries` call below. Filtering after `take` would be correct
+        // and useless: sensitive rows would consume result slots and the caller
+        // would get 2 hits where it asked for 10, with nothing saying why. This
+        // is the shape `hybridSearchRows` already documents, where the same
+        // predicate sits inside the vector candidate CTE for the same reason.
+        where: excludeSensitive
+          ? { ...scoped, content: like, sensitivity: { not: 'sensitive' } }
+          : { ...scoped, content: like },
         select: { id: true },
         take,
       });
@@ -244,7 +254,10 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        // Still passed: this is the authorisation boundary, and it must not
+        // depend on the query above having remembered to narrow.
+        excludeSensitive
       );
     }
     case 'project': {
@@ -257,7 +270,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'goal': {
@@ -270,7 +284,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'area': {
@@ -283,7 +298,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'entity': {
@@ -296,7 +312,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
     case 'document': {
@@ -309,7 +326,8 @@ export async function keywordSummaries(
         scope,
         entityType,
         rows.map((r) => r.id),
-        includeArchived
+        includeArchived,
+        excludeSensitive
       );
     }
   }
