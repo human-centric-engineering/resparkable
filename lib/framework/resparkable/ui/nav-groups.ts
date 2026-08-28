@@ -26,6 +26,7 @@ import {
   FolderKanban,
   FolderSync,
   Inbox,
+  Handshake,
   LayoutGrid,
   Link2,
   Settings,
@@ -79,6 +80,11 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       { href: RESPARKABLE_ROUTES.GOALS, label: 'Goals', icon: Target },
       { href: RESPARKABLE_ROUTES.AREAS, label: 'Life', icon: Compass },
       { href: RESPARKABLE_ROUTES.BOARDS, label: 'Boards', icon: LayoutGrid },
+      // Under Organise rather than Daily. It is a place you go when you want
+      // somebody else's material, not part of the loop you run every morning —
+      // and putting it in Daily would start blurring the line the whole access
+      // layer is built to keep sharp between your work and theirs.
+      { href: RESPARKABLE_ROUTES.SHARED, label: 'Shared with me', icon: Handshake },
     ],
   },
   {

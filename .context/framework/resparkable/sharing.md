@@ -4,7 +4,7 @@ How Resparkable answers **"may this viewer see this row?"**, and why the answer 
 
 This is the Release 2 companion to [`plan.md`](./plan.md) §13, which is the specification. This document is what a person reading the code needs: the boundary, the entry points, what each basis permits, and the four places the implementation deviates from the plan on purpose.
 
-Status: **phases 10 and 11 landed** — access resolution, the two tables, the ESLint boundary, and public share links end to end. Phases 12–14 — named-grant routes and `/shared-with-me`, invites and comments, the erasure hooks — are still to come.
+Status: **phases 10, 11 and 12 landed** — access resolution, the two tables, the ESLint boundary, public share links end to end, and named grants with `/shared-with-me`. Phases 13 and 14 — invites, comments and the commenter role, then the erasure hooks and the grantee-email scrub — are still to come.
 
 ---
 
@@ -62,6 +62,7 @@ Mint with `randomBytes(24).toString('base64url')` — 192 bits, and deliberately
 resolveResparkableAccess({ viewer, entityType, entityId, need }); // one item
 resolveResparkableAccessMany({ viewer, refs, need }); // a list
 resparkableVisibilityScope(viewer); // "what is shared with me"
+grantOwnerScope(grant); // a scope from a grant the viewer holds
 
 resolveResparkableShareLink(token); // the public reader
 shareLinkAccess(link);
@@ -149,6 +150,18 @@ The code implements this faithfully rather than quietly narrowing it, and `resol
 - **Offer "share a snapshot instead"**, which flips the board to `membership: 'explicit'` and materialises today's matches. For anything leaving your organisation this is the safer choice, and the UI should say so.
 
 An explicit-membership board has no such problem: its contents are exactly the rows you put in it.
+
+---
+
+## The dialog, and the three things a filter board must say
+
+§13 requires all three mitigations, and `components/resparkable/share/share-dialog.tsx` is where they live:
+
+1. **The rule, in plain English.** `describeBoardFilter` builds the sentence and `buildBoardView` returns it as `filterSummary` — on the server, because the honest version needs the project's _name_ and the filter holds only an id. It always ends by naming the consequence ("anyone you share it with also sees tasks you add later that match") rather than stopping at the criteria, which would be accurate and useless. It describes the board **the render path actually produces**: an unparseable filter falls back to showing everything, so the sentence says so rather than describing criteria nobody could read.
+2. **The live count**, from `totalCards`.
+3. **"Share a snapshot instead"** — `POST /api/v1/resparkable/boards/[id]/snapshot`, the only one of the three that is a mechanism rather than a warning. It flips the board to `membership: 'explicit'` and pins exactly the cards it shows now, in the order it shows them, inside one transaction. Already-explicit boards 404: re-pinning a board somebody curated by hand, from a filter that no longer describes it, would throw their arrangement away.
+
+The membership comes from `buildBoardView`, never from a second query — the snapshot has to be what the owner was looking at when they pressed the button, cap and column order included, and a second implementation of "which cards are on this board" would eventually disagree with the first.
 
 ---
 
@@ -241,7 +254,23 @@ They do **not** appear in the viewer's own lists or search. Three reasons, in we
 2. A second brain's lists are a **planning** surface. Someone else's project sitting in "my projects" corrupts prioritisation and your own sense of what you have committed to.
 3. Mixing them in would make ~40 list endpoints potential leaks, rather than the ~6 that have to be got right.
 
-`/shared-with-me` (phase 12) gets its own routes under `/api/v1/resparkable/shared/*`, its own search that explicitly does **not** touch `ResparkableEmbedding`, and no write paths.
+`/shared-with-me` has its own routes under `/api/v1/resparkable/shared/*`, its own search that explicitly does **not** touch `ResparkableEmbedding`, and no write paths.
+
+**The list shows direct grants only.** A shared project's tasks are reached by opening the project. Flattening the cascade into the list would answer "what has Priya given me?" with two hundred rows when the honest answer is one project — the cascade is a property of the thing that was handed over, not a second set of things that were.
+
+**The search is a substring match and says so.** The owner's search is hybrid: a vector query against `ResparkableEmbedding` blended with BM25. This one enumerates the granted refs and their one-level cascade, projects them through `repo/shared-view.ts`'s allowlist, and filters the normalised `title` and `body` in memory. Three things follow, and the first is why it is built this way:
+
+1. **It cannot touch the owner's embeddings, because it never issues a query that could.** Structural rather than a filter somebody has to keep correct. `shared-with-me.test.ts` mocks the embedding repo to _throw_, so a future call that reached it fails the run rather than passing on a stubbed empty array.
+2. **It cannot find a rewording.** "deadline" will not find "due Friday", and the UI's placeholder says "match words" rather than "search" for that reason.
+3. **It filters the projection, not the table**, so a query cannot be used to probe for words in text the viewer is not allowed to read — `notes` under a grant that did not open them is not searched because it was never fetched.
+
+It stops at `SHARED_SEARCH_SCAN_LIMIT` (1000 refs) and reports that it did. A cap that truncates silently reads as "this is everything".
+
+### Getting an `OwnerScope` from a grant you hold
+
+`/shared-with-me` resolves a viewer's whole grant set in one query and then has to read the granted items — which means a scope per owner, without re-resolving each item and throwing the answer away. `grantOwnerScope(grant)` is that, and it is the fifth legitimate source of a scope alongside `sharedOwnerScope`. It is safe for the same reasons: **the id comes off a database row, never off the request**, and a `LiveGrant` is only ever produced by `access/store.ts` from a row that survived `isShareActive` and a grantee match on the viewer's own session id or address. Holding the grant _is_ the resolution.
+
+Keep `rg 'grantOwnerScope\('` as short as `rg 'sharedOwnerScope\('`.
 
 **Shared-in items are excluded from everything of the owner's** — embeddings, context, prioritisation, background workflows. No exceptions. The subtle failure is a naive union of cascaded tasks, which both corrupts "what should I do now" and leaks another person's deadlines into an LLM prompt.
 
@@ -260,6 +289,12 @@ They do **not** appear in the viewer's own lists or search. Three reasons, in we
 | Query-shape tests                        | `tests/unit/lib/framework/resparkable/access/store-isolation.test.ts`    |
 | The D5 boundary, run as ESLint           | `tests/unit/lib/framework/resparkable/access/eslint-d5-boundary.test.ts` |
 | Minting, revoking, the public payload    | `lib/framework/resparkable/services/sharing.ts`                          |
+| Issuing, amending and revoking a grant   | `lib/framework/resparkable/services/grants.ts`                           |
+| The owner's side of a grant, in SQL      | `lib/framework/resparkable/repo/grants.ts`                               |
+| `/shared-with-me`, and its search        | `lib/framework/resparkable/services/shared-with-me.ts`                   |
+| Building a viewer from a session         | `lib/framework/resparkable/api/viewer.ts`                                |
+| The owner's share dialog                 | `components/resparkable/share/share-dialog.tsx`                          |
+| The filter-board sentence and snapshot   | `lib/framework/resparkable/services/board-view.ts`                       |
 | The owner's side of a link               | `lib/framework/resparkable/repo/share-links.ts`                          |
 | The reader's projection (allowlist)      | `lib/framework/resparkable/repo/shared-view.ts`                          |
 | The reader page                          | `app/(public)/s/[token]/page.tsx`                                        |

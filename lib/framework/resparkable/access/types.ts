@@ -180,6 +180,15 @@ export interface LiveGrant {
   acceptedAt: Date | null;
   expiresAt: Date | null;
   revokedAt: Date | null;
+  /**
+   * When the owner shared this.
+   *
+   * Carried for the grantee's surface, which has to be able to say "Priya
+   * shared this on Tuesday" — `acceptedAt` cannot stand in for it, because a
+   * grant to an address that already has an account is live from the moment it
+   * is issued and may never be accepted at all.
+   */
+  createdAt: Date;
 }
 
 /** A live public link, as the access layer reads it. */

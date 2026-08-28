@@ -148,6 +148,14 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   entity: { collections: ['link'], record: { type: 'entity', param: 'id' } },
   connections: { collections: ['link'] },
   graph: { collections: ['link'] },
+  // Both empty, and that is the point rather than an omission. Every
+  // `ResparkableChangeType` names a write to the *viewer's own* brain, and
+  // nothing the viewer does can change what somebody else has shared with
+  // them: a shared surface has no write paths at all. The only thing that
+  // moves these tabs is the owner editing or revoking on their side, which
+  // arrives as a fresh fetch or a 404 rather than as a local change.
+  shared: { collections: [] },
+  sharedItem: { collections: [] },
   vault: { collections: [] },
   settings: { collections: ['space'] },
   archive: { collections: ['project', 'goal', 'task', 'thought', 'entity'] },

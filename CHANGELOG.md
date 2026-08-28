@@ -18,6 +18,33 @@ release process.
 
 ### Added
 
+- **Resparkable named grants, and `/shared-with-me`.** `POST
+  /api/v1/resparkable/grants` shares an item with an email address; it is an
+  **upsert** on `(entityType, entityId, granteeEmail)`, so re-sharing amends the
+  one relationship rather than adding a second beside it, and the response is
+  **identical whether or not the address has an account** — a differing one
+  would make sharing an account-existence oracle. `PATCH` moves role, task-detail
+  and expiry (never the address: re-addressing is a revoke plus a new grant);
+  `DELETE` revokes, and a second revoke is a 404 so the audit answer to "when did
+  access stop?" cannot be restamped. Grants default to 90 days, capped at 365,
+  with "never" reachable only by typing it.
+  `GET /api/v1/resparkable/shared` is the grantee's side and the only read
+  surface in the tier that crosses a person: direct grants only, each naming who
+  shared it, with **no write verbs under the prefix at all**.
+  `/shared/[entityType]/[entityId]` resolves on every request, so a grant revoked
+  a second ago 404s now rather than after a TTL, and returns the owner, the
+  basis, and the granted parent when the item was reached through a cascade.
+  `/shared/search` is a **substring match over the allowlisted projection** that
+  never touches `ResparkableEmbedding` — the owner's semantic index is theirs —
+  and reports when it hit its scan cap rather than showing a short list silently.
+  New `grantOwnerScope`, the fifth legitimate source of an `OwnerScope`, and
+  `viewerFromSession`, the one place a `ResparkableViewer` is built.
+  New `POST /api/v1/resparkable/boards/[id]/snapshot` freezes a filter board to
+  the cards it currently shows — §13's third required mitigation for the
+  dynamic-filter trap, and the only one that is a mechanism rather than a
+  warning. `BoardViewPayload` gains `filterSummary`, the board's membership rule
+  in plain English, for the share dialog to state before anyone agrees to it.
+
 - **Resparkable public share links, and the `/s/[token]` reader.**
   `POST /api/v1/resparkable/share-links` mints a link and returns the plaintext
   token **once** — a 192-bit `base64url` value, stored only as a sha256 digest,

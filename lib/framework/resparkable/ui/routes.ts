@@ -60,6 +60,22 @@ export const RESPARKABLE_ROUTES = {
   board: (slug: string): string => `${BASE}/boards/${slug}`,
 
   /**
+   * What other people have shared with me (§13, Release 2 phase 12).
+   *
+   * A section of its own rather than a filter on the existing lists, and that
+   * is the design rather than a routing convenience: shared-in items must never
+   * appear in Projects, Boards or Search, so that `WHERE userId = $1` stays an
+   * unconditional invariant on every one of those. It is also the honest
+   * product answer — a second brain's lists are a planning surface, and
+   * somebody else's project sitting in "my projects" corrupts your own sense of
+   * what you have committed to.
+   */
+  SHARED: `${BASE}/shared`,
+  /** One shared item. `type` is the shareable type, not an arbitrary string. */
+  sharedItem: (type: string, id: string): string =>
+    `${BASE}/shared/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+
+  /**
    * Archived items, and what has gone quiet (§11, phase 8).
    *
    * **Deliberately not in the main nav.** §11 is explicit that the archived list

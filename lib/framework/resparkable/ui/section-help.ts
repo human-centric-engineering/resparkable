@@ -325,6 +325,38 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
+    href: RESPARKABLE_ROUTES.SHARED,
+    title: 'Shared with me',
+    blurb: 'Items other people have shared with you, kept separate from your own.',
+    blocks: [
+      {
+        heading: 'These never mix with your own items',
+        body: 'A shared project does not appear in Projects, a shared board does not appear in Boards, and none of them appear in your search results. They live here and nowhere else. Your own lists stay a picture of what you have committed to.',
+      },
+      {
+        heading: 'What you can see',
+        body: 'The title, the description, the status and the due date. Sharing a project also shows its tasks, and sharing a goal shows its child goals. Task notes are hidden unless the person sharing turned that on. Priority scores, the reasons behind them, item history, and links to things that were not shared are never shown.',
+      },
+      {
+        heading: 'You cannot change anything here',
+        body: 'There is no edit, no drag, no delete. A share is read-only. If the person gave you a commenter role you can leave comments; that is the only thing you can write.',
+      },
+      {
+        heading: 'Access can be withdrawn at any moment',
+        body: 'When someone revokes a share or it reaches its expiry date, it stops working on your very next click rather than at the end of a session. An item that has gone from this list has been withdrawn or has expired.',
+      },
+      {
+        heading: 'Search here works differently',
+        body: 'It matches words in the titles and descriptions of what has been shared with you. It does not search by meaning the way your own search does, because that index belongs to the person who owns the items. Searching "deadline" will not find "due Friday".',
+      },
+      {
+        heading: 'A shared board keeps changing',
+        body: 'If someone shared a board that picks its cards by a filter, new cards matching that filter appear here as they create them. A board with cards added by hand shows exactly the cards they put on it.',
+      },
+    ],
+  },
+
+  {
     href: RESPARKABLE_ROUTES.VAULT,
     title: 'Vault',
     blurb: 'Your whole brain as a folder of markdown, out and back in.',

@@ -48,11 +48,15 @@ import {
 } from '@dnd-kit/core';
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 
+import { Share2 } from 'lucide-react';
+
 import { BoardColumn } from '@/components/resparkable/board/board-column';
 import { CardDetailSheet } from '@/components/resparkable/board/card-detail-sheet';
 import { TaskCard } from '@/components/resparkable/board/task-card';
+import { ShareDialog } from '@/components/resparkable/share/share-dialog';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
@@ -79,6 +83,7 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
   const [columns, setColumns] = React.useState(view.columns);
   const [dragging, setDragging] = React.useState<BoardCardWire | null>(null);
   const [openCard, setOpenCard] = React.useState<BoardCardWire | null>(null);
+  const [sharing, setSharing] = React.useState(false);
 
   // A refresh brings new server state; adopt it rather than keeping a stale mirror.
   React.useEffect(() => {
@@ -178,7 +183,37 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
 
   return (
     <div className="space-y-3">
-      <SaveStatus state={state} message={message} />
+      <div className="flex items-center gap-2">
+        <SaveStatus state={state} message={message} />
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="ml-auto"
+          onClick={() => setSharing(true)}
+        >
+          <Share2 className="h-4 w-4" aria-hidden="true" />
+          Share
+        </Button>
+      </div>
+
+      <ShareDialog
+        open={sharing}
+        onOpenChange={setSharing}
+        entityType="board"
+        entityId={view.board.id}
+        title={view.board.name}
+        // Only a filter board carries the warning. An explicit board's contents
+        // are exactly the cards the owner put on it, so there is nothing to
+        // caution about and a warning would train people to ignore the one that
+        // matters.
+        filterBoard={
+          !explicit && view.filterSummary
+            ? { summary: view.filterSummary, cardCount: view.totalCards }
+            : undefined
+        }
+        onSnapshot={() => refresh({ type: 'board', id: view.board.id })}
+      />
 
       <DndContext
         sensors={sensors}
