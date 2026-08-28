@@ -66,6 +66,17 @@ export interface SharedItemView {
 export const SHARED_CHILD_LIMIT = 200;
 
 /**
+ * What {@link findSharedChildIds} actually asks the database for.
+ *
+ * One more than it will render, so the caller can tell "exactly at the limit"
+ * from "more than the limit" without a second `count`. Comparing a full page
+ * against the limit cannot: a project with exactly 200 live tasks would tell
+ * every reader there were more, which is the same lie as truncating silently,
+ * told in the other direction.
+ */
+const CHILD_PROBE = SHARED_CHILD_LIMIT + 1;
+
+/**
  * Load a batch of items of one type for a shared reader.
  *
  * `withDetail` opens the prose on a **task** only. Every other type's body IS
@@ -247,7 +258,7 @@ export async function findSharedChildIds(
         where: { ...ownerWhere(scope), projectId: parentId, archivedAt: null },
         select: { id: true },
         orderBy: [{ dueAt: 'asc' }, { createdAt: 'asc' }],
-        take: SHARED_CHILD_LIMIT,
+        take: CHILD_PROBE,
       });
       return { childType: 'task', ids: rows.map((row) => row.id) };
     }
@@ -256,7 +267,7 @@ export async function findSharedChildIds(
         where: { ...ownerWhere(scope), parentGoalId: parentId, archivedAt: null },
         select: { id: true },
         orderBy: [{ targetDate: 'asc' }, { createdAt: 'asc' }],
-        take: SHARED_CHILD_LIMIT,
+        take: CHILD_PROBE,
       });
       return { childType: 'goal', ids: rows.map((row) => row.id) };
     }

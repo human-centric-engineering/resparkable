@@ -563,6 +563,45 @@ describe('the batched form', () => {
     expect(batched.get('project:p_1')).toEqual(single);
   });
 
+  it('agrees with the per-item form when a task has several granted parents', async () => {
+    // The case the test above cannot see: a task on a project AND on a board,
+    // with a grant on each, differing only in `includeTaskDetail`. Both forms
+    // must pick the same one, and the per-item form documents which, in
+    // `best()`: the strongest. Taking whichever parent came back first instead
+    // makes the same task show less in a list than it does when opened, and the
+    // divergence runs in the safe direction, so nothing would ever report it.
+    const grants = [
+      grant({ id: 'g_project', entityType: 'project', entityId: 'p_1' }),
+      grant({ id: 'g_board', entityType: 'board', entityId: 'b_1', includeTaskDetail: true }),
+    ];
+
+    findEntityOwner.mockResolvedValue(OWNER);
+    findEntityOwners.mockImplementation(async (type: string, ids: string[]) =>
+      type === 'task' ? new Map(ids.map((id) => [id, OWNER])) : new Map()
+    );
+    // No direct grant on the task itself; both grants sit on its parents.
+    findLiveGrantsForRefs.mockImplementation(
+      async (_viewer: unknown, refs: Array<{ entityType: string }>) =>
+        refs.some((ref) => ref.entityType === 'task') ? [] : grants
+    );
+    findTaskFacts.mockResolvedValue(new Map([['t_1', { projectId: 'p_1', status: 'todo' }]]));
+    findBoardsPinningTasks.mockResolvedValue(new Map([['t_1', ['b_1']]]));
+
+    const single = await resolveResparkableAccess({
+      viewer: GRANTEE,
+      entityType: 'task',
+      entityId: 't_1',
+    });
+    const batched = await resolveResparkableAccessMany({
+      viewer: GRANTEE,
+      refs: [{ entityType: 'task', entityId: 't_1' }],
+    });
+
+    expect(single.basis).toBe('grant-cascade');
+    expect(single.redact).not.toContain('notes');
+    expect(batched.get('task:t_1')).toEqual(single);
+  });
+
   it('denies an id it could not find an owner for', async () => {
     findEntityOwners.mockResolvedValue(new Map());
 

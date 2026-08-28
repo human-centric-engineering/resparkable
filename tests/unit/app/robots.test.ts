@@ -17,7 +17,7 @@
  * @see lib/app/robots.ts
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import robots from '@/app/robots';
 import { appDisallowedPaths } from '@/lib/app/robots';
@@ -54,5 +54,27 @@ describe('robots.txt', () => {
     const disallow = rule().disallow ?? [];
     expect(disallow).not.toContain('');
     expect(disallow).not.toContain('/');
+  });
+
+  describe('the sitemap URL', () => {
+    const original = process.env.NEXT_PUBLIC_APP_URL;
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.NEXT_PUBLIC_APP_URL;
+      else process.env.NEXT_PUBLIC_APP_URL = original;
+    });
+
+    it('points at the configured deployment', () => {
+      process.env.NEXT_PUBLIC_APP_URL = 'https://resparkable.example';
+      expect(robots().sitemap).toBe('https://resparkable.example/sitemap.xml');
+    });
+
+    it('falls back to localhost when the deployment URL is unset', () => {
+      // The fallback is the branch a deployed build never takes, so it is the
+      // one that rots. A `robots.txt` advertising a localhost sitemap is a
+      // misconfiguration that only shows up in a crawler's logs.
+      delete process.env.NEXT_PUBLIC_APP_URL;
+      expect(robots().sitemap).toBe('http://localhost:3000/sitemap.xml');
+    });
   });
 });

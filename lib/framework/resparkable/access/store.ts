@@ -300,7 +300,14 @@ export async function findTaskProjects(
   if (taskIds.length === 0) return new Map();
 
   const rows = await prisma.resparkableTask.findMany({
-    where: { userId: ownerId, id: { in: [...taskIds] } },
+    // Same rule as `findGoalParents`, and it matters more here because tasks
+    // reach the cascade two ways. `findSharedChildIds` lists a project's tasks
+    // with `archivedAt: null`, and `loadFilteredCards` reaches a filter board's
+    // cards through `listTasks`, whose default `taskWhere` excludes archived
+    // rows too. An archived task is therefore rendered by nothing, and a
+    // cascade that still granted it would hand out exactly what this file's
+    // header calls the unsafe direction: access to a row the board never showed.
+    where: { userId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
     select: { id: true, projectId: true, status: true },
   });
 
@@ -319,7 +326,12 @@ export async function findGoalParents(
   if (goalIds.length === 0) return new Map();
 
   const rows = await prisma.resparkableGoal.findMany({
-    where: { userId: ownerId, id: { in: [...goalIds] } },
+    // Archived goals have no cascade parent. `findSharedChildIds` renders a
+    // parent goal's children with `archivedAt: null`, so a cascade that still
+    // reached them would grant access to something no shared surface displays.
+    // An archived goal shared DIRECTLY still resolves: that is the owner's own
+    // gesture, and it is settled before the cascade runs.
+    where: { userId: ownerId, id: { in: [...goalIds] }, archivedAt: null },
     select: { id: true, parentGoalId: true },
   });
 
@@ -344,14 +356,30 @@ export async function findTaskFacts(
   if (taskIds.length === 0) return new Map();
 
   const rows = await prisma.resparkableTask.findMany({
-    where: { userId: ownerId, id: { in: [...taskIds] } },
+    // Same rule as `findGoalParents`, and it matters more here because tasks
+    // reach the cascade two ways. `findSharedChildIds` lists a project's tasks
+    // with `archivedAt: null`, and `loadFilteredCards` reaches a filter board's
+    // cards through `listTasks`, whose default `taskWhere` excludes archived
+    // rows too. An archived task is therefore rendered by nothing, and a
+    // cascade that still granted it would hand out exactly what this file's
+    // header calls the unsafe direction: access to a row the board never showed.
+    where: { userId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
     select: { id: true, projectId: true, status: true },
   });
 
   return new Map(rows.map((row) => [row.id, row]));
 }
 
-/** Board ids that pin these tasks explicitly, batched. */
+/**
+ * Board ids that pin these tasks explicitly, batched.
+ *
+ * **Only boards still on `membership: 'explicit'`.** `updateBoard` lets a board
+ * flip from explicit to filter and deletes none of its cards, and
+ * `loadFilteredCards` ignores the card table entirely. So a board curated,
+ * shared, then switched to a filter would otherwise keep granting every task it
+ * was ever pinned with, for ever, with nothing in the UI hinting at it. Unlike
+ * an archived row, that one does not heal.
+ */
 export async function findBoardsPinningTasks(
   ownerId: string,
   taskIds: readonly string[]
@@ -359,7 +387,11 @@ export async function findBoardsPinningTasks(
   if (taskIds.length === 0) return new Map();
 
   const rows = await prisma.resparkableBoardCard.findMany({
-    where: { userId: ownerId, taskId: { in: [...taskIds] } },
+    where: {
+      userId: ownerId,
+      taskId: { in: [...taskIds] },
+      board: { membership: 'explicit' },
+    },
     select: { taskId: true, boardId: true },
   });
 

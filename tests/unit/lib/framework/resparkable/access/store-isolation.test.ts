@@ -61,6 +61,7 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import {
   findBoardsPinningTasks,
+  findEntityOwner,
   findEntityOwners,
   findFilterBoards,
   findGoalParents,
@@ -68,8 +69,10 @@ import {
   findLiveGrantsForViewer,
   findLiveShareLinkByTokenHash,
   findTaskFacts,
+  findTaskProjects,
 } from '@/lib/framework/resparkable/access/store';
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
+import type { ResparkableShareableType } from '@/lib/framework/resparkable/access/types';
 
 const VIEWER = { userId: 'user_b', email: 'B@Example.com' };
 const OWNER = 'user_a';
@@ -292,5 +295,282 @@ describe('share links are looked up by digest', () => {
     });
 
     await expect(findLiveShareLinkByTokenHash('x')).resolves.toBeNull();
+  });
+
+  it('resolves an active link to its LiveShareLink shape', async () => {
+    prismaMock.resparkableShareLink.findUnique.mockResolvedValue({
+      id: 'link_1',
+      userId: OWNER,
+      entityType: 'project',
+      entityId: 'p_1',
+      includeChildren: true,
+      includeTaskDetail: false,
+      expiresAt: null,
+      revokedAt: null,
+    });
+
+    const link = await findLiveShareLinkByTokenHash('x');
+
+    expect(link).toEqual({
+      id: 'link_1',
+      ownerId: OWNER,
+      entityType: 'project',
+      entityId: 'p_1',
+      includeChildren: true,
+      includeTaskDetail: false,
+      expiresAt: null,
+      revokedAt: null,
+    });
+  });
+});
+
+describe('granteeClauses turns "no identity" into an empty RESULT, not an empty query', () => {
+  // The shape test above ("makes NO query at all...") proves no Prisma call
+  // happens. This proves the other half: the function still resolves to a
+  // usable empty value rather than throwing or returning undefined, which
+  // matters because a caller that skips this and reads `.length` on `undefined`
+  // would crash the whole resolution rather than reading "nothing shared".
+  it('findLiveGrantsForViewer resolves to an empty array for an anonymous viewer', async () => {
+    await expect(findLiveGrantsForViewer({ userId: null, email: null })).resolves.toEqual([]);
+  });
+
+  it('findLiveGrantsForRefs resolves to an empty array for an anonymous viewer', async () => {
+    await expect(
+      findLiveGrantsForRefs({ userId: null, email: null }, [
+        { entityType: 'project', entityId: 'p_1' },
+      ])
+    ).resolves.toEqual([]);
+  });
+});
+
+describe('findEntityOwners: the never arm', () => {
+  it('throws rather than silently returning nothing for an unrecognised type', async () => {
+    // The `never` arm is what makes adding a shareable type without an owner
+    // lookup a compile error elsewhere, but here forcing a value the union
+    // does not contain, it has to fail LOUDLY at runtime instead of quietly
+    // resolving to an empty map that reads as "denied" for every caller.
+    await expect(
+      findEntityOwners('not-a-real-type' as unknown as ResparkableShareableType, ['x_1'])
+    ).rejects.toThrow(/no owner lookup/);
+  });
+});
+
+describe('findEntityOwner (singular)', () => {
+  it('returns the owner id for a known item', async () => {
+    prismaMock.resparkableProject.findMany.mockResolvedValue([{ id: 'p_1', userId: 'user_a' }]);
+    await expect(findEntityOwner('project', 'p_1')).resolves.toBe('user_a');
+  });
+
+  it('returns null for an id that matches nothing', async () => {
+    prismaMock.resparkableProject.findMany.mockResolvedValue([]);
+    await expect(findEntityOwner('project', 'p_1')).resolves.toBeNull();
+  });
+});
+
+describe('toLiveGrants: the row-shaping every grant read shares', () => {
+  it('drops a grant whose entityType has left the shareable list', async () => {
+    // A row like this can only exist if a type was removed from the shareable
+    // union after grants were issued against it. The resolver must not be
+    // handed a `thought` because an old row says so.
+    prismaMock.resparkableGrant.findMany.mockResolvedValue([
+      {
+        id: 'g_1',
+        userId: 'user_a',
+        entityType: 'thought',
+        entityId: 't_1',
+        role: 'viewer',
+        includeTaskDetail: false,
+        acceptedAt: null,
+        expiresAt: null,
+        revokedAt: null,
+      },
+    ]);
+
+    await expect(findLiveGrantsForViewer(VIEWER)).resolves.toEqual([]);
+  });
+
+  it('drops an expired grant even though the query already asked for revokedAt: null', async () => {
+    // Belt and braces: `isShareActive` is the single definition of "still
+    // live", and this is the JS-side half of it actually running.
+    prismaMock.resparkableGrant.findMany.mockResolvedValue([
+      {
+        id: 'g_1',
+        userId: 'user_a',
+        entityType: 'project',
+        entityId: 'p_1',
+        role: 'viewer',
+        includeTaskDetail: false,
+        acceptedAt: null,
+        expiresAt: new Date('2020-01-01T00:00:00Z'),
+        revokedAt: null,
+      },
+    ]);
+
+    await expect(findLiveGrantsForViewer(VIEWER)).resolves.toEqual([]);
+  });
+
+  it('narrows any role other than "commenter" to "viewer"', async () => {
+    // Widening a role by typo is the failure worth preventing; narrowing one is
+    // visible. A row with a garbled role column must read as the weaker role.
+    prismaMock.resparkableGrant.findMany.mockResolvedValue([
+      {
+        id: 'g_1',
+        userId: 'user_a',
+        entityType: 'project',
+        entityId: 'p_1',
+        role: 'editor',
+        includeTaskDetail: false,
+        acceptedAt: null,
+        expiresAt: null,
+        revokedAt: null,
+      },
+    ]);
+
+    const [grant] = await findLiveGrantsForViewer(VIEWER);
+    expect(grant.role).toBe('viewer');
+  });
+
+  it('keeps a "commenter" role as commenter', async () => {
+    prismaMock.resparkableGrant.findMany.mockResolvedValue([
+      {
+        id: 'g_1',
+        userId: 'user_a',
+        entityType: 'project',
+        entityId: 'p_1',
+        role: 'commenter',
+        includeTaskDetail: false,
+        acceptedAt: null,
+        expiresAt: null,
+        revokedAt: null,
+      },
+    ]);
+
+    const [grant] = await findLiveGrantsForViewer(VIEWER);
+    expect(grant.role).toBe('commenter');
+  });
+});
+
+describe('findTaskProjects', () => {
+  it('maps a task to its project id, dropping tasks with no project', async () => {
+    // Unlike findTaskFacts, this map only makes sense for tasks that actually
+    // sit inside a project: a task with no project cannot contribute a
+    // project-basis cascade edge, so it is absent rather than mapped to null.
+    prismaMock.resparkableTask.findMany.mockResolvedValue([
+      { id: 't_1', projectId: 'p_1', status: 'todo' },
+      { id: 't_2', projectId: null, status: 'todo' },
+    ]);
+
+    const result = await findTaskProjects(OWNER, ['t_1', 't_2']);
+
+    expect(result.get('t_1')).toBe('p_1');
+    expect(result.has('t_2')).toBe(false);
+  });
+
+  it('makes no query for an empty id list', async () => {
+    await findTaskProjects(OWNER, []);
+    expect(prismaMock.resparkableTask.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('cascade lookups: what they actually return, not just what they filter on', () => {
+  it('findTaskFacts keeps a task with no project, unlike findTaskProjects', async () => {
+    prismaMock.resparkableTask.findMany.mockResolvedValue([
+      { id: 't_1', projectId: null, status: 'todo' },
+    ]);
+
+    const facts = await findTaskFacts(OWNER, ['t_1']);
+
+    expect(facts.get('t_1')).toEqual({ id: 't_1', projectId: null, status: 'todo' });
+  });
+
+  it('findGoalParents drops a goal with no parent', async () => {
+    prismaMock.resparkableGoal.findMany.mockResolvedValue([
+      { id: 'g_1', parentGoalId: 'g_0' },
+      { id: 'g_2', parentGoalId: null },
+    ]);
+
+    const parents = await findGoalParents(OWNER, ['g_1', 'g_2']);
+
+    expect(parents.get('g_1')).toBe('g_0');
+    expect(parents.has('g_2')).toBe(false);
+  });
+
+  it('findBoardsPinningTasks groups every board that pins the same task', async () => {
+    prismaMock.resparkableBoardCard.findMany.mockResolvedValue([
+      { taskId: 't_1', boardId: 'b_1' },
+      { taskId: 't_1', boardId: 'b_2' },
+    ]);
+
+    const boards = await findBoardsPinningTasks(OWNER, ['t_1']);
+
+    expect(boards.get('t_1')).toEqual(['b_1', 'b_2']);
+  });
+
+  describe('the cascade reaches only what a shared surface actually renders', () => {
+    // The invariant `cascade.ts` states about itself, asserted on the queries
+    // rather than trusted. Every one of these grants a row that no shared
+    // surface displays, which is the direction that file's header names as the
+    // dangerous one: resolution saying yes to a card the board never showed.
+
+    it('findTaskFacts asks only for live tasks', async () => {
+      // A project's shared children come from `findSharedChildIds`, which
+      // filters `archivedAt: null`; a filter board's come from `listTasks`,
+      // whose default `taskWhere` does the same. An archived task is rendered
+      // by neither, so it must not inherit access from either.
+      await findTaskFacts(OWNER, ['t_1']);
+
+      expect(lastWhere('resparkableTask')).toMatchObject({
+        userId: OWNER,
+        archivedAt: null,
+      });
+    });
+
+    it('findGoalParents asks only for live goals', async () => {
+      await findGoalParents(OWNER, ['g_1']);
+
+      expect(lastWhere('resparkableGoal')).toMatchObject({
+        userId: OWNER,
+        archivedAt: null,
+      });
+    });
+
+    it('findBoardsPinningTasks ignores pins on a board that is no longer explicit', async () => {
+      // `updateBoard` lets `membership` flip from explicit to filter and
+      // deletes no cards, while `loadFilteredCards` ignores the card table
+      // outright. Without this clause a board curated, shared, then switched to
+      // a filter keeps granting every task it was ever pinned with, and unlike
+      // an archived row that one never heals.
+      await findBoardsPinningTasks(OWNER, ['t_1']);
+
+      expect(lastWhere('resparkableBoardCard')).toMatchObject({
+        userId: OWNER,
+        board: { membership: 'explicit' },
+      });
+    });
+  });
+
+  it('findFilterBoards hands back the filter and columns untouched, for cascade.ts to evaluate', async () => {
+    prismaMock.resparkableBoard.findMany.mockResolvedValue([
+      { id: 'b_1', filter: { projectId: 'p_1' }, columns: [{ status: 'done' }] },
+    ]);
+
+    const boards = await findFilterBoards(OWNER);
+
+    expect(boards).toEqual([
+      { id: 'b_1', filter: { projectId: 'p_1' }, columns: [{ status: 'done' }] },
+    ]);
+  });
+
+  it('makes no query for an empty id list: findGoalParents and findTaskFacts', async () => {
+    await expect(findGoalParents(OWNER, [])).resolves.toEqual(new Map());
+    expect(prismaMock.resparkableGoal.findMany).not.toHaveBeenCalled();
+
+    await expect(findTaskFacts(OWNER, [])).resolves.toEqual(new Map());
+    expect(prismaMock.resparkableTask.findMany).not.toHaveBeenCalled();
+  });
+
+  it('makes no query for an empty id list: findBoardsPinningTasks', async () => {
+    await expect(findBoardsPinningTasks(OWNER, [])).resolves.toEqual(new Map());
+    expect(prismaMock.resparkableBoardCard.findMany).not.toHaveBeenCalled();
   });
 });

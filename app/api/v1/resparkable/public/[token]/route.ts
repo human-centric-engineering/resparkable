@@ -41,10 +41,36 @@
  * only interesting thing to do here without a token is guess.
  */
 
-import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { readPublicShare } from '@/lib/framework/resparkable/services/sharing';
 import { shareTokenSchema } from '@/lib/framework/resparkable/validations';
+import { logger } from '@/lib/logging';
+import { getFullContext } from '@/lib/logging/context';
+
+/**
+ * The route pattern, logged in place of the resolved path.
+ *
+ * **This route does not use `getRouteLogger`, and that is the point.** The
+ * shared helper binds two fields to every line a route emits: `url`
+ * (`request.url`) and `endpoint` (`new URL(request.url).pathname`). On every
+ * other route in the codebase those are exactly what you want in a log line. On
+ * this one they are the credential: the token is a path segment, so both fields
+ * carry a working share link in plaintext.
+ *
+ * That matters more than it looks. The token is stored only as a sha256 digest
+ * precisely so a database dump yields no working links, and `logger.sanitize`
+ * redacts by **key name** (`token`, `secret`, `authorization`, …), never by
+ * value, so `url` and `endpoint` sail through untouched. The line then reaches
+ * stdout and the in-memory admin buffer that `GET /api/v1/admin/logs` serves,
+ * where its `search` filter greps the serialised context. An operator with no
+ * other read path into anyone's brain could harvest live links from it, and
+ * revoking a link does not scrub a log.
+ *
+ * So the context is built by hand from an explicit allowlist. There is no
+ * session here to carry a user, and `tokenPrefix` is the field designed for
+ * correlating a share if a line ever needs to.
+ */
+const ROUTE_PATTERN = '/api/v1/resparkable/public/[token]';
 
 /**
  * The headers every response from this route carries, hit or miss.
@@ -72,7 +98,14 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ token: string }> }
 ): Promise<Response> {
-  const log = await getRouteLogger(request);
+  const context = await getFullContext(request);
+  const log = logger.withContext({
+    requestId: context.requestId,
+    visitorId: context.visitorId,
+    method: context.method,
+    userAgent: context.userAgent,
+    endpoint: ROUTE_PATTERN,
+  });
   const { token } = await params;
 
   // Shape-checked before the database is touched. Not a correctness measure —
@@ -84,7 +117,10 @@ export async function GET(
   const payload = await readPublicShare(parsed.data);
   if (!payload) return notFound();
 
-  // The token is never logged, here or anywhere. A log line is the one place a
+  // No token in the fields, and none in the bound context either: see
+  // `ROUTE_PATTERN`. Passing no `token` field was never enough on its own: the
+  // shared route logger puts the resolved path in `endpoint` and the full URL
+  // in `url`, and the token is a path segment. A log line is the one place a
   // bearer credential most reliably outlives the system that issued it.
   log.info('Resparkable public share read', {
     entityType: payload.item.entityType,

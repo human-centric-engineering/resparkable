@@ -330,7 +330,16 @@ export async function resolveResparkableAccessMany(input: {
     const key = refKey(ref);
     const ownerId = owners.get(key);
     const parents = parentsByChild.get(key) ?? [];
-    const parentGrant = parents.map((parent) => inherited.get(refKey(parent))).find(Boolean);
+    // `best`, not "the first parent that happens to carry a grant". A task can
+    // sit on a project AND on two boards, and the per-item form above picks the
+    // strongest of those grants, so taking the first here would make the same
+    // task show less detail in a list than it does when opened. The divergence
+    // runs in the safe direction, which is exactly why nothing would report it.
+    const parentGrant = best(
+      parents
+        .map((parent) => inherited.get(refKey(parent)))
+        .filter((grant): grant is LiveGrant => grant !== undefined)
+    );
 
     if (!ownerId || !parentGrant) {
       results.set(key, DENY);

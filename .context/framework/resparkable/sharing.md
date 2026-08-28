@@ -152,7 +152,7 @@ An explicit-membership board has no such problem: its contents are exactly the r
 
 ---
 
-## Four deliberate deviations from the plan
+## Five deliberate deviations from the plan
 
 Recorded here rather than quietly diverging.
 
@@ -162,7 +162,13 @@ Recorded here rather than quietly diverging.
 
 **3. `access/**` may import Prisma.** The plan's phrasing ("the repo layer is the only place that talks to the database") predates the shared-query layer existing. Routing shared queries through `repo/**` would mean giving that layer a way to say "not my rows" — precisely the capability it exists not to have. The boundary is not "one layer touches the database"; it is "each layer is named for the kind of query it may write".
 
-**4. `boardFilterMatches` fails closed where `loadFilteredCards` fails open.** When a board's stored `filter` JSON does not parse, the render path (`services/board-view.ts`) falls back to an empty filter and shows everything live. Doing the same in the access layer would be fail-open in an authorisation path — a corrupt column would widen a shared board to the owner's entire task list. So it denies, and the resulting mismatch runs in the safe direction: the grantee sees fewer cards than the owner, never more.
+**4. `boardFilterMatches` fails closed where `loadFilteredCards` fails open.** When a board's stored `filter` JSON does not parse, the render path (`services/board-view.ts`) falls back to an empty filter and shows everything live. Doing the same in the access layer would be fail-open in an authorisation path: a corrupt column would widen a shared board to the owner's entire task list. So it denies, and the resulting mismatch runs in the safe direction: the grantee sees fewer cards than the owner, never more.
+
+**5. The cascade does not mirror a filter board's 300-card cap.** `loadFilteredCards` asks for `take: CARD_LIMIT` (300) ordered by `priorityScore desc`, so a filter board with more matches than that renders the top 300. The cascade applies no such cap, which means a task ranked 301st is granted by `resolveResparkableAccess` while the shared board never displays it.
+
+This one is left standing rather than fixed, and the reason is that the fix is worse than the gap. Mirroring the cap means running a scored ranking query on the authorisation path, and it means access to a row depending on `priorityScore`, a number that moves on its own: a task could become readable or stop being readable overnight because something else was re-prioritised, with no gesture from the owner and nothing to point at in an audit. A ceiling on how many rows a board can display is a rendering decision; letting it silently become an access-control decision is the larger mistake.
+
+Two related over-grants in the same family were **not** left standing, because neither had that objection. Archived rows are now excluded from the cascade (`findTaskFacts`, `findGoalParents`), since every render path already excludes them. And `findBoardsPinningTasks` now matches only boards still on `membership: 'explicit'`, so a board curated, shared and later flipped to a filter stops granting the tasks it was once pinned with. That second one is the one worth remembering: unlike an archived row, it never healed on its own.
 
 ---
 

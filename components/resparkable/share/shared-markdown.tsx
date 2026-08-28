@@ -15,7 +15,15 @@
  * agreed to that and cannot see it happening.
  *
  * So a remote image renders as a placeholder the reader can choose to load.
- * Same-origin and `data:` images render normally: those cannot phone anywhere.
+ * Same-origin images render normally: those cannot phone anywhere.
+ *
+ * `data:` images never arrive at all. `react-markdown`'s `defaultUrlTransform`
+ * allows only `http`, `https`, `mailto`, `irc` and `xmpp`, and rewrites every
+ * other scheme to the empty string, so an inline image in a shared note is
+ * dropped by the parser before this component sees it. That is the framework's
+ * decision rather than this page's, and the empty `src` it produces is handled
+ * below rather than passed to an `<img>`, which the browser would resolve as a
+ * second request for the current page.
  *
  * Tightening `img-src` globally would be the other fix and it is worse — it
  * would break every legitimate image on the owner's own surfaces to close a
@@ -38,14 +46,39 @@ import { MARKDOWN_BLOCK_CLASSES } from '@/components/admin/orchestration/markdow
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-/** Can this src reach a third party if the browser fetches it automatically? */
-function isRemote(src: string | undefined): boolean {
-  if (!src) return false;
-  return /^https?:\/\//i.test(src);
+/**
+ * Can this src reach a third party if the browser fetches it automatically?
+ *
+ * Asked as an allowlist, not as a match on `https?://`, because of
+ * **protocol-relative URLs**. `![](//tracker.example/p.gif)` has no scheme, so
+ * react-markdown's `defaultUrlTransform` passes it through untouched (it only
+ * strips a URL whose *scheme* is unsafe, and this one has none), and the
+ * browser then resolves it against this page's https origin. It reaches the
+ * third party exactly as `https://tracker.example/p.gif` does. A check anchored
+ * on `https?://` never sees it, which would leave the gate open to the one form
+ * an author would reach for if they were trying to slip past it.
+ *
+ * Anything else carrying a scheme defers too. The caller has already discarded
+ * an empty `src`, which is what every scheme react-markdown rejects, `data:`
+ * included, has been rewritten to by the time it gets here. So a scheme
+ * arriving at this function is one the parser allowed, and none of those are
+ * this origin.
+ *
+ * What is left is a root-relative `/x.png` or a bare `x.png`: this origin,
+ * rendered immediately.
+ */
+function isRemote(src: string): boolean {
+  if (src.startsWith('//')) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(src);
 }
 
-function DeferredImage({ src, alt }: { src?: string; alt?: string }): React.ReactElement {
+function DeferredImage({ src, alt }: { src?: string; alt?: string }): React.ReactElement | null {
   const [loaded, setLoaded] = useState(false);
+
+  // No src, or one the parser rewrote to `''` because its scheme is not on
+  // react-markdown's allowlist. `<img src="">` is not an empty image: the
+  // browser resolves it against the document URL and fetches this page again.
+  if (!src) return null;
 
   if (!isRemote(src)) {
     // Same-origin or a data URI. Nothing to defer — a plain <img> rather than
@@ -61,7 +94,11 @@ function DeferredImage({ src, alt }: { src?: string; alt?: string }): React.Reac
 
   let host = 'another site';
   try {
-    host = new URL(src as string).host;
+    // A protocol-relative src has no scheme for `URL` to parse, and it is the
+    // page's own origin that supplies one at fetch time. Naming the host is the
+    // whole value of the placeholder, so give it the scheme the browser would.
+    const absolute = src.startsWith('//') ? `https:${src}` : src;
+    host = new URL(absolute).host || host;
   } catch {
     // A src that does not parse is not one worth naming. The placeholder still
     // renders, and the reader still gets the choice.

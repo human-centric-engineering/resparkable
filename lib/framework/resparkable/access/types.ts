@@ -73,10 +73,22 @@ export interface ResparkableViewer {
 /**
  * Why access was granted.
  *
- * The distinction between direct and cascaded is not cosmetic: a cascaded item
- * was never chosen by its owner for sharing, so it carries the stricter
- * redaction set, and the UI says "shared as part of X" rather than naming it as
- * a thing someone handed over.
+ * The distinction between direct and cascaded is not cosmetic, but it is
+ * narrower than it sounds, and this comment used to overstate it. **A cascaded
+ * item carries the same redaction set as a direct one of the same kind.** What
+ * changes is two things: `permissions.comment` is always false, because
+ * commenting is something you do to the item that was actually handed over; and
+ * `via` names the parent, so the UI can say "shared as part of X" rather than
+ * presenting it as a thing someone chose to give you.
+ *
+ * Redaction does not change because the cascade only ever runs inside one
+ * brain the viewer was already given a door into. A grantee who can see the
+ * project can already see who shared it and what was said about it; withholding
+ * the same two fields one level down would read as a bug rather than as care,
+ * and would leave a grantee looking at comments on a project and none on its
+ * tasks. The line that does the work is basis-kind, `grant` versus `link`: a
+ * named grant is a relationship and carries `ownerIdentity` and `comments`, a
+ * public link is a document and carries neither.
  */
 export type ResparkableAccessBasis = 'owner' | 'grant' | 'grant-cascade' | 'link' | 'link-cascade';
 

@@ -55,7 +55,9 @@ vi.mock('@/lib/db/client', () => {
 import { prisma } from '@/lib/db/client';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
+  countShareLinkView,
   createShareLink,
+  findShareLink,
   listShareLinks,
   ownsEntity,
   revokeShareLink,
@@ -257,5 +259,101 @@ describe('ownsEntity', () => {
   it('is false for a row that is not the caller’s', async () => {
     db.resparkableTask.count.mockResolvedValue(0);
     await expect(ownsEntity(SCOPE, 'task', 't_1')).resolves.toBe(false);
+  });
+
+  it('routes every shareable type to its own table', async () => {
+    // A per-type sweep rather than one case: the switch has six arms, and the
+    // failure worth guarding against is a seventh type added later that copies
+    // the wrong branch, which a single-type test would never catch.
+    const cases = [
+      ['area', db.resparkableArea] as const,
+      ['goal', db.resparkableGoal] as const,
+      ['project', db.resparkableProject] as const,
+      ['review', db.resparkableReview] as const,
+      ['board', db.resparkableBoard] as const,
+      ['task', db.resparkableTask] as const,
+    ];
+
+    for (const [entityType, delegate] of cases) {
+      delegate.count.mockResolvedValue(1);
+      await expect(ownsEntity(SCOPE, entityType, 'x_1')).resolves.toBe(true);
+      expect(delegate.count).toHaveBeenCalledWith({ where: { userId: 'user_a', id: 'x_1' } });
+    }
+  });
+
+  it('throws rather than silently denying for an unrecognised type', async () => {
+    // Same reasoning as `access/store.ts`'s `findEntityOwners`: the `never` arm
+    // exists so a type added to the shareable union without a table here is a
+    // compile error, and at runtime it must fail loudly rather than resolving
+    // to `false`, which would read as "not yours" for every caller.
+    await expect(
+      ownsEntity(SCOPE, 'not-a-real-type' as unknown as Parameters<typeof ownsEntity>[1], 'x_1')
+    ).rejects.toThrow(/no table for/);
+  });
+});
+
+describe('setVisibility routes every shareable type to its own table', () => {
+  // Exercised through the mint path: `createShareLink` is the only caller that
+  // hits every branch of the switch, since `revokeShareLink`'s own tests above
+  // only ever exercise `project`.
+  const cases = [
+    ['area', () => db.resparkableArea] as const,
+    ['goal', () => db.resparkableGoal] as const,
+    ['project', () => db.resparkableProject] as const,
+    ['review', () => db.resparkableReview] as const,
+    ['board', () => db.resparkableBoard] as const,
+    ['task', () => db.resparkableTask] as const,
+  ];
+
+  it.each(cases)('flips %s visibility to link on mint', async (entityType, getDelegate) => {
+    getDelegate().updateMany.mockResolvedValue({ count: 1 });
+
+    await createShareLink(SCOPE, {
+      entityType,
+      entityId: 'x_1',
+      tokenHash: 'digest',
+      tokenPrefix: 'AAAABBBB',
+      includeChildren: false,
+      includeTaskDetail: false,
+      expiresAt: null,
+    });
+
+    expect(getDelegate().updateMany).toHaveBeenCalledWith({
+      where: { userId: 'user_a', id: 'x_1' },
+      data: { visibility: 'link' },
+    });
+  });
+});
+
+describe('findShareLink', () => {
+  it('returns one of the owner’s links, scoped by id and userId together', async () => {
+    db.resparkableShareLink.findFirst.mockResolvedValue(linkRow({ id: 'link_1' }));
+
+    const link = await findShareLink(SCOPE, 'link_1');
+
+    expect(link?.id).toBe('link_1');
+    expect(db.resparkableShareLink.findFirst).toHaveBeenCalledWith({
+      where: { userId: 'user_a', id: 'link_1' },
+    });
+  });
+
+  it('returns null for a link that is not the caller’s: never another owner’s row', async () => {
+    db.resparkableShareLink.findFirst.mockResolvedValue(null);
+    await expect(findShareLink(SCOPE, 'link_x')).resolves.toBeNull();
+  });
+});
+
+describe('countShareLinkView', () => {
+  it('increments the view count and stamps the time, unscoped', async () => {
+    // Deliberately the one unscoped write in this file: the public reader has
+    // no session, and the link id already came from a token lookup that proved
+    // the link is live. A miss must be zero rows, not a throw that could fail a
+    // page render, which is why this is `updateMany` on a bare id.
+    await countShareLinkView('link_1', NOW);
+
+    expect(db.resparkableShareLink.updateMany).toHaveBeenCalledWith({
+      where: { id: 'link_1' },
+      data: { viewCount: { increment: 1 }, lastViewedAt: NOW },
+    });
   });
 });

@@ -272,8 +272,8 @@ export async function buildSharePayload(
 
   return {
     item,
-    children,
-    childrenTruncated: children.length >= SHARED_CHILD_LIMIT,
+    children: children.items,
+    childrenTruncated: children.truncated,
     includeTaskDetail: withDetail,
   };
 }
@@ -285,6 +285,11 @@ export async function buildSharePayload(
  * board's curated order and a filter board's live membership both come from the
  * one module that owns them. Everything else has a plain FK and comes from
  * `repo/shared-view.ts`.
+ *
+ * Returns whether the list was cut as well as the list itself. The caller cannot
+ * infer it from the length: a page exactly at the limit and a page cut at the
+ * limit are the same number, and guessing "more" from that tells readers there
+ * is more to see when there is not.
  */
 async function loadChildren(
   scope: OwnerScope,
@@ -292,38 +297,50 @@ async function loadChildren(
   entityId: string,
   withDetail: boolean,
   now: Date
-): Promise<SharedItemView[]> {
+): Promise<{ items: SharedItemView[]; truncated: boolean }> {
   if (entityType === 'board') {
     const view = await buildBoardView(scope, entityId, now);
-    if (!view) return [];
+    if (!view) return { items: [], truncated: false };
 
     // Column order, then card order within a column — the board's own reading
     // order. `unplaced` last, because a card with no column is still a card and
     // silently dropping it would make the shared board disagree with the
     // owner's. Never `priorityScore`: ordering by it leaks the ranking through
     // the sequence even with the number withheld.
-    const ids = [
+    const all = [
       ...view.columns.flatMap((column) => column.cards.map((card) => card.task.id)),
       ...view.unplaced.map((card) => card.task.id),
-    ].slice(0, SHARED_CHILD_LIMIT);
+    ];
+    const ids = all.slice(0, SHARED_CHILD_LIMIT);
 
     const items = await findSharedItems(scope, 'task', ids, withDetail);
     const byId = new Map(items.map((item) => [item.id, item]));
-    return ids
-      .map((id) => byId.get(id))
-      .filter((item): item is SharedItemView => item !== undefined);
+    return {
+      items: ids
+        .map((id) => byId.get(id))
+        .filter((item): item is SharedItemView => item !== undefined),
+      truncated: all.length > SHARED_CHILD_LIMIT,
+    };
   }
 
   const children = await findSharedChildIds(scope, entityType, entityId);
-  if (!children) return [];
+  if (!children) return { items: [], truncated: false };
 
-  const items = await findSharedItems(scope, children.childType, children.ids, withDetail);
-  // Restore the order the id query chose — `findMany` with an `in` makes no
+  // The query asked for one more than it renders, so a full page here means
+  // there is genuinely another one behind it.
+  const truncated = children.ids.length > SHARED_CHILD_LIMIT;
+  const ids = children.ids.slice(0, SHARED_CHILD_LIMIT);
+
+  const items = await findSharedItems(scope, children.childType, ids, withDetail);
+  // Restore the order the id query chose. `findMany` with an `in` makes no
   // ordering promise, and a due-date sequence is the whole point of it.
   const byId = new Map(items.map((item) => [item.id, item]));
-  return children.ids
-    .map((id) => byId.get(id))
-    .filter((item): item is SharedItemView => item !== undefined);
+  return {
+    items: ids
+      .map((id) => byId.get(id))
+      .filter((item): item is SharedItemView => item !== undefined),
+    truncated,
+  };
 }
 
 /** Re-exported so routes do not each import from two modules. */

@@ -65,6 +65,8 @@ vi.mock('@/lib/logging', () => ({
 
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+// The mocked value above, read back rather than retyped, so the two cannot drift.
+import { SHARED_CHILD_LIMIT } from '@/lib/framework/resparkable/repo/shared-view';
 import {
   mintShareLink,
   readPublicShare,
@@ -364,6 +366,77 @@ describe('reading a public share', () => {
     // Unplaced last: a card with no column is still a card, and dropping it
     // would make the shared board disagree with the owner's.
     expect(payload?.children.map((child) => child.id)).toEqual(['t_1', 't_2', 't_9']);
+  });
+
+  describe('childrenTruncated', () => {
+    // The repo asks for one more child than it renders, so the service can tell
+    // "exactly at the limit" from "cut at the limit". Comparing a rendered page
+    // against the limit cannot, and the two failures point opposite ways: claim
+    // more when there is none, or stop without saying so.
+    const ids = (count: number) => Array.from({ length: count }, (_, i) => `t_${i}`);
+
+    beforeEach(() => {
+      findLiveShareLinkByTokenHash.mockResolvedValue(liveLink({ includeChildren: true }));
+      findSharedItems.mockImplementation(async (_s: unknown, _t: unknown, wanted: string[]) =>
+        wanted.map((id) => itemView({ entityType: 'task', id }))
+      );
+    });
+
+    it('is false for a project with exactly the limit, and renders them all', async () => {
+      findSharedChildIds.mockResolvedValue({
+        childType: 'task',
+        ids: ids(SHARED_CHILD_LIMIT),
+      });
+
+      const payload = await readPublicShare('AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH');
+
+      expect(payload?.children).toHaveLength(SHARED_CHILD_LIMIT);
+      expect(payload?.childrenTruncated).toBe(false);
+    });
+
+    it('is true, and drops the probe row, when there is one more', async () => {
+      findSharedChildIds.mockResolvedValue({
+        childType: 'task',
+        ids: ids(SHARED_CHILD_LIMIT + 1),
+      });
+
+      const payload = await readPublicShare('AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH');
+
+      // The extra row exists to be counted, never to be rendered.
+      expect(payload?.children).toHaveLength(SHARED_CHILD_LIMIT);
+      expect(payload?.childrenTruncated).toBe(true);
+    });
+
+    it('is false for a board whose cards fit', async () => {
+      findLiveShareLinkByTokenHash.mockResolvedValue(
+        liveLink({ entityType: 'board', entityId: 'b_1', includeChildren: true })
+      );
+      findSharedItem.mockResolvedValue(itemView({ entityType: 'board', id: 'b_1' }));
+      buildBoardView.mockResolvedValue({
+        columns: [{ cards: ids(SHARED_CHILD_LIMIT).map((id) => ({ task: { id } })) }],
+        unplaced: [],
+      });
+
+      const payload = await readPublicShare('AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH');
+
+      expect(payload?.childrenTruncated).toBe(false);
+    });
+
+    it('is true for a board with more cards than it renders', async () => {
+      findLiveShareLinkByTokenHash.mockResolvedValue(
+        liveLink({ entityType: 'board', entityId: 'b_1', includeChildren: true })
+      );
+      findSharedItem.mockResolvedValue(itemView({ entityType: 'board', id: 'b_1' }));
+      buildBoardView.mockResolvedValue({
+        columns: [{ cards: ids(SHARED_CHILD_LIMIT).map((id) => ({ task: { id } })) }],
+        unplaced: [{ task: { id: 't_extra' } }],
+      });
+
+      const payload = await readPublicShare('AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH');
+
+      expect(payload?.children).toHaveLength(SHARED_CHILD_LIMIT);
+      expect(payload?.childrenTruncated).toBe(true);
+    });
   });
 });
 

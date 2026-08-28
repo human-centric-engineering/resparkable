@@ -238,7 +238,15 @@ export async function keywordSummaries(
   switch (entityType) {
     case 'thought': {
       const rows = await prisma.resparkableThought.findMany({
-        where: { ...scoped, content: like },
+        // The sensitivity predicate belongs in THIS query, not only in the
+        // `findSummaries` call below. Filtering after `take` would be correct
+        // and useless: sensitive rows would consume result slots and the caller
+        // would get 2 hits where it asked for 10, with nothing saying why. This
+        // is the shape `hybridSearchRows` already documents, where the same
+        // predicate sits inside the vector candidate CTE for the same reason.
+        where: excludeSensitive
+          ? { ...scoped, content: like, sensitivity: { not: 'sensitive' } }
+          : { ...scoped, content: like },
         select: { id: true },
         take,
       });
@@ -247,6 +255,8 @@ export async function keywordSummaries(
         entityType,
         rows.map((r) => r.id),
         includeArchived,
+        // Still passed: this is the authorisation boundary, and it must not
+        // depend on the query above having remembered to narrow.
         excludeSensitive
       );
     }

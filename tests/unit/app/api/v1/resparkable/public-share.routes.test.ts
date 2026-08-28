@@ -16,8 +16,14 @@
  * - Owner-side mint returns the plaintext once; the list never returns it
  * - Minting against someone else's item is a 404, not a 403
  *
+ * `DELETE /api/v1/resparkable/share-links/[id]` (revocation) is covered in the
+ * same file: it shares the `services/sharing` mock with the mint/list routes
+ * above, and the enumeration-safety rule (404, never 403, on a miss) is the
+ * same rule the POST route's own test already documents.
+ *
  * @see app/api/v1/resparkable/public/[token]/route.ts
  * @see app/api/v1/resparkable/share-links/route.ts
+ * @see app/api/v1/resparkable/share-links/[id]/route.ts
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -25,6 +31,47 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const routeLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
 vi.mock('@/lib/api/context', () => ({ getRouteLogger: async () => routeLog }));
+
+/**
+ * The context bound to the public route's logger, captured.
+ *
+ * The route builds this itself instead of calling `getRouteLogger`, because the
+ * shared helper binds `url` (the whole request URL) and `endpoint` (the
+ * *resolved* pathname). On this route the token is a path segment, so both
+ * would carry a working share link into every log line. Asserting the log
+ * *fields* alone would not have caught that; the leak was in the context.
+ */
+const boundContext: Array<Record<string, unknown>> = [];
+
+vi.mock('@/lib/logging', () => ({
+  // The full surface, not just `withContext`: `handleAPIError` reaches for
+  // `logger.error` on the guard's catch path, and a narrower stub turns an
+  // assertion about a 404 into a TypeError about the mock.
+  logger: {
+    withContext: (context: Record<string, unknown>) => {
+      boundContext.push(context);
+      return routeLog;
+    },
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
+vi.mock('@/lib/logging/context', () => ({
+  getFullContext: async () => ({
+    requestId: 'req_1',
+    visitorId: 'visitor_1',
+    method: 'GET',
+    // Present in the real helper's return, and both carry the token. The route
+    // must drop them rather than spread the whole object.
+    // Literal, not `LIVE_TOKEN`: a `vi.mock` factory is hoisted above the
+    // module's own consts, so referencing one here is a TDZ error.
+    url: 'https://resparkable.test/api/v1/resparkable/public/AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH',
+    userAgent: 'test-agent',
+  }),
+}));
 
 vi.mock('@/lib/auth/guards', () => ({
   withAuth:
@@ -48,15 +95,17 @@ vi.mock('@/lib/framework/resparkable/services/sharing', () => ({
 
 import { GET as PUBLIC_GET } from '@/app/api/v1/resparkable/public/[token]/route';
 import { GET as LINKS_GET, POST as LINKS_POST } from '@/app/api/v1/resparkable/share-links/route';
+import { DELETE as LINK_DELETE } from '@/app/api/v1/resparkable/share-links/[id]/route';
 import {
   listOwnShareLinks,
   mintShareLink,
   readPublicShare,
+  revokeShareLink,
 } from '@/lib/framework/resparkable/services/sharing';
 
 const SESSION = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
-/** 32 base64url characters — the shape `shareTokenSchema` accepts. */
+/** 32 base64url characters: the shape `shareTokenSchema` accepts. */
 const LIVE_TOKEN = 'AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH';
 const OTHER_TOKEN = 'ZZZZYYYYXXXXWWWWVVVVUUUUTTTTSSSS';
 
@@ -106,7 +155,43 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(readPublicShare).mockResolvedValue(null);
   vi.mocked(listOwnShareLinks).mockResolvedValue([]);
+  vi.mocked(revokeShareLink).mockResolvedValue(null);
+  boundContext.length = 0;
 });
+
+/** A full `ResparkableShareLink` row, as `revokeShareLink` resolves it. */
+function shareLinkRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'link_1',
+    userId: 'user_a',
+    entityType: 'project',
+    entityId: 'clh0000000000000000000001',
+    tokenHash: 'digest',
+    tokenPrefix: LIVE_TOKEN.slice(0, 8),
+    includeChildren: false,
+    includeTaskDetail: false,
+    expiresAt: null,
+    revokedAt: new Date('2026-08-27T00:00:00Z'),
+    viewCount: 2,
+    lastViewedAt: null,
+    createdAt: new Date('2026-08-01T00:00:00Z'),
+    updatedAt: new Date('2026-08-27T00:00:00Z'),
+    ...overrides,
+  };
+}
+
+function deleteReq(id: string) {
+  return {
+    url: `http://localhost:3000/api/v1/resparkable/share-links/${id}`,
+    headers: new Headers(),
+  } as unknown as Request;
+}
+
+function invokeDelete(id: string, session: unknown = SESSION): Promise<Response> {
+  return (LINK_DELETE as (...args: unknown[]) => Promise<Response>)(deleteReq(id), session, {
+    params: Promise.resolve({ id }),
+  });
+}
 
 describe('GET /api/v1/resparkable/public/[token]', () => {
   it('returns the payload for a live token', async () => {
@@ -180,6 +265,32 @@ describe('GET /api/v1/resparkable/public/[token]', () => {
 
     const logged = JSON.stringify(routeLog.info.mock.calls);
     expect(logged).not.toContain(LIVE_TOKEN);
+  });
+
+  it('never writes the token into the logger context either', async () => {
+    // The assertion above passes trivially: the route passes no token field.
+    // It is not where the token got out. `getRouteLogger` binds `url` (the
+    // whole request URL) and `endpoint` (the *resolved* pathname) to every line
+    // a route emits, and the token is a path segment, so both carried a working
+    // share link. `logger.sanitize` redacts by key name (`token`, `secret`,
+    // `authorization`, …) and never by value, so neither field was touched, and
+    // the line reached stdout and the admin log buffer that
+    // `GET /api/v1/admin/logs` serves, whose `search` greps the serialised
+    // context. Revoking a link does not scrub a log.
+    vi.mocked(readPublicShare).mockResolvedValue(PAYLOAD);
+
+    await invokePublic(LIVE_TOKEN);
+
+    expect(
+      boundContext,
+      'the route must build its own log context: reverting it to getRouteLogger re-binds url and endpoint, and the token is in both'
+    ).toHaveLength(1);
+    expect(JSON.stringify(boundContext)).not.toContain(LIVE_TOKEN);
+    // Positively: the route pattern, so a log reader can still tell which
+    // endpoint served the request.
+    expect(boundContext[0].endpoint).toBe('/api/v1/resparkable/public/[token]');
+    // And `url` is dropped rather than spread through from `getFullContext`.
+    expect(boundContext[0]).not.toHaveProperty('url');
   });
 });
 
@@ -304,5 +415,60 @@ describe('GET /api/v1/resparkable/share-links', () => {
     expect(raw).not.toContain(LIVE_TOKEN);
     expect(raw).not.toContain('tokenHash');
     expect(raw).toContain('AAAABBBB');
+  });
+});
+
+describe('DELETE /api/v1/resparkable/share-links/[id]', () => {
+  it('returns the documented success envelope on a successful revoke', async () => {
+    const revoked = shareLinkRow();
+    vi.mocked(revokeShareLink).mockResolvedValue(revoked);
+
+    const response = await invokeDelete('link_1');
+    const body = (await response.json()) as {
+      success: boolean;
+      data: { id: string; revokedAt: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual({ id: revoked.id, revokedAt: revoked.revokedAt.toISOString() });
+  });
+
+  it('404s, not 403s, when revokeShareLink finds no such link of the caller’s', async () => {
+    // Same enumeration-safety rule the sibling POST route documents: a 403
+    // would confirm the row exists (belongs to someone else) rather than not
+    // existing at all, and the two must be indistinguishable to the caller.
+    vi.mocked(revokeShareLink).mockResolvedValue(null);
+
+    const response = await invokeDelete('not_mine');
+    const body = (await response.json()) as { success: boolean };
+
+    expect(response.status).toBe(404);
+    expect(body.success).toBe(false);
+  });
+
+  it('builds the owner scope from the session user id, never the request', async () => {
+    vi.mocked(revokeShareLink).mockResolvedValue(shareLinkRow({ userId: 'user_b' }));
+
+    await invokeDelete('link_1', { user: { id: 'user_b' }, session: { userId: 'user_b' } });
+
+    // The scope handed to the service must carry the SESSION's id, not
+    // anything read off the request/params: there is nothing in the request
+    // this route could have taken it from instead, so this proves the route
+    // reads `session.user.id` and not, say, a header or body field it forgot
+    // to strip.
+    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[0]).toEqual({ userId: 'user_b' });
+    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[1]).toBe('link_1');
+  });
+
+  it('never logs the share token or its prefix', async () => {
+    const revoked = shareLinkRow({ tokenPrefix: LIVE_TOKEN.slice(0, 8) });
+    vi.mocked(revokeShareLink).mockResolvedValue(revoked);
+
+    await invokeDelete('link_1');
+
+    const logged = JSON.stringify(routeLog.info.mock.calls);
+    expect(logged).not.toContain(LIVE_TOKEN);
+    expect(logged).not.toContain(revoked.tokenPrefix);
   });
 });
