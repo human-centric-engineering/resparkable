@@ -1207,11 +1207,12 @@ waiting for Release 9.
 | 11  | Public share links: token minting, `/s/[token]` reader, robots + `X-Robots-Tag` + `Referrer-Policy`, revocation, expiry. **DONE 2026-08-26** | tests 14–18         |
 | 12  | Named grants + cascade + redaction + `/shared-with-me`. **DONE 2026-08-28**                                                                  | tests 5–9           |
 | 13  | Invite flow + share-invite email + rate limit; then comments + commenter role. **DONE 2026-08-28**                                           | tests 10–13         |
-| 14  | Erasure hook + drift probes + grantee-email scrub                                                                                            | tests 22–24         |
+| 14  | Erasure hook + drift probes + grantee-email scrub. **DONE 2026-08-28**                                                                       | tests 22–24         |
 
 Cheap — 4–5 days — because `conversation-access.ts`, `invitation-token.ts`, `emails/invitation.tsx`, `visitor-id.ts` and `registerErasureCleanupHook` are all correct existing precedents. The expensive part is the test matrix, and it should be.
 
-**Phases 10 and 11 landed 2026-08-26; phases 12 and 13 landed 2026-08-28.** The
+**Release 2 is complete.** Phases 10 and 11 landed 2026-08-26; phases 12, 13
+and 14 landed 2026-08-28. The
 implementation notes, the five deliberate deviations from §13 below, the
 reader's header/redaction contract, and the share dialog's three filter-board
 mitigations are in [`sharing.md`](./sharing.md); this section stays the
@@ -1232,6 +1233,23 @@ emails in `capabilities/notify.ts`, which imports a component directly rather
 than going through the registry. Adding a Resparkable-specific template to a
 core directory would be a merge conflict inflicted on every host project for no
 gain, since there is no platform default for it to fall back to.
+
+Phase 14 found that §13's `cleanupExternal` list names blobs that do not exist.
+`resparkable-vaults/<userId>/` and `resparkable-vault-snapshots/<userId>/` would
+be written by Release 3's **Managed** transport, which is on hold and stores
+nothing; the one-time vault export streams a zip and persists no server-side
+state. The hook deletes `framework-resparkable/<userId>/`, which is where
+`documents/ingest.ts` actually writes retained originals. The vault prefixes go
+in when the blobs do.
+
+It also found that the erasure-hook registry is the one registration seam
+sunrise#462 did not reach, so a boot-time registration may not be present in the
+erasure request's realm. Filed as ask #44, and carried rather than worked around
+because there is no point in the erasure route's import graph a fork can reach.
+What makes that tolerable is how little rides on it: B1, B8 and B9 are database
+constraints covering the whole brain, every accepted grant and every comment an
+erased person wrote, and the hook covers only the two residues a cascade cannot
+express.
 
 Note `visibility` and the `OwnerScope` repo boundary land in Release 1 phases 1–2 even though nothing uses them yet. Retrofitting either onto rows people have already created is what causes leaks.
 

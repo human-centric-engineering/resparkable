@@ -538,6 +538,32 @@ export const resparkableTransferPolicies: TransferPolicySet = {
     },
     {
       ...BRAIN,
+      model: 'ResparkableComment',
+      disposition: 'export-only',
+      note:
+        'Comments left on items you shared, including who wrote each one. ' +
+        'Included so the record is yours — third-party text standing in your ' +
+        'brain is exactly the thing you are owed sight of — but never written ' +
+        'back, for the same reason as the grant above and one more. A comment ' +
+        'is addressed to a relationship that does not exist on the far side: ' +
+        'importing one would put words in somebody’s mouth on an installation ' +
+        'where they have no account, under an author id that means nothing ' +
+        'there, on an item nobody has shared with them. Words attributed to a ' +
+        'person are the last thing that should be replayed by a machine.',
+      ownerColumn: 'userId',
+      softRefsIgnored: {
+        entityId:
+          'Identifies whichever item the comment sits on, across six tables in ' +
+          'the tier. Kept verbatim because the row is never replayed — same as ' +
+          'ResparkableGrant.entityId.',
+        authorUserId:
+          'The author’s account id in THIS installation, meaningless in ' +
+          'another. Kept verbatim rather than rewritten, for the same reason ' +
+          'the row is never imported at all.',
+      },
+    },
+    {
+      ...BRAIN,
       model: 'ResparkableShareLink',
       disposition: 'export-only',
       note:

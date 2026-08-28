@@ -123,8 +123,9 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // `/transcribe/image` one photo to a vision model; `/vault`
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
-    // connection open for a tool loop; and the two public share-reader rules,
-    // which are the exception to everything else in this list — see below).
+    // connection open for a tool loop; `/grants/[id]/invite` sends mail to
+    // somebody else; and the two public share-reader rules, which are the
+    // exception to everything else in this list — see below).
     // Asserting the exact set keeps the original intent: a stray rule still
     // fails, and so does one that escapes the namespace.
     //
@@ -148,6 +149,12 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         // own API, so without it a browser would be uncapped.
         String(/^\/api\/v1\/resparkable\/public(?:\/|$)/),
         String(/^\/s\//),
+        // The share invite, the one DAILY cap in the tier and the only one
+        // about somebody else's inbox rather than this deployment's bill.
+        // Anchored on the `/invite` suffix rather than the `/grants` prefix, so
+        // creating, amending and revoking a grant stay on the section's
+        // 100/min — only the verb that sends mail is capped at 20/day.
+        String(/^\/api\/v1\/resparkable\/grants\/[^/]+\/invite$/),
         String(/^\/api\/v1\/resparkable\/search(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),

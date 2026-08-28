@@ -18,6 +18,30 @@ release process.
 
 ### Added
 
+- **Resparkable erasure, and Art. 15's other direction.** The tier registers an
+  erasure cleanup hook again — deleted in phase 56 when the job queue removed
+  the rows it existed for, back now for two things a cascade genuinely cannot
+  reach: an **unaccepted invite**, which is addressed by email and so has no
+  foreign key to hang off, and **stored document originals**, which are object
+  storage and cannot enlist in a database transaction. The scrub deletes grants
+  matched on the erased person's lower-cased address, reading it from the
+  erasure transaction because hooks run before `user.delete()`. Everything else
+  is Postgres: probes **B1**, **B8** and **B9** guard hand-written
+  `ON DELETE CASCADE` constraints covering the whole brain, every accepted grant
+  and every comment an erased person wrote, and `lib/framework/resparkable/privacy/erasure.ts`
+  states at the top how little rides on the hook — `lib/privacy/erasure-hooks.ts`
+  is the one registration seam sunrise#462 did not reach, filed as ask #44.
+  New `lib/framework/resparkable/access/subject-export.ts` answers the two
+  subject-access questions the owner-scoped manifest deferred in as many words:
+  **what has been shared with me**, and **comments I wrote** on other people's
+  items. Both live on somebody else's rows, so both are shared queries. It
+  matches the account id and the address (an unaccepted invite has only the
+  latter), includes revoked and expired grants — a withdrawn share is part of
+  the record of what was done with a subject's data — and carries no content of
+  what was shared. `ResparkableComment` joins the account-transfer policy as
+  `export-only`: words attributed to a person are the last thing that should be
+  replayed into an installation where they have no account.
+
 - **Resparkable share invites, and comments.** `POST
   /api/v1/resparkable/grants/[id]/invite` emails the person a grant was issued
   to — a **separate call from creating the grant**, so a mail-provider outage

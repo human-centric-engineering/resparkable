@@ -220,10 +220,12 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
       'Who they have shared items with, on what terms, and when — including invitations never accepted. Their own record of a decision they made about their own data.',
     // Owner-scoped, like every other source here: `userId` on this table is the
     // OWNER. The mirror question — "what has been shared WITH me?" — is a read
-    // across a boundary this repo layer cannot express by construction (D5),
-    // and it is answered in Release 2 phase 14 alongside the grantee erasure
-    // hook, where the cross-subject question gets decided once rather than
-    // half-answered here.
+    // across a boundary this repo layer cannot express by construction (D5).
+    // It is answered by `access/subject-export.ts`, which `lib/app/data-export.ts`
+    // merges into the same `resparkable` section as a `sharedWithMe` list.
+    // Deliberately NOT half-answered here: a source in this manifest that
+    // reached other people's rows would be the one owner query in the tier that
+    // was not one.
     //
     // `inviteTokenHash` is omitted: it is the digest of a live credential, and
     // exporting it tells the subject nothing they cannot see from
@@ -241,10 +243,10 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
       'Comments left on items they shared, including who wrote each one. Third-party text standing in their brain, which is exactly why they are owed sight of it.',
     // Owner-scoped, so this is the comments *on their items* — including ones
     // other people wrote. The mirror — comments THEY wrote on somebody else's
-    // shared item, which are keyed on `authorUserId` — is the same
-    // cross-boundary read `ResparkableGrant` above defers, and lands with it in
-    // phase 14. Half-answering it here would put one direction of a two-way
-    // relationship in the bundle and leave a reader believing it was both.
+    // shared item, keyed on `authorUserId` — is the same cross-boundary read
+    // `ResparkableGrant` above hands to `access/subject-export.ts`, and arrives
+    // in the bundle beside this one as `commentsIWrote`. Both directions, or a
+    // reader believes a one-way list is the whole relationship.
     //
     // Nothing is omitted. A comment is a body, an author and two timestamps;
     // there is no credential on the row and no derived column.

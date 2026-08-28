@@ -4,7 +4,7 @@ How Resparkable answers **"may this viewer see this row?"**, and why the answer 
 
 This is the Release 2 companion to [`plan.md`](./plan.md) §13, which is the specification. This document is what a person reading the code needs: the boundary, the entry points, what each basis permits, and the four places the implementation deviates from the plan on purpose.
 
-Status: **phases 10–13 landed** — access resolution, the three tables, the ESLint boundary, public share links, named grants with `/shared-with-me`, and invites plus comments. Phase 14 — the erasure hooks and the grantee-email scrub — is still to come.
+Status: **Release 2 is complete** — access resolution, the three tables, the ESLint boundary, public share links, named grants with `/shared-with-me`, invites, comments, and erasure.
 
 ---
 
@@ -47,7 +47,7 @@ Two orthogonal facts, deliberately not merged.
 
 **The grantee needs its own foreign key, and it is hand-written.** Nothing cascades to a grant row when the **grantee** is erased, because `userId` is the owner. `ON DELETE SET NULL` would be worse than no constraint at all: it leaves a live grant addressed by `granteeEmail` — retained personal data belonging to an erased person, on a row they cannot reach. So `framework_resparkable_grant_granteeUserId_fkey` is `ON DELETE CASCADE`, written by hand in the migration because `User` lives in a Sunrise-owned file, and guarded by **drift probe B8** (the sibling of B1, which guards the owner cascade).
 
-That FK covers accepted grants. **Unaccepted invites have no `granteeUserId` to hang off**, and are covered by an erasure `scrubInTransaction` hook matching `granteeEmail` — phase 14. Both halves are needed; neither covers the other.
+That FK covers accepted grants. **Unaccepted invites have no `granteeUserId` to hang off**, and are covered by an erasure `scrubInTransaction` hook matching `granteeEmail`. Both halves are needed; neither covers the other. See "Erasure" below for how much rides on each.
 
 ### Why the token is hashed
 
@@ -215,6 +215,35 @@ Everything else is one answer. Unknown, malformed, revoked, expired and already-
 
 ---
 
+## Erasure
+
+Almost all of it is Postgres, and that is the first thing to know about it. `ResparkableSpace` holds one hand-written `ON DELETE CASCADE` into `"user"` (**B1**) and every satellite table hangs off it. The two _cross-person_ cases have their own: `granteeUserId` (**B8**) and `authorUserId` (**B9**). Those are database constraints — they cannot fail to run, and `db:drift-check` fails if a migration ever recreates one with the wrong action.
+
+`lib/framework/resparkable/privacy/erasure.ts` covers the residue, which is exactly two things:
+
+| Residue                       | Why no cascade reaches it                                                                         |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| An **unaccepted invite**      | `granteeUserId` is null, so the grant is addressed by email alone and there is no key to hang off |
+| **Stored document originals** | Object storage cannot enlist in a database transaction                                            |
+
+The scrub reads the address from the transaction (`ErasureTxContext` carries only `userId`, and hooks run **before** `user.delete()`) and lower-cases it — `granteeEmail` is stored lower-cased, and matching a `User.email` raw would leave the row of anybody who signed up with a capital letter. It **deletes** rather than nulls, for the reason `granteeUserId` is CASCADE rather than SET NULL: the owner's audit answer to "who did I share with" cannot be legitimate at the cost of holding an erased person's address on a row they can no longer see or revoke.
+
+It deliberately does **not** delete comments. `authorUserId` is CASCADE, so `user.delete()` takes them a moment later; deleting them here as well would be a second definition of what erasure means, and two definitions drift.
+
+### The registration hazard, said plainly
+
+`lib/privacy/erasure-hooks.ts` is a plain module-scoped `Map`, and `eraseUser()` runs in the route realm while `initResparkable()` runs at boot. Under Next 16 + Turbopack those are different module graphs — the split sunrise#462 fixed for the contributor and capability registries and did not reach here. **A boot-registered erasure hook may not be present when erasure actually runs.** There is no point in the erasure route's import graph a fork can reach, so this is filed as ask #44 and carried.
+
+It is tolerable only because of the table above: what rides on the hook is an unaccepted invite and some blobs, not the brain.
+
+### Art. 15's other direction
+
+`repo/subject-export.ts` is owner-scoped, so it cannot answer two questions that are about a subject but live on **somebody else's rows**: what has been shared _with_ them, and comments _they_ wrote elsewhere. `access/subject-export.ts` answers both — reading across a person is what that layer is named for — and `lib/app/data-export.ts` merges the two into one `resparkable` section.
+
+It matches on **both** the account id and the address (an unaccepted invite has only the latter), **includes revoked and expired grants** (this is a record of what was done with the subject's data, and a withdrawn share is part of it), and carries **no content of what was shared** — a grant says _that_ somebody shared a project, and the project is theirs.
+
+---
+
 ## Five deliberate deviations from the plan
 
 Recorded here rather than quietly diverging.
@@ -349,6 +378,8 @@ Keep `rg 'grantOwnerScope\('` as short as `rg 'sharedOwnerScope\('`.
 | The invite email                         | `components/resparkable/emails/share-invite.tsx`                         |
 | Comments, and who may write which verb   | `lib/framework/resparkable/services/comments.ts`                         |
 | The comment thread's queries             | `lib/framework/resparkable/repo/comments.ts`                             |
+| The erasure hook, and what rides on it   | `lib/framework/resparkable/privacy/erasure.ts`                           |
+| Art. 15's cross-person half              | `lib/framework/resparkable/access/subject-export.ts`                     |
 | The owner's side of a link               | `lib/framework/resparkable/repo/share-links.ts`                          |
 | The reader's projection (allowlist)      | `lib/framework/resparkable/repo/shared-view.ts`                          |
 | The reader page                          | `app/(public)/s/[token]/page.tsx`                                        |
