@@ -68,12 +68,17 @@ export function pageArgs(options: PageOptions = {}): { take: number; skip: numbe
 
 /**
  * Type-level guard used by the repo modules: a create payload must not carry
- * `userId`, because the repo injects it from the scope. If a caller could pass
- * one, `POST { userId: <someone else> }` becomes a write into another user's
- * brain — isolation test 2 in the plan ("B cannot create a row with
- * `userId: A` via the body").
+ * `spaceId`, because the repo injects it from the scope. If a caller could pass
+ * one, `POST { spaceId: <somebody else's> }` becomes a write into another
+ * person's brain, which is isolation test 2 in the plan ("B cannot create a row
+ * with `userId: A` via the body").
+ *
+ * The omitted key is the OWNER KEY, not the name of a person. Phase 45 renamed
+ * it, and `createdByUserId` is deliberately not omitted alongside it: that
+ * column is the row's author (§23.5) and a caller supplying one is recording who
+ * wrote something, not choosing whose brain it lands in.
  */
-export type WithoutOwner<T> = Omit<T, 'userId' | 'id' | 'createdAt' | 'updatedAt'>;
+export type WithoutOwner<T> = Omit<T, 'spaceId' | 'id' | 'createdAt' | 'updatedAt'>;
 
 /** Re-exported for repo modules so they import one path, not two. */
 export type { ArchiveVisibility, SpaceScope };

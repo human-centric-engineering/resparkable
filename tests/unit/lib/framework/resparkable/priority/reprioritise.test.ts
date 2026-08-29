@@ -82,7 +82,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   vi.mocked(getResparkableSpace).mockResolvedValue({
-    userId: 'user_x',
+    spaceId: 'user_x',
     timezone: 'UTC',
     priorityWeights: null,
     energyProfile: null,

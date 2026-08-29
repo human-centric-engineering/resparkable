@@ -82,7 +82,7 @@ async function createBrain(label: string): Promise<string> {
   // because a constraint corrected it is a fixture nobody can read.
   await prisma.resparkableSpace.create({
     data: {
-      userId: user.id,
+      spaceId: user.id,
       ownerUserId: user.id,
       inboxToken: `${PREFIX}-${label}-${stamp}`,
       timezone: 'UTC',
@@ -92,8 +92,8 @@ async function createBrain(label: string): Promise<string> {
 }
 
 /** Job rows for these owners, and nothing else in the table. */
-function mine(userIds: string[]) {
-  return { userId: { in: userIds } };
+function mine(spaceIds: string[]) {
+  return { spaceId: { in: spaceIds } };
 }
 
 async function main(): Promise<void> {
@@ -221,7 +221,7 @@ async function main(): Promise<void> {
     owners.splice(owners.indexOf(erased), 1);
 
     check(
-      (await prisma.resparkableJob.count({ where: { userId: erased } })) === 0,
+      (await prisma.resparkableJob.count({ where: { spaceId: erased } })) === 0,
       'the D1 cascade removed the erased brain’s job rows — no hook involved'
     );
     check(

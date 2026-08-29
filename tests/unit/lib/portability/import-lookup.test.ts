@@ -11,7 +11,7 @@
  *
  * These assert **the arguments that reach Prisma**, for the reason
  * `collect.test.ts` gives: a test that checks the rows coming back only proves
- * the mock returned what it was told to. Checking `where: { userId }` proves the
+ * the mock returned what it was told to. Checking `where: { spaceId }` proves the
  * lookup scoped the query, which is the thing that matters.
  *
  * @see lib/portability/import-lookup.ts
@@ -87,10 +87,10 @@ describe('createExistingLookup', () => {
     it('scopes a merge-key lookup to the importing account', async () => {
       const lookup = createExistingLookup(USER_ID);
 
-      await lookup.byMergeKey('ResparkableArea', ['userId', 'slug'], [[USER_ID, 'health']]);
+      await lookup.byMergeKey('ResparkableArea', ['spaceId', 'slug'], [[USER_ID, 'health']]);
 
       expect(callsTo('resparkableArea')[0]).toMatchObject({
-        where: { userId: USER_ID, OR: [{ userId: USER_ID, slug: 'health' }] },
+        where: { spaceId: USER_ID, OR: [{ spaceId: USER_ID, slug: 'health' }] },
       });
     });
 
@@ -99,7 +99,7 @@ describe('createExistingLookup', () => {
 
       await lookup.softCandidates('ResparkableGoal');
 
-      expect(callsTo('resparkableGoal')[0]).toMatchObject({ where: { userId: USER_ID } });
+      expect(callsTo('resparkableGoal')[0]).toMatchObject({ where: { spaceId: USER_ID } });
     });
 
     it('uses each model’s own spelling of "belongs to"', async () => {
@@ -121,7 +121,7 @@ describe('createExistingLookup', () => {
       const where = callsTo('aiDatasetCase')[0].where as Record<string, unknown>;
 
       expect(where).toEqual({ OR: [{ datasetId: 'ds-1', position: 0 }] });
-      expect(where.userId).toBeUndefined();
+      expect(where.spaceId).toBeUndefined();
     });
 
     it('refuses to query a model that nothing constrains', async () => {
@@ -177,7 +177,7 @@ describe('createExistingLookup', () => {
 
       await lookup.byMergeKey(
         'ResparkableArea',
-        ['userId', 'slug'],
+        ['spaceId', 'slug'],
         [
           [USER_ID, 'health'],
           [USER_ID, 'work'],
@@ -188,19 +188,19 @@ describe('createExistingLookup', () => {
       // for combinations the bundle never contained.
       expect(callsTo('resparkableArea')[0].OR).toBeUndefined();
       expect((callsTo('resparkableArea')[0].where as Record<string, unknown>).OR).toEqual([
-        { userId: USER_ID, slug: 'health' },
-        { userId: USER_ID, slug: 'work' },
+        { spaceId: USER_ID, slug: 'health' },
+        { spaceId: USER_ID, slug: 'work' },
       ]);
     });
 
     it('selects the key columns and the id, and nothing else', async () => {
       const lookup = createExistingLookup(USER_ID);
 
-      await lookup.byMergeKey('ResparkableArea', ['userId', 'slug'], [[USER_ID, 'health']]);
+      await lookup.byMergeKey('ResparkableArea', ['spaceId', 'slug'], [[USER_ID, 'health']]);
 
       expect(callsTo('resparkableArea')[0].select).toEqual({
         id: true,
-        userId: true,
+        spaceId: true,
         slug: true,
       });
     });
@@ -212,7 +212,7 @@ describe('createExistingLookup', () => {
         `slug-${i}`,
       ]);
 
-      await lookup.byMergeKey('ResparkableArea', ['userId', 'slug'], tuples);
+      await lookup.byMergeKey('ResparkableArea', ['spaceId', 'slug'], tuples);
 
       expect(callsTo('resparkableArea')).toHaveLength(2);
     });
@@ -220,17 +220,19 @@ describe('createExistingLookup', () => {
     it('asks nothing at all when there is nothing to ask about', async () => {
       const lookup = createExistingLookup(USER_ID);
 
-      expect(await lookup.byMergeKey('ResparkableArea', ['userId', 'slug'], [])).toEqual(new Map());
+      expect(await lookup.byMergeKey('ResparkableArea', ['spaceId', 'slug'], [])).toEqual(
+        new Map()
+      );
       expect(callsTo('resparkableArea')).toEqual([]);
     });
 
     it('keys the result the same way the planner will look it up', async () => {
-      given('resparkableArea', [{ id: 'area-here', userId: USER_ID, slug: 'health' }]);
+      given('resparkableArea', [{ id: 'area-here', spaceId: USER_ID, slug: 'health' }]);
       const lookup = createExistingLookup(USER_ID);
 
       const found = await lookup.byMergeKey(
         'ResparkableArea',
-        ['userId', 'slug'],
+        ['spaceId', 'slug'],
         [[USER_ID, 'health']]
       );
 

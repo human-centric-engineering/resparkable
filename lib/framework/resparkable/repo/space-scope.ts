@@ -259,14 +259,14 @@ export function spaceScopeFor(input: {
  * (No repo does this today; the `WithoutOwner` type and the `.strict()` route
  * schemas are the two other things standing in the way.)
  *
- * The Prisma FIELD is still `userId` at this commit, mapped to the `spaceId`
- * column. Phase 45 renames the column and the field in separate commits, so
- * that the irreversible one carries no code and the churny one carries no SQL;
- * this function is the seam that lets those two be separate, and it is the one
- * line that changes when the field follows.
+ * The field and the column agree again. For one commit they did not: phase 45
+ * renamed the column, mapped the Prisma field onto it, and renamed the field
+ * separately, so that the irreversible change carried no code and the churny one
+ * carried no SQL. This function was the seam that made those two separable, and
+ * this line is what changed when the field caught up.
  */
-export function spaceWhere(scope: SpaceScope): { userId: string } {
-  return { userId: scope.spaceId };
+export function spaceWhere(scope: SpaceScope): { spaceId: string } {
+  return { spaceId: scope.spaceId };
 }
 
 /**
@@ -295,7 +295,7 @@ export type ArchiveVisibility = boolean | 'only';
 export function liveSpaceWhere(
   scope: SpaceScope,
   includeArchived: ArchiveVisibility = false
-): { userId: string; archivedAt?: null | { not: null } } {
+): { spaceId: string; archivedAt?: null | { not: null } } {
   if (includeArchived === 'only') {
     return { ...spaceWhere(scope), archivedAt: { not: null } };
   }

@@ -75,7 +75,7 @@ const CREATE = {
 function row(overrides: Record<string, unknown> = {}) {
   return {
     id: 'grant_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     entityType: 'project',
     entityId: 'p_1',
     granteeUserId: null,
@@ -111,7 +111,7 @@ describe('upsertGrant', () => {
     await upsertGrant(OWNER, CREATE);
 
     const args = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[0][0];
-    expect(args.create).toMatchObject({ userId: 'user_a' });
+    expect(args.create).toMatchObject({ spaceId: 'user_a' });
     // Never in the update payload: a grant's owner is fixed at creation, and a
     // writable one would make re-sharing a way to move a row between brains.
     expect(args.update).not.toHaveProperty('userId');
@@ -155,7 +155,7 @@ describe('listOwnGrants', () => {
     const grants = await listOwnGrants(OWNER, {}, NOW);
 
     expect(vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0][0]?.where).toMatchObject({
-      userId: 'user_a',
+      spaceId: 'user_a',
     });
     expect(grants.map((grant) => grant.id)).toEqual(['live']);
   });
@@ -175,7 +175,7 @@ describe('listOwnGrants', () => {
     await listOwnGrants(OWNER, { entityType: 'board', entityId: 'b_1' }, NOW);
 
     expect(vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0][0]?.where).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       entityType: 'board',
       entityId: 'b_1',
     });
@@ -190,7 +190,7 @@ describe('findOwnGrant', () => {
     // to remember the ownership check. Not-found and not-yours are the same
     // answer, and the query is what makes that true.
     expect(vi.mocked(prisma.resparkableGrant.findFirst).mock.calls[0][0]?.where).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       id: 'grant_x',
     });
   });
@@ -202,7 +202,7 @@ describe('updateGrant', () => {
 
     expect(await updateGrant(OWNER, 'grant_x', { role: 'commenter' })).toBe(false);
     expect(vi.mocked(prisma.resparkableGrant.updateMany).mock.calls[0][0].where).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       id: 'grant_x',
     });
   });
@@ -213,7 +213,7 @@ describe('revokeGrant', () => {
     await revokeGrant(OWNER, 'grant_1', NOW);
 
     const args = vi.mocked(prisma.resparkableGrant.updateMany).mock.calls[0][0];
-    expect(args.where).toEqual({ userId: 'user_a', id: 'grant_1', revokedAt: null });
+    expect(args.where).toEqual({ spaceId: 'user_a', id: 'grant_1', revokedAt: null });
     expect(args.data).toEqual({ revokedAt: NOW });
   });
 
@@ -229,7 +229,7 @@ describe('stampInviteToken', () => {
     await stampInviteToken(OWNER, 'grant_1', 'digest_1', NOW);
 
     const args = vi.mocked(prisma.resparkableGrant.updateMany).mock.calls[0][0];
-    expect(args.where).toEqual({ userId: 'user_a', id: 'grant_1', revokedAt: null });
+    expect(args.where).toEqual({ spaceId: 'user_a', id: 'grant_1', revokedAt: null });
     expect(args.data).toEqual({ inviteTokenHash: 'digest_1', inviteSentAt: NOW });
   });
 

@@ -52,7 +52,7 @@ describe('spaceScope', () => {
     // @ts-expect-error — deliberately violating the signature
     expect(() => spaceScope(undefined)).toThrow(/verified userId is required/);
     // @ts-expect-error — deliberately violating the signature
-    expect(() => spaceScope({ userId: 'user_a' })).toThrow(/verified userId is required/);
+    expect(() => spaceScope({ spaceId: 'user_a' })).toThrow(/verified userId is required/);
   });
 });
 
@@ -97,7 +97,7 @@ describe('spaceWhere', () => {
     // 45 renames the column and the field in separate commits so the
     // irreversible one carries no code. This assertion is the seam, and it is
     // the line that changes when the field follows.
-    expect(spaceWhere(spaceScope('user_a'))).toEqual({ userId: 'user_a' });
+    expect(spaceWhere(spaceScope('user_a'))).toEqual({ spaceId: 'user_a' });
   });
 
   it('cannot be overridden by a later spread', () => {
@@ -106,7 +106,7 @@ describe('spaceWhere', () => {
     // writes the spread backwards, which review can see.
     const where = { ...spaceWhere(spaceScope('user_a')), status: 'todo' };
 
-    expect(where).toEqual({ userId: 'user_a', status: 'todo' });
+    expect(where).toEqual({ spaceId: 'user_a', status: 'todo' });
   });
 });
 
@@ -114,17 +114,17 @@ describe('liveSpaceWhere', () => {
   it('excludes archived rows by default', () => {
     // Every default list gains this, from one place rather than 40 call sites.
     expect(liveSpaceWhere(spaceScope('user_a'))).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       archivedAt: null,
     });
   });
 
   it('includes archived rows only when asked explicitly', () => {
-    expect(liveSpaceWhere(spaceScope('user_a'), true)).toEqual({ userId: 'user_a' });
+    expect(liveSpaceWhere(spaceScope('user_a'), true)).toEqual({ spaceId: 'user_a' });
   });
 
   it('still scopes to the owner when including archived rows', () => {
     // The opt-in widens the lifecycle filter, never the ownership one.
-    expect(liveSpaceWhere(spaceScope('user_a'), true).userId).toBe('user_a');
+    expect(liveSpaceWhere(spaceScope('user_a'), true).spaceId).toBe('user_a');
   });
 });

@@ -164,7 +164,7 @@ beforeEach(() => {
 function shareLinkRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'link_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     createdByUserId: null,
     entityType: 'project',
     entityId: 'clh0000000000000000000001',
@@ -304,7 +304,7 @@ describe('POST /api/v1/resparkable/share-links', () => {
       token: LIVE_TOKEN,
       link: {
         id: 'link_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         createdByUserId: null,
         entityType: 'project',
         entityId: BODY.entityId,
@@ -451,7 +451,7 @@ describe('DELETE /api/v1/resparkable/share-links/[id]', () => {
   });
 
   it('builds the owner scope from the session user id, never the request', async () => {
-    vi.mocked(revokeShareLink).mockResolvedValue(shareLinkRow({ userId: 'user_b' }));
+    vi.mocked(revokeShareLink).mockResolvedValue(shareLinkRow({ spaceId: 'user_b' }));
 
     await invokeDelete('link_1', { user: { id: 'user_b' }, session: { userId: 'user_b' } });
 

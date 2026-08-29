@@ -61,17 +61,17 @@ const collected: CollectedAccount = {
   userId: SOURCE,
   groups: ['brain'],
   models: [
-    model({ model: 'ResparkableSpace', rows: [{ id: 'space-1', userId: SOURCE }] }),
+    model({ model: 'ResparkableSpace', rows: [{ id: 'space-1', spaceId: SOURCE }] }),
     model({
       model: 'ResparkableArea',
-      rows: [{ id: 'area-1', userId: SOURCE, slug: 'health', name: 'health', title: 'Health' }],
+      rows: [{ id: 'area-1', spaceId: SOURCE, slug: 'health', name: 'health', title: 'Health' }],
     }),
     model({
       model: 'ResparkableProject',
       rows: [
         {
           id: 'proj-1',
-          userId: SOURCE,
+          spaceId: SOURCE,
           slug: 'rebuild',
           name: 'rebuild',
           title: 'Rebuild',
@@ -82,10 +82,10 @@ const collected: CollectedAccount = {
     model({
       model: 'ResparkableTask',
       rows: [
-        { id: 'task-1', userId: SOURCE, title: 'Ship it', projectId: 'proj-1' },
+        { id: 'task-1', spaceId: SOURCE, title: 'Ship it', projectId: 'proj-1' },
         // No project. The optional foreign key stays empty rather than becoming
         // an orphan, which is the difference this test exists to keep straight.
-        { id: 'task-2', userId: SOURCE, title: 'Think', projectId: null },
+        { id: 'task-2', spaceId: SOURCE, title: 'Think', projectId: null },
       ],
     }),
     // A table with no rows. The writer gives it a manifest line and no file, and
@@ -95,7 +95,7 @@ const collected: CollectedAccount = {
     model({
       model: 'ResparkableEvent',
       disposition: 'export-only',
-      rows: [{ id: 'ev-1', userId: SOURCE, kind: 'task.created', entityId: 'task-1' }],
+      rows: [{ id: 'ev-1', spaceId: SOURCE, kind: 'task.created', entityId: 'task-1' }],
     }),
   ],
   unreachable: [],
@@ -122,7 +122,7 @@ const withOriginals: CollectedAccount = {
       rows: [
         {
           id: 'doc-1',
-          userId: SOURCE,
+          spaceId: SOURCE,
           fileHash: 'a'.repeat(64),
           mimeType: 'application/pdf',
           storageKey: `framework-resparkable/${SOURCE}/${'a'.repeat(64)}.pdf`,
@@ -160,8 +160,8 @@ describe('export → import', () => {
     const incoming = exportAndRead();
 
     expect(incoming.tables.get('ResparkableTask')?.rows).toEqual([
-      { id: 'task-1', userId: SOURCE, title: 'Ship it', projectId: 'proj-1' },
-      { id: 'task-2', userId: SOURCE, title: 'Think', projectId: null },
+      { id: 'task-1', spaceId: SOURCE, title: 'Ship it', projectId: 'proj-1' },
+      { id: 'task-2', spaceId: SOURCE, title: 'Think', projectId: null },
     ]);
     expect(incoming.totalRows).toBe(6);
   });
@@ -266,7 +266,7 @@ describe('export → import', () => {
         lookup: {
           async byMergeKey(_model, columns, tuples) {
             for (const values of tuples) {
-              const index = columns.indexOf('userId');
+              const index = columns.indexOf('spaceId');
               if (index !== -1) seen.push(String(values[index]));
             }
             return new Map();

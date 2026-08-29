@@ -75,8 +75,8 @@ generator portability {
 /// field there (CLAUDE.md: never add columns to `User`). **That FK is the GDPR
 /// cascade** — probe B1 asserts both its existence and its ON DELETE action.
 model ResparkableSpace {
-  id     String @id @default(cuid())
-  userId String @unique @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String @unique
 
   /// personal | group. A personal space has `ownerUserId` set and is reached by
   /// the D1 cascade; a group space has it NULL and points at a `ResparkableGroup`
@@ -205,8 +205,8 @@ model ResparkableSpace {
 /// and understanding tool, not an optimisation tool: no scorer factor weighs an
 /// Area by time logged against it (see `.context/framework/resparkable/design-principles.md`).
 model ResparkableArea {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -253,18 +253,18 @@ model ResparkableArea {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
+  @@unique([spaceId, slug])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
   @@map("framework_resparkable_area")
 }
 
 /// Horizons: life → year → quarter → month → week.
 model ResparkableGoal {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -322,20 +322,20 @@ model ResparkableGoal {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
-  @@index([userId, horizon, status])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
+  @@unique([spaceId, slug])
+  @@index([spaceId, horizon, status])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
   @@index([parentGoalId])
   @@index([areaId])
   @@map("framework_resparkable_goal")
 }
 
 model ResparkableProject {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -388,13 +388,13 @@ model ResparkableProject {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
-  @@index([userId, status])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
-  @@index([userId, priorityScore(sort: Desc)])
+  @@unique([spaceId, slug])
+  @@index([spaceId, status])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
+  @@index([spaceId, priorityScore(sort: Desc)])
   @@index([areaId])
   @@map("framework_resparkable_project")
 }
@@ -411,8 +411,8 @@ model ResparkableProject {
 /// semantically thin, so a tsvector gives better recall for less money. That is
 /// why this model has `searchVector` but no `indexedHash`.
 model ResparkableTask {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -500,21 +500,21 @@ model ResparkableTask {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@index([userId, status])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
-  @@index([userId, priorityScore(sort: Desc)])
-  @@index([userId, dueAt])
+  @@index([spaceId, status])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
+  @@index([spaceId, priorityScore(sort: Desc)])
+  @@index([spaceId, dueAt])
   @@index([projectId])
   @@map("framework_resparkable_task")
 }
 
 /// The capture inbox — the front door of the whole product.
 model ResparkableThought {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -570,19 +570,19 @@ model ResparkableThought {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, externalId])
-  @@index([userId, status, createdAt])
-  @@index([userId, archivedAt])
+  @@unique([spaceId, externalId])
+  @@index([spaceId, status, createdAt])
+  @@index([spaceId, archivedAt])
   @@map("framework_resparkable_thought")
 }
 
 /// The one polymorphic edge table (D2). No FKs to targets — orphans are swept
 /// by `pruneResparkableOrphans(userId)` and by the transactional delete services.
 model ResparkableLink {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -634,12 +634,12 @@ model ResparkableLink {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, sourceType, sourceId, targetType, targetId, kind])
-  @@index([userId, status])
-  @@index([userId, sourceType, sourceId])
-  @@index([userId, targetType, targetId])
+  @@unique([spaceId, sourceType, sourceId, targetType, targetId, kind])
+  @@index([spaceId, status])
+  @@index([spaceId, sourceType, sourceId])
+  @@index([spaceId, targetType, targetId])
   @@map("framework_resparkable_link")
 }
 
@@ -684,8 +684,8 @@ model ResparkableLink {
 /// Archiving DELETES the rows here rather than filtering them at query time
 /// (§11, §17 risk 5b).
 model ResparkableEmbedding {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -758,19 +758,19 @@ model ResparkableEmbedding {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, entityType, entityId, chunkIndex])
-  @@index([userId, entityType])
-  @@index([userId, contentHash])
+  @@unique([spaceId, entityType, entityId, chunkIndex])
+  @@index([spaceId, entityType])
+  @@index([spaceId, contentHash])
   @@map("framework_resparkable_embedding")
 }
 
 /// A named, shareable kanban view. A board is a VIEW over tasks that already
 /// exist, not a new subsystem (§12).
 model ResparkableBoard {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -818,18 +818,18 @@ model ResparkableBoard {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
+  @@unique([spaceId, slug])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
   @@map("framework_resparkable_board")
 }
 
 /// Explicit board membership — only used when `membership: 'explicit'`.
 model ResparkableBoardCard {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -861,10 +861,10 @@ model ResparkableBoardCard {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   @@unique([boardId, taskId])
-  @@index([userId])
+  @@index([spaceId])
   @@index([boardId, position])
   @@index([taskId])
   @@map("framework_resparkable_board_card")
@@ -873,8 +873,8 @@ model ResparkableBoardCard {
 /// Trello-style coloured labels. A table rather than a `String[]` so a rename
 /// is one write and export can carry colours (§12).
 model ResparkableTag {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -904,15 +904,15 @@ model ResparkableTag {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
+  @@unique([spaceId, slug])
   @@map("framework_resparkable_tag")
 }
 
 model ResparkableTaskTag {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -940,10 +940,10 @@ model ResparkableTaskTag {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   @@unique([taskId, tagId])
-  @@index([userId])
+  @@index([spaceId])
   @@index([tagId])
   @@map("framework_resparkable_task_tag")
 }
@@ -951,8 +951,8 @@ model ResparkableTaskTag {
 /// Sub-steps within a card. Real FK with a real cascade — unlike the
 /// polymorphic edge table, there is nothing to keep once the task is gone.
 model ResparkableChecklistItem {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -984,10 +984,10 @@ model ResparkableChecklistItem {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   @@index([taskId, position])
-  @@index([userId])
+  @@index([spaceId])
   @@map("framework_resparkable_checklist_item")
 }
 
@@ -999,8 +999,8 @@ model ResparkableChecklistItem {
 /// client surfaces through the stale digest, never by inflating task scores
 /// (§1, §11).
 model ResparkableEntity {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1042,11 +1042,11 @@ model ResparkableEntity {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@unique([userId, slug])
-  @@index([userId, kind, status])
-  @@index([userId, archivedAt])
+  @@unique([spaceId, slug])
+  @@index([spaceId, kind, status])
+  @@index([spaceId, archivedAt])
   @@map("framework_resparkable_entity")
 }
 
@@ -1055,8 +1055,8 @@ model ResparkableEntity {
 /// so it stays inside the `WHERE userId = $1` invariant — the platform KB is a
 /// global asset and per-user scoping there is a documented anti-pattern (§4).
 model ResparkableDocument {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1111,7 +1111,7 @@ model ResparkableDocument {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   /// Dedupe is enforced by the DATABASE, not just by the lookup that precedes it.
   ///
@@ -1121,17 +1121,17 @@ model ResparkableDocument {
   /// `ResparkableThought.externalId` got this treatment for exactly the same reason
   /// (a replayed webhook delivery); documents deserve it too. The unique index also
   /// serves the lookup, so it replaces the plain index rather than adding to it.
-  @@unique([userId, fileHash])
-  @@index([userId, status])
-  @@index([userId, archivedAt])
+  @@unique([spaceId, fileHash])
+  @@index([spaceId, status])
+  @@index([spaceId, archivedAt])
   @@map("framework_resparkable_document")
 }
 
 /// Planned and actual time — feeds `effortFit` and the "organise my time"
 /// requirement. Deliberately not vault-synced: calendar-shaped and high-churn.
 model ResparkableTimeBlock {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1172,9 +1172,9 @@ model ResparkableTimeBlock {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@index([userId, startAt])
+  @@index([spaceId, startAt])
   @@index([taskId])
   @@index([projectId])
   @@index([areaId])
@@ -1185,8 +1185,8 @@ model ResparkableTimeBlock {
 /// render. Reviews sync one-way DB → vault: they are regenerated, and letting
 /// vault edits flow back is a guaranteed data-loss complaint (§14).
 model ResparkableReview {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1232,11 +1232,11 @@ model ResparkableReview {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@index([userId, horizon, generatedAt(sort: Desc)])
-  @@index([userId, archivedAt])
-  @@index([userId, visibility])
+  @@index([spaceId, horizon, generatedAt(sort: Desc)])
+  @@index([spaceId, archivedAt])
+  @@index([spaceId, visibility])
   @@map("framework_resparkable_review")
 }
 
@@ -1247,8 +1247,8 @@ model ResparkableReview {
 /// MUST NEVER CARRY AN EMAIL ADDRESS. Store `granteeUserId` or a hash — an
 /// email in the owner's log survives the grantee's erasure (§1, §13).
 model ResparkableEvent {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// **On an event row this is the ACTOR, not the item's author** (§23.10), and
   /// the name invites the wrong reading everywhere else in the tier. A task Sam
@@ -1295,18 +1295,18 @@ model ResparkableEvent {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@index([userId, kind, createdAt(sort: Desc)])
-  @@index([userId, createdAt(sort: Desc)])
-  @@index([userId, entityType, entityId])
+  @@index([spaceId, kind, createdAt(sort: Desc)])
+  @@index([spaceId, createdAt(sort: Desc)])
+  @@index([spaceId, entityType, entityId])
   /// The demand gate. `source` sits BETWEEN the two columns of the index above,
   /// and a b-tree cannot skip a middle column — so that index cannot serve this
   /// query however similar it looks. On a dormant brain every event since the
   /// last run is system-authored, so without this the `EXISTS` walks all of
   /// them to answer "no": the one answer that saves money would be the most
   /// expensive to reach.
-  @@index([userId, source, createdAt(sort: Desc)])
+  @@index([spaceId, source, createdAt(sort: Desc)])
   @@map("framework_resparkable_event")
 }
 
@@ -1357,8 +1357,8 @@ model ResparkableSettings {
 /// lazily (not inline with `ensureResparkableSpace`) the first time a
 /// billing-aware code path touches it, see `services/billing.ts`.
 model ResparkableCreditAccount {
-  id     String @id @default(cuid())
-  userId String @unique @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String @unique
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1381,15 +1381,15 @@ model ResparkableCreditAccount {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   @@map("framework_resparkable_credit_account")
 }
 
 /// Append-only spend/grant history behind `ResparkableCreditAccount.balanceCredits`.
 model ResparkableCreditLedgerEntry {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1427,14 +1427,14 @@ model ResparkableCreditLedgerEntry {
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   /// Idempotency guard for the Site B tick-poll (jobs.ts): a repeat pass over
   /// an already-billed execution hits this constraint instead of double-charging.
   /// Nullable, so admin_grant/refund/chat/ideate rows (no execution id) are
   /// unconstrained. Postgres treats each NULL as distinct.
   @@unique([kind, relatedWorkflowExecutionId])
-  @@index([userId, createdAt])
+  @@index([spaceId, createdAt])
   @@map("framework_resparkable_credit_ledger_entry")
 }
 
@@ -1488,7 +1488,7 @@ model ResparkableJob {
   /// Renamed by §23's phase 45 with the other satellites: it relates to the
   /// space today because a space is an owner; afterwards it relates to
   /// `ownerUserId`.
-  userId String @map("spaceId")
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1550,12 +1550,12 @@ model ResparkableJob {
 
   /// D1: the cascade path. Erasing a user removes the space row, which removes
   /// every row here. Verified by scripts/framework/resparkable/smoke-isolation.ts.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   /// Idempotent enqueue: "make sure this owner has a triage job" is an
   /// `ON CONFLICT DO NOTHING`. Owner-keyed, so it stays one row per kind
   /// however many workspaces they hold (§24 W2).
-  @@unique([userId, kind])
+  @@unique([spaceId, kind])
   /// The claim query, and the only index it needs. Ordinary and composite
   /// rather than partial: the claim's predicate is `now()`-relative, so there
   /// is no time-independent subset to index on, and an ordinary index is one
@@ -1602,8 +1602,8 @@ model ResparkableJob {
 /// is covered by an erasure `scrubInTransaction` hook matching `granteeEmail`
 /// instead. Both halves are needed; neither covers the other.
 model ResparkableGrant {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1659,7 +1659,7 @@ model ResparkableGrant {
 
   /// D1: the cascade path for the OWNER. See the drift warning above for the
   /// grantee's, which is a different FK to a different table.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   /// One grant per address per item. Re-granting is an update, not a second row
   /// — two live grants with different roles would make "what can Bob do" a
@@ -1669,7 +1669,7 @@ model ResparkableGrant {
   @@index([granteeUserId, revokedAt])
   @@index([granteeEmail, revokedAt])
   /// The owner's read: "who can see this item?"
-  @@index([userId, entityType, entityId])
+  @@index([spaceId, entityType, entityId])
   @@map("framework_resparkable_grant")
 }
 
@@ -1684,8 +1684,8 @@ model ResparkableGrant {
 /// a cuid, which is timestamp-prefixed and monotonic, precisely the wrong shape
 /// for "unguessable".
 model ResparkableShareLink {
-  id     String @id @default(cuid())
-  userId String @map("spaceId")
+  id      String @id @default(cuid())
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1737,9 +1737,9 @@ model ResparkableShareLink {
 
   /// D1: the cascade path. Erasing the owner takes the link with it, which is
   /// what makes "erase me" also mean "my links stop working".
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
-  @@index([userId, entityType, entityId])
+  @@index([spaceId, entityType, entityId])
   @@map("framework_resparkable_share_link")
 }
 
@@ -1781,9 +1781,9 @@ model ResparkableShareLink {
 /// A flat list per item is what a commenter grant promises: a way to say
 /// something back, not a discussion forum.
 model ResparkableComment {
-  id     String @id @default(cuid())
+  id      String @id @default(cuid())
   /// The OWNER of the item, not the author. See the header.
-  userId String @map("spaceId")
+  spaceId String
 
   /// Who wrote this row (§23.5). Null in every space that existed before groups
   /// did, and redundant with the owner in a personal space; in a group space it
@@ -1823,11 +1823,11 @@ model ResparkableComment {
 
   /// D1: the cascade path for the OWNER. See the drift warning above for the
   /// author's, which is a different FK to a different table.
-  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
   /// The read every comment surface makes: "what has been said on this item?",
   /// oldest first.
-  @@index([userId, entityType, entityId, createdAt])
+  @@index([spaceId, entityType, entityId, createdAt])
   /// The erasure read, and the author's own "what have I written?" export.
   @@index([authorUserId])
   @@map("framework_resparkable_comment")

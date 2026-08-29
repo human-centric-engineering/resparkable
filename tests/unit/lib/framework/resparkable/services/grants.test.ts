@@ -63,7 +63,7 @@ const NOW = new Date('2026-08-28T10:00:00.000Z');
 function grantRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'grant_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     createdByUserId: null,
     entityType: 'project',
     entityId: 'p_1',

@@ -127,7 +127,7 @@ function ledgerEntry(
 ): ResparkableCreditLedgerEntry {
   return {
     id: 'ledger_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     createdByUserId: null,
     kind: 'admin_grant',
     creditsDelta: 100,
@@ -412,7 +412,7 @@ describe('POST /api/v1/admin/resparkable/billing/grants', () => {
     expect(response.status).toBe(200);
     expect(body.data.entry).toMatchObject({
       id: 'ledger_9',
-      userId: 'user_a',
+      spaceId: 'user_a',
       kind: 'admin_grant',
       creditsDelta: 250,
     });

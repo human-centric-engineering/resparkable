@@ -48,7 +48,7 @@ export interface LedgerEntryInput {
 export async function findCreditAccount(
   scope: SpaceScope
 ): Promise<ResparkableCreditAccount | null> {
-  return prisma.resparkableCreditAccount.findUnique({ where: { userId: scope.spaceId } });
+  return prisma.resparkableCreditAccount.findUnique({ where: { spaceId: scope.spaceId } });
 }
 
 /**
@@ -67,7 +67,7 @@ export async function ensureCreditAccount(
 
   try {
     return await prisma.resparkableCreditAccount.create({
-      data: { userId: scope.spaceId, balanceCredits: initialBalance },
+      data: { spaceId: scope.spaceId, balanceCredits: initialBalance },
     });
   } catch (error) {
     if (isUniqueConstraintViolation(error)) {
@@ -97,7 +97,7 @@ export async function applyLedgerEntry(
 ): Promise<ResparkableCreditLedgerEntry> {
   return prisma.$transaction(async (tx) => {
     await tx.resparkableCreditAccount.update({
-      where: { userId: scope.spaceId },
+      where: { spaceId: scope.spaceId },
       data: { balanceCredits: { increment: entry.creditsDelta } },
     });
     return tx.resparkableCreditLedgerEntry.create({
@@ -275,11 +275,11 @@ export async function listCreditAccountsForAdmin(
   if (users.length === 0) return [];
 
   const accounts = await prisma.resparkableCreditAccount.findMany({
-    where: { userId: { in: users.map((user) => user.id) } },
-    select: { userId: true, balanceCredits: true },
+    where: { spaceId: { in: users.map((user) => user.id) } },
+    select: { spaceId: true, balanceCredits: true },
   });
   const balanceByUserId = new Map(
-    accounts.map((account) => [account.userId, account.balanceCredits])
+    accounts.map((account) => [account.spaceId, account.balanceCredits])
   );
 
   return users.map((user) => ({

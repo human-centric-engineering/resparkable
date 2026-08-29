@@ -73,7 +73,7 @@ describe('findAcceptedGoalLinks', () => {
 
     // Assert
     expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       status: 'accepted',
       OR: [
         { sourceType: 'project', sourceId: { in: ['proj_1'] }, targetType: 'goal' },
@@ -129,7 +129,7 @@ describe('listUnreviewedLinks', () => {
 
     // Assert
     expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       status: 'suggested',
       reviewedAt: null,
       OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: NOW } }],
@@ -172,7 +172,7 @@ describe('listSuggestedLinksForSources', () => {
 
     // Assert
     expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       status: 'suggested',
       reviewedAt: null,
       sourceType: 'thought',
@@ -209,7 +209,7 @@ describe('listLinks / countLinks filters (phase 4)', () => {
   ] as const)('applies the %s filter alongside the scope', async (_name, filters) => {
     await listLinks(SCOPE, filters);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', ...filters });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', ...filters });
   });
 
   it('applies every filter at once without dropping any', async () => {
@@ -222,7 +222,7 @@ describe('listLinks / countLinks filters (phase 4)', () => {
 
     await listLinks(SCOPE, filters);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', ...filters });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', ...filters });
   });
 
   it('omits absent filters rather than sending undefined, which Prisma treats differently', async () => {
@@ -230,13 +230,13 @@ describe('listLinks / countLinks filters (phase 4)', () => {
     // versions, and a stray undefined is how a filter accidentally matches nothing.
     await listLinks(SCOPE);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x' });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x' });
   });
 
   it('scopes the count the same way it scopes the list', async () => {
     await countLinks(SCOPE, { status: 'accepted' });
 
-    expect(count.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', status: 'accepted' });
+    expect(count.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', status: 'accepted' });
   });
 
   it('cannot be pointed at another user through a filter object', async () => {
@@ -244,9 +244,9 @@ describe('listLinks / countLinks filters (phase 4)', () => {
     // place a caller-supplied key could in principle overwrite `userId`. The
     // following keys are literal, so it cannot — pinned because the ordering is
     // the kind of thing a later edit "tidies".
-    await listLinks(SCOPE, { userId: 'user_other' } as never);
+    await listLinks(SCOPE, { spaceId: 'user_other' } as never);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ userId: 'user_x' });
+    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ spaceId: 'user_x' });
   });
 });
 
@@ -273,7 +273,7 @@ describe('createSuggestedLinks (phase 4)', () => {
     // Prisma types `data` as one row OR an array; the sweep always sends an array.
     const rows = Array.isArray(args?.data) ? args.data : [args?.data];
     expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row?.userId === 'user_x')).toBe(true);
+    expect(rows.every((row) => row?.spaceId === 'user_x')).toBe(true);
   });
 });
 
@@ -305,7 +305,7 @@ describe('listLinksForEntity', () => {
     await listLinksForEntity(SCOPE, 'project', 'proj_1');
 
     const where = findMany.mock.calls[0]?.[0]?.where;
-    expect(where).toMatchObject({ userId: 'user_x' });
+    expect(where).toMatchObject({ spaceId: 'user_x' });
     // The OR array itself carries no userId — scoping is the sibling key, not
     // baked into either branch, which is what makes it impossible to bypass by
     // matching only one side of the OR.
@@ -318,7 +318,7 @@ describe('listLinksForEntity', () => {
   it('resolves a different owner to their own scope, not a hard-coded one', async () => {
     await listLinksForEntity(spaceScope('user_y'), 'project', 'proj_1');
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ userId: 'user_y' });
+    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ spaceId: 'user_y' });
   });
 
   it('applies the statuses filter only when given, and never as an empty array', async () => {
@@ -385,7 +385,7 @@ describe('listLinksForEntities', () => {
   it('scopes to the given owner — a ref matching another user’s edge is never returned', async () => {
     await listLinksForEntities(SCOPE, [{ type: 'project', id: 'proj_1' }]);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ userId: 'user_x' });
+    expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ spaceId: 'user_x' });
   });
 
   it('applies the statuses and take options the same way listLinksForEntity does', async () => {
@@ -404,7 +404,7 @@ describe('findLink', () => {
   it('scopes the lookup to the given owner and the id together', async () => {
     await findLink(SCOPE, 'link_1');
 
-    expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', id: 'link_1' });
+    expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', id: 'link_1' });
   });
 
   it('returns whatever Prisma resolves — null on a miss, the row on a hit', async () => {
@@ -429,7 +429,7 @@ describe('createLink', () => {
     });
 
     const data = create.mock.calls[0]?.[0]?.data as Record<string, unknown>;
-    expect(data.userId).toBe('user_x');
+    expect(data.spaceId).toBe('user_x');
     expect(data.origin).toBe('user');
   });
 });
@@ -439,7 +439,7 @@ describe('reviewLink', () => {
     await reviewLink(SCOPE, 'link_1', { status: 'accepted', reviewedAt: NOW });
 
     const call = update.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'link_1', userId: 'user_x' });
+    expect(call?.where).toEqual({ id: 'link_1', spaceId: 'user_x' });
     expect(call?.data).toEqual({ status: 'accepted', reviewedAt: NOW });
   });
 

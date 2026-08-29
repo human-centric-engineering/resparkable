@@ -112,7 +112,7 @@ describe('archiveAgedInboxThoughts', () => {
     await archiveAgedInboxThoughts(SCOPE, 90, { now: NOW });
 
     const where = whereOf(vi.mocked(prisma.resparkableThought.findMany));
-    expect(where.userId).toBe('user_a');
+    expect(where.spaceId).toBe('user_a');
     expect(where.status).toBe('inbox');
     // Already-archived rows are excluded, which is what makes a second pass over
     // the same brain — two instances racing, a restart re-arming the job — find
@@ -158,7 +158,7 @@ describe('archiveAgedInboxThoughts', () => {
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.resparkableEmbedding.deleteMany).toHaveBeenCalledWith({
       where: {
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'thought',
         entityId: { in: ['row_0', 'row_1', 'row_2'] },
       },
@@ -192,7 +192,7 @@ describe('archiveAgedInboxThoughts', () => {
     expect(prisma.resparkableEvent.createMany).toHaveBeenCalledWith({
       data: [
         {
-          userId: 'user_a',
+          spaceId: 'user_a',
           kind: 'archived',
           entityType: 'thought',
           entityId: 'row_0',
@@ -200,7 +200,7 @@ describe('archiveAgedInboxThoughts', () => {
           metadata: { reason: 'aged_out' },
         },
         {
-          userId: 'user_a',
+          spaceId: 'user_a',
           kind: 'archived',
           entityType: 'thought',
           entityId: 'row_1',
@@ -303,7 +303,7 @@ describe('archiveAgedClosedProjects', () => {
 
     expect(result.cascadedTasks).toBe(4);
     const taskWhere = whereOf(vi.mocked(prisma.resparkableTask.findMany));
-    expect(taskWhere).toMatchObject({ userId: 'user_a', archivedAt: null });
+    expect(taskWhere).toMatchObject({ spaceId: 'user_a', archivedAt: null });
     expect(taskWhere.projectId).toEqual({ in: ['proj_1'] });
 
     const [taskUpdate] = vi.mocked(prisma.resparkableTask.updateMany).mock.calls[0] as [
@@ -476,13 +476,13 @@ describe('archiveAgedGoals', () => {
 
     expect(result).toEqual({ count: 2, capped: false });
     expect(prisma.resparkableGoal.updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: { in: ['row_0', 'row_1'] } },
+      where: { spaceId: 'user_a', id: { in: ['row_0', 'row_1'] } },
       data: { archivedAt: NOW, archivedReason: 'aged_out', indexedHash: null },
     });
     // Goals carry vectors — unlike tasks and reviews, dropping them belongs in
     // the same transaction as the stamp (property 2 in the file header).
     expect(prisma.resparkableEmbedding.deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', entityType: 'goal', entityId: { in: ['row_0', 'row_1'] } },
+      where: { spaceId: 'user_a', entityType: 'goal', entityId: { in: ['row_0', 'row_1'] } },
     });
   });
 
@@ -547,7 +547,7 @@ describe('pruneStaleSuggestedLinks — the tombstone rule', () => {
 
     expect(result.count).toBe(3);
     expect(prisma.resparkableLink.deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: { in: ['row_0', 'row_1', 'row_2'] } },
+      where: { spaceId: 'user_a', id: { in: ['row_0', 'row_1', 'row_2'] } },
     });
     // Derived data, so no event and no vector work.
     expect(prisma.resparkableEvent.createMany).not.toHaveBeenCalled();
@@ -569,7 +569,7 @@ describe('pruneAgedEvents', () => {
     await pruneAgedEvents(SCOPE, 400, { now: NOW });
 
     const where = whereOf(vi.mocked(prisma.resparkableEvent.findMany));
-    expect(where).toEqual({ userId: 'user_a', createdAt: { lt: daysBefore(NOW, 400) } });
+    expect(where).toEqual({ spaceId: 'user_a', createdAt: { lt: daysBefore(NOW, 400) } });
     expect(prisma.resparkableEvent.deleteMany).toHaveBeenCalled();
   });
 
@@ -616,7 +616,7 @@ describe('pruneCardsForArchivedTasks', () => {
 
     expect(result.count).toBe(2);
     const where = whereOf(vi.mocked(prisma.resparkableBoardCard.findMany));
-    expect(where).toEqual({ userId: 'user_a', task: { archivedAt: { not: null } } });
+    expect(where).toEqual({ spaceId: 'user_a', task: { archivedAt: { not: null } } });
     expect(prisma.resparkableBoardCard.deleteMany).toHaveBeenCalled();
   });
 

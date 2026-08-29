@@ -160,7 +160,7 @@ describe('reclassifying a note reaches the chunks', () => {
     // chunks, so a marker on the first one alone would let paragraph two of a
     // sensitive note through.
     expect(args).toEqual({
-      where: { userId: 'user_a', entityType: 'thought', entityId: 't_1' },
+      where: { spaceId: 'user_a', entityType: 'thought', entityId: 't_1' },
       data: { sensitivity: 'sensitive' },
     });
   });

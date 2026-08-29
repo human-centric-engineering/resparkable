@@ -64,7 +64,7 @@ describe('findLatestReview', () => {
   it('is owner-scoped and excludes archived reviews', async () => {
     await findLatestReview(SCOPE);
 
-    expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', archivedAt: null });
+    expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', archivedAt: null });
   });
 
   it('orders by generatedAt, not row age', async () => {
@@ -110,10 +110,10 @@ describe('createReview', () => {
       horizon: 'weekly',
       title: 'Week 31',
       body: 'x',
-      userId: 'user_b',
+      spaceId: 'user_b',
     } as Parameters<typeof createReview>[1]);
 
-    expect(create.mock.calls[0]?.[0]?.data).toMatchObject({ userId: 'user_x' });
+    expect(create.mock.calls[0]?.[0]?.data).toMatchObject({ spaceId: 'user_x' });
   });
 });
 
@@ -121,13 +121,13 @@ describe('listReviews', () => {
   it('is owner-scoped and excludes archived reviews by default', async () => {
     await listReviews(SCOPE);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', archivedAt: null });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', archivedAt: null });
   });
 
   it('includes archived reviews only when explicitly asked', async () => {
     await listReviews(SCOPE, {}, { includeArchived: true });
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x' });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x' });
   });
 
   it('orders by generatedAt, like the latest read', async () => {
@@ -150,7 +150,7 @@ describe('countReviews', () => {
     await countReviews(SCOPE, { horizon: 'weekly' });
 
     expect(count.mock.calls[0]?.[0]?.where).toEqual({
-      userId: 'user_x',
+      spaceId: 'user_x',
       archivedAt: null,
       horizon: 'weekly',
     });
@@ -164,7 +164,7 @@ describe('findReview', () => {
     await findReview(SCOPE, 'review_of_user_b');
 
     expect(findFirst.mock.calls[0]?.[0]?.where).toEqual({
-      userId: 'user_x',
+      spaceId: 'user_x',
       id: 'review_of_user_b',
     });
   });
@@ -176,7 +176,7 @@ describe('archiveReview', () => {
 
     await archiveReview(SCOPE, 'review_1');
 
-    expect(update.mock.calls[0]?.[0]?.where).toEqual({ id: 'review_1', userId: 'user_x' });
+    expect(update.mock.calls[0]?.[0]?.where).toEqual({ id: 'review_1', spaceId: 'user_x' });
   });
 
   it('sets archivedAt and a reason without touching indexedHash', async () => {
@@ -212,7 +212,7 @@ describe('deleteReview', () => {
 
     expect(vi.mocked(prisma.resparkableReview.delete).mock.calls[0]?.[0]?.where).toEqual({
       id: 'review_1',
-      userId: 'user_x',
+      spaceId: 'user_x',
     });
   });
 });

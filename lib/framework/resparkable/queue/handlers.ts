@@ -165,7 +165,7 @@ async function queueWorkflow(
     logger.warn('Resparkable job found no published workflow to queue', {
       kind,
       slug,
-      userId: scope.spaceId,
+      spaceId: scope.spaceId,
     });
     return { ...NOTHING, incomplete: true };
   }

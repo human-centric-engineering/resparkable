@@ -18,6 +18,27 @@ release process.
 
 ### Added
 
+- **The Prisma field catches up with the column: `spaceId` everywhere.** The
+  transitional `@map("spaceId")` is gone, so `ResparkableSpace.spaceId` and the
+  same field on all 23 satellites are named the same thing in the schema, the
+  client, the raw SQL and `psql`. `spaceWhere()` returns `{ spaceId }`,
+  `WithoutOwner<T>` omits `spaceId`, and `transfer/policy.ts`'s `ownerColumn` and
+  `mergeKeys` name it too.
+
+  **This commit carries no migration**: the column moved two commits ago. It is
+  the churny half of the split, deliberately isolated so it could be reviewed as
+  what it is.
+
+  One finding worth recording, because it invalidates an obvious plan: **the
+  compiler does not catch an unknown key in a Prisma `where` literal.** Prisma 7's
+  generic argument types absorb excess properties, so `where: { userId }` on a
+  model that no longer has that column type-checks cleanly and fails only at
+  runtime. `access/store.ts` was entirely broken by this for a while (every
+  cascade read matching nothing, which fails closed but fails), and it was the
+  mocked tests asserting the argument shape, plus a real-database smoke, that
+  found it rather than `tsc`. Anyone doing a similar rename should sweep Prisma
+  literals by hand and treat the compiler as a partial net.
+
 - **`OwnerScope` is now `SpaceScope`, and the partition key is no longer the
   acting person.** `repo/owner-scope.ts` becomes `repo/space-scope.ts` and the
   branded type carries three fields instead of one: `spaceId` (what every `WHERE`

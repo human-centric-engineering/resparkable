@@ -53,7 +53,7 @@ const NOW = new Date('2026-08-04T09:00:00.000Z');
 function event(overrides: Partial<ResparkableEvent> = {}): ResparkableEvent {
   return {
     id: 'ev_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     createdByUserId: null,
     kind: 'completed',
     entityType: 'task',

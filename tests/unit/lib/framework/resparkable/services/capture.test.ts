@@ -43,7 +43,7 @@ const SCOPE = spaceScope('user_a');
 
 const THOUGHT = {
   id: 'thought_1',
-  userId: 'user_a',
+  spaceId: 'user_a',
   content: 'Ring the accountant',
   source: 'web',
 } as ResparkableThought;

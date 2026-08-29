@@ -177,13 +177,13 @@ export class ResparkableCaptureForTokenCapability extends BaseCapability<
       );
     }
 
-    const scope = spaceScope(space.userId);
+    const scope = spaceScope(space.spaceId);
     const contact = await findOwnerContact(scope);
 
     if (!contact?.emailVerified || contact.email.toLowerCase() !== parsed.from.toLowerCase()) {
       logger.warn('Resparkable inbound capture — sender did not match the account', {
         messageId: parsed.messageId,
-        userId: space.userId,
+        userId: space.spaceId,
       });
       return this.error(
         'The sender did not match the account’s verified email. The message was not captured.',
@@ -200,7 +200,7 @@ export class ResparkableCaptureForTokenCapability extends BaseCapability<
     });
 
     logger.info('Resparkable inbound capture', {
-      userId: space.userId,
+      userId: space.spaceId,
       deduped,
     });
 

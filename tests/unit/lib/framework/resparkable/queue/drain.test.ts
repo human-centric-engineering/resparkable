@@ -80,7 +80,7 @@ const NOTHING = {
 function job(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'job_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     kind: 'triage',
     dueAt: new Date('2026-06-15T03:15:00.000Z'),
     attempts: 0,
@@ -343,7 +343,7 @@ describe('failure handling', () => {
     vi.mocked(runResparkableJob)
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue({ ...NOTHING, executionsQueued: 1 });
-    claimOnce([job(), job({ id: 'job_2', userId: 'user_b' })]);
+    claimOnce([job(), job({ id: 'job_2', spaceId: 'user_b' })]);
 
     const result = await drainResparkableJobs({ now: NOW, maxJobs: 5, concurrency: 2 });
 

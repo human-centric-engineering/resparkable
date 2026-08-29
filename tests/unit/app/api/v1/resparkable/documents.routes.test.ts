@@ -134,7 +134,7 @@ function makeLog() {
 function makeDocument(overrides: Partial<ResparkableDocument> = {}): ResparkableDocument {
   return {
     id: 'doc_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     createdByUserId: null,
     title: 'Meeting notes',
     fileName: 'notes.md',

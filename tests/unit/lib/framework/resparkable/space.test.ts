@@ -64,7 +64,7 @@ const mockedFindBillingSettings = vi.mocked(findResparkableBillingSettings);
 function spaceRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'space_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     inboxToken: 'a'.repeat(32),
     timezone: 'UTC',
     workStyle: 'balanced',
@@ -93,7 +93,7 @@ describe('ensureResparkableSpace', () => {
 
     const result = await ensureResparkableSpace('user_a');
 
-    expect(result).toMatchObject({ userId: 'user_a' });
+    expect(result).toMatchObject({ spaceId: 'user_a' });
     expect(create).toHaveBeenCalledTimes(1);
     // The full personal-space shape, not just the key. `ownerUserId` is what
     // carries the GDPR cascade (§23.2), and it cannot be defaulted in the schema
@@ -104,7 +104,7 @@ describe('ensureResparkableSpace', () => {
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          userId: 'user_a',
+          spaceId: 'user_a',
           ownerUserId: 'user_a',
           kind: 'personal',
           isDefault: true,
@@ -167,7 +167,7 @@ describe('ensureResparkableSpace', () => {
     create.mockResolvedValue(spaceRow());
     mockedEnsureCreditAccount.mockRejectedValue(new Error('db unavailable'));
 
-    await expect(ensureResparkableSpace('user_a')).resolves.toMatchObject({ userId: 'user_a' });
+    await expect(ensureResparkableSpace('user_a')).resolves.toMatchObject({ spaceId: 'user_a' });
   });
 
   it('returns the existing space without writing', async () => {
@@ -263,7 +263,7 @@ describe('findSpaceByInboxToken', () => {
 
     const result = await findSpaceByInboxToken('a'.repeat(32));
 
-    expect(result).toMatchObject({ userId: 'user_a' });
+    expect(result).toMatchObject({ spaceId: 'user_a' });
     expect(findUnique).toHaveBeenCalledWith({ where: { inboxToken: 'a'.repeat(32) } });
   });
 
@@ -366,7 +366,7 @@ describe('updateResparkableSettings (phase 3)', () => {
 
     // Assert
     expect(update).toHaveBeenCalledWith({
-      where: { userId: 'user_a' },
+      where: { spaceId: 'user_a' },
       data: { timezone: 'Europe/London' },
     });
   });
@@ -426,7 +426,7 @@ describe('updateResparkableSettings (phase 3)', () => {
 
     // Assert: it reaches the write, and comes back as the value now in force.
     expect(update).toHaveBeenCalledWith({
-      where: { userId: 'user_a' },
+      where: { spaceId: 'user_a' },
       data: { connectionStrengthFloor: 0.72 },
     });
     expect(settings.connectionStrengthFloor).toBe(0.72);
@@ -443,7 +443,7 @@ describe('updateResparkableSettings (phase 3)', () => {
 
     // Assert
     expect(update).toHaveBeenCalledWith({
-      where: { userId: 'user_a' },
+      where: { spaceId: 'user_a' },
       data: { connectionStrengthFloor: null },
     });
     expect(settings.connectionStrengthFloor).toBe(STRENGTH_FLOOR);

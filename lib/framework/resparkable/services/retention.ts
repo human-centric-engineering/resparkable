@@ -176,7 +176,7 @@ export async function enforceResparkableRetention(
 
   if (archived > 0 || pruned > 0) {
     logger.info('Resparkable retention pass', {
-      userId: scope.spaceId,
+      spaceId: scope.spaceId,
       archived,
       pruned,
       capped,

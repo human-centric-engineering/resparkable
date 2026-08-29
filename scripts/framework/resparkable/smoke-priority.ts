@@ -100,7 +100,7 @@ async function main(): Promise<void> {
     console.log('\nSpace bootstrap — the phase-2 500 on a new user’s first write');
 
     check(
-      (await prisma.resparkableSpace.count({ where: { userId: userA } })) === 0,
+      (await prisma.resparkableSpace.count({ where: { spaceId: userA } })) === 0,
       'the new user starts with no space row at all'
     );
 
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     });
     check(!!firstTask, 'creating a task bootstraps the space instead of violating the FK');
     check(
-      (await prisma.resparkableSpace.count({ where: { userId: userA } })) === 1,
+      (await prisma.resparkableSpace.count({ where: { spaceId: userA } })) === 1,
       'exactly one space row was created'
     );
 

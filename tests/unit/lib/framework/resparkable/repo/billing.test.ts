@@ -81,25 +81,25 @@ beforeEach(() => {
 describe('ensureCreditAccount', () => {
   it('creates an account on first use', async () => {
     findUnique.mockResolvedValue(null);
-    create.mockResolvedValue({ id: 'acct_1', userId: 'user_a', balanceCredits: 0 });
+    create.mockResolvedValue({ id: 'acct_1', spaceId: 'user_a', balanceCredits: 0 });
 
     const result = await ensureCreditAccount(scope);
 
-    expect(result).toMatchObject({ userId: 'user_a' });
-    expect(create).toHaveBeenCalledWith({ data: { userId: 'user_a', balanceCredits: 0 } });
+    expect(result).toMatchObject({ spaceId: 'user_a' });
+    expect(create).toHaveBeenCalledWith({ data: { spaceId: 'user_a', balanceCredits: 0 } });
   });
 
   it('funds the account at the given initial balance', async () => {
     findUnique.mockResolvedValue(null);
-    create.mockResolvedValue({ id: 'acct_1', userId: 'user_a', balanceCredits: 50 });
+    create.mockResolvedValue({ id: 'acct_1', spaceId: 'user_a', balanceCredits: 50 });
 
     await ensureCreditAccount(scope, 50);
 
-    expect(create).toHaveBeenCalledWith({ data: { userId: 'user_a', balanceCredits: 50 } });
+    expect(create).toHaveBeenCalledWith({ data: { spaceId: 'user_a', balanceCredits: 50 } });
   });
 
   it('returns the existing account without writing', async () => {
-    findUnique.mockResolvedValue({ id: 'acct_1', userId: 'user_a', balanceCredits: 10 });
+    findUnique.mockResolvedValue({ id: 'acct_1', spaceId: 'user_a', balanceCredits: 10 });
 
     const result = await ensureCreditAccount(scope);
 
@@ -110,7 +110,7 @@ describe('ensureCreditAccount', () => {
   it('resolves to the winner’s row when two first-touches race', async () => {
     findUnique
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'acct_winner', userId: 'user_a', balanceCredits: 0 });
+      .mockResolvedValueOnce({ id: 'acct_winner', spaceId: 'user_a', balanceCredits: 0 });
     create.mockRejectedValue(uniqueViolation());
 
     const result = await ensureCreditAccount(scope);
@@ -133,7 +133,7 @@ describe('findCreditAccount', () => {
 
     await findCreditAccount(scope);
 
-    expect(findUnique).toHaveBeenCalledWith({ where: { userId: 'user_a' } });
+    expect(findUnique).toHaveBeenCalledWith({ where: { spaceId: 'user_a' } });
   });
 });
 
@@ -148,11 +148,11 @@ describe('applyLedgerEntry', () => {
     });
 
     expect(update).toHaveBeenCalledWith({
-      where: { userId: 'user_a' },
+      where: { spaceId: 'user_a' },
       data: { balanceCredits: { increment: -3.5 } },
     });
     expect(ledgerCreate).toHaveBeenCalledWith({
-      data: { kind: 'agent_spend', creditsDelta: -3.5, tokenCostUsd: 3.5, userId: 'user_a' },
+      data: { kind: 'agent_spend', creditsDelta: -3.5, tokenCostUsd: 3.5, spaceId: 'user_a' },
     });
   });
 
@@ -181,14 +181,14 @@ describe('applyLedgerEntry', () => {
 
 describe('grantCreditsAsAdmin', () => {
   it('ensures the target account exists before writing the grant', async () => {
-    findUnique.mockResolvedValue({ id: 'acct_1', userId: 'user_b', balanceCredits: 0 });
+    findUnique.mockResolvedValue({ id: 'acct_1', spaceId: 'user_b', balanceCredits: 0 });
     ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
 
     await grantCreditsAsAdmin('user_b', 25, 'welcome bonus', 'admin_1');
 
     expect(ledgerCreate).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        userId: 'user_b',
+        spaceId: 'user_b',
         kind: 'admin_grant',
         creditsDelta: 25,
         note: 'welcome bonus',
@@ -199,12 +199,12 @@ describe('grantCreditsAsAdmin', () => {
 
   it('creates the account first when the target user has never touched billing', async () => {
     findUnique.mockResolvedValue(null);
-    create.mockResolvedValue({ id: 'acct_new', userId: 'user_new', balanceCredits: 0 });
+    create.mockResolvedValue({ id: 'acct_new', spaceId: 'user_new', balanceCredits: 0 });
     ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
 
     await grantCreditsAsAdmin('user_new', 10, undefined, 'admin_1');
 
-    expect(create).toHaveBeenCalledWith({ data: { userId: 'user_new', balanceCredits: 0 } });
+    expect(create).toHaveBeenCalledWith({ data: { spaceId: 'user_new', balanceCredits: 0 } });
   });
 });
 
@@ -227,8 +227,8 @@ describe('listCreditAccountsForAdmin', () => {
     ]);
     // Deliberately out of order relative to `users`.
     findMany.mockResolvedValue([
-      { userId: 'user_b', balanceCredits: 7 },
-      { userId: 'user_a', balanceCredits: 3 },
+      { spaceId: 'user_b', balanceCredits: 7 },
+      { spaceId: 'user_a', balanceCredits: 3 },
     ]);
 
     const rows = await listCreditAccountsForAdmin();
@@ -293,8 +293,8 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
 
   it('excludes executions whose owner no longer has a brain', async () => {
     // Without this, oldest-first becomes its own trap. A system-owned legacy
-    // run carries its owner in `scope`, and `AiWorkflowExecution.userId` is
-    // `onDelete: Cascade` — so a row with `userId: null` survives the erasure
+    // run carries its owner in `scope`, and `AiWorkflowExecution.spaceId` is
+    // `onDelete: Cascade` — so a row with `spaceId: null` survives the erasure
     // of the person named in its scope. Billing it makes `ensureCreditAccount`
     // fail its FK (a P2003, not the P2002 the caller swallows), so it stays a
     // candidate for ever — and being old, it sits at the HEAD of the ordering.
@@ -313,7 +313,7 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
     // The space is matched on its own key, which phase 45 renamed...
     expect(sql).toMatch(/s\."spaceId"\s*=\s*COALESCE\(/);
     // ...while `e."userId"` stays `userId`, because it is
-    // `ai_workflow_execution.userId`: a CORE column naming the person a run
+    // `ai_workflow_execution.spaceId`: a CORE column naming the person a run
     // belongs to, not this tier's owner key. Asserted rather than assumed,
     // because a blanket rename of every `"userId"` in that file's SQL rewrites
     // this one too, after which the query matches nothing, bills nobody, and
@@ -385,11 +385,11 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
 
   it('returns what the query returned', async () => {
     queryRaw.mockResolvedValue([
-      { id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.4 },
+      { id: 'exec_1', spaceId: 'user_a', scope: null, totalCostUsd: 0.4 },
     ]);
 
     await expect(
       findUnbilledTerminalResparkableExecutions(['resparkable-nightly-triage'], ['completed'], 100)
-    ).resolves.toEqual([{ id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.4 }]);
+    ).resolves.toEqual([{ id: 'exec_1', spaceId: 'user_a', scope: null, totalCostUsd: 0.4 }]);
   });
 });

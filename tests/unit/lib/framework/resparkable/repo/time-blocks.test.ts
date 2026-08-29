@@ -102,7 +102,7 @@ describe('listTimeBlocks filters', () => {
     // Assert — every filter survives together, proving the spreads don't clobber each other
     const call = vi.mocked(prisma.resparkableTimeBlock.findMany).mock.calls[0]?.[0];
     expect(call?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       endAt: { gte: from },
       startAt: { lte: to },
       source: 'plan',

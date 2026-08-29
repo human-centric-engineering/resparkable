@@ -15,8 +15,8 @@
 import { prisma } from '@/lib/db/client';
 import { Prisma, type ResparkableSpace } from '@prisma/client';
 
-export async function findSpaceByUserId(userId: string): Promise<ResparkableSpace | null> {
-  return prisma.resparkableSpace.findUnique({ where: { userId } });
+export async function findSpaceByUserId(spaceId: string): Promise<ResparkableSpace | null> {
+  return prisma.resparkableSpace.findUnique({ where: { spaceId } });
 }
 
 export async function findSpaceByToken(inboxToken: string): Promise<ResparkableSpace | null> {
@@ -47,12 +47,22 @@ export async function findSpaceByToken(inboxToken: string): Promise<ResparkableS
  * the schema for two thirds of the answer.
  */
 export async function createSpace(data: {
+  /**
+   * The owner's user id, which for a personal space is ALSO the space key.
+   *
+   * Named for the person rather than the partition on purpose: this is the one
+   * function in the tier that turns a human into a brain, and the caller has a
+   * session, not a space. The two meanings are separated below rather than
+   * being allowed to blur, because they stop being the same value the moment a
+   * group space exists.
+   */
   userId: string;
   inboxToken: string;
 }): Promise<ResparkableSpace> {
   return prisma.resparkableSpace.create({
     data: {
-      ...data,
+      inboxToken: data.inboxToken,
+      spaceId: data.userId,
       // A personal space's key value IS its owner's user id (§23.2). This is
       // the invariant the whole rename rests on, and the only place it is
       // established rather than assumed.
@@ -95,7 +105,7 @@ export interface SpaceSettingsPatch {
  * would have to import it to express the same thing.
  */
 export async function updateSpaceSettings(
-  userId: string,
+  spaceId: string,
   patch: SpaceSettingsPatch
 ): Promise<ResparkableSpace> {
   const data: Prisma.ResparkableSpaceUncheckedUpdateInput = {};
@@ -109,7 +119,7 @@ export async function updateSpaceSettings(
     data.connectionStrengthFloor = patch.connectionStrengthFloor;
   }
 
-  return prisma.resparkableSpace.update({ where: { userId }, data });
+  return prisma.resparkableSpace.update({ where: { spaceId }, data });
 }
 
 function jsonOrNull(value: object | null): Prisma.InputJsonValue | typeof Prisma.DbNull {

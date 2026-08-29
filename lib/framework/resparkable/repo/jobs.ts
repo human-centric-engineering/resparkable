@@ -42,7 +42,7 @@ import { Prisma } from '@prisma/client';
 /** One claimed job, with the owner's zone so the caller needs no second read. */
 export interface ClaimedResparkableJob {
   id: string;
-  userId: string;
+  spaceId: string;
   kind: string;
   dueAt: Date;
   attempts: number;
@@ -311,8 +311,8 @@ export async function pullResparkableJobsForward(
 export async function listSpacesWithoutJobs(
   limit: number,
   expectedKinds: number = RESPARKABLE_JOB_KINDS.length
-): Promise<Array<{ userId: string; timezone: string }>> {
-  return prisma.$queryRaw<Array<{ userId: string; timezone: string }>>`
+): Promise<Array<{ spaceId: string; timezone: string }>> {
+  return prisma.$queryRaw<Array<{ spaceId: string; timezone: string }>>`
     SELECT s."spaceId", s."timezone"
     FROM "framework_resparkable_space" s
     LEFT JOIN "framework_resparkable_job" j ON j."spaceId" = s."spaceId"

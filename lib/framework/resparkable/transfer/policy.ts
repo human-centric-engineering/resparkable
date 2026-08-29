@@ -15,12 +15,23 @@
  *
  * ## What is special about this tier
  *
- * Every table hangs off `ResparkableSpace` through `userId`, which is
+ * Every table hangs off `ResparkableSpace` through `spaceId`, which is
  * simultaneously the owner column and the foreign key to the space row. So the
  * space must be written first, and every other table's ownership is rewritten by
- * changing one column. That is why the brain is the easy half of a transfer —
- * and why the hard part is everything that refers to a row *without* a foreign
- * key behind it.
+ * changing one column. That is why the brain is the easy half of a transfer, and
+ * why the hard part is everything that refers to a row *without* a foreign key
+ * behind it.
+ *
+ * Phase 45 renamed that column from `userId`, and the rename is invisible to the
+ * compiler here: this file is data, so its `ownerColumn` and `mergeKeys` entries
+ * are string literals that no type checks. `policy-coverage.test.ts` is what
+ * checks them, by diffing every one against the real model graph, and it is the
+ * only thing that would have caught the rename being missed.
+ *
+ * `ResparkableSpace` also gained a SECOND user-id column in that phase, which is
+ * why its policy carries a soft reference for `ownerUserId`: `ownerColumn` is
+ * singular, and an import that rewrote only the key would leave a brain carrying
+ * a stranger's `ON DELETE CASCADE`.
  *
  * @see lib/portability/policy.ts — what each field means
  * @see lib/framework/resparkable/repo/subject-export.ts — the Art. 15 half
@@ -146,8 +157,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableSpace',
       disposition: 'transfer',
       note: 'The brain itself — your timezone, weekly capacity and how work gets prioritised.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId']],
       // A live bearer token: anyone holding it can post into this person's
       // inbox, on the installation this bundle was taken FROM. So it is dropped
       // rather than merely not-written — `repo/subject-export.ts` omits it from
@@ -207,8 +218,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableArea',
       disposition: 'transfer',
       note: 'The life areas you organise everything else under.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId', 'slug']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
       softRefs: [AUTHORED_BY],
@@ -219,7 +230,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableGoal',
       disposition: 'transfer',
       note: 'Goals across every horizon, including which goal sits under which.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       // A real constraint, as for areas, projects and entities. This table used
       // to carry a soft key instead — horizon, normalised title, target date —
       // because it had no `@@unique` to point at, and that guess was the one
@@ -227,7 +238,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       // on a guess is writing into a guess. The soft key is gone rather than
       // kept as a fallback, so there is exactly one answer to "is this the same
       // goal?" and it is the same answer the vault importer gives.
-      mergeKeys: [['userId', 'slug']],
+      mergeKeys: [['spaceId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
       softRefs: [AUTHORED_BY],
@@ -238,8 +249,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableProject',
       disposition: 'transfer',
       note: 'Projects, their status, and which area they belong to.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId', 'slug']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId', 'slug']],
       reset: {
         indexedHash: null,
         // Recomputed by the prioritiser on the far side. The stored score is
@@ -263,7 +274,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableTask',
       disposition: 'transfer',
       note: 'Tasks with their notes, scheduling, snooze history and manual priority boosts.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       reset: { priorityScore: 0, priorityFactors: null },
       // Deliberately no merge key. Two tasks with the same title are usually two
       // tasks. A duplicate task is a minor annoyance; a wrongly merged one loses
@@ -286,7 +297,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableThought',
       disposition: 'transfer',
       note: 'Raw captured thoughts — the most personal free text in the product.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       reset: { indexedHash: null },
       softRefs: [
         {
@@ -309,7 +320,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       // anything captured in the app, and Postgres treats nulls as distinct — so
       // it binds for exactly the inbound-integration rows and no others. That is
       // still worth having: re-importing must not duplicate emailed captures.
-      mergeKeys: [['userId', 'externalId']],
+      mergeKeys: [['spaceId', 'externalId']],
       softMergeKey: (row: Readonly<Record<string, unknown>>): string | null => {
         const content = typeof row.content === 'string' ? row.content.trim() : '';
         if (content === '') return null;
@@ -323,8 +334,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableEntity',
       disposition: 'transfer',
       note: 'Notes about other people and companies — your own record of who is who.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId', 'slug']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
       softRefs: [AUTHORED_BY],
@@ -335,8 +346,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableTag',
       disposition: 'transfer',
       note: 'Your own tag vocabulary, with the colours and order you gave it.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId', 'slug']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId', 'slug']],
       softRefs: [AUTHORED_BY],
     },
 
@@ -345,7 +356,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableTaskTag',
       disposition: 'transfer',
       note: 'Which tags are on which tasks.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       // Both columns are foreign keys, so this can only be evaluated after the
       // tasks and tags they name have been remapped.
       mergeKeys: [['taskId', 'tagId']],
@@ -357,7 +368,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableChecklistItem',
       disposition: 'transfer',
       note: 'Checklist steps inside tasks.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       // No constraint exists, and position plus text is a reasonable identity
       // for a step within an already-matched task.
       softMergeKey: (row: Readonly<Record<string, unknown>>): string | null => {
@@ -373,8 +384,8 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableBoard',
       disposition: 'transfer',
       note: 'Kanban boards, their columns and their filters.',
-      ownerColumn: 'userId',
-      mergeKeys: [['userId', 'slug']],
+      ownerColumn: 'spaceId',
+      mergeKeys: [['spaceId', 'slug']],
       jsonRefs: [
         // A board with `membership: 'filter'` is a live query, not a fixed list.
         // If this id does not resolve, the board renders empty with no error —
@@ -399,7 +410,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableBoardCard',
       disposition: 'transfer',
       note: 'Where each task sits on a board — the arrangement, not just the tasks.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       mergeKeys: [['boardId', 'taskId']],
       softRefs: [AUTHORED_BY],
     },
@@ -409,7 +420,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableTimeBlock',
       disposition: 'transfer',
       note: 'What you planned or recorded working on, and when.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softMergeKey: (row: Readonly<Record<string, unknown>>): string | null => {
         const start = row.startAt instanceof Date ? row.startAt.toISOString() : text(row.startAt);
         return `${start}|${text(row.title)}`;
@@ -425,7 +436,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'Connections between items, including ones you rejected. Rejected links ' +
         'are kept deliberately: they are what stops the weekly sweep proposing ' +
         'the same connection again for ever.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softRefs: [
         {
           idColumn: 'sourceId',
@@ -445,7 +456,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       ],
       // Contains four remapped values, so it can only be evaluated after both
       // ends have been resolved.
-      mergeKeys: [['userId', 'sourceType', 'sourceId', 'targetType', 'targetId', 'kind']],
+      mergeKeys: [['spaceId', 'sourceType', 'sourceId', 'targetType', 'targetId', 'kind']],
     },
 
     {
@@ -453,10 +464,10 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableDocument',
       disposition: 'transfer',
       note: 'Documents you uploaded, and the text extracted from them.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       // Content-addressed, which makes this the one table where identity is
       // exact: the same file is the same row, in any account.
-      mergeKeys: [['userId', 'fileHash']],
+      mergeKeys: [['spaceId', 'fileHash']],
       reset: {
         indexedHash: null,
         // Rewritten by the importer when the original bytes travel with the
@@ -490,7 +501,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       model: 'ResparkableReview',
       disposition: 'transfer',
       note: 'Your generated weekly and monthly reviews, with their full text.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       reset: { indexedHash: null },
       softRefs: [
         {
@@ -530,7 +541,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'the record is yours, but not written back: a timeline recreated in a ' +
         'new environment would describe activity that never happened there, ' +
         'sitting beside real entries and indistinguishable from them.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softRefsIgnored: {
         createdByUserId:
           'Phase 45 (§23.10): on an EVENT row this is the actor rather than the ' +
@@ -559,7 +570,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'account was actually granted and actually spent, and writing an ' +
         'exported number into a different account would let a self-export/' +
         'import round trip mint credits nobody granted.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softRefsIgnored: {
         createdByUserId: AUTHORED_BY_NOT_IMPORTED,
       },
@@ -574,7 +585,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'not written back — the same reasoning as the activity log: replaying ' +
         'it into a new account would describe charges and grants that never ' +
         'happened there.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softRefsIgnored: {
         createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         relatedConversationId:
@@ -613,7 +624,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'hold that address on the far side — an import that silently starts ' +
         'sharing the brain it just moved. Sharing is a decision made in the ' +
         'place it applies, and it is remade there.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       redact: ['inviteTokenHash'],
       softRefsIgnored: {
         createdByUserId: AUTHORED_BY_NOT_IMPORTED,
@@ -642,7 +653,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'where they have no account, under an author id that means nothing ' +
         'there, on an item nobody has shared with them. Words attributed to a ' +
         'person are the last thing that should be replayed by a machine.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       softRefsIgnored: {
         createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         entityId:
@@ -666,7 +677,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'people are holding, and it points at the installation that issued it. ' +
         'Importing one would create a live public link on a different ' +
         'deployment that nobody was ever given, whose token exists nowhere.',
-      ownerColumn: 'userId',
+      ownerColumn: 'spaceId',
       // The digest of a live bearer credential. Absent from the bundle for the
       // same reason `inboxToken` is: an export is a file that gets emailed and
       // synced, and the row is never imported, so nothing needs it.

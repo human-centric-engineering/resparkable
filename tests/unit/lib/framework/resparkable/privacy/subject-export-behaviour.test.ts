@@ -114,7 +114,7 @@ describe('owner scoping', () => {
     for (const { model, findMany } of delegates()) {
       expect(findMany, `${model} was never queried`).toHaveBeenCalledTimes(1);
       expect(findMany.mock.calls[0]?.[0]?.where, `${model} is not owner-scoped`).toEqual({
-        userId: 'user_a',
+        spaceId: 'user_a',
       });
     }
   });

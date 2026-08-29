@@ -95,7 +95,7 @@ describe('listGoals filters', () => {
 
     // Assert — goals.ts threading the flag through to liveSpaceWhere
     const call = vi.mocked(prisma.resparkableGoal.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_x' });
+    expect(call?.where).toMatchObject({ spaceId: 'user_x' });
     expect(call?.where).not.toHaveProperty('archivedAt');
   });
 });
@@ -107,7 +107,7 @@ describe('countGoals', () => {
 
     // Assert
     const call = vi.mocked(prisma.resparkableGoal.count).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_x' });
+    expect(call?.where).toMatchObject({ spaceId: 'user_x' });
     expect(call?.where).not.toHaveProperty('archivedAt');
   });
 });

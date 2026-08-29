@@ -202,7 +202,7 @@ function updates(delegate: string): { where: unknown; data: unknown }[] {
   );
 }
 
-const SPACE = { id: 'space-old', userId: SOURCE };
+const SPACE = { id: 'space-old', spaceId: SOURCE };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -223,11 +223,11 @@ describe('applyImportPlan', () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
         ResparkableArea: [
-          { id: 'area-old', userId: 'somebody-else', slug: 'health', name: 'health' },
+          { id: 'area-old', spaceId: 'somebody-else', slug: 'health', name: 'health' },
         ],
       });
 
-      expect(created('resparkableArea')[0]).toMatchObject({ userId: TARGET });
+      expect(created('resparkableArea')[0]).toMatchObject({ spaceId: TARGET });
     });
 
     it('refuses a plan prepared for a different account', async () => {
@@ -247,7 +247,7 @@ describe('applyImportPlan', () => {
     it('never writes the id the bundle carried', async () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+        ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
       });
 
       const row = created('resparkableArea')[0];
@@ -261,9 +261,9 @@ describe('applyImportPlan', () => {
       // the area this import just wrote, not the one in the account it left.
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+        ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
         ResparkableProject: [
-          { id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'rebuild', areaId: 'area-old' },
+          { id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'rebuild', areaId: 'area-old' },
         ],
       });
 
@@ -277,9 +277,9 @@ describe('applyImportPlan', () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
         ResparkableArea: [
-          { id: 'a1', userId: SOURCE, slug: 'health', name: 'health' },
-          { id: 'a2', userId: SOURCE, slug: 'work', name: 'work' },
-          { id: 'a3', userId: SOURCE, slug: 'home', name: 'home' },
+          { id: 'a1', spaceId: SOURCE, slug: 'health', name: 'health' },
+          { id: 'a2', spaceId: SOURCE, slug: 'work', name: 'work' },
+          { id: 'a3', spaceId: SOURCE, slug: 'home', name: 'home' },
         ],
       });
 
@@ -294,9 +294,9 @@ describe('applyImportPlan', () => {
       await planAndApply(
         {
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }] }
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }] }
       );
 
       expect(created('resparkableArea')).toEqual([]);
@@ -309,18 +309,18 @@ describe('applyImportPlan', () => {
       await planAndApply(
         {
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
           ResparkableProject: [
             {
               id: 'proj-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'rebuild',
               name: 'rebuild',
               areaId: 'area-old',
             },
           ],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }] }
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }] }
       );
 
       expect(created('resparkableProject')[0].areaId).toBe('area-here');
@@ -330,9 +330,9 @@ describe('applyImportPlan', () => {
       const { result } = await planAndApply(
         {
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }] }
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }] }
       );
 
       expect(result.totals).toMatchObject({ created: 1, skipped: 1 });
@@ -398,8 +398,8 @@ describe('applyImportPlan', () => {
       // The reason `mint` is a function and not a constant.
       await planAndApply({
         ResparkableSpace: [
-          { id: 's1', userId: SOURCE },
-          { id: 's2', userId: 'another' },
+          { id: 's1', spaceId: SOURCE },
+          { id: 's2', spaceId: 'another' },
         ],
       });
 
@@ -429,7 +429,7 @@ describe('applyImportPlan', () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
         ResparkableTask: [
-          { id: 't1', userId: SOURCE, title: 'Ship it', dueAt: '2026-09-30T00:00:00.000Z' },
+          { id: 't1', spaceId: SOURCE, title: 'Ship it', dueAt: '2026-09-30T00:00:00.000Z' },
         ],
       });
 
@@ -442,7 +442,7 @@ describe('applyImportPlan', () => {
     it('leaves a string column as a string', async () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableTask: [{ id: 't1', userId: SOURCE, title: 'Ship it' }],
+        ResparkableTask: [{ id: 't1', spaceId: SOURCE, title: 'Ship it' }],
       });
 
       expect(created('resparkableTask')[0].title).toBe('Ship it');
@@ -454,7 +454,7 @@ describe('applyImportPlan', () => {
         ResparkableBoard: [
           {
             id: 'b1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             slug: 'work',
             columns: [{ name: 'Doing', status: 'in-progress' }],
           },
@@ -474,10 +474,10 @@ describe('applyImportPlan', () => {
       const { result } = await planAndApply({
         ResparkableSpace: [SPACE],
         ResparkableGoal: [
-          { id: 'goal-parent', userId: SOURCE, horizon: 'year', title: 'Get fit' },
+          { id: 'goal-parent', spaceId: SOURCE, horizon: 'year', title: 'Get fit' },
           {
             id: 'goal-child',
-            userId: SOURCE,
+            spaceId: SOURCE,
             horizon: 'quarter',
             title: 'Run 10k',
             parentGoalId: 'goal-parent',
@@ -498,10 +498,10 @@ describe('applyImportPlan', () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
         ResparkableGoal: [
-          { id: 'goal-parent', userId: SOURCE, horizon: 'year', title: 'Get fit' },
+          { id: 'goal-parent', spaceId: SOURCE, horizon: 'year', title: 'Get fit' },
           {
             id: 'goal-child',
-            userId: SOURCE,
+            spaceId: SOURCE,
             horizon: 'quarter',
             title: 'Run 10k',
             parentGoalId: 'goal-parent',
@@ -521,7 +521,7 @@ describe('applyImportPlan', () => {
     it('makes no second pass when nothing points at its own table', async () => {
       const { result } = await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableGoal: [{ id: 'g1', userId: SOURCE, horizon: 'year', title: 'Get fit' }],
+        ResparkableGoal: [{ id: 'g1', spaceId: SOURCE, horizon: 'year', title: 'Get fit' }],
       });
 
       expect(updates('resparkableGoal')).toEqual([]);
@@ -533,9 +533,9 @@ describe('applyImportPlan', () => {
     it('writes parents before children', async () => {
       await planAndApply({
         ResparkableProject: [
-          { id: 'p1', userId: SOURCE, slug: 'rebuild', name: 'rebuild', areaId: 'a1' },
+          { id: 'p1', spaceId: SOURCE, slug: 'rebuild', name: 'rebuild', areaId: 'a1' },
         ],
-        ResparkableArea: [{ id: 'a1', userId: SOURCE, slug: 'health', name: 'health' }],
+        ResparkableArea: [{ id: 'a1', spaceId: SOURCE, slug: 'health', name: 'health' }],
         ResparkableSpace: [SPACE],
       });
 
@@ -555,7 +555,7 @@ describe('applyImportPlan', () => {
       // arrived, with nothing to say which is which.
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableArea: [{ id: 'a1', userId: SOURCE, slug: 'health', name: 'health' }],
+        ResparkableArea: [{ id: 'a1', spaceId: SOURCE, slug: 'health', name: 'health' }],
       });
 
       expect(transactions).toHaveLength(1);
@@ -565,7 +565,7 @@ describe('applyImportPlan', () => {
     it('batches a long table rather than sending one enormous insert', async () => {
       const areas = Array.from({ length: APPLY_CAPS.batchSize + 10 }, (_, i) => ({
         id: `a${i}`,
-        userId: SOURCE,
+        spaceId: SOURCE,
         slug: `area-${i}`,
       }));
 
@@ -580,7 +580,7 @@ describe('applyImportPlan', () => {
     it('refuses an import larger than one transaction carries, before writing any of it', async () => {
       const areas = Array.from({ length: APPLY_CAPS.maxRows + 1 }, (_, i) => ({
         id: `a${i}`,
-        userId: SOURCE,
+        spaceId: SOURCE,
         slug: `area-${i}`,
       }));
 
@@ -616,11 +616,11 @@ describe('applyImportPlan', () => {
       // would let the more expensive operation through unbounded.
       const areas = Array.from({ length: APPLY_CAPS.maxRows + 1 }, (_, i) => ({
         id: `a${i}`,
-        userId: SOURCE,
+        spaceId: SOURCE,
         slug: `area-${i}`,
         name: `Area ${i}`,
       }));
-      const here = areas.map((area) => ({ ...area, id: `here-${area.id}`, userId: TARGET }));
+      const here = areas.map((area) => ({ ...area, id: `here-${area.id}`, spaceId: TARGET }));
 
       const plan = await buildImportPlan({
         bundle: bundleOf({ ResparkableSpace: [SPACE], ResparkableArea: areas }),
@@ -645,10 +645,10 @@ describe('applyImportPlan', () => {
         {
           ResparkableSpace: [SPACE],
           ResparkableArea: [
-            { id: 'area-old', userId: SOURCE, slug: 'health', name: 'Health, renamed' },
+            { id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'Health, renamed' },
           ],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'Health' }] },
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'Health' }] },
         'overwrite'
       );
 
@@ -670,7 +670,7 @@ describe('applyImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'The imported copy.',
@@ -682,7 +682,7 @@ describe('applyImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-here',
-              userId: TARGET,
+              spaceId: TARGET,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'The copy already here.',
@@ -706,7 +706,7 @@ describe('applyImportPlan', () => {
       // arrives.
       await planAndApply(
         { ResparkableSpace: [SPACE] },
-        { ResparkableSpace: [{ id: 'space-here', userId: TARGET }] },
+        { ResparkableSpace: [{ id: 'space-here', spaceId: TARGET }] },
         'overwrite'
       );
 
@@ -753,14 +753,14 @@ describe('applyImportPlan', () => {
           ResparkableArea: [
             {
               id: 'area-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'health',
               name: 'Health',
               indexedHash: 'stale-digest',
             },
           ],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'Health' }] },
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'Health' }] },
         'overwrite'
       );
 
@@ -772,10 +772,10 @@ describe('applyImportPlan', () => {
         {
           ResparkableSpace: [SPACE],
           ResparkableArea: [
-            { id: 'area-old', userId: SOURCE, slug: 'health', name: 'Health, renamed' },
+            { id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'Health, renamed' },
           ],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'Health' }] }
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'Health' }] }
       );
 
       expect(updates('resparkableArea')).toEqual([]);
@@ -788,18 +788,18 @@ describe('applyImportPlan', () => {
       await planAndApply(
         {
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'Health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'Health' }],
           ResparkableProject: [
             {
               id: 'project-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'run-a-marathon',
               name: 'Run a marathon',
               areaId: 'area-old',
             },
           ],
         },
-        { ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'Health' }] },
+        { ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'Health' }] },
         'overwrite'
       );
 
@@ -816,11 +816,11 @@ describe('applyImportPlan', () => {
     it('rewrites a resolvable id at a declared path to the target account’s minted id', async () => {
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableProject: [{ id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'Rebuild' }],
+        ResparkableProject: [{ id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'Rebuild' }],
         ResparkableBoard: [
           {
             id: 'board-1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             slug: 'work',
             name: 'Work',
             columns: [{ name: 'Doing', status: 'in-progress' }],
@@ -849,7 +849,7 @@ describe('applyImportPlan', () => {
         ResparkableBoard: [
           {
             id: 'board-1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             slug: 'work',
             name: 'Work',
             columns: [{ name: 'Doing', status: 'in-progress' }],
@@ -871,12 +871,12 @@ describe('applyImportPlan', () => {
         {
           ResparkableSpace: [SPACE],
           ResparkableProject: [
-            { id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'Rebuild' },
+            { id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'Rebuild' },
           ],
           ResparkableBoard: [
             {
               id: 'board-1',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               name: 'Work',
               columns: [{ name: 'Doing', status: 'in-progress' }],
@@ -886,7 +886,7 @@ describe('applyImportPlan', () => {
         },
         {
           ResparkableProject: [
-            { id: 'proj-here', userId: TARGET, slug: 'rebuild', name: 'Rebuild' },
+            { id: 'proj-here', spaceId: TARGET, slug: 'rebuild', name: 'Rebuild' },
           ],
         }
       );
@@ -901,11 +901,11 @@ describe('applyImportPlan', () => {
       // rather than at a fixed path, because its shape varies by horizon.
       await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableTask: [{ id: 'task-old', userId: SOURCE, title: 'Ship it' }],
+        ResparkableTask: [{ id: 'task-old', spaceId: SOURCE, title: 'Ship it' }],
         ResparkableReview: [
           {
             id: 'review-1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             horizon: 'weekly',
             title: 'Week 39',
             body: 'Body text.',
@@ -934,7 +934,7 @@ describe('applyImportPlan', () => {
         ResparkableReview: [
           {
             id: 'review-1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             horizon: 'weekly',
             title: 'Week 39',
             body: 'Body text.',
@@ -957,7 +957,7 @@ describe('applyImportPlan', () => {
         ResparkableBoard: [
           {
             id: 'board-1',
-            userId: SOURCE,
+            spaceId: SOURCE,
             slug: 'work',
             name: 'Work',
             columns: [{ name: 'Doing', status: 'in-progress' }],
@@ -974,9 +974,9 @@ describe('applyImportPlan', () => {
     it('does not write them, and says how many', async () => {
       const { result } = await planAndApply({
         ResparkableSpace: [SPACE],
-        ResparkableTask: [{ id: 't1', userId: SOURCE, title: 'Ship it' }],
+        ResparkableTask: [{ id: 't1', spaceId: SOURCE, title: 'Ship it' }],
         ResparkableBoardCard: [
-          { id: 'c1', userId: SOURCE, boardId: 'board-missing', taskId: 't1' },
+          { id: 'c1', spaceId: SOURCE, boardId: 'board-missing', taskId: 't1' },
         ],
       });
 
@@ -1007,7 +1007,7 @@ describe('applyImportPlan', () => {
 
     const DOCUMENT = {
       id: 'doc-1',
-      userId: SOURCE,
+      spaceId: SOURCE,
       fileHash: HASH,
       mimeType: 'application/pdf',
       // The source account's key. It addresses a bucket that is not ours, and
@@ -1086,7 +1086,7 @@ describe('applyImportPlan', () => {
       // existing row is untouched.
       const { result } = await planAndApply(
         { ResparkableSpace: [SPACE], ResparkableDocument: [DOCUMENT] },
-        { ResparkableDocument: [{ ...DOCUMENT, id: 'doc-here', userId: TARGET }] },
+        { ResparkableDocument: [{ ...DOCUMENT, id: 'doc-here', spaceId: TARGET }] },
         'skip',
         arriving()
       );
@@ -1147,7 +1147,7 @@ describe('applyImportPlan', () => {
       const { result } = await planAndApply(
         {
           ResparkableSpace: [SPACE],
-          ResparkableTask: [{ id: 'task-1', userId: SOURCE, title: 'x' }],
+          ResparkableTask: [{ id: 'task-1', spaceId: SOURCE, title: 'x' }],
         },
         {},
         'skip',

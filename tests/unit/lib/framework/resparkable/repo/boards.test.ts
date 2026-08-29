@@ -105,7 +105,7 @@ describe('listBoards', () => {
     await listBoards(SCOPE);
 
     const call = vi.mocked(resparkableBoard.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', archivedAt: null });
+    expect(call?.where).toEqual({ spaceId: 'user_a', archivedAt: null });
     expect(call?.orderBy).toEqual({ name: 'asc' });
     expect(call?.take).toBe(50);
     expect(call?.skip).toBe(0);
@@ -117,7 +117,7 @@ describe('listBoards', () => {
     await listBoards(SCOPE, { includeArchived: true });
 
     const call = vi.mocked(resparkableBoard.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a' });
+    expect(call?.where).toEqual({ spaceId: 'user_a' });
   });
 
   it('threads custom pagination through to take/skip', async () => {
@@ -144,7 +144,7 @@ describe('countBoards', () => {
     await countBoards(SCOPE);
 
     const call = vi.mocked(resparkableBoard.count).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', archivedAt: null });
+    expect(call?.where).toEqual({ spaceId: 'user_a', archivedAt: null });
   });
 
   it('includes the archive when asked', async () => {
@@ -153,7 +153,7 @@ describe('countBoards', () => {
     await countBoards(SCOPE, true);
 
     const call = vi.mocked(resparkableBoard.count).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a' });
+    expect(call?.where).toEqual({ spaceId: 'user_a' });
   });
 });
 
@@ -166,7 +166,7 @@ describe('findBoard', () => {
 
     expect(result).toBe(row);
     const call = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'board_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'board_1' });
   });
 
   it("returns null for another user's board id — not-found and not-yours are the same answer", async () => {
@@ -174,7 +174,7 @@ describe('findBoard', () => {
 
     await expect(findBoard(SCOPE, 'someone_elses_board')).resolves.toBeNull();
     const call = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_a', id: 'someone_elses_board' });
+    expect(call?.where).toMatchObject({ spaceId: 'user_a', id: 'someone_elses_board' });
   });
 });
 
@@ -187,7 +187,7 @@ describe('findBoardBySlug', () => {
 
     expect(result).toBe(row);
     const call = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', slug: 'work' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', slug: 'work' });
   });
 
   it('returns null when the slug belongs to no board of the caller', async () => {
@@ -205,7 +205,7 @@ describe('createBoard', () => {
 
     const passedData = vi.mocked(resparkableBoard.create).mock.calls[0]?.[0]?.data;
     expect(passedData).toMatchObject({
-      userId: 'user_a',
+      spaceId: 'user_a',
       name: 'Work',
       slug: 'work',
       membership: 'filter',
@@ -272,12 +272,12 @@ describe('createBoard', () => {
   // bypasses the first.
   it('stamps the verified scope over a userId smuggled into the payload', async () => {
     vi.mocked(resparkableBoard.create).mockResolvedValue({ id: 'board_1' });
-    const attackerPayload = { name: 'Work', userId: 'attacker' } as unknown as BoardCreateData;
+    const attackerPayload = { name: 'Work', spaceId: 'attacker' } as unknown as BoardCreateData;
 
     await createBoard(SCOPE, attackerPayload);
 
     const passedData = vi.mocked(resparkableBoard.create).mock.calls[0]?.[0]?.data;
-    expect(passedData?.userId).toBe('user_a');
+    expect(passedData?.spaceId).toBe('user_a');
   });
 });
 
@@ -288,7 +288,7 @@ describe('updateBoard', () => {
     await updateBoard(SCOPE, 'board_1', { name: 'Renamed' });
 
     const call = vi.mocked(resparkableBoard.update).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'board_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'board_1', spaceId: 'user_a' });
     expect(call?.data).toMatchObject({ name: 'Renamed' });
   });
 
@@ -336,7 +336,7 @@ describe('archiveBoard', () => {
     await archiveBoard(SCOPE, 'board_1', 'no longer used', now);
 
     const call = vi.mocked(resparkableBoard.update).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'board_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'board_1', spaceId: 'user_a' });
     expect(call?.data).toEqual({ archivedAt: now, archivedReason: 'no longer used' });
   });
 
@@ -363,7 +363,7 @@ describe('restoreBoard', () => {
     await restoreBoard(SCOPE, 'board_1');
 
     const call = vi.mocked(resparkableBoard.update).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'board_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'board_1', spaceId: 'user_a' });
     expect(call?.data).toEqual({ archivedAt: null, archivedReason: null });
   });
 
@@ -381,7 +381,7 @@ describe('deleteBoard', () => {
     await deleteBoard(SCOPE, 'board_1');
 
     const call = vi.mocked(resparkableBoard.delete).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'board_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'board_1', spaceId: 'user_a' });
   });
 
   it("resolves to null rather than throwing for another user's board", async () => {
@@ -398,7 +398,7 @@ describe('listBoardCards', () => {
     await listBoardCards(SCOPE, 'board_1');
 
     const call = vi.mocked(resparkableBoardCard.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', boardId: 'board_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', boardId: 'board_1' });
     expect(call?.orderBy).toEqual({ position: 'asc' });
   });
 
@@ -418,7 +418,7 @@ describe('findBoardCard', () => {
 
     expect(result).toBe(row);
     const call = vi.mocked(resparkableBoardCard.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'card_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'card_1' });
   });
 
   it("returns null for another user's card id", async () => {
@@ -459,11 +459,11 @@ describe('addBoardCard', () => {
     await addBoardCard(SCOPE, 'board_1', 'task_1', 1000);
 
     const boardCall = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
-    expect(boardCall?.where).toEqual({ userId: 'user_a', id: 'board_1' });
+    expect(boardCall?.where).toEqual({ spaceId: 'user_a', id: 'board_1' });
     expect(boardCall?.select).toEqual({ id: true });
 
     const taskCall = vi.mocked(resparkableTask.findFirst).mock.calls[0]?.[0];
-    expect(taskCall?.where).toEqual({ userId: 'user_a', id: 'task_1' });
+    expect(taskCall?.where).toEqual({ spaceId: 'user_a', id: 'task_1' });
     expect(taskCall?.select).toEqual({ id: true });
   });
 
@@ -473,10 +473,14 @@ describe('addBoardCard', () => {
     await addBoardCard(SCOPE, 'board_1', 'task_1', 1500);
 
     const existingCall = vi.mocked(resparkableBoardCard.findFirst).mock.calls[0]?.[0];
-    expect(existingCall?.where).toEqual({ userId: 'user_a', boardId: 'board_1', taskId: 'task_1' });
+    expect(existingCall?.where).toEqual({
+      spaceId: 'user_a',
+      boardId: 'board_1',
+      taskId: 'task_1',
+    });
 
     expect(resparkableBoardCard.create).toHaveBeenCalledWith({
-      data: { userId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1500 },
+      data: { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1500 },
     });
     expect(resparkableBoardCard.update).not.toHaveBeenCalled();
   });
@@ -509,7 +513,7 @@ describe('updateBoardCardPosition', () => {
     await updateBoardCardPosition(SCOPE, 'card_1', 3000);
 
     const call = vi.mocked(resparkableBoardCard.update).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'card_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'card_1', spaceId: 'user_a' });
     expect(call?.data).toEqual({ position: 3000 });
   });
 
@@ -527,7 +531,7 @@ describe('removeBoardCard', () => {
     await removeBoardCard(SCOPE, 'card_1');
 
     const call = vi.mocked(resparkableBoardCard.delete).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'card_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'card_1', spaceId: 'user_a' });
   });
 
   it("resolves to null rather than throwing for another user's card", async () => {
@@ -559,15 +563,15 @@ describe('renumberBoardCards', () => {
     // Each entry's own id and computed position — not a shared value, not the
     // return value of the mock echoed back.
     expect(resparkableBoardCard.updateMany).toHaveBeenNthCalledWith(1, {
-      where: { id: 'card_1', userId: 'user_a' },
+      where: { id: 'card_1', spaceId: 'user_a' },
       data: { position: 1000 },
     });
     expect(resparkableBoardCard.updateMany).toHaveBeenNthCalledWith(2, {
-      where: { id: 'card_2', userId: 'user_a' },
+      where: { id: 'card_2', spaceId: 'user_a' },
       data: { position: 2000 },
     });
     expect(resparkableBoardCard.updateMany).toHaveBeenNthCalledWith(3, {
-      where: { id: 'card_3', userId: 'user_a' },
+      where: { id: 'card_3', spaceId: 'user_a' },
       data: { position: 3000 },
     });
   });
@@ -587,7 +591,7 @@ describe('snapshotBoardMembership', () => {
 
     expect(result).toBeNull();
     const call = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'board_1', membership: 'filter' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'board_1', membership: 'filter' });
     // Nothing written when the board doesn't qualify — an already-explicit
     // board must not be re-pinned, throwing a hand-curated arrangement away.
     expect(resparkableBoardCard.deleteMany).not.toHaveBeenCalled();
@@ -617,7 +621,7 @@ describe('snapshotBoardMembership', () => {
     );
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     const deleteCall = vi.mocked(resparkableBoardCard.deleteMany).mock.calls[0]?.[0];
-    expect(deleteCall?.where).toEqual({ userId: 'user_a', boardId: 'board_1' });
+    expect(deleteCall?.where).toEqual({ spaceId: 'user_a', boardId: 'board_1' });
   });
 
   it('uses skipDuplicates on the createMany', async () => {
@@ -638,8 +642,8 @@ describe('snapshotBoardMembership', () => {
     const createCall = vi.mocked(resparkableBoardCard.createMany).mock.calls[0]?.[0];
     expect(createCall?.skipDuplicates).toBe(true);
     expect(createCall?.data).toEqual([
-      { userId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1000 },
-      { userId: 'user_a', boardId: 'board_1', taskId: 'task_2', position: 2000 },
+      { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1000 },
+      { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_2', position: 2000 },
     ]);
   });
 

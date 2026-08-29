@@ -142,7 +142,7 @@ export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArg
       // An erased account whose schedule row outlived it. Not an error: the
       // workflow did its job, there is simply nobody left to tell.
       logger.info('Resparkable notification skipped — no owner', {
-        userId: scope.spaceId,
+        spaceId: scope.spaceId,
         notification: args.notification,
       });
       return this.success({ sent: false, reason: 'no_owner' });
@@ -161,7 +161,7 @@ export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArg
       // run that produced the thing being notified about. The briefing is
       // written and readable in the app either way.
       logger.warn('Resparkable notification failed to send', {
-        userId: scope.spaceId,
+        spaceId: scope.spaceId,
         notification: args.notification,
       });
       return this.success({ sent: false, reason: 'send_failed' });

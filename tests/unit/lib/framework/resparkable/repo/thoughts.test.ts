@@ -84,7 +84,7 @@ describe('listThoughts — where clause', () => {
     await listThoughts(SCOPE);
 
     const where = vi.mocked(prisma.resparkableThought.findMany).mock.calls[0]?.[0]?.where;
-    expect(where).toMatchObject({ userId: 'user_a', archivedAt: null });
+    expect(where).toMatchObject({ spaceId: 'user_a', archivedAt: null });
   });
 
   it('keeps the owner scope alongside every other filter, not replaced by them', async () => {
@@ -98,7 +98,7 @@ describe('listThoughts — where clause', () => {
     });
 
     const where = vi.mocked(prisma.resparkableThought.findMany).mock.calls[0]?.[0]?.where;
-    expect(where).toMatchObject({ userId: 'user_a', archivedAt: null });
+    expect(where).toMatchObject({ spaceId: 'user_a', archivedAt: null });
   });
 
   it('passes status through literally when supplied, and omits it otherwise', async () => {

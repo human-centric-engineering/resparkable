@@ -93,7 +93,7 @@ describe('listTags', () => {
     await listTags(SCOPE);
 
     const call = vi.mocked(resparkableTag.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a' });
+    expect(call?.where).toEqual({ spaceId: 'user_a' });
     expect(call?.orderBy).toEqual([{ sortOrder: 'asc' }, { name: 'asc' }]);
     expect(call?.take).toBe(50);
     expect(call?.skip).toBe(0);
@@ -123,7 +123,7 @@ describe('countTags', () => {
     await countTags(SCOPE);
 
     const call = vi.mocked(resparkableTag.count).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a' });
+    expect(call?.where).toEqual({ spaceId: 'user_a' });
   });
 });
 
@@ -136,7 +136,7 @@ describe('findTag', () => {
 
     expect(result).toBe(row);
     const call = vi.mocked(resparkableTag.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'tag_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'tag_1' });
   });
 
   it("returns null for another user's tag id", async () => {
@@ -155,7 +155,7 @@ describe('findTagBySlug', () => {
 
     expect(result).toBe(row);
     const call = vi.mocked(resparkableTag.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', slug: 'urgent' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', slug: 'urgent' });
   });
 
   it('returns null when the slug belongs to no tag of the caller', async () => {
@@ -172,7 +172,7 @@ describe('createTag', () => {
     await createTag(SCOPE, { name: 'Urgent', slug: 'urgent' });
 
     expect(resparkableTag.create).toHaveBeenCalledWith({
-      data: { userId: 'user_a', name: 'Urgent', slug: 'urgent' },
+      data: { spaceId: 'user_a', name: 'Urgent', slug: 'urgent' },
     });
   });
 
@@ -181,12 +181,12 @@ describe('createTag', () => {
   // is the only way to reach past `WithoutOwner<…>` to prove it does.
   it('stamps the verified scope over a userId smuggled into the payload', async () => {
     vi.mocked(resparkableTag.create).mockResolvedValue({ id: 'tag_1' });
-    const attackerPayload = { name: 'Urgent', userId: 'attacker' } as unknown as TagCreateData;
+    const attackerPayload = { name: 'Urgent', spaceId: 'attacker' } as unknown as TagCreateData;
 
     await createTag(SCOPE, attackerPayload);
 
     const passedData = vi.mocked(resparkableTag.create).mock.calls[0]?.[0]?.data;
-    expect(passedData?.userId).toBe('user_a');
+    expect(passedData?.spaceId).toBe('user_a');
   });
 });
 
@@ -197,7 +197,7 @@ describe('updateTag', () => {
     await updateTag(SCOPE, 'tag_1', { name: 'Renamed' });
 
     expect(resparkableTag.update).toHaveBeenCalledWith({
-      where: { id: 'tag_1', userId: 'user_a' },
+      where: { id: 'tag_1', spaceId: 'user_a' },
       data: { name: 'Renamed' },
     });
   });
@@ -216,7 +216,7 @@ describe('deleteTag', () => {
     await deleteTag(SCOPE, 'tag_1');
 
     const call = vi.mocked(resparkableTag.delete).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'tag_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'tag_1', spaceId: 'user_a' });
   });
 
   it("resolves to null rather than throwing for another user's tag", async () => {
@@ -240,7 +240,7 @@ describe('listTagsForTasks', () => {
     await listTagsForTasks(SCOPE, ['task_1', 'task_2']);
 
     const call = vi.mocked(resparkableTaskTag.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', taskId: { in: ['task_1', 'task_2'] } });
+    expect(call?.where).toEqual({ spaceId: 'user_a', taskId: { in: ['task_1', 'task_2'] } });
     expect(call?.include).toEqual({ tag: true });
   });
 
@@ -248,14 +248,14 @@ describe('listTagsForTasks', () => {
     vi.mocked(resparkableTaskTag.findMany).mockResolvedValue([
       {
         id: 'jt_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         taskId: 'task_1',
         tagId: 'tag_1',
         tag: { id: 'tag_1', name: 'Urgent' },
       },
       {
         id: 'jt_2',
-        userId: 'user_a',
+        spaceId: 'user_a',
         taskId: 'task_2',
         tagId: 'tag_2',
         tag: { id: 'tag_2', name: 'Blocked' },
@@ -294,7 +294,7 @@ describe('setTaskTags', () => {
     await setTaskTags(SCOPE, 'task_1', []);
 
     const call = vi.mocked(resparkableTask.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'task_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'task_1' });
     expect(call?.select).toEqual({ id: true });
   });
 
@@ -311,19 +311,19 @@ describe('setTaskTags', () => {
 
     const ownershipCall = vi.mocked(resparkableTag.findMany).mock.calls[0]?.[0];
     expect(ownershipCall?.where).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       id: { in: ['tag_1', 'tag_2', 'tag_3'] },
     });
 
     // The computed owned-id set — derived from the ownership query, not the
     // raw request — drives both the delete and the create.
     expect(resparkableTaskTag.deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', taskId: 'task_1', tagId: { notIn: ['tag_1', 'tag_3'] } },
+      where: { spaceId: 'user_a', taskId: 'task_1', tagId: { notIn: ['tag_1', 'tag_3'] } },
     });
     expect(resparkableTaskTag.createMany).toHaveBeenCalledWith({
       data: [
-        { userId: 'user_a', taskId: 'task_1', tagId: 'tag_1' },
-        { userId: 'user_a', taskId: 'task_1', tagId: 'tag_3' },
+        { spaceId: 'user_a', taskId: 'task_1', tagId: 'tag_1' },
+        { spaceId: 'user_a', taskId: 'task_1', tagId: 'tag_3' },
       ],
       skipDuplicates: true,
     });
@@ -339,7 +339,7 @@ describe('setTaskTags', () => {
     // "these are the tags now" outcome, not skipped just because the request
     // resolved to nothing.
     expect(resparkableTaskTag.deleteMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', taskId: 'task_1', tagId: { notIn: [] } },
+      where: { spaceId: 'user_a', taskId: 'task_1', tagId: { notIn: [] } },
     });
   });
 
@@ -347,7 +347,7 @@ describe('setTaskTags', () => {
     await setTaskTags(SCOPE, 'task_1', []);
 
     const ownershipCall = vi.mocked(resparkableTag.findMany).mock.calls[0]?.[0];
-    expect(ownershipCall?.where).toEqual({ userId: 'user_a', id: { in: [] } });
+    expect(ownershipCall?.where).toEqual({ spaceId: 'user_a', id: { in: [] } });
     expect(resparkableTaskTag.createMany).not.toHaveBeenCalled();
   });
 
@@ -369,7 +369,7 @@ describe('setTaskTags', () => {
 
     expect(result).toBe(finalTags);
     const finalCall = vi.mocked(resparkableTag.findMany).mock.calls[1]?.[0];
-    expect(finalCall?.where).toEqual({ userId: 'user_a', id: { in: ['tag_1'] } });
+    expect(finalCall?.where).toEqual({ spaceId: 'user_a', id: { in: ['tag_1'] } });
     expect(finalCall?.orderBy).toEqual([{ sortOrder: 'asc' }, { name: 'asc' }]);
   });
 
