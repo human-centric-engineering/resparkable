@@ -18,17 +18,40 @@ release process.
 
 ### Added
 
-- **A share control for five of the six shareable types, not two.** Release 2 built the
+- **`/resparkable/sharing`: every share is now revocable, including the ones you
+  cannot navigate to.** `ShareDialog` is the only place a share is revoked and it
+  is reachable only through the entity's own control, which holds until the
+  entity stops being reachable. It stops three ordinary ways: **replaced**
+  (`createReview` is a `create`, so tomorrow's briefing card renders a different
+  row), **archived** (which revokes nothing and moves the control behind a filter
+  most surfaces hide by default), and **deleted** (where the share rows cascade
+  but the title does not resolve, so the row must still render). Before this,
+  each of those left a live share nothing could close, and expiry was the only
+  thing that ever closed it. Granting is not the hard half of sharing; taking it
+  back is.
+
+  New `GET /api/v1/resparkable/shares` and
+  `lib/framework/resparkable/services/my-shares.ts` list the inventory **keyed on
+  the share rather than the entity**, which is the only ordering that can show a
+  share whose entity you can no longer open. It is an ordinary **owner query**:
+  the resemblance to `/shared-with-me` is superficial and the two must not be
+  unified, because that one reads other people's rows through a grant and this
+  one reads the owner's own rows and the grants they issued. `access/*` is
+  neither imported nor needed. **Eight queries whatever the row count**: two
+  lists, then at most one per shareable type to resolve titles via the reader's
+  existing allowlist projection, never one per share. Ordered gone, then
+  archived, then live, because somebody on this page is closing something.
+  Read-only: revoking still goes through `DELETE /grants/[id]` and
+  `DELETE /share-links/[id]`, since a second revoke path would be a second
+  definition of what revocation means. New nav entry "Shared by me", a Workspace
+  tab, and `RESPARKABLE_ROUTES.SHARING`.
+
+- **A share control for all six shareable types, not two.** Release 2 built the
   access layer, the cascade, the redaction and the routes for §13's whole list
   (`area`, `goal`, `project`, `review`, `board`, `task`) and shipped a button for
   two of them. The other four were reachable by API and by nothing a person could
   press, which is the kind of gap that stays open because every test still passes.
-  `review` is the one still without a button, and that is now a recorded decision
-  rather than the same gap: regeneration writes a **new** `ResparkableReview`
-  row, so a link minted on today's briefing would point at a row with no surface
-  able to revoke it. Granting is not the hard half of sharing; taking it back is.
-  It waits on an owner-side "things I have shared" surface, which the same trap
-  makes worth building for **any** entity that stops being reachable.
+  `review` went in last, because it needed the surface below to exist first.
   New `components/resparkable/share/share-button.tsx` owns the open state, the
   button and the mounted dialog, so no surface hand-rolls the three lines and gets
   the `entityType` wrong; the six surfaces are listed in

@@ -805,6 +805,28 @@ export type ShareLinkWire = z.infer<typeof shareLinkSchema>;
 
 export const shareLinksSchema = z.array(shareLinkSchema);
 
+/**
+ * One entity the owner has shared, with everything they gave away on it.
+ *
+ * `title` is nullable because the whole point of the surface is shares whose
+ * entity the owner can no longer reach: a replaced review, an archived
+ * project, a deleted row whose cascade has not landed yet. A schema that
+ * required the title would make the rows this page exists for fail validation,
+ * which is the failure mode where the page silently shows nothing.
+ */
+export const myShareItemSchema = z.object({
+  entityType: z.string(),
+  entityId: z.string(),
+  title: z.string().nullable(),
+  archived: z.boolean(),
+  grants: z.array(grantSchema),
+  links: z.array(shareLinkSchema),
+});
+
+export type MyShareItemWire = z.infer<typeof myShareItemSchema>;
+
+export const mySharesSchema = z.array(myShareItemSchema);
+
 /** The mint response. `token` and `path` appear here and in no later read. */
 export const mintedShareLinkSchema = z.object({
   link: z.object({

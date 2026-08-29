@@ -216,6 +216,8 @@ export const RESPARKABLE_API = {
    * item itself.
    */
   SHARED: '/api/v1/resparkable/shared',
+  /** The other direction: what this owner has shared out. */
+  SHARES: '/api/v1/resparkable/shares',
   /**
    * Search across what has been shared with me.
    *

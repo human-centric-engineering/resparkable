@@ -76,6 +76,16 @@ export const RESPARKABLE_ROUTES = {
     `${BASE}/shared/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
 
   /**
+   * The other direction: what this owner has shared out.
+   *
+   * `sharing` rather than `shared`, because the two words would be one typo
+   * apart on a pair of routes that mean opposite things. The surface exists
+   * because `ShareDialog` is only reachable through an item's own control, so
+   * a share on an item that can no longer be opened had no way to be closed.
+   */
+  SHARING: `${BASE}/sharing`,
+
+  /**
    * Where a share-invite email lands (§13, phase 13).
    *
    * Under `/resparkable`, so it is behind the session gate `proxy.ts` applies by
