@@ -310,7 +310,23 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
 
     const sql = lastSql();
     expect(sql).toContain('framework_resparkable_space');
-    expect(sql).toContain('COALESCE(e."userId"');
+    // The space is matched on its own key, which phase 45 renamed...
+    expect(sql).toMatch(/s\."spaceId"\s*=\s*COALESCE\(/);
+    // ...while `e."userId"` stays `userId`, because it is
+    // `ai_workflow_execution.userId`: a CORE column naming the person a run
+    // belongs to, not this tier's owner key. Asserted rather than assumed,
+    // because a blanket rename of every `"userId"` in that file's SQL rewrites
+    // this one too, after which the query matches nothing, bills nobody, and
+    // raises no error.
+    expect(sql).toMatch(/COALESCE\(\s*e\."userId",/);
+    // Both scope keys are read, so a schedule row written before phase 45 still
+    // resolves. The migration adds the new key beside the old rather than
+    // replacing it, and this is the half that makes that worth doing. The keys
+    // are BOUND rather than interpolated, so they are asserted in the values
+    // and not in the text.
+    const bound = (queryRaw.mock.calls.at(-1) ?? []).slice(1);
+    expect(bound).toContain('resparkableSpaceId');
+    expect(bound).toContain('resparkableUserId');
   });
 
   it('takes the oldest unbilled first', async () => {

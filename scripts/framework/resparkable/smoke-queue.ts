@@ -73,8 +73,20 @@ async function createBrain(label: string): Promise<string> {
   });
   // The space directly rather than through `ensureResparkableSpace`, which also
   // mints credits and seeds settings. This script is about the queue.
+  //
+  // `ownerUserId` has to be written even here, and that is the point of
+  // assertion 9 below: it carries the cascade, so a space without it holds job
+  // rows no erasure can reach. Phase 45 added a CHECK constraint (probe B12) so
+  // this insert now fails loudly rather than producing an unerasable brain — but
+  // the field is still written explicitly, because a fixture that only passes
+  // because a constraint corrected it is a fixture nobody can read.
   await prisma.resparkableSpace.create({
-    data: { userId: user.id, inboxToken: `${PREFIX}-${label}-${stamp}`, timezone: 'UTC' },
+    data: {
+      userId: user.id,
+      ownerUserId: user.id,
+      inboxToken: `${PREFIX}-${label}-${stamp}`,
+      timezone: 'UTC',
+    },
   });
   return user.id;
 }

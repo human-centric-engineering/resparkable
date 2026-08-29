@@ -43,7 +43,7 @@ import {
 } from '@/lib/framework/resparkable/repo/billing';
 import {
   ownerScope,
-  RESPARKABLE_SCHEDULE_OWNER_KEY,
+  readResparkableScheduleSpaceId,
 } from '@/lib/framework/resparkable/repo/owner-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
@@ -144,8 +144,10 @@ function resolveExecutionOwner(execution: BillableWorkflowExecution): string | n
   const scope: unknown = execution.scope;
   if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
 
-  const scoped = (scope as Record<string, unknown>)[RESPARKABLE_SCHEDULE_OWNER_KEY];
-  return typeof scoped === 'string' && scoped.length > 0 ? scoped : null;
+  // Either key: phase 45 writes `resparkableSpaceId` alongside the old
+  // `resparkableUserId` rather than replacing it, so a schedule row created
+  // before the migration still resolves here.
+  return readResparkableScheduleSpaceId(scope as Record<string, unknown>) ?? null;
 }
 
 /**

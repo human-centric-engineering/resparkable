@@ -30,7 +30,7 @@
  */
 
 import {
-  RESPARKABLE_SCHEDULE_OWNER_KEY,
+  readResparkableScheduleSpaceId,
   ownerScope,
   type OwnerScope,
 } from '@/lib/framework/resparkable/repo/owner-scope';
@@ -81,7 +81,12 @@ export class MissingResparkableUserError extends Error {
  * today) can reach it directly; the base class calls it for everything else.
  */
 export function requireResparkableUser(context: CapabilityContext): OwnerScope {
-  const userId = context.userId ?? context.scope?.[RESPARKABLE_SCHEDULE_OWNER_KEY];
+  // TODO(release-10): after §24 this value is a SPACE id while `context.userId`
+  // is a USER id. They are the same string today, and phase 45 renamed the
+  // column but did not, and could not, make one workspace per person into
+  // several. When it does, the session branch has to resolve the actor's
+  // *default* workspace rather than assume it.
+  const userId = context.userId ?? readResparkableScheduleSpaceId(context.scope);
   if (!userId) throw new MissingResparkableUserError();
   return ownerScope(userId);
 }

@@ -64,6 +64,7 @@ function grantRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'grant_1',
     userId: 'user_a',
+    createdByUserId: null,
     entityType: 'project',
     entityId: 'p_1',
     granteeUserId: null,

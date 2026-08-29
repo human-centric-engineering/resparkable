@@ -164,6 +164,7 @@ function shareLinkRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'link_1',
     userId: 'user_a',
+    createdByUserId: null,
     entityType: 'project',
     entityId: 'clh0000000000000000000001',
     tokenHash: 'digest',
@@ -303,6 +304,7 @@ describe('POST /api/v1/resparkable/share-links', () => {
       link: {
         id: 'link_1',
         userId: 'user_a',
+        createdByUserId: null,
         entityType: 'project',
         entityId: BODY.entityId,
         tokenHash: 'digest',

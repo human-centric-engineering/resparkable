@@ -30,7 +30,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { SEARCHABLE_ENTITY_TYPES } from '@/lib/framework/resparkable/validations';
-import type { TransferPolicySet } from '@/lib/portability/policy';
+import type { SoftRef, TransferPolicySet } from '@/lib/portability/policy';
 
 /**
  * Maps a stored `entityType` / `sourceType` value onto its Prisma model.
@@ -97,6 +97,48 @@ const INDEXED_HASH_REVIEWED = {
     'it discloses nothing further — and it is reset on import in any case.',
 } as const;
 
+/**
+ * §23.5's authorship column, as an import sees it.
+ *
+ * Every satellite gained `createdByUserId` in phase 45, and on a personal brain
+ * it is redundant with the owner. It still has to be *classified*, because the
+ * column holds a `User` id with no Prisma relation behind it (the FK is
+ * hand-written, since Resparkable must not add a relation field to the
+ * Sunrise-owned `User`) and an unclassified reference-shaped column is what
+ * `policy-coverage.test.ts` refuses to let ship.
+ *
+ * Remapped rather than dropped, so an imported brain says the importing account
+ * wrote its own notes rather than naming a stranger. `null` on unresolved
+ * because losing authorship costs nothing here: a personal space has exactly one
+ * author and the owner column already records who that is. Contrast
+ * `ResparkableSpace.ownerUserId`, which drops the row instead, because there the
+ * same value carries the erasure cascade.
+ *
+ * Group spaces do not transfer with an account at all (§23.6), so the case where
+ * this column names somebody OTHER than the space's owner never reaches an
+ * import bundle.
+ */
+const AUTHORED_BY: SoftRef = {
+  idColumn: 'createdByUserId',
+  model: 'User',
+  onUnresolved: 'null',
+};
+
+/**
+ * The same column on a model that leaves but never comes back.
+ *
+ * An `export-only` policy is read on the way out and never written on the way
+ * in, so there is no id to remap and {@link AUTHORED_BY}'s question does not
+ * arise. It still needs an answer on the record, because the coverage guard
+ * cannot tell "nobody imports this" from "nobody thought about this", and those
+ * two look identical right up until somebody flips a disposition.
+ */
+const AUTHORED_BY_NOT_IMPORTED =
+  'Who wrote the row (§23.5). This model is export-only, so nothing ever ' +
+  'writes this column on import and there is no id to remap. On import it ' +
+  'would take the same answer as every transferable sibling: remap to the ' +
+  'importing account, null if unresolved.';
+
 export const resparkableTransferPolicies: TransferPolicySet = {
   policies: [
     {
@@ -132,6 +174,32 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         priorityWeights: 'Scoring weights. Numbers.',
         retentionPolicy: 'How long to keep things, in days. Numbers.',
       },
+      // Phase 45 (§23.2) gave this table a SECOND column holding a user id, and
+      // an import has to rewrite both.
+      //
+      // `ownerColumn` covers `userId`, the space key, and there is only one of
+      // it. `ownerUserId` carries the GDPR cascade, and left alone it would
+      // arrive from the bundle still naming the person the bundle came FROM.
+      // That is not a cosmetic wrongness: the hand-written FK behind it is
+      // ON DELETE CASCADE, so an imported brain would be destroyed when a
+      // stranger closed their account, and until then it would be reachable by
+      // that stranger's erasure rather than by its actual owner's.
+      //
+      // A soft reference is the right shape and not a workaround. The column
+      // genuinely is an id into `User` with no Prisma relation behind it (the
+      // FK is hand-written because Resparkable must not add a relation field to
+      // the Sunrise-owned `User`), which is the exact case `softRefs` exists
+      // for, and the import's id map already resolves the bundle's user to the
+      // importing account.
+      //
+      // `drop-row` rather than `null`, and the choice is load-bearing. `User`
+      // always travels with a bundle, so unresolved means a hand-edited or
+      // truncated file; a null owner would leave a whole brain that no erasure
+      // can ever reach, which is a permanent Art. 17 hole created by a malformed
+      // input. Dropping the space drops everything hanging off it, which sounds
+      // drastic and is the point: a bundle that cannot say whose brain this is
+      // should not produce one.
+      softRefs: [{ idColumn: 'ownerUserId', model: 'User', onUnresolved: 'drop-row' }],
     },
 
     {
@@ -143,6 +211,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       mergeKeys: [['userId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -161,6 +230,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       mergeKeys: [['userId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -185,6 +255,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'survives to need remapping.',
       },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -207,6 +278,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         // would be angriest to lose, and an expired boost reads as zero anyway.
         manualBoost: 'A user-set priority override, not credential material.',
       },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -225,6 +297,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           // is still a thought worth keeping.
           onUnresolved: 'null',
         },
+        AUTHORED_BY,
       ],
       softRefsIgnored: {
         externalId:
@@ -254,6 +327,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       mergeKeys: [['userId', 'slug']],
       reset: { indexedHash: null },
       secretReviewed: { ...INDEXED_HASH_REVIEWED },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -263,6 +337,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       note: 'Your own tag vocabulary, with the colours and order you gave it.',
       ownerColumn: 'userId',
       mergeKeys: [['userId', 'slug']],
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -274,6 +349,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       // Both columns are foreign keys, so this can only be evaluated after the
       // tasks and tags they name have been remapped.
       mergeKeys: [['taskId', 'tagId']],
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -289,6 +365,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         if (step === '') return null;
         return `${text(row.taskId)}|${text(row.position)}|${step}`;
       },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -314,6 +391,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'Column definitions — name, the status each maps to, and a colour. ' +
           'Statuses are enum values, not row ids.',
       },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -323,6 +401,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       note: 'Where each task sits on a board — the arrangement, not just the tasks.',
       ownerColumn: 'userId',
       mergeKeys: [['boardId', 'taskId']],
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -335,6 +414,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         const start = row.startAt instanceof Date ? row.startAt.toISOString() : text(row.startAt);
         return `${start}|${text(row.title)}`;
       },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -361,6 +441,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           typeMap: BRAIN_TYPE_MAP,
           onUnresolved: 'drop-row',
         },
+        AUTHORED_BY,
       ],
       // Contains four remapped values, so it can only be evaluated after both
       // ends have been resolved.
@@ -401,6 +482,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'credential — and rewritten on import, or nulled when the originals ' +
           'do not travel.',
       },
+      softRefs: [AUTHORED_BY],
     },
 
     {
@@ -420,6 +502,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           // footnote.
           onUnresolved: 'null',
         },
+        AUTHORED_BY,
       ],
       jsonRefs: [
         {
@@ -449,6 +532,10 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'sitting beside real entries and indistinguishable from them.',
       ownerColumn: 'userId',
       softRefsIgnored: {
+        createdByUserId:
+          'Phase 45 (§23.10): on an EVENT row this is the actor rather than the ' +
+          'row’s author — the person who did the thing the event describes. ' +
+          'Export-only, so nothing writes it on import and there is no id to remap.',
         entityId:
           'Identifies whichever row an entry describes, across every table in ' +
           'the tier. Kept verbatim because the log is never replayed — it is ' +
@@ -473,6 +560,9 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'exported number into a different account would let a self-export/' +
         'import round trip mint credits nobody granted.',
       ownerColumn: 'userId',
+      softRefsIgnored: {
+        createdByUserId: AUTHORED_BY_NOT_IMPORTED,
+      },
     },
     {
       owner: 'framework:resparkable',
@@ -486,6 +576,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'happened there.',
       ownerColumn: 'userId',
       softRefsIgnored: {
+        createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         relatedConversationId:
           'Soft reference to the chat turn this entry billed, kept verbatim ' +
           'because the entry is never replayed — it is read against the ' +
@@ -525,6 +616,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
       ownerColumn: 'userId',
       redact: ['inviteTokenHash'],
       softRefsIgnored: {
+        createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         entityId:
           'Identifies whichever row the grant covers, across six tables in the ' +
           'tier. Kept verbatim because the grant is never replayed — it is ' +
@@ -552,6 +644,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'person are the last thing that should be replayed by a machine.',
       ownerColumn: 'userId',
       softRefsIgnored: {
+        createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         entityId:
           'Identifies whichever item the comment sits on, across six tables in ' +
           'the tier. Kept verbatim because the row is never replayed — same as ' +
@@ -586,6 +679,7 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'redacted above.',
       },
       softRefsIgnored: {
+        createdByUserId: AUTHORED_BY_NOT_IMPORTED,
         entityId:
           'Identifies whichever row the link points at. Kept verbatim, never ' +
           'replayed — same as the grant above.',

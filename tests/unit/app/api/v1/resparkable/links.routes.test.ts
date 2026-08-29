@@ -116,6 +116,7 @@ function linkRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'link_1',
     userId: 'user_a',
+    createdByUserId: null,
     sourceType: 'project',
     sourceId: SOURCE_ID,
     targetType: 'goal',

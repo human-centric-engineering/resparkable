@@ -18,6 +18,51 @@ release process.
 
 ### Added
 
+- **The Resparkable brain's owner key is now `spaceId`, and the GDPR cascade
+  hangs off a new `ownerUserId`.** Release 9 phase 45 (`plan.md` §23.2), the
+  structural half of Groups: `ResparkableSpace.userId` and the `userId` column on
+  all 23 satellites are renamed, `ResparkableSpace` gains
+  `kind: 'personal' | 'group'` plus a nullable, deliberately **non-unique**
+  `ownerUserId`, and the hand-written `→ "user"("id") ON DELETE CASCADE` FK moves
+  onto that column. A group space has `ownerUserId` NULL and is therefore,
+  correctly, unreachable by the personal cascade: one member closing their
+  account must not take a shared workspace with them. Nothing creates a group
+  space yet; that is phase 46.
+
+  **The migration rewrites no rows.** Every satellite referenced
+  `ResparkableSpace.userId` and nothing referenced its `id`, so a personal space
+  keeps its existing key value (which happens to be a user id) and the change is
+  a catalog rename rather than an `UPDATE` over the largest tables in the
+  database. Proved rather than asserted, by
+  `npm run framework:resparkable:key-checksum`, which compares row counts,
+  content digests, `pg_class.relfilenode` and `pg_stat_user_tables` tuple
+  counters either side: a checksum alone passes on a full rewrite, so the
+  relfilenode is the measure that actually answers the question.
+
+  Also landed here, because the migration that would add them is the migration
+  over 23 tables and it happens once: §24.1's workspace columns (`isDefault`,
+  `name`, `slug`, `archivedAt`) with a partial unique index enforcing at most one
+  live default per owner, and §23.5's `createdByUserId` on every satellite with
+  `ON DELETE SetNull`, so an erased member loses their authorship and the group
+  keeps its content.
+
+  New drift probes: **B1b** (the pre-phase-45 FK must be gone, which is what
+  distinguishes "the migration ran" from "it ran to completion"), **B10** (the
+  partial unique, asserted by definition: a plain index of the same name
+  satisfies existence and enforces nothing), **B11** (all 23 authorship keys in
+  one probe, checking the action, because `Cascade` here would let a departing
+  member delete a group's shared material), and **B12**, a `CHECK` making the
+  ownership invariant a database rule rather than a convention. B12 is not
+  decoration: two writers produced a personal space with a NULL `ownerUserId`
+  within an hour of the column existing, and every such row is a brain no erasure
+  can ever reach.
+
+  `RESPARKABLE_SCHEDULE_OWNER_KEY` gains a sibling `RESPARKABLE_SCHEDULE_SPACE_KEY`
+  (§24.2). Both keys are written and either is read, via the new
+  `readResparkableScheduleSpaceId()`: replacing the old one outright would open a
+  window at deploy, before the new code is on every pod, in which an old reader
+  silently resolves no owner.
+
 - **`/resparkable/sharing`: every share is now revocable, including the ones you
   cannot navigate to.** `ShareDialog` is the only place a share is revoked and it
   is reachable only through the entity's own control, which holds until the

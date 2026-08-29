@@ -109,7 +109,7 @@ export async function findLatestStatusChanges(
            "createdAt",
            "metadata"->>'statusTo' AS "statusTo"
     FROM "framework_resparkable_event"
-    WHERE "userId" = ${scope.userId}
+    WHERE "spaceId" = ${scope.userId}
       AND "entityType" = 'task'
       AND "entityId" IN (${Prisma.join(taskIds)})
       AND "metadata" ? 'statusTo'

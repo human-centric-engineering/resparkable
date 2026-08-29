@@ -434,10 +434,10 @@ async function main(): Promise<void> {
       SELECT MAX(1 - (a."embedding" <=> b."embedding")) AS similarity
       FROM "framework_resparkable_embedding" a
       JOIN "framework_resparkable_embedding" b
-        ON a."userId" = b."userId"
+        ON a."spaceId" = b."spaceId"
        AND a."entityType" = 'thought' AND b."entityType" = 'thought'
        AND a."entityId" < b."entityId"
-      WHERE a."userId" = ${userA}
+      WHERE a."spaceId" = ${userA}
         AND a."embedding" IS NOT NULL AND b."embedding" IS NOT NULL
     `;
     const bestSimilarity = best?.similarity ?? 0;

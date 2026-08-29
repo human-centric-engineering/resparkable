@@ -73,6 +73,44 @@ export interface OwnerScope {
 export const RESPARKABLE_SCHEDULE_OWNER_KEY = 'resparkableUserId';
 
 /**
+ * The same thing, under the name §24.2 says it has to have.
+ *
+ * `resparkableUserId` stops being able to answer the question the moment one
+ * person can own several workspaces: a per-user key cannot name which of three
+ * brains a 04:30 run is for. Phase 45 lands the rename with the rest of the key
+ * migration, because rewriting a `Json?` column is cheap while every user has
+ * exactly one space and the mapping is the identity, and it is a data-repair job
+ * with a support tail afterwards.
+ *
+ * **Both keys are written, and either is read.** Replacing the old one outright
+ * opens a window at deploy, before the new code is on every pod, in which an old
+ * reader finds nothing and silently resolves no owner: a skipped bill, or a 04:30
+ * briefing in which every capability throws with nothing surfacing it. Keeping
+ * both makes a pre-migration row resolve without a special case and leaves a
+ * one-line deletion for a later phase. Read through
+ * {@link readResparkableScheduleSpaceId} rather than either constant directly,
+ * so the fallback lives in one place.
+ */
+export const RESPARKABLE_SCHEDULE_SPACE_KEY = 'resparkableSpaceId';
+
+/**
+ * Pull the space id out of a persisted scope, accepting either key.
+ *
+ * Returns `undefined` rather than throwing: a scope naming no space is an
+ * ordinary state (an org-level schedule that has nothing to do with this tier),
+ * and the callers already have a "no owner" path that says so properly.
+ */
+export function readResparkableScheduleSpaceId(
+  scope: Record<string, unknown> | null | undefined
+): string | undefined {
+  if (!scope) return undefined;
+  const next = scope[RESPARKABLE_SCHEDULE_SPACE_KEY];
+  if (typeof next === 'string' && next.length > 0) return next;
+  const legacy = scope[RESPARKABLE_SCHEDULE_OWNER_KEY];
+  return typeof legacy === 'string' && legacy.length > 0 ? legacy : undefined;
+}
+
+/**
  * Mint a scope from a **verified** user id.
  *
  * The id must come from the session (`withAuth`'s `session.user.id`), from

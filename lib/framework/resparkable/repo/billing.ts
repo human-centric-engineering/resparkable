@@ -17,7 +17,10 @@ import {
   ownerWhere,
   type OwnerScope,
 } from '@/lib/framework/resparkable/repo/owner-scope';
-import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
+import {
+  RESPARKABLE_SCHEDULE_OWNER_KEY,
+  RESPARKABLE_SCHEDULE_SPACE_KEY,
+} from '@/lib/framework/resparkable/repo/owner-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
 import { Prisma } from '@prisma/client';
@@ -215,8 +218,21 @@ export async function findUnbilledTerminalResparkableExecutions(
           AND l."relatedWorkflowExecutionId" = e."id"
       )
       AND EXISTS (
+        -- e."userId" is ai_workflow_execution.userId, a CORE column naming the
+        -- person a run belongs to. It is NOT the tier's owner key and phase 45
+        -- does not rename it: only s."spaceId", on the tier's own table, moved.
+        -- Worth the comment, because a blanket rename of every "userId" in this
+        -- file's SQL silently rewrites this one, after which the query matches
+        -- nothing: it bills nobody and raises no error.
         SELECT 1 FROM "framework_resparkable_space" s
-        WHERE s."userId" = COALESCE(e."userId", e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY})
+        WHERE s."spaceId" = COALESCE(
+          e."userId",
+          -- Both scope keys, because phase 45 writes the new one alongside the
+          -- old rather than replacing it: a schedule row created before the
+          -- migration still carries only the old resparkableUserId key.
+          e."scope"->>${RESPARKABLE_SCHEDULE_SPACE_KEY},
+          e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY}
+        )
       )
     ORDER BY e."updatedAt" ASC
     LIMIT ${limit}

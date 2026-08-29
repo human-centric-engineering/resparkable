@@ -73,27 +73,29 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db/client';
 
 /**
- * Columns `framework_resparkable_space` carries *before* phase 45, with the key
- * column named neutrally so the same list works on both sides of the rename.
+ * Columns phase 45 ADDS. Excluded from the content digest on both sides.
  *
- * The parent is the one table whose `t.*::text` legitimately differs across the
- * migration, so it cannot use the positional shortcut every satellite uses. The
- * list is written out rather than derived: deriving it from
- * `information_schema` after the migration would silently include the new
- * columns and compare nothing.
+ * The digest has to answer "does this table still hold the same data", and a
+ * column that did not exist before cannot have changed. Hashing `t.*::text`
+ * without this exclusion reports a content change on every table that gained
+ * `createdByUserId`, which is every satellite: true, useless, and it would bury
+ * the one finding that matters.
+ *
+ * Written out rather than derived. Deriving the list from `information_schema`
+ * after the migration would include the new columns in both runs' projections
+ * and compare nothing at all, which is the failure mode that looks like success.
  */
-const SPACE_PRE_MIGRATION_COLUMNS = [
-  'id',
-  'inboxToken',
-  'timezone',
-  'energyProfile',
-  'priorityWeights',
-  'retentionPolicy',
-  'workStyle',
-  'connectionStrengthFloor',
-  'createdAt',
-  'updatedAt',
-] as const;
+const PHASE_45_ADDED_COLUMNS = new Set([
+  // On every satellite (§23.5).
+  'createdByUserId',
+  // On the parent only (§23.2 and §24.1).
+  'kind',
+  'ownerUserId',
+  'isDefault',
+  'name',
+  'slug',
+  'archivedAt',
+]);
 
 const SPACE_TABLE = 'framework_resparkable_space';
 
@@ -183,16 +185,31 @@ async function detectKeyColumn(table: string): Promise<string | null> {
   return names[0] ?? null;
 }
 
-/** Row count plus an order-independent content digest. */
+/**
+ * Row count plus an order-independent content digest over the pre-migration
+ * columns.
+ *
+ * `ROW(...)::text` rather than `t.*::text` because every table gains a column
+ * here (see {@link PHASE_45_ADDED_COLUMNS}). Ordering the projection by
+ * `ordinal_position` and dropping the additions gives the identical column list
+ * on both sides, because `RENAME COLUMN` preserves `attnum` and `ADD COLUMN`
+ * appends at the end. So the digest still moves if and only if the *data* moved.
+ */
 async function measureContent(table: string): Promise<{ rows: number; checksum: string | null }> {
-  // The parent gains columns, so it is hashed over an explicit projection.
-  // Every satellite uses `t.*::text`, which is positional and therefore
-  // invariant under a column rename.
-  const projection =
-    table === SPACE_TABLE
-      ? `ROW(${SPACE_PRE_MIGRATION_COLUMNS.map((c) => `t."${c}"`).join(', ')})::text`
-      : `t.*::text`;
+  const columns = await prisma.$queryRaw<Array<{ column_name: string }>>`
+    SELECT column_name
+      FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = ${table}
+     ORDER BY ordinal_position
+  `;
+  const kept = columns
+    .map((c) => c.column_name)
+    .filter((name) => !PHASE_45_ADDED_COLUMNS.has(name));
+  if (kept.length === 0) {
+    throw new Error(`${table} has no pre-migration columns left to hash`);
+  }
 
+  const projection = `ROW(${kept.map((c) => `t."${c}"`).join(', ')})::text`;
   const rows = await prisma.$queryRawUnsafe<Array<{ rows: bigint; checksum: string | null }>>(
     `SELECT count(*)::bigint AS rows,
             md5(string_agg(h, '' ORDER BY h)) AS checksum
@@ -295,13 +312,19 @@ function compare(before: Snapshot, after: Snapshot): string[] {
       );
     }
 
-    // Index names change in this migration, so compare the multiset of
-    // relfilenodes rather than the name-to-node mapping. A renamed index keeps
-    // its node; a rebuilt one does not.
-    const wasNodes = Object.values(was.indexes).sort().join(',');
-    const nowNodes = Object.values(now.indexes).sort().join(',');
-    if (wasNodes !== nowNodes) {
-      problems.push(`${now.table}: index storage changed (an index was REBUILT, not renamed)`);
+    // Index names change in this migration, so compare relfilenodes rather than
+    // the name-to-node mapping: a renamed index keeps its node, a rebuilt one
+    // does not. A SUBSET check rather than equality, because the parent
+    // legitimately gains two indexes here (the ownerUserId lookup and B10) and
+    // requiring equality would report every addition as a rebuild. What must not
+    // happen is a node going missing.
+    const nowNodes = new Set(Object.values(now.indexes));
+    const lost = Object.entries(was.indexes).filter(([, node]) => !nowNodes.has(node));
+    if (lost.length > 0) {
+      problems.push(
+        `${now.table}: ${lost.length} index(es) REBUILT rather than renamed: ` +
+          lost.map(([name]) => name).join(', ')
+      );
     }
 
     const written = now.tuplesWritten - was.tuplesWritten;

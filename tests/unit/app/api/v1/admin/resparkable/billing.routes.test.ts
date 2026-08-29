@@ -128,6 +128,7 @@ function ledgerEntry(
   return {
     id: 'ledger_1',
     userId: 'user_a',
+    createdByUserId: null,
     kind: 'admin_grant',
     creditsDelta: 100,
     tokenCostUsd: null,

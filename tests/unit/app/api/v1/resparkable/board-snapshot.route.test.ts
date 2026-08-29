@@ -52,6 +52,7 @@ const VIEW = {
   board: {
     id: 'board_1',
     userId: 'user_a',
+    createdByUserId: null,
     name: 'Sprint 12',
     slug: 'sprint-12',
     description: null,

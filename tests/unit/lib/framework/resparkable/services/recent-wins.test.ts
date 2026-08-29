@@ -54,6 +54,7 @@ function event(overrides: Partial<ResparkableEvent> = {}): ResparkableEvent {
   return {
     id: 'ev_1',
     userId: 'user_a',
+    createdByUserId: null,
     kind: 'completed',
     entityType: 'task',
     entityId: 'task_1',

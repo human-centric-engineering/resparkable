@@ -4,7 +4,7 @@
  * The plan (§4) put `searchResparkable` in `search/hybrid-search.ts`, but the tier's
  * ESLint boundary forbids importing Prisma anywhere except `repo/**`, and that
  * constraint is worth more than the file layout: it means the raw SQL — the one
- * place a `WHERE "userId" = …` can be forgotten — can only be written in the
+ * place a `WHERE "spaceId" = …` can be forgotten — can only be written in the
  * layer whose every function takes an `OwnerScope`. So the SQL lives here and
  * `search/*` orchestrates around it.
  *
@@ -159,7 +159,7 @@ export async function upsertEmbeddings(
     for (const row of rows) {
       await tx.$executeRaw`
         INSERT INTO "framework_resparkable_embedding" (
-          "id", "userId", "entityType", "entityId", "chunkIndex", "content",
+          "id", "spaceId", "entityType", "entityId", "chunkIndex", "content",
           "sensitivity", "embedding", "contentHash", "embeddingModel",
           "embeddingProvider", "embeddingDimension", "embeddedAt",
           "createdAt", "updatedAt"
@@ -170,7 +170,7 @@ export async function upsertEmbeddings(
           ${row.contentHash}, ${row.embeddingModel}, ${row.embeddingProvider},
           ${row.embeddingDimension}, ${row.embeddedAt}, NOW(), NOW()
         )
-        ON CONFLICT ("userId", "entityType", "entityId", "chunkIndex") DO UPDATE SET
+        ON CONFLICT ("spaceId", "entityType", "entityId", "chunkIndex") DO UPDATE SET
           "content" = EXCLUDED."content",
           "sensitivity" = EXCLUDED."sensitivity",
           "embedding" = EXCLUDED."embedding",
@@ -445,7 +445,7 @@ export async function hybridSearchRows(
           0.0
         ) AS keyword_score
       FROM "framework_resparkable_embedding" e
-      WHERE e."userId" = ${scope.userId}
+      WHERE e."spaceId" = ${scope.userId}
         AND e."embedding" IS NOT NULL
         AND e."entityType" IN (${typeList(input.entityTypes)})
         AND (${input.excludeSensitive} = FALSE OR e."sensitivity" <> 'sensitive')
@@ -490,7 +490,7 @@ export async function searchTaskKeywords(
     SELECT t."id",
            ts_rank_cd(t."searchVector", plainto_tsquery('english', ${query}), 32) AS score
     FROM "framework_resparkable_task" t
-    WHERE t."userId" = ${scope.userId}
+    WHERE t."spaceId" = ${scope.userId}
       AND t."searchVector" @@ plainto_tsquery('english', ${query})
       AND (${includeArchived} OR t."archivedAt" IS NULL)
     ORDER BY score DESC
@@ -549,7 +549,7 @@ export async function nearestNeighbourRows(
     WITH src AS (
       SELECT s."embedding" AS embedding
       FROM "framework_resparkable_embedding" s
-      WHERE s."userId" = ${scope.userId}
+      WHERE s."spaceId" = ${scope.userId}
         AND s."entityType" = ${input.entityType}
         AND s."entityId" = ${input.entityId}
         AND s."embedding" IS NOT NULL
@@ -560,7 +560,7 @@ export async function nearestNeighbourRows(
            e."entityId",
            MIN(e."embedding" <=> (SELECT embedding FROM src)) AS distance
     FROM "framework_resparkable_embedding" e
-    WHERE e."userId" = ${scope.userId}
+    WHERE e."spaceId" = ${scope.userId}
       AND e."embedding" IS NOT NULL
       AND e."entityType" IN (${typeList(input.targetTypes)})
       AND NOT (e."entityType" = ${input.entityType} AND e."entityId" = ${input.entityId})
@@ -568,7 +568,7 @@ export async function nearestNeighbourRows(
       AND NOT EXISTS (
         SELECT 1
         FROM "framework_resparkable_link" l
-        WHERE l."userId" = ${scope.userId}
+        WHERE l."spaceId" = ${scope.userId}
           AND (
             (l."sourceType" = ${input.entityType} AND l."sourceId" = ${input.entityId}
               AND l."targetType" = e."entityType" AND l."targetId" = e."entityId")

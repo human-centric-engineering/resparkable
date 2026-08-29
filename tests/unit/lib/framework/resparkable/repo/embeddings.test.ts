@@ -108,7 +108,7 @@ describe('upsertEmbeddings', () => {
     const sql = (template as unknown as string[]).join('?');
 
     expect(sql).toContain('ON CONFLICT');
-    expect(sql).toContain('"userId", "entityType", "entityId", "chunkIndex"');
+    expect(sql).toContain('"spaceId", "entityType", "entityId", "chunkIndex"');
     expect(sql).toContain('DO UPDATE SET');
   });
 

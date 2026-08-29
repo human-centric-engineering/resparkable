@@ -258,7 +258,7 @@ const SCOPED_CALLS: Array<[string, () => Promise<unknown>]> = [
  * They are deliberately **not** in the sweep above: it inspects the object
  * handed to a Prisma delegate, and a tagged template has none. They get a
  * stronger, more specific assertion instead (see the raw-SQL block below) —
- * which matters, because raw SQL is precisely where a missing `WHERE "userId"`
+ * which matters, because raw SQL is precisely where a missing `WHERE "spaceId"`
  * would hide.
  */
 const RAW_SQL_CALLS: Array<[string, () => Promise<unknown>]> = [
@@ -342,13 +342,34 @@ describe('every repo call is owner-scoped', () => {
       expect(scoped, `unscoped Prisma call: ${JSON.stringify(args)}`).toBe(true);
     }
   });
+
+  it.each(SCOPED_CALLS)('%s never filters on the ACTOR', async (_name, call) => {
+    // D5, restated by §23.2. `SpaceScope` carries `actorUserId` for attribution
+    // and role checks, and the moment it appears in a `where` a group space has
+    // a per-row ACL: a membership join on the hot path of roughly forty list
+    // endpoints, `priorityScore`'s single indexed ORDER BY defeated, and every
+    // one of those endpoints a potential leak (§23.4).
+    //
+    // Asserted structurally rather than by reading the code, and asserted NOW,
+    // while nothing has an actor to filter on. The mistake this prevents is not
+    // one somebody makes deliberately; it is one that arrives as a convenience
+    // in a phase that has group members to hand.
+    await call();
+
+    for (const args of recordedArgs()) {
+      const rendered = JSON.stringify(args.where ?? {});
+      expect(rendered, `a repo query filtered on the actor: ${rendered}`).not.toContain(
+        'actorUserId'
+      );
+    }
+  });
 });
 
 describe('raw SQL binds userId as a parameter, never interpolates it', () => {
   /**
    * Two separate properties, and both matter.
    *
-   * **Scoped**: the statement filters on `"userId" = $n` and `scope.userId` is
+   * **Scoped**: the statement filters on `"spaceId" = $n` and `scope.userId` is
    * among the bound values. A vector search that forgets this returns whichever
    * rows are nearest across *every* user's brain — the exact leak §16.2 calls out
    * ("B's search never returns A's rows, including when A's row is the better
@@ -375,7 +396,10 @@ describe('raw SQL binds userId as a parameter, never interpolates it', () => {
       expect(Array.isArray(template), 'raw SQL must be a tagged template').toBe(true);
       const sql = (template as unknown as string[]).join('?');
 
-      expect(sql, 'raw SQL must filter on userId').toMatch(/"userId"\s*=/);
+      expect(sql, 'raw SQL must filter on spaceId').toMatch(/"spaceId"\s*=/);
+      // Same rule as the Prisma sweep above: the actor is attribution, never a
+      // filter. Raw SQL is where it would be easiest to slip one in unnoticed.
+      expect(sql, 'raw SQL must not filter on the actor').not.toContain('actorUserId');
       expect(values, 'scope.userId must be a bound parameter').toContain('user_a');
       expect(sql, 'the user id must never be interpolated into the SQL text').not.toContain(
         'user_a'

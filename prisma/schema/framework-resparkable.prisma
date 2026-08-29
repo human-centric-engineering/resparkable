@@ -10,25 +10,42 @@
 //
 //   1. Every table is `@@map("framework_resparkable_<name>")`. The prefix is what
 //      keeps Resparkable's tables from colliding with a host project's own.
-//   2. Every model carries `userId`, and every index leads with it. There is
-//      exactly ONE satellite table — `ResparkableSpace` — holding a hand-written FK
-//      to `"user"("id") ON DELETE CASCADE. Everything else cascades from that,
-//      so GDPR erasure is transitive and no column is ever added to `User`.
-//   3. Cross-user reads are structurally impossible in `repo/*` (D5). The
-//      schema's job is to make `WHERE userId = $1` the natural query.
+//   2. Every model carries `spaceId`, and every index leads with it. There is
+//      exactly ONE satellite table, `ResparkableSpace`, and its `ownerUserId`
+//      holds the hand-written FK to `"user"("id") ON DELETE CASCADE. Everything
+//      else cascades from that, so GDPR erasure is transitive and no column is
+//      ever added to `User`. A GROUP space has `ownerUserId` NULL and is
+//      therefore, correctly, not reachable by that cascade at all (§23.2): one
+//      member closing their account must not take a shared workspace with them.
+//      Until phase 46 nothing creates one.
+//   3. Cross-space reads are structurally impossible in `repo/*` (D5). The
+//      schema's job is to make `WHERE spaceId = $1` the natural query.
 //
 // ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️  (see also the per-model blocks below)
-// SIX Postgres objects here are managed via raw SQL in the migration because
-// Prisma cannot model them. `npx prisma migrate dev` WILL emit DROP statements
-// for all six on every schema-diff run. Always inspect generated migration SQL
-// and remove any line touching them before applying — every one of them fails
-// **silently, with no error**. (Note: the HNSW index is NOT on today's query path —
-// the hybrid search's pre-filter and blended ORDER BY defeat it, verified with
-// EXPLAIN — so B3 guards a future restructuring. B4/B6, the GENERATED tsvector
-// columns, guard live code: recreated as plain columns they are never populated and
-// keyword search silently returns nothing.)
-// `lib/framework/resparkable/db-drift.ts` probes all six; run
-// `npm run db:drift-check` after EVERY `migrate dev`. Non-negotiable.
+// A set of Postgres objects here is managed via raw SQL in the migration because
+// Prisma cannot model them, and `npx prisma migrate dev` WILL emit DROP
+// statements for every one of them on every schema-diff run. Always inspect
+// generated migration SQL and remove any line touching them before applying:
+// every one of them fails **silently, with no error**.
+//
+// The count is deliberately not restated here. It said "six" from the table's
+// first day until phase 45, while `db-drift.ts` had grown to nine, and a number
+// that drifts is worse than no number because it reads as a checklist somebody
+// has completed. `lib/framework/resparkable/db-drift.ts` IS the inventory:
+// B1 (the GDPR-cascade FK, on `ownerUserId` since phase 45), B1b and B3 and B7
+// (objects that must NOT exist), B2 (the halfvec column), B4/B6 (GENERATED
+// tsvector columns), B5 (the GIN index over B4), B8/B9 (grantee and comment
+// author cascades), B10 (the one-default-per-owner partial unique) and B11
+// (23 `createdByUserId` keys in one probe).
+//
+// Two of them guard live code rather than a future restructuring, and are worth
+// naming: B4/B6, the GENERATED tsvector columns, are never populated if
+// recreated as plain columns, so keyword search silently returns nothing for
+// every row written afterwards while old rows still match. The HNSW index is NOT
+// on today's query path (the hybrid search's pre-filter and blended ORDER BY
+// defeat it, verified with EXPLAIN), so B3 guards a future restructuring.
+//
+// Run `npm run db:drift-check` after EVERY `migrate dev`. Non-negotiable.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The model graph account transfer runs on, rebuilt on every `prisma generate`.
@@ -59,7 +76,44 @@ generator portability {
 /// cascade** — probe B1 asserts both its existence and its ON DELETE action.
 model ResparkableSpace {
   id     String @id @default(cuid())
-  userId String @unique
+  userId String @unique @map("spaceId")
+
+  /// personal | group. A personal space has `ownerUserId` set and is reached by
+  /// the D1 cascade; a group space has it NULL and points at a `ResparkableGroup`
+  /// instead (§23.2), which is exactly why erasing a member cannot take a shared
+  /// workspace with them. Probe B1 asserts both halves.
+  kind String @default("personal") @db.VarChar(16)
+
+  /// The human owner, and the anchor of the GDPR cascade.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// `framework_resparkable_space_ownerUserId_fkey` (→ `"user"("id")`
+  /// ON DELETE CASCADE) is hand-written in the migration, for the same reason
+  /// the old `userId` FK was: `User` lives in a Sunrise-owned schema file and
+  /// Resparkable must not add a relation field there. Probe B1 asserts its
+  /// existence AND its ON DELETE action on THIS column.
+  ///
+  /// **Deliberately NOT `@unique`.** That absence is the feature, not an
+  /// oversight: it is the whole schema-level cost of several workspaces per
+  /// owner (§24.1). Do not add the constraint as a tidy-up reasoning that one
+  /// person obviously has one brain.
+  ownerUserId String?
+
+  /// Where unnamed capture lands and what the app opens on (§24.2). A real
+  /// setting rather than a fallback: a user may change it and may not have none,
+  /// which the partial unique index (probe B10) enforces at the database rather
+  /// than only in the service.
+  isDefault Boolean @default(false)
+
+  /// Display name and URL segment. Null on the space every account already had,
+  /// because naming a thing you have only one of is a question nobody asked;
+  /// Release 10 fills them in when it lets you create a second.
+  name String? @db.VarChar(120)
+  slug String? @db.VarChar(64)
+
+  /// Archiving a workspace hides it without destroying it (§24.1). Archiving the
+  /// default promotes a successor and says so out loud.
+  archivedAt DateTime?
 
   /// Routing token for email capture: brain+<inboxToken>@<RESPARKABLE_INBOX_DOMAIN>.
   inboxToken String @unique
@@ -142,6 +196,7 @@ model ResparkableSpace {
   /// would have left two answers to "when was this brain last worked on".
   jobs ResparkableJob[]
 
+  @@index([ownerUserId])
   @@map("framework_resparkable_space")
 }
 
@@ -151,7 +206,23 @@ model ResparkableSpace {
 /// Area by time logged against it (see `.context/framework/resparkable/design-principles.md`).
 model ResparkableArea {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   name        String
   slug        String
@@ -193,7 +264,23 @@ model ResparkableArea {
 /// Horizons: life → year → quarter → month → week.
 model ResparkableGoal {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   title       String
   /// Unique per user, as for areas, projects and entities. A goal is an
@@ -248,7 +335,23 @@ model ResparkableGoal {
 
 model ResparkableProject {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   name        String
   slug        String
@@ -309,7 +412,23 @@ model ResparkableProject {
 /// why this model has `searchVector` but no `indexedHash`.
 model ResparkableTask {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   title String
   notes String? @db.Text
@@ -395,7 +514,23 @@ model ResparkableTask {
 /// The capture inbox — the front door of the whole product.
 model ResparkableThought {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   content String @db.Text
 
@@ -447,7 +582,23 @@ model ResparkableThought {
 /// by `pruneResparkableOrphans(userId)` and by the transactional delete services.
 model ResparkableLink {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   sourceType String @db.VarChar(16)
   sourceId   String
@@ -534,7 +685,23 @@ model ResparkableLink {
 /// (§11, §17 risk 5b).
 model ResparkableEmbedding {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// thought | project | goal | area | entity | document. NOT task (§1).
   entityType String @db.VarChar(16)
@@ -603,7 +770,23 @@ model ResparkableEmbedding {
 /// exist, not a new subsystem (§12).
 model ResparkableBoard {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   name        String
   slug        String
@@ -646,7 +829,23 @@ model ResparkableBoard {
 /// Explicit board membership — only used when `membership: 'explicit'`.
 model ResparkableBoardCard {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   boardId String
   taskId  String
@@ -675,7 +874,23 @@ model ResparkableBoardCard {
 /// is one write and export can carry colours (§12).
 model ResparkableTag {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   name      String
   slug      String
@@ -697,7 +912,23 @@ model ResparkableTag {
 
 model ResparkableTaskTag {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   taskId String
   tagId  String
@@ -721,7 +952,23 @@ model ResparkableTaskTag {
 /// polymorphic edge table, there is nothing to keep once the task is gone.
 model ResparkableChecklistItem {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   taskId String
   text   String
@@ -753,7 +1000,23 @@ model ResparkableChecklistItem {
 /// (§1, §11).
 model ResparkableEntity {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   name        String
   slug        String
@@ -793,7 +1056,23 @@ model ResparkableEntity {
 /// global asset and per-user scoping there is a documented anti-pattern (§4).
 model ResparkableDocument {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   title    String
   fileName String
@@ -852,7 +1131,23 @@ model ResparkableDocument {
 /// requirement. Deliberately not vault-synced: calendar-shaped and high-churn.
 model ResparkableTimeBlock {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   title String?
 
@@ -891,7 +1186,23 @@ model ResparkableTimeBlock {
 /// vault edits flow back is a guaranteed data-loss complaint (§14).
 model ResparkableReview {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// daily | weekly | month | quarter | briefing | connections | context_summary
   horizon String @db.VarChar(16)
@@ -937,7 +1248,22 @@ model ResparkableReview {
 /// email in the owner's log survives the grantee's erasure (§1, §13).
 model ResparkableEvent {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// **On an event row this is the ACTOR, not the item's author** (§23.10), and
+  /// the name invites the wrong reading everywhere else in the tier. A task Sam
+  /// created and Priya completed produces one row attributed to Sam and one
+  /// attributed to Priya; a feed reading the task's author for both would put
+  /// Sam's name on Priya's work.
+  ///
+  /// `source: 'system'` rows have no actor and are rendered as the workspace
+  /// acting, never as an unattributed line that reads like somebody hiding.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️  Hand-written FK, ON DELETE SetNull,
+  /// probe B11. There is deliberately NO index on this column: §23.10 forbids
+  /// any aggregate over members, and the absent index is what makes the
+  /// leaderboard awkward as well as forbidden.
+  createdByUserId String?
 
   /// captured | completed | promoted | archived | restored | snoozed |
   /// unsnoozed | linked | shared | revoked
@@ -1031,11 +1357,27 @@ model ResparkableSettings {
 /// lazily (not inline with `ensureResparkableSpace`) the first time a
 /// billing-aware code path touches it, see `services/billing.ts`.
 model ResparkableCreditAccount {
-  id             String   @id @default(cuid())
-  userId         String   @unique
-  balanceCredits Float    @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id     String @id @default(cuid())
+  userId String @unique @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
+  balanceCredits  Float    @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
@@ -1047,7 +1389,23 @@ model ResparkableCreditAccount {
 /// Append-only spend/grant history behind `ResparkableCreditAccount.balanceCredits`.
 model ResparkableCreditLedgerEntry {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// admin_grant | agent_spend | refund
   kind         String @db.VarChar(16)
@@ -1130,7 +1488,23 @@ model ResparkableJob {
   /// Renamed by §23's phase 45 with the other satellites: it relates to the
   /// space today because a space is an owner; afterwards it relates to
   /// `ownerUserId`.
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// triage | briefing | weekly_review | horizon_check | sweep | retention | reindex
   ///
@@ -1229,7 +1603,23 @@ model ResparkableJob {
 /// instead. Both halves are needed; neither covers the other.
 model ResparkableGrant {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// area | goal | project | review | board | task. Never `thought`.
   entityType String @db.VarChar(16)
@@ -1295,7 +1685,23 @@ model ResparkableGrant {
 /// for "unguessable".
 model ResparkableShareLink {
   id     String @id @default(cuid())
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// area | goal | project | review | board | task. Never `thought`.
   entityType String @db.VarChar(16)
@@ -1377,7 +1783,23 @@ model ResparkableShareLink {
 model ResparkableComment {
   id     String @id @default(cuid())
   /// The OWNER of the item, not the author. See the header.
-  userId String
+  userId String @map("spaceId")
+
+  /// Who wrote this row (§23.5). Null in every space that existed before groups
+  /// did, and redundant with the owner in a personal space; in a group space it
+  /// is what makes attribution and the activity feed possible at all.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// The FK to `"user"("id")` ON DELETE **SetNull** is hand-written (Prisma
+  /// cannot model it: no relation field may be added to `User`). Probe B11
+  /// covers this column on every satellite at once.
+  ///
+  /// SetNull rather than Cascade is the point: erasing a member removes their
+  /// authorship and leaves the group's content, because that content is the
+  /// group's. Note the asymmetry with `ResparkableComment.authorUserId`, which
+  /// genuinely cascades — authored rows survive an erasure and comment bodies
+  /// do not.
+  createdByUserId String?
 
   /// area | goal | project | review | board | task. Never `thought` — the raw
   /// capture inbox is unshareable, so nothing can be commented on there.

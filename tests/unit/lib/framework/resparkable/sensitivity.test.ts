@@ -147,7 +147,7 @@ describe('the vector CTE can express the filter', () => {
     });
 
     const sql = sqlOf(queryRaw.mock.calls[0]);
-    expect(sql).toContain('e."userId" = ');
+    expect(sql).toContain('e."spaceId" = ');
     expect(boundValues(queryRaw.mock.calls[0])).toContain('user_a');
   });
 });

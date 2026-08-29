@@ -134,6 +134,7 @@ function makeDocument(overrides: Partial<ResparkableDocument> = {}): Resparkable
   return {
     id: 'doc_1',
     userId: 'user_a',
+    createdByUserId: null,
     title: 'Meeting notes',
     fileName: 'notes.md',
     fileHash: 'a'.repeat(64),
