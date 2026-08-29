@@ -180,6 +180,33 @@ An explicit-membership board has no such problem: its contents are exactly the r
 
 The membership comes from `buildBoardView`, never from a second query — the snapshot has to be what the owner was looking at when they pressed the button, cap and column order included, and a second implementation of "which cards are on this board" would eventually disagree with the first.
 
+### Where the control is, for each of the six types
+
+§13's shareable list is `area`, `goal`, `project`, `review`, `board`, `task`, and not `thought`. Release 2 built the access layer, the cascade, the redaction and the routes for all six, and shipped a **button** for two of them. The other four were reachable by API and by nothing a person could press, which is a gap of exactly the kind that stays open because every test passes. `components/resparkable/share/share-button.tsx` is the wrapper that closed it: `open` state, a button and a mounted `ShareDialog`, so no surface hand-rolls the three lines and gets the `entityType` wrong.
+
+| Type      | Where the control is                                                    |
+| --------- | ----------------------------------------------------------------------- |
+| `area`    | the row on Life, `components/resparkable/areas/areas-view.tsx`          |
+| `goal`    | the node in the tree, `components/resparkable/goals/goals-view.tsx`     |
+| `project` | the detail header, `components/resparkable/projects/project-detail.tsx` |
+| `board`   | the board header, `components/resparkable/board/board-view.tsx`         |
+| `task`    | the card sheet, `components/resparkable/board/card-detail-sheet.tsx`    |
+| `review`  | the morning briefing, `components/resparkable/today/briefing-card.tsx`  |
+
+Four things about that table are decisions rather than the shape it happened to take.
+
+**A `goal` control is on every node, not only on roots.** The cascade takes a goal to its child goals and projects and their tasks, so sharing a parent and sharing one child are different acts and both are things somebody means to do. A control only on roots would have made the wider of the two the easier one.
+
+**An `area` control shares the statement and nothing under it.** The cascade is typed and one level, and `area` is the type it deliberately stops at: sharing "Career" hands over what matters and why, not the goals and projects filed beneath it, each of which is shareable on its own terms.
+
+**A `task` is shared from its card and not from a ranked list.** `TaskRow`, which Today and the project page both use, has no share button and should not get one: its own docblock is the reason, that a ranked list is a decision aid and a row that shows everything shows nothing. §13's stated reason for making `task` shareable at all was §12's, that a board is worthless if you cannot hand somebody a single card, and the card is where this puts it. The consequence is worth knowing: a task on no board has no share affordance, and putting it on one is the route.
+
+**The card sheet hands the card up rather than opening a dialog inside a dialog.** `CardDetailSheet` is itself a Radix dialog. Nesting `ShareDialog` inside it works in the sense that it renders, and fails in the sense that two focus traps are stacked, Escape means something different depending on which one holds focus, and the share flow ends with the card sheet still open behind a dialog the person has finished with. So the button calls `onShare`, `BoardView` closes the sheet and mounts the task's share dialog in its place. The dialog is rendered only while a card is being shared, so its panels fetch that task's grants rather than the previously shared card's.
+
+**A `review` is shared from the briefing because that is the only review surface.** The tier has no reviews list and needs none for the type to be shareable. One thing to keep in view: regenerating writes a **new** row rather than editing this one (`POST /reviews` has no `PATCH`, deliberately), and a grant names a row, so a share stays pointed at the briefing that was shared. A new briefing is not silently published to whoever held the old link.
+
+**A `thought` has no control anywhere**, which is the feature §13 describes rather than an omission. The raw capture inbox is the likeliest place for something its author would be mortified to leak. Promote it to a task first, which is the workflow regardless.
+
 ---
 
 ## Invites: the token that grants nothing
@@ -381,6 +408,7 @@ Keep `rg 'grantOwnerScope\('` as short as `rg 'sharedOwnerScope\('`.
 | `/shared-with-me`, and its search        | `lib/framework/resparkable/services/shared-with-me.ts`                   |
 | Building a viewer from a session         | `lib/framework/resparkable/api/viewer.ts`                                |
 | The owner's share dialog                 | `components/resparkable/share/share-dialog.tsx`                          |
+| The control that opens it, on all six    | `components/resparkable/share/share-button.tsx`                          |
 | The filter-board sentence and snapshot   | `lib/framework/resparkable/services/board-view.ts`                       |
 | Minting, sending and accepting an invite | `lib/framework/resparkable/services/invites.ts`                          |
 | The invite email                         | `components/resparkable/emails/share-invite.tsx`                         |

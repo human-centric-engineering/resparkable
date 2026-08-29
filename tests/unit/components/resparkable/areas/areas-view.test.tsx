@@ -13,6 +13,8 @@
  * - Create dialog opens from the header button and from the empty state's action
  * - Edit dialog opens pre-filled with the clicked area, then closes on escape
  * - The colour swatch and description render when an area has them
+ * - Every row carries a share control, named for its own area. `area` is one
+   of §13's six shareable types and shipped without one in Release 2
  *
  * @see components/resparkable/areas/areas-view.tsx
  */
@@ -51,6 +53,16 @@ function area(overrides: Partial<AreaWire> = {}): AreaWire {
 }
 
 describe('AreasView', () => {
+  it('offers a share control on every row, named for that area', () => {
+    render(<AreasView areas={[area(), area({ id: 'area_2', name: 'Career' })]} />);
+
+    // Named per row rather than a page of identical "Share" buttons: with four
+    // controls on each row and two rows, the item is the only thing that tells
+    // them apart to a screen reader.
+    expect(screen.getByRole('button', { name: 'Share Health' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Share Career' })).toBeInTheDocument();
+  });
+
   it('counts a single area in the singular', () => {
     render(<AreasView areas={[area()]} />);
 

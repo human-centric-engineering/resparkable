@@ -21,6 +21,10 @@
  * - No briefing yet reads as an invitation, not an error
  * - "Write a new one" posts with no override; "Surprise me" posts `exploratory`
  * - The outcome is announced in an `aria-live` region, and a failure says so
+ * - A stored briefing offers a share control, and no briefing offers none.
+ *   A briefing is a `ResparkableReview`, which is one of §13's six shareable
+ *   types and the only one the owner has a surface for, so this card is where
+ *   a `review` is shared from
  *
  * @see components/resparkable/today/briefing-card.tsx
  */
@@ -54,6 +58,20 @@ beforeEach(() => {
 });
 
 describe('BriefingCard — reading', () => {
+  it('offers a share control for the stored briefing, named for it', () => {
+    render(<BriefingCard initial={wire()} />);
+
+    expect(screen.getByRole('button', { name: 'Share Tuesday' })).toBeInTheDocument();
+  });
+
+  it('offers nothing to share before the first briefing exists', () => {
+    render(<BriefingCard initial={wire({ review: null })} />);
+
+    // There is no row to grant against, and a control that could only fail is
+    // worse than no control.
+    expect(screen.queryByRole('button', { name: /^Share/ })).toBeNull();
+  });
+
   it('makes no request when it is only rendering', () => {
     render(<BriefingCard initial={wire()} />);
 

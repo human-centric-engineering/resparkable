@@ -21,6 +21,10 @@
  * - An achieved goal past its date is NOT flagged — it is finished, not late
  * - Horizons render, and roots are ordered nearest-horizon first
  * - The empty state explains what goals do to the ranking
+ * - Every node carries a share control, child nodes included. §13's cascade
+ *   takes a goal to its children, so sharing a parent and sharing one child
+ *   are different acts; a control only on roots would make the wider of the
+ *   two the easier one
  *
  * @see components/resparkable/goals/goals-view.tsx
  */
@@ -59,6 +63,21 @@ function goal(overrides: Partial<GoalWire> = {}): GoalWire {
 }
 
 describe('GoalsView', () => {
+  it('offers a share control on every node, not only on roots', () => {
+    render(
+      <GoalsView
+        goals={[
+          goal({ id: 'parent', title: 'Build a business', horizon: 'life' }),
+          goal({ id: 'child', title: 'Ship the beta', parentGoalId: 'parent' }),
+        ]}
+        areas={[]}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Share Build a business' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Share Ship the beta' })).toBeInTheDocument();
+  });
+
   it('nests a child under its parent', () => {
     render(
       <GoalsView

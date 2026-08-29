@@ -24,13 +24,24 @@
  * `POST /briefing/regenerate` queues a workflow run for the maintenance tick
  * rather than running it inline, so nothing here can await a result. The button
  * therefore reports that it has asked, and the page picks the new briefing up on
- * its next load. Pretending otherwise — a spinner that resolves to nothing —
- * would be worse than saying what actually happened.
+ * its next load. Pretending otherwise, a spinner that resolves to nothing, would
+ * be worse than saying what actually happened.
+ *
+ * ## This is where a `review` is shared from
+ *
+ * A briefing is a `ResparkableReview` row, and `review` is one of §13's six
+ * shareable types. It is also the only stored review the owner has a surface
+ * for, so the share control lives here: the tier has no reviews list and does
+ * not need one to make the type shareable. Regenerating writes a **new** row
+ * rather than editing this one, which matters for anything already shared. The
+ * grant names a row, so a share stays pointed at the briefing that was shared
+ * and a new one is not silently published to whoever held the old link.
  */
 
 import * as React from 'react';
 import { Sparkles } from 'lucide-react';
 
+import { ShareButton } from '@/components/resparkable/share/share-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ClientDate } from '@/components/ui/client-date';
@@ -127,6 +138,13 @@ export function BriefingCard({ initial }: { initial: BriefingWire }): React.Reac
           >
             Surprise me today
           </Button>
+          {initial.review && (
+            <ShareButton
+              entityType="review"
+              entityId={initial.review.id}
+              title={initial.review.title}
+            />
+          )}
         </div>
 
         {/* An `aria-live` status line rather than a toast — the tier builds its

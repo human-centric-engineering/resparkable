@@ -15,6 +15,7 @@ import { Compass, MessageCircle, Pencil, Plus } from 'lucide-react';
 
 import { AreaForm } from '@/components/resparkable/areas/area-form';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
+import { ShareButton } from '@/components/resparkable/share/share-button';
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { Badge } from '@/components/ui/badge';
@@ -111,6 +112,12 @@ export function AreasView({
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
                 </Button>
+                {/* Sharing an area cascades to nothing: §13's cascade is typed
+                    and one level, and area is the one type it deliberately
+                    stops at. So this hands over the statement of what matters
+                    and why, and not the goals or projects filed under it, each
+                    of which is shareable on its own terms. */}
+                <ShareButton compact entityType="area" entityId={area.id} title={area.name} />
                 <ArchiveControls
                   collection={RESPARKABLE_API.AREAS}
                   id={area.id}

@@ -21,10 +21,25 @@
  * raw HTML. Task notes arrive from an email inbox, a voice transcript and an LLM as
  * well as from typing, so this is a path where the content is frequently not
  * something the reader wrote.
+ *
+ * ## Sharing hands the card up rather than opening a dialog inside a dialog
+ *
+ * This sheet *is* a dialog, and `ShareDialog` is another one. Radix will nest
+ * them, but the result is two stacked focus traps where Escape does something
+ * different depending on which one has focus, and the share flow ends with the
+ * card sheet still open behind a dialog the person has finished with. So the
+ * button calls `onShare` and the board closes this sheet and opens the share
+ * dialog in its place. That is also the better interaction: sharing a card is
+ * leaving the card, not a side panel on it.
+ *
+ * This is the one place a task can be shared, and that is deliberate. §13 made
+ * `task` shareable for §12's reason, that a board is worthless if you cannot
+ * hand somebody a single card. `TaskRow` on Today deliberately does not get the
+ * same control, for the reason its own docblock gives.
  */
 
 import * as React from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Share2, Trash2 } from 'lucide-react';
 
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
@@ -51,6 +66,8 @@ export interface CardDetailSheetProps {
   card: BoardCardWire | null;
   allTags: TagWire[];
   onOpenChange: (open: boolean) => void;
+  /** Closes this sheet and opens the share dialog on the task. See the docblock. */
+  onShare: (card: BoardCardWire) => void;
 }
 
 /**
@@ -65,11 +82,14 @@ export function CardDetailSheet({
   card,
   allTags,
   onOpenChange,
+  onShare,
 }: CardDetailSheetProps): React.ReactElement {
   return (
     <Dialog open={card !== null} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
-        {card && <CardDetailBody key={card.task.id} card={card} allTags={allTags} />}
+        {card && (
+          <CardDetailBody key={card.task.id} card={card} allTags={allTags} onShare={onShare} />
+        )}
       </DialogContent>
     </Dialog>
   );
@@ -86,9 +106,11 @@ export function CardDetailSheet({
 function CardDetailBody({
   card,
   allTags,
+  onShare,
 }: {
   card: BoardCardWire;
   allTags: TagWire[];
+  onShare: (card: BoardCardWire) => void;
 }): React.ReactElement {
   const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
@@ -158,6 +180,25 @@ function CardDetailBody({
           {card.task.estimateMinutes !== null && ` · ${card.task.estimateMinutes} min`}
         </DialogDescription>
       </DialogHeader>
+
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Share ${card.task.title}`}
+          onClick={() => onShare(card)}
+        >
+          <Share2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+          Share
+        </Button>
+        {/* A shared task exposes its own title, status, due date, tags and
+            checklist progress. Never its notes unless the share opens them,
+            never its project, its links to items the grantee cannot see, its
+            `manualBoostReason`, or its score (§13). Nothing here has to enforce
+            that: the redaction is the access layer's, computed at read time
+            from the grant, and this button only decides that a share happens. */}
+      </div>
 
       <div className="space-y-5">
         {card.task.notes && (

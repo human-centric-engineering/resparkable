@@ -155,6 +155,15 @@ beforeEach(() => {
 });
 
 describe('ProjectDetail', () => {
+  it('offers a share control named for the project', () => {
+    render(<ProjectDetail view={view()} areas={[]} />);
+
+    // Sharing a project includes its tasks read-only, one level and redacted
+    // (§13). The control itself only decides that a share happens; the
+    // redaction is the access layer's, computed at read time from the grant.
+    expect(screen.getByRole('button', { name: 'Share Q4 launch' })).toBeInTheDocument();
+  });
+
   it('shows the area it is filed under, and when it was last touched', () => {
     render(
       <ProjectDetail
