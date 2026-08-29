@@ -66,7 +66,7 @@ of the three is reachable from a model.
 
 `ResparkableCapability` (in
 [`capabilities/base.ts`](../../../lib/framework/resparkable/capabilities/base.ts))
-resolves that into an `OwnerScope` **before** a subclass's `run` is entered.
+resolves that into an `SpaceScope` **before** a subclass's `run` is entered.
 Subclasses receive the scope and have no way to ask for another one, so "I forgot
 the check" is not a reachable state — which matters more than the check itself,
 because the failure this guards against is not a wrong check but a _fifteenth_
