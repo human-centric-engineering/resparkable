@@ -41,13 +41,26 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-// FORK (Resparkable): `lib/app/data-export.ts` is filled here, and its collector
-// queries seventeen tables. This file is a seam test — it asserts what each
-// `lib/app/*` export IS, not what the tier does behind it — so the tier's data
-// access is stubbed rather than run. Without this the row below needs a live
-// database, which no other row here does.
+// FORK (Resparkable): `lib/app/data-export.ts` is filled here, and it runs TWO
+// collectors — one per side of the D5 boundary. `repo/subject-export.ts`
+// answers "what is in this person's brain?"; `access/subject-export.ts` answers
+// the two questions that are about them but live on somebody else's rows. This
+// file is a seam test — it asserts what each `lib/app/*` export IS, not what the
+// tier does behind it — so both are stubbed rather than run. Without them the
+// row below needs a live database, which no other row here does.
+//
+// Both mocks are load-bearing and neither is redundant: the seam awaits them in
+// a `Promise.all`, so an unmocked collector reaches Prisma no matter what the
+// other one does. A third collector added to the seam needs a third line here,
+// and will announce itself as a connection error rather than an assertion
+// failure — which is what happened when the access-layer collector landed.
 vi.mock('@/lib/framework/resparkable/repo/subject-export', () => ({
   collectResparkableSubjectData: vi.fn().mockResolvedValue({}),
+}));
+vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
+  collectResparkableCrossSubjectData: vi
+    .fn()
+    .mockResolvedValue({ sharedWithMe: [], commentsIWrote: [] }),
 }));
 
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
@@ -123,8 +136,9 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // `/transcribe/image` one photo to a vision model; `/vault`
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
-    // connection open for a tool loop; and the two public share-reader rules,
-    // which are the exception to everything else in this list — see below).
+    // connection open for a tool loop; `/grants/[id]/invite` sends mail to
+    // somebody else; and the two public share-reader rules, which are the
+    // exception to everything else in this list — see below).
     // Asserting the exact set keeps the original intent: a stray rule still
     // fails, and so does one that escapes the namespace.
     //
@@ -148,6 +162,12 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         // own API, so without it a browser would be uncapped.
         String(/^\/api\/v1\/resparkable\/public(?:\/|$)/),
         String(/^\/s\//),
+        // The share invite, the one DAILY cap in the tier and the only one
+        // about somebody else's inbox rather than this deployment's bill.
+        // Anchored on the `/invite` suffix rather than the `/grants` prefix, so
+        // creating, amending and revoking a grant stay on the section's
+        // 100/min — only the verb that sends mail is capped at 20/day.
+        String(/^\/api\/v1\/resparkable\/grants\/[^/]+\/invite$/),
         String(/^\/api\/v1\/resparkable\/search(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),

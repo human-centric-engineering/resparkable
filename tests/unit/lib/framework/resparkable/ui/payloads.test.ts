@@ -1010,6 +1010,7 @@ describe('boardViewSchema', () => {
       ],
       unplaced: [],
       totalCards: 1,
+      filterSummary: null,
       ...overrides,
     };
   }

@@ -417,6 +417,34 @@ export function sharedOwnerScope(result: ResparkableAccessResult): OwnerScope {
   return ownerScope(result.ownerId);
 }
 
+/**
+ * Mint an `OwnerScope` from a grant this viewer **holds**.
+ *
+ * The bulk-path sibling of {@link sharedOwnerScope}, and it exists for one
+ * surface: `/shared-with-me` resolves a viewer's whole grant set in one query
+ * via {@link resparkableVisibilityScope}, then has to read the granted items —
+ * which means it needs a scope per owner without re-resolving each item and
+ * throwing away the answer.
+ *
+ * It is safe for the same two reasons the singular form is, and it is worth
+ * restating them rather than pointing at them:
+ *
+ *   • **The id comes from a database row, never from the request.** A
+ *     `LiveGrant` is only ever produced by `store.ts` from a row that survived
+ *     `isShareActive` and a grantee match on the viewer's own session id or
+ *     address. There is no constructor for one on the request side.
+ *   • **Holding the grant is the resolution.** The singular form takes a
+ *     positive `ResparkableAccessResult` because it is handed a decision; this
+ *     one is handed the evidence the decision would be made from.
+ *
+ * What the scope buys is the same narrow thing: `repo/shared-view.ts`'s
+ * allowlisted projection. Keep `rg 'grantOwnerScope\('` as short as
+ * `rg 'sharedOwnerScope\('`.
+ */
+export function grantOwnerScope(grant: LiveGrant): OwnerScope {
+  return ownerScope(grant.ownerId);
+}
+
 // ─── Public links ────────────────────────────────────────────────────────────
 
 /**

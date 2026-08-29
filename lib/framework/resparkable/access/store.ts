@@ -138,6 +138,7 @@ const GRANT_SELECT = {
   acceptedAt: true,
   expiresAt: true,
   revokedAt: true,
+  createdAt: true,
 } as const;
 
 /** Shape a grant row, dropping any whose type is no longer shareable. */
@@ -152,6 +153,7 @@ function toLiveGrants(
     acceptedAt: Date | null;
     expiresAt: Date | null;
     revokedAt: Date | null;
+    createdAt: Date;
   }>,
   now: Date
 ): LiveGrant[] {
@@ -170,6 +172,7 @@ function toLiveGrants(
       acceptedAt: row.acceptedAt,
       expiresAt: row.expiresAt,
       revokedAt: row.revokedAt,
+      createdAt: row.createdAt,
     }));
 }
 

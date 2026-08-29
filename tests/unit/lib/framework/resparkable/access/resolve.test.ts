@@ -89,6 +89,7 @@ function grant(overrides: Partial<LiveGrant> = {}): LiveGrant {
     acceptedAt: new Date('2026-08-01T00:00:00Z'),
     expiresAt: null,
     revokedAt: null,
+    createdAt: new Date('2026-08-01T00:00:00Z'),
     ...overrides,
   };
 }

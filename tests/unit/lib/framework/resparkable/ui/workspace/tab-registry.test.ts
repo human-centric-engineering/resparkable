@@ -52,12 +52,17 @@ describe('coverage', () => {
       const entry = TAB_REGISTRY[kind];
       if (!entry.routeBacked) continue;
 
+      // A two-part address, unlike every other detail kind: a shared item is
+      // addressed by `(entityType, entityId)` because the six shareable tables
+      // have separate id spaces.
       const params =
-        kind === 'project' || kind === 'entity'
-          ? { id: 'clx123' }
-          : kind === 'board'
-            ? { slug: 'my-board' }
-            : {};
+        kind === 'sharedItem'
+          ? { entityType: 'project', id: 'clx123' }
+          : kind === 'project' || kind === 'entity'
+            ? { id: 'clx123' }
+            : kind === 'board'
+              ? { slug: 'my-board' }
+              : {};
 
       const href = buildRouteForTab(kind, params);
       expect(href).not.toBeNull();

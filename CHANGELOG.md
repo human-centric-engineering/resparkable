@@ -18,6 +18,88 @@ release process.
 
 ### Added
 
+- **Resparkable erasure, and Art. 15's other direction.** The tier registers an
+  erasure cleanup hook again — deleted in phase 56 when the job queue removed
+  the rows it existed for, back now for two things a cascade genuinely cannot
+  reach: an **unaccepted invite**, which is addressed by email and so has no
+  foreign key to hang off, and **stored document originals**, which are object
+  storage and cannot enlist in a database transaction. The scrub deletes grants
+  matched on the erased person's lower-cased address, reading it from the
+  erasure transaction because hooks run before `user.delete()`. Everything else
+  is Postgres: probes **B1**, **B8** and **B9** guard hand-written
+  `ON DELETE CASCADE` constraints covering the whole brain, every accepted grant
+  and every comment an erased person wrote, and `lib/framework/resparkable/privacy/erasure.ts`
+  states at the top how little rides on the hook — `lib/privacy/erasure-hooks.ts`
+  is the one registration seam sunrise#462 did not reach, filed as ask #44.
+  New `lib/framework/resparkable/access/subject-export.ts` answers the two
+  subject-access questions the owner-scoped manifest deferred in as many words:
+  **what has been shared with me**, and **comments I wrote** on other people's
+  items. Both live on somebody else's rows, so both are shared queries. It
+  matches the account id and the address (an unaccepted invite has only the
+  latter), includes revoked and expired grants — a withdrawn share is part of
+  the record of what was done with a subject's data — and carries no content of
+  what was shared. `ResparkableComment` joins the account-transfer policy as
+  `export-only`: words attributed to a person are the last thing that should be
+  replayed into an installation where they have no account.
+
+- **Resparkable share invites, and comments.** `POST
+  /api/v1/resparkable/grants/[id]/invite` emails the person a grant was issued
+  to — a **separate call from creating the grant**, so a mail-provider outage
+  leaves working access rather than a person told they have access and does
+  not, and so "send it again" is a button rather than a second grant. **The
+  invite token grants nothing on its own**: the grant is already live for the
+  address it names, and the token only binds an *account* to it, so a forwarded
+  email is useless without that mailbox. The email names the kind of thing
+  shared and never its title, because a subject line lands in a preview pane and
+  a mail provider's index. New `resparkable-invite` rate-limit tier, **20/day
+  per user** — the only daily cap in the tier, and the only one about somebody
+  else's inbox rather than this deployment's bill.
+  `POST /api/v1/resparkable/invites/accept` binds the account: the token names
+  the grant and the **session proves the address**, so a different signed-in
+  person gets a masked address and a refusal, while unknown, malformed, revoked,
+  expired and already-spent tokens all give the same 404. New page at
+  `/resparkable/invite/[token]`, behind the session gate by design.
+  New `ResparkableComment` model and `/api/v1/resparkable/comments`, which is
+  what `role: 'commenter'` means and the only write path in the tier a non-owner
+  can reach. `POST` asks the resolver for `need: 'comment'` rather than checking
+  a role, so a viewer grant, a **cascaded** grant of any role and a public link
+  are all refused by one answer. **Editing is the author's alone; deleting is
+  the author's or the owner's** — both enforced in `where` clauses, not in prior
+  checks. Comments are excluded from embeddings, context and background
+  workflows structurally, because third-party text inside the owner's data is a
+  prompt-injection vector aimed at the owner's own agent. New drift probe **B9**
+  guards the hand-written `authorUserId` FK (`ON DELETE CASCADE`), the sibling
+  of B8; `ResparkableComment` joins the tier's subject-access manifest.
+  `BoardViewPayload.filterSummary` is optional on the wire, so a rolling deploy
+  cannot break a board tab.
+
+- **Resparkable named grants, and `/shared-with-me`.** `POST
+  /api/v1/resparkable/grants` shares an item with an email address; it is an
+  **upsert** on `(entityType, entityId, granteeEmail)`, so re-sharing amends the
+  one relationship rather than adding a second beside it, and the response is
+  **identical whether or not the address has an account** — a differing one
+  would make sharing an account-existence oracle. `PATCH` moves role, task-detail
+  and expiry (never the address: re-addressing is a revoke plus a new grant);
+  `DELETE` revokes, and a second revoke is a 404 so the audit answer to "when did
+  access stop?" cannot be restamped. Grants default to 90 days, capped at 365,
+  with "never" reachable only by typing it.
+  `GET /api/v1/resparkable/shared` is the grantee's side and the only read
+  surface in the tier that crosses a person: direct grants only, each naming who
+  shared it, with **no write verbs under the prefix at all**.
+  `/shared/[entityType]/[entityId]` resolves on every request, so a grant revoked
+  a second ago 404s now rather than after a TTL, and returns the owner, the
+  basis, and the granted parent when the item was reached through a cascade.
+  `/shared/search` is a **substring match over the allowlisted projection** that
+  never touches `ResparkableEmbedding` — the owner's semantic index is theirs —
+  and reports when it hit its scan cap rather than showing a short list silently.
+  New `grantOwnerScope`, the fifth legitimate source of an `OwnerScope`, and
+  `viewerFromSession`, the one place a `ResparkableViewer` is built.
+  New `POST /api/v1/resparkable/boards/[id]/snapshot` freezes a filter board to
+  the cards it currently shows — §13's third required mitigation for the
+  dynamic-filter trap, and the only one that is a mechanism rather than a
+  warning. `BoardViewPayload` gains `filterSummary`, the board's membership rule
+  in plain English, for the share dialog to state before anyone agrees to it.
+
 - **Resparkable public share links, and the `/s/[token]` reader.**
   `POST /api/v1/resparkable/share-links` mints a link and returns the plaintext
   token **once** — a 192-bit `base64url` value, stored only as a sha256 digest,
@@ -985,6 +1067,14 @@ release process.
 
 ### Removed
 
+- **The share and comment count helpers nothing rendered.**
+  `countGrantsForItems` (`services/grants.ts`), `countCommentsFor`
+  (`services/comments.ts`), and the two repo queries behind them,
+  `countLiveGrantsByEntity` (`repo/grants.ts`) and `countCommentsByEntity`
+  (`repo/comments.ts`). Written for a "shared with 2 people" badge that no
+  surface asks for; a `groupBy` kept alive by its own docstring is a claim about
+  the product that is not true.
+
 - **The per-user `AiWorkflowSchedule` rows, and everything that existed to keep
   them correct.** `schedules/ensure.ts` (`ensureResparkableSchedules`),
   `schedules/cron.ts` (`dailyCron`, `weeklyCron`, `monthlyCron`,
@@ -1078,6 +1168,23 @@ release process.
 
 
 ### Fixed
+
+- **Sharing an item with yourself is refused rather than half-working.**
+  `POST /api/v1/resparkable/grants` accepted the owner's own address and wrote a
+  live grant: `granteeClauses` matches the session's own mailbox regardless of
+  who owns the item, so the item appeared under "Shared with me" and then 404'd
+  on open, because `readSharedWithMe` denies `basis: 'owner'` on purpose. Now a
+  400. Checked in the route rather than the schema because it needs the session,
+  and in the route rather than the service because it is a request-shape
+  complaint rather than an access decision.
+
+- **An invite is no longer spent twice by React's dev remount.**
+  `reactStrictMode` is on, so `AcceptInvite`'s effect mounts, unmounts and
+  remounts; `acceptGrant` clears `inviteTokenHash` on the first call, so the
+  second POST found no grant and rendered "This is not available" over a token
+  accepted a millisecond earlier. The existing `cancelled` flag could not help:
+  it suppressed the first run's redirect and let the second run's failure win. A
+  ref now guards the effect, read synchronously on the remount.
 
 
 - **`redact` could produce a table an import cannot write.** A column dropped on
@@ -1869,6 +1976,35 @@ release process.
 
 
 ### Security
+
+- **A cascaded item no longer hands the reader its own children.**
+  `GET /api/v1/resparkable/shared/[type]/[id]` expanded children
+  unconditionally, and `goal → goal` is the shape that made that reachable: a
+  grant on a top-level goal cascades one level to its children, and expanding a
+  child's children then serialised a *grandchild* — an item
+  `resolveResparkableAccess` denies outright. The reader was handed, in one
+  payload, the very row their next request would 404 on. Children now expand
+  only when `access.basis === 'grant'`, the item its owner actually chose to
+  share; a `grant-cascade` item is a leaf of the share by definition and returns
+  `children: []`. Every other type was safe by accident (`project` and `board`
+  cascade to tasks, which are leaves; `area`, `review` and `task` cascade to
+  nothing), which is exactly why the rule is stated on the **basis** rather than
+  on the type.
+
+- **A comment edit or delete is scoped to the thread it was authorised
+  against.** `editComment` and `deleteComment` matched on comment id, owner and
+  author, but not on the item — and access on this surface is resolved against
+  the *item*. A comment id belonging to a different item was therefore never
+  covered by that resolution: the write landed on one thread while the response
+  returned another, so the caller saw an unchanged list and an unrelated comment
+  had moved. Not a cross-user hole, since the owner and author predicates still
+  held, but an edit is not authorised by "you own something somewhere". Both now
+  take the `{ entityType, entityId }` the caller was authorised for and carry it
+  into the `where`. `services/comments.ts` and `services/shared-with-me.ts` also
+  narrow a route's `entityType` with `isResparkableShareableType` instead of
+  asserting it with `as`: the assertion happened to be true because the resolver
+  denies unshareable types, and true-because-something-downstream-checks is the
+  shape that stops being true when the something downstream moves.
 
 
 - **Live credentials are now dropped from transfer bundles, not merely left

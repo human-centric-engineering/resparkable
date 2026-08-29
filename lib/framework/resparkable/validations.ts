@@ -1766,3 +1766,204 @@ export type ShareLinkListQuery = z.infer<typeof shareLinkListQuerySchema>;
  * length-checked reject is cheaper than an indexed miss.
  */
 export const shareTokenSchema = z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not a share token');
+
+/**
+ * How long a named grant lives.
+ *
+ * The same tagged union as {@link shareLinkExpirySchema}, and deliberately not
+ * a shared constant: the two answer different questions and will not
+ * necessarily keep the same default. A link is a document handed to a stranger
+ * and thirty days is generous; a grant is a working relationship with someone
+ * the owner named, and ninety is closer to how long a project runs.
+ *
+ * What the two must not diverge on is the shape. `null` remains unreachable by
+ * omission on both, for the reason the link version spells out.
+ */
+export const grantExpirySchema = z
+  .discriminatedUnion('kind', [
+    z.object({ kind: z.literal('days'), days: z.number().int().min(1).max(365) }).strict(),
+    z.object({ kind: z.literal('never') }).strict(),
+  ])
+  .default({ kind: 'days', days: 90 });
+
+/**
+ * The address a grant is issued to.
+ *
+ * **Lower-cased here, at the boundary, and nowhere else.** The column carries a
+ * `@@unique([entityType, entityId, granteeEmail])`, and `granteeClauses` in
+ * `access/store.ts` lower-cases the viewer's address before matching — so an
+ * un-normalised write would produce a second grant row for the same person and
+ * a "what can Bob do" question with two answers.
+ *
+ * Trimmed before lower-casing, because a pasted address routinely carries a
+ * trailing space and a grant nobody can match is worse than a 400.
+ */
+export const granteeEmailSchema = z
+  .string()
+  .max(320)
+  // Trimmed and lower-cased BEFORE validation, not after. A pasted address
+  // routinely carries a trailing space, and validating first would 400 on it —
+  // the trim has to run early enough to be the reason the value passes, not a
+  // tidy-up applied to a value that already did.
+  .transform((value) => value.trim().toLowerCase())
+  .pipe(z.email('Enter a valid email address').max(255));
+
+/**
+ * Issue a named grant, or re-issue an existing one.
+ *
+ * **`POST` is an upsert, and that is the schema's decision rather than the
+ * handler's.** §13 puts one grant per address per item in a unique index
+ * precisely so re-sharing changes the existing relationship instead of adding a
+ * second one alongside it. A 409 here would leave the UI to explain that Bob
+ * already has viewer access and must be revoked before he can be made a
+ * commenter, which is a worse answer to "share this with Bob" than just doing
+ * it.
+ *
+ * `role` defaults to `viewer` and `includeTaskDetail` to off: both defaults
+ * are the narrow ones, and both widen what another person sees.
+ */
+export const createGrantSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    granteeEmail: granteeEmailSchema,
+    role: z.enum(['viewer', 'commenter']).default('viewer'),
+    includeTaskDetail: z.boolean().default(false),
+    expiry: grantExpirySchema,
+  })
+  .strict();
+
+export type CreateGrantInput = z.infer<typeof createGrantSchema>;
+
+/**
+ * Change a live grant without revoking and re-issuing it.
+ *
+ * Every field optional, and `granteeEmail` deliberately absent: re-addressing a
+ * grant is not an edit, it is a revoke and a new grant to a different person.
+ * Allowing it here would let one PATCH silently move access from one mailbox to
+ * another while the row's history said nothing happened.
+ */
+export const updateGrantSchema = z
+  .object({
+    role: z.enum(['viewer', 'commenter']).optional(),
+    includeTaskDetail: z.boolean().optional(),
+    expiry: grantExpirySchema.optional(),
+  })
+  .strict();
+
+export type UpdateGrantInput = z.infer<typeof updateGrantSchema>;
+
+/** Filter the owner's own grant list. No filter lists every grant they issued. */
+export const grantListQuerySchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES).optional(),
+    entityId: cuidSchema.optional(),
+    /** Include grants already revoked or expired. Off by default. */
+    includeInactive: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+  })
+  .strict();
+
+export type GrantListQuery = z.infer<typeof grantListQuerySchema>;
+
+/**
+ * Filter `/shared-with-me`.
+ *
+ * No `includeInactive`: a revoked or expired grant is not a thing the grantee
+ * gets to look at the remains of. The owner's list has that flag because it is
+ * their own audit trail; this one is the other side of the relationship.
+ */
+export const sharedListQuerySchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES).optional(),
+  })
+  .strict();
+
+export type SharedListQuery = z.infer<typeof sharedListQuerySchema>;
+
+/**
+ * Search across what has been shared with me.
+ *
+ * **A separate schema from `searchQuerySchema`, because this search is a
+ * different mechanism.** The owner's search is hybrid — a vector query against
+ * `ResparkableEmbedding` blended with BM25. This one never touches that table
+ * (§13: shared-in items are excluded from everything of the owner's, and the
+ * embeddings belong to the owner), so there is no `mode`, no `threshold` and no
+ * semantic option to offer. It matches titles and bodies of the handful of
+ * items the viewer has been given, and the absent fields are the point.
+ */
+export const sharedSearchQuerySchema = z
+  .object({
+    q: z.string().trim().min(1, 'Enter something to search for').max(200),
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES).optional(),
+  })
+  .strict();
+
+export type SharedSearchQuery = z.infer<typeof sharedSearchQuerySchema>;
+
+/**
+ * Write a comment.
+ *
+ * **Plain text, not markdown**, which the schema cannot enforce and the
+ * renderer does — but the length can, and 4000 characters is the shape of the
+ * decision. A comment is a sentence or a paragraph, the thing a commenter grant
+ * promises: a way to say something back, not a document. Anything longer
+ * belongs in the item, which the commenter cannot write to, which is the point.
+ *
+ * `entityType` and `entityId` are in the body rather than the path because the
+ * thread is addressed by the pair — the six shareable tables have separate id
+ * spaces, and the access layer treats a bare id with no type predicate as the
+ * shape of a leak.
+ */
+export const createCommentSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    body: z.string().trim().min(1, 'Write something first').max(4000),
+  })
+  .strict();
+
+export type CreateCommentInput = z.infer<typeof createCommentSchema>;
+
+/** Edit one's own comment. The author is the session, never the body. */
+export const updateCommentSchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+    body: z.string().trim().min(1, 'Write something first').max(4000),
+  })
+  .strict();
+
+export type UpdateCommentInput = z.infer<typeof updateCommentSchema>;
+
+/** Read or delete a thread, addressed the way every row in this layer is. */
+export const commentRefQuerySchema = z
+  .object({
+    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+    entityId: cuidSchema,
+  })
+  .strict();
+
+export type CommentRefQuery = z.infer<typeof commentRefQuerySchema>;
+
+/**
+ * Accept a share invite.
+ *
+ * The token is 32 base64url characters, the same shape and the same 192 bits as
+ * a share-link token — but it does something entirely different, and the
+ * difference is worth stating where the schema is read. **A share link is a
+ * bearer credential: holding it is access.** An invite token grants nothing on
+ * its own; it only binds an account to a grant that already exists, and the
+ * grant is already live for the address it was issued to. A leaked invite email
+ * is therefore useless without that mailbox, which is exactly the property a
+ * bearer credential does not have.
+ */
+export const acceptInviteSchema = z
+  .object({
+    token: z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not an invite token'),
+  })
+  .strict();
+
+export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;

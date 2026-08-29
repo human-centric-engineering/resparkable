@@ -150,6 +150,83 @@ export const RESPARKABLE_API = {
   STALE_STILL_LIVE: '/api/v1/resparkable/stale/still-live',
   documentDownload: (id: string): string => `/api/v1/resparkable/documents/${id}/download`,
 
+  // ─── Sharing (Release 2, §13) ──────────────────────────────────────────────
+  // Two owner surfaces and three grantee ones, and the split is the design:
+  // a public link is a document, a named grant is a relationship.
+
+  /**
+   * Public share links — the owner's side. `POST` returns the plaintext token
+   * **once**; nothing in the system can produce it again, so the UI has to say
+   * "copy this now" and mean it.
+   */
+  /**
+   * Freeze a filter board into the cards it currently shows (§13). The share
+   * dialog's "share a snapshot instead" button, and the only one of the three
+   * dynamic-filter mitigations that is a mechanism rather than a warning.
+   */
+  boardSnapshot: (id: string): string => `/api/v1/resparkable/boards/${id}/snapshot`,
+
+  SHARE_LINKS: '/api/v1/resparkable/share-links',
+  shareLink: (id: string): string => `/api/v1/resparkable/share-links/${id}`,
+  /** The reader's own URL, for a copy button. Not an API path. */
+  publicShare: (token: string): string => `/s/${token}`,
+
+  /**
+   * Named grants — the owner's side. `POST` is an upsert on
+   * `(entityType, entityId, granteeEmail)`: sharing again with the same person
+   * amends the relationship rather than adding a second one beside it.
+   */
+  GRANTS: '/api/v1/resparkable/grants',
+  grant: (id: string): string => `/api/v1/resparkable/grants/${id}`,
+  /**
+   * Email the person a grant was issued to.
+   *
+   * Separate from creating the grant, so a mail outage leaves working access
+   * rather than a person told they have access and does not — and so "send it
+   * again" is a button rather than a second grant. Capped at 20/day per user:
+   * the invite costs this deployment nothing and lands in somebody else's
+   * inbox, which is a different kind of limit from every other one in the tier.
+   */
+  grantInvite: (id: string): string => `/api/v1/resparkable/grants/${id}/invite`,
+  /**
+   * Bind my account to a share somebody made to my address.
+   *
+   * Not "grant me access" — the grant is already live for the address it names.
+   * The token names the grant and the **session proves the address**, which is
+   * what makes a forwarded invite email useless.
+   */
+  ACCEPT_INVITE: '/api/v1/resparkable/invites/accept',
+
+  /**
+   * Comments — the only write path in the tier a non-owner can reach, and the
+   * only thing `role: 'commenter'` means.
+   *
+   * Addressed by `?entityType=&entityId=`, because access is resolved against
+   * the item rather than the comment.
+   */
+  COMMENTS: '/api/v1/resparkable/comments',
+  comment: (id: string): string => `/api/v1/resparkable/comments/${id}`,
+
+  /**
+   * What other people have shared with me — the grantee's side, and the only
+   * read surface in the tier that crosses a person.
+   *
+   * **There are no write paths under this prefix and there must not be.** A
+   * grant is `viewer` or `commenter`; neither implies any authority over the
+   * item itself.
+   */
+  SHARED: '/api/v1/resparkable/shared',
+  /**
+   * Search across what has been shared with me.
+   *
+   * A different mechanism from {@link SEARCH}, not a scoped version of it: this
+   * one never touches `ResparkableEmbedding`, because that index belongs to the
+   * owner. It is a substring match, and the UI should not imply otherwise.
+   */
+  SHARED_SEARCH: '/api/v1/resparkable/shared/search',
+  sharedItem: (entityType: string, entityId: string): string =>
+    `/api/v1/resparkable/shared/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+
   /** Admin surface — instance settings, not user data. */
   ADMIN: {
     SETTINGS: '/api/v1/admin/resparkable/settings',

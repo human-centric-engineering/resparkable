@@ -47,6 +47,7 @@
  */
 
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
 import { collectResparkableSubjectData } from '@/lib/framework/resparkable/repo/subject-export';
 
 /** Identity of the subject being exported. */
@@ -84,5 +85,24 @@ export type AppSubjectData = Record<string, unknown>;
  * param — never from a request body or a model.
  */
 export async function collectAppSubjectData(subject: AppSubjectQuery): Promise<AppSubjectData> {
-  return { resparkable: await collectResparkableSubjectData(ownerScope(subject.userId)) };
+  // Two collectors, because the subject's data lives on two sides of a
+  // boundary. `repo/subject-export.ts` answers "what is in this person's
+  // brain?" and is owner-scoped by construction; `access/subject-export.ts`
+  // answers the two questions that are about them but live on *somebody else's*
+  // rows — what has been shared with them, and comments they wrote elsewhere.
+  //
+  // The second is the one the owner-scoped manifest deferred, in as many words,
+  // when `ResparkableGrant` was added: "a read across a boundary this repo
+  // layer cannot express by construction (D5)". It is answered in `access/**`
+  // because reading across a person is what that layer is named for.
+  //
+  // `email` is threaded through rather than looked up, because an unaccepted
+  // invite is addressed by address alone and dropping those would silently omit
+  // the grants most likely to have been forgotten about.
+  const [own, crossSubject] = await Promise.all([
+    collectResparkableSubjectData(ownerScope(subject.userId)),
+    collectResparkableCrossSubjectData({ userId: subject.userId, email: subject.email }),
+  ]);
+
+  return { resparkable: { ...own, ...crossSubject } };
 }

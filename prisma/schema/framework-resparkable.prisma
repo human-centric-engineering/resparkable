@@ -130,6 +130,7 @@ model ResparkableSpace {
   /// `ResparkableGrant`'s header for why that is what preserves D1.
   grants     ResparkableGrant[]
   shareLinks ResparkableShareLink[]
+  comments   ResparkableComment[]
 
   /// Phase 56: the job queue. One row per kind per owner; see `ResparkableJob`.
   ///
@@ -1334,4 +1335,78 @@ model ResparkableShareLink {
 
   @@index([userId, entityType, entityId])
   @@map("framework_resparkable_share_link")
+}
+
+/// A comment left on a shared item — what makes `role: 'commenter'` mean
+/// something.
+///
+/// ## `userId` is the OWNER, and the author is a second, hand-written FK
+///
+/// The same shape as `ResparkableGrant`, for the same reason: the row belongs
+/// to the brain it was written into, so it cascades from `ResparkableSpace`
+/// like every other table in this tier and `WHERE userId = $1` keeps meaning
+/// the same thing. The *author* is somebody else, and needs its own path out.
+///
+/// ⚠️ **PRISMA-SCHEMA DRIFT WARNING.** `framework_resparkable_comment_authorUserId_fkey`
+/// (→ `"user"("id") ON DELETE CASCADE`) is hand-written in
+/// `20260828120000_resparkable_comments/migration.sql`, because `User` lives in
+/// a Sunrise-owned schema file and a relation declared here would rewrite it.
+/// A regenerated migration will not re-emit it. **Probe B9 asserts it**, and
+/// `npm run db:drift-check` is not optional after `migrate dev`.
+///
+/// **CASCADE, never SetNull-and-keep.** The body is free text an erased person
+/// wrote — often about themselves, sometimes about somebody else — and keeping
+/// it under a nulled author is retained personal data on a row its writer can
+/// no longer reach. §13 is explicit about this one.
+///
+/// ## What this table must never touch
+///
+/// **A grantee's comment is third-party text arriving inside the owner's data,
+/// so it is a prompt-injection vector aimed at the owner's own agent.** It is
+/// therefore excluded from `ResparkableEmbedding`, from the context builder and
+/// from every background workflow — structurally, by nothing in
+/// `embedding/**` or `context/**` ever reading this table. There is no flag to
+/// get wrong.
+///
+/// ## Why there is no `parentCommentId`
+///
+/// Threading is a product decision nobody has made, and a nullable self-FK
+/// added "in case" is the kind of column that acquires meaning by accident.
+/// A flat list per item is what a commenter grant promises: a way to say
+/// something back, not a discussion forum.
+model ResparkableComment {
+  id     String @id @default(cuid())
+  /// The OWNER of the item, not the author. See the header.
+  userId String
+
+  /// area | goal | project | review | board | task. Never `thought` — the raw
+  /// capture inbox is unshareable, so nothing can be commented on there.
+  entityType String @db.VarChar(16)
+  entityId   String
+
+  /// Who wrote it. Hand-written FK — see the drift warning above. Never null:
+  /// a comment with no author is a comment nobody can be accountable for, and
+  /// erasure deletes the row rather than orphaning it.
+  authorUserId String
+
+  /// Plain text, not markdown, and deliberately so. Rendering a grantee's
+  /// markdown on the owner's screen widens the surface for no benefit the
+  /// feature needs — a comment is a sentence, not a document.
+  body String @db.Text
+
+  /// Set when the author edits. `null` means it says what it said.
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// D1: the cascade path for the OWNER. See the drift warning above for the
+  /// author's, which is a different FK to a different table.
+  space ResparkableSpace @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  /// The read every comment surface makes: "what has been said on this item?",
+  /// oldest first.
+  @@index([userId, entityType, entityId, createdAt])
+  /// The erasure read, and the author's own "what have I written?" export.
+  @@index([authorUserId])
+  @@map("framework_resparkable_comment")
 }

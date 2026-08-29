@@ -60,6 +60,7 @@ function view(overrides: Partial<BoardViewPayload> = {}): BoardViewPayload {
     columns: [{ status: 'todo', label: 'To do', wipLimit: null, overWip: false, cards: [card()] }],
     unplaced: [],
     totalCards: 1,
+    filterSummary: null,
     ...overrides,
   };
 }

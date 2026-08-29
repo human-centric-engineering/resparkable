@@ -21,8 +21,9 @@
  */
 
 import * as React from 'react';
-import { Link2, ListTodo, MessageCircle, Pencil } from 'lucide-react';
+import { Link2, ListTodo, MessageCircle, Pencil, Share2 } from 'lucide-react';
 
+import { ShareDialog } from '@/components/resparkable/share/share-dialog';
 import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
 import { ProjectForm } from '@/components/resparkable/projects/project-form';
@@ -52,6 +53,7 @@ export interface ProjectDetailProps {
 export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactElement {
   const [editOpen, setEditOpen] = React.useState(false);
   const [talkOpen, setTalkOpen] = React.useState(false);
+  const [shareOpen, setShareOpen] = React.useState(false);
   const { project, area, tasks, openTaskCount, totalTaskCount, related } = view;
 
   return (
@@ -98,6 +100,10 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
               <Pencil className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
               Edit
             </Button>
+            <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
+              <Share2 className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+              Share
+            </Button>
             <SnoozeMenu
               kind="project"
               id={project.id}
@@ -106,6 +112,19 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
             />
           </div>
         </div>
+
+        {/* Sharing a project includes its tasks, read-only — a project without
+            them is a title and a paragraph, and people work around that by
+            pasting task lists into descriptions, which goes stale, carries no
+            redaction and is invisible to revocation (§13). Task notes stay
+            closed unless the share opens them. */}
+        <ShareDialog
+          open={shareOpen}
+          onOpenChange={setShareOpen}
+          entityType="project"
+          entityId={project.id}
+          title={project.name}
+        />
 
         {project.description && <MarkdownView content={project.description} />}
       </div>

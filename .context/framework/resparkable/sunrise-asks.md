@@ -556,3 +556,25 @@ actually bites. It is still the right seam — but _which_ route a host lands on
 a host's product decision, not something a framework tier should force on every
 install. This repo is Resparkable's development home, not a product built on it, so
 it keeps the platform default. `install.md` §2.11 tells a host how to set it.
+
+### Found by Release 2 phase 14 — the erasure hook (2026-08-28)
+
+| #   | Ask                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Priority                                                                                                                                                                                                                                                         | Issue |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| 44  | **`lib/privacy/erasure-hooks.ts` keeps its registry in a plain module-scoped `Map`.** Back it with `globalThis`, exactly as #462 did for the contributor and capability registries | `eraseUser()` runs in the route realm; `instrumentation.ts` is a separate module graph under Next 16 + Turbopack. A hook registered at boot may therefore not be present when erasure actually runs — the same failure #462 fixed twice over and did not reach here. It is worse than the two it did fix, in one specific way: those failed **visibly** (a missing tool, an empty context block), and this one fails **silently and permanently**. The rows the hook was meant to reach are simply still there afterwards, and the erasure request reports success. There is no point in the erasure route's import graph a fork can reach, so this cannot be worked around downstream | Low effort, and the fix is a shape core has already shipped twice. High consequence: the failure mode is retained personal data after a successful-looking Art. 17 request, which is the one class of bug that is a regulatory problem rather than a stack trace | —     |
+
+**Downstream status (#44):** carried, and the reason it is carried rather than
+worked around is that there is nothing to work around it with. Resparkable
+registers from `initResparkable()` — the designed mechanism — and
+`lib/framework/resparkable/privacy/erasure.ts` says at the top of the file that
+it is best-effort, so a reader is not left believing otherwise.
+
+What makes that acceptable rather than alarming is **how little rides on it**.
+Every accepted grant and every comment an erased person wrote is removed by a
+hand-written `ON DELETE CASCADE` (probes B8 and B9), and their whole brain by
+another (B1). Those are database constraints: they cannot fail to run, and
+`db:drift-check` fails if a migration ever recreates one with the wrong action.
+The hook covers exactly two things a cascade cannot reach — an **unaccepted
+invite**, which is addressed by email and has no foreign key to hang off, and
+**stored document originals**, which are object storage. Both are worth having;
+neither is the bulk of Art. 17.

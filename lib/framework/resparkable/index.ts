@@ -25,6 +25,7 @@
  * a leaf fork can override or extend them from `initLeafApp()`.
  */
 import { initLeafApp } from '@/lib/app/leaf-bootstrap';
+import { registerResparkableErasureHook } from '@/lib/framework/resparkable/privacy/erasure';
 import { registerBuiltInCapabilities } from '@/lib/orchestration/capabilities';
 import { logger } from '@/lib/logging';
 
@@ -64,20 +65,31 @@ export async function initResparkable(): Promise<void> {
   // — leaving it would be harmless, but it would be dead weight at boot.
   registerBuiltInCapabilities();
 
-  // **Erasure needs no registration any more, and that is a phase-56 deletion
-  // rather than an omission.** The tier used to register a cleanup hook for one
-  // reason: `AiWorkflowSchedule.createdBy` is `onDelete: SetNull`, so an erased
-  // person's four schedule rows survived them with a live `nextRunAt`, firing
-  // for ever against a brain that no longer existed. That hook was itself
-  // best-effort — `eraseUser()` reads a plain module-scope Map with no lazy
-  // re-init, so a boot-time registration may not be present in the erasure
-  // request's realm (resparkable#462) — and needed a sweep-job safety net under
-  // it to catch what it missed.
+  // **The erasure hook is back, for a different reason than it left.**
   //
-  // The queue removed the rows the hook existed for. `ResparkableJob` hangs off
-  // `ResparkableSpace` like every other satellite table, so erasure is the D1
-  // cascade again: one FK, no code, no realm problem, and nothing to
-  // silently not happen.
+  // It was deleted in phase 56 and the deletion was right: it existed because
+  // `AiWorkflowSchedule.createdBy` is `onDelete: SetNull`, so an erased
+  // person's four schedule rows survived them with a live `nextRunAt`, firing
+  // for ever against a brain that no longer existed. The queue removed those
+  // rows — `ResparkableJob` hangs off `ResparkableSpace`, so erasure became the
+  // D1 cascade again: one FK, no code, no realm problem.
+  //
+  // Release 2 phase 14 brings back two things a cascade genuinely cannot do:
+  // an **unaccepted invite**, which is addressed by email and so has no foreign
+  // key to hang off, and **stored document originals**, which are object
+  // storage and cannot enlist in a database transaction.
+  //
+  // The realm caveat the old comment recorded still stands and is worth
+  // keeping: `lib/privacy/erasure-hooks.ts` is a plain module-scoped Map, so a
+  // boot-time registration may not be present in the erasure request's realm
+  // (sunrise#462 fixed exactly this for the contributor and capability
+  // registries and did not reach this one; ask #34). What has changed is how
+  // much rides on it. Every accepted grant and every comment an erased person
+  // wrote is covered by a hand-written `ON DELETE CASCADE` — probes B8 and B9 —
+  // which is a database constraint and cannot fail to run. This hook covers the
+  // residue, and `lib/framework/resparkable/privacy/erasure.ts` says so at the
+  // top rather than implying it is the whole of Art. 17.
+  registerResparkableErasureHook();
 
   logger.debug('Resparkable framework tier booted');
 

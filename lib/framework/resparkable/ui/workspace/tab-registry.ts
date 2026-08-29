@@ -37,6 +37,7 @@ import {
   Settings,
   Share2,
   StickyNote,
+  Handshake,
   Sun,
   Target,
   Users,
@@ -60,6 +61,8 @@ export type TabKind =
   | 'entity'
   | 'connections'
   | 'graph'
+  | 'shared'
+  | 'sharedItem'
   | 'vault'
   | 'settings'
   | 'archive'
@@ -93,6 +96,16 @@ export interface TabParams {
   day?: string;
   /** `projects` — the status filter. Absent means every project. */
   status?: string;
+  /**
+   * `sharedItem` — the shareable type of the item somebody shared.
+   *
+   * A shared item needs a type as well as an id because the six shareable
+   * tables have separate id spaces, and the access layer addresses every row as
+   * a `(type, id)` pair for exactly that reason: an `entityId: { in: [...] }`
+   * with no type predicate is the shape of the leak that layer exists to
+   * prevent.
+   */
+  entityType?: string;
   /** `search` — whether the (keyword-only) archived corpus is included. */
   includeArchived?: boolean;
 }
@@ -156,6 +169,26 @@ function detail(href: string, field: 'id' | 'slug'): (pathname: string) => TabPa
     // doesn't model yet, not to the detail kind — don't half-match it.
     if (rest.length === 0 || rest.includes('/')) return null;
     return { [field]: rest };
+  };
+}
+
+/**
+ * `pathname` is `href/<type>/<id>` — a two-segment detail page.
+ *
+ * The shared surface addresses an item by `(entityType, entityId)` rather than
+ * by id alone, because the six shareable tables have separate id spaces and the
+ * whole access layer treats a bare id with no type predicate as the shape of a
+ * leak. The URL matches the address rather than flattening it.
+ */
+function typedDetail(href: string): (pathname: string) => TabParams | null {
+  const prefix = `${href}/`;
+  return (pathname) => {
+    if (!pathname.startsWith(prefix)) return null;
+    const parts = pathname.slice(prefix.length).split('/');
+    if (parts.length !== 2) return null;
+    const [entityType, id] = parts;
+    if (!entityType || !id) return null;
+    return { entityType, id };
   };
 }
 
@@ -296,6 +329,28 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
       const focus = searchParams.get('focus');
       return focusType && focus ? { ...params, focusType, focus } : params;
     },
+  },
+  shared: {
+    kind: 'shared',
+    defaultTitle: 'Shared with me',
+    icon: Handshake,
+    routeBacked: true,
+    matchRoute: exact(RESPARKABLE_ROUTES.SHARED),
+    buildRoute: () => RESPARKABLE_ROUTES.SHARED,
+  },
+  sharedItem: {
+    kind: 'sharedItem',
+    defaultTitle: 'Shared item',
+    icon: Handshake,
+    routeBacked: true,
+    // Two segments rather than one, so `detail()` does not fit: the type is
+    // part of the address, not a decoration on it.
+    matchRoute: typedDetail(RESPARKABLE_ROUTES.SHARED),
+    buildRoute: (params) =>
+      RESPARKABLE_ROUTES.sharedItem(
+        requireParam(params, 'entityType', 'sharedItem'),
+        requireParam(params, 'id', 'sharedItem')
+      ),
   },
   vault: {
     kind: 'vault',

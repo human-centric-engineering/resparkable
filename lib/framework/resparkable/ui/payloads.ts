@@ -547,6 +547,21 @@ export const boardViewSchema = z.object({
   /** Cards whose status matches no column — surfaced rather than lost. */
   unplaced: z.array(boardCardSchema),
   totalCards: z.number(),
+  /**
+   * The membership rule in plain English, for a filter board only. `null` on an
+   * explicit board, whose contents are exactly the cards the owner put on it.
+   *
+   * The share dialog is what needs it: §13 requires that sharing a filter board
+   * states the rule before the owner agrees to it, because the share keeps
+   * handing out tasks created afterwards.
+   *
+   * `.optional()` for the reason `archivedReason` is: it was added after the
+   * shape shipped, and during a rolling deploy a new client will be served by
+   * an old server that does not send it. A required field would turn that
+   * window into a board tab that fails to parse rather than one that shows no
+   * warning. The share dialog treats absent and `null` the same way.
+   */
+  filterSummary: z.string().nullable().optional(),
 });
 
 export type BoardViewWire = z.infer<typeof boardViewSchema>;
@@ -631,3 +646,224 @@ export const vaultImportResponseSchema = z.object({
 });
 
 export type VaultImportResponse = z.infer<typeof vaultImportResponseSchema>;
+
+// ─── Sharing (Release 2, §13) ────────────────────────────────────────────────
+
+/**
+ * One item as a shared reader sees it — the allowlisted projection.
+ *
+ * The same shape the public reader gets, because it is the same projection:
+ * `repo/shared-view.ts` is the only place in the tier that uses `select` rather
+ * than `omit`, so a column added to `ResparkableTask` next month cannot reach a
+ * shared surface by nobody remembering to exclude it.
+ *
+ * What is deliberately absent is as much the contract as what is here:
+ * `priorityScore`, `manualBoostReason`, every foreign key, the item's parent,
+ * its links, and its event history.
+ */
+export const sharedItemSchema = z.object({
+  entityType: z.string(),
+  id: z.string(),
+  title: z.string(),
+  /** Markdown, rendered with no raw HTML. Null when the item has no prose. */
+  body: z.string().nullable(),
+  status: z.string().nullable(),
+  dueAt: isoDate.nullable(),
+  horizon: z.string().nullable(),
+  archived: z.boolean(),
+  updatedAt: isoDate,
+  tags: z.array(z.string()),
+  checklist: z.object({ done: z.number(), total: z.number() }).nullable(),
+});
+
+export type SharedItemWire = z.infer<typeof sharedItemSchema>;
+
+/**
+ * Who shared something with me.
+ *
+ * Present at all only because the basis is a **grant**. A public link never
+ * carries this: a stranger holding a URL gets the content and learns nothing
+ * about whose it is. That is the line the whole access layer is drawn on.
+ */
+export const sharedOwnerSchema = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  email: z.string(),
+});
+
+export const sharedWithMeItemSchema = z.object({
+  item: sharedItemSchema,
+  owner: sharedOwnerSchema,
+  role: z.string(),
+  canComment: z.boolean(),
+  includeTaskDetail: z.boolean(),
+  sharedAt: isoDate,
+  expiresAt: isoDate.nullable(),
+});
+
+export type SharedWithMeItemWire = z.infer<typeof sharedWithMeItemSchema>;
+
+export const sharedWithMeListSchema = z.array(sharedWithMeItemSchema);
+
+/** One shared item opened: the item, its cascade, and how access was reached. */
+export const sharedItemDetailSchema = z.object({
+  item: sharedItemSchema,
+  children: z.array(sharedItemSchema),
+  /** True when the cascade was capped, so the page can say so rather than lie. */
+  childrenTruncated: z.boolean(),
+  includeTaskDetail: z.boolean(),
+  owner: sharedOwnerSchema,
+  basis: z.string().nullable(),
+  canComment: z.boolean(),
+  /**
+   * The granted parent, when this item was reached through a cascade. Lets the
+   * page say "shared as part of Acme Redesign" instead of implying the child
+   * was handed over on its own.
+   */
+  via: z.object({ entityType: z.string(), entityId: z.string() }).nullable(),
+});
+
+export type SharedItemDetailWire = z.infer<typeof sharedItemDetailSchema>;
+
+export const sharedSearchHitSchema = z.object({
+  item: sharedItemSchema,
+  owner: sharedOwnerSchema,
+  /** The granted parent this hit was reached through, or null if it is one. */
+  via: z.string().nullable(),
+});
+
+export const sharedSearchHitsSchema = z.array(sharedSearchHitSchema);
+
+export type SharedSearchHitWire = z.infer<typeof sharedSearchHitSchema>;
+
+/**
+ * A named grant, as its **owner** sees it.
+ *
+ * `granteeEmail` is here because the owner typed it — it is their own record of
+ * who they shared with. `granteeUserId` is not, and its absence is load-bearing:
+ * §13 requires that issuing a grant tells nobody whether the address has an
+ * account, or "share with someone" becomes an existence oracle.
+ */
+export const grantSchema = z.object({
+  id: z.string(),
+  entityType: z.string(),
+  entityId: z.string(),
+  granteeEmail: z.string(),
+  role: z.string(),
+  includeTaskDetail: z.boolean(),
+  /**
+   * Whether they have bound an account to this grant. **Not** the same question
+   * as whether they can see it — they can, from the moment it is issued.
+   */
+  accepted: z.boolean(),
+  invitedAt: isoDate.nullable(),
+  expiresAt: isoDate.nullable(),
+  revokedAt: isoDate.nullable(),
+  active: z.boolean(),
+  createdAt: isoDate,
+});
+
+export type GrantWire = z.infer<typeof grantSchema>;
+
+export const grantsSchema = z.array(grantSchema);
+
+/** What `POST /resparkable/grants` answers. The grant, and nothing beside it. */
+export const createdGrantSchema = z.object({ grant: grantSchema });
+
+/**
+ * What `POST /resparkable/grants/[id]/invite` answers.
+ *
+ * One boolean, and deliberately only one. It says whether an email left the
+ * building — the owner's own question about their own action — and nothing
+ * about whether the address has an account, which is the answer §13 keeps out
+ * of every response on this surface.
+ */
+export const inviteSentSchema = z.object({ sent: z.boolean() });
+
+/**
+ * A public link, as its owner sees it.
+ *
+ * `tokenPrefix` and never the token: the plaintext exists once, in the 201 that
+ * minted it. A lost link is re-minted, not recovered.
+ */
+export const shareLinkSchema = z.object({
+  id: z.string(),
+  entityType: z.string(),
+  entityId: z.string(),
+  tokenPrefix: z.string(),
+  includeChildren: z.boolean(),
+  includeTaskDetail: z.boolean(),
+  expiresAt: isoDate.nullable(),
+  revokedAt: isoDate.nullable(),
+  active: z.boolean(),
+  viewCount: z.number(),
+  lastViewedAt: isoDate.nullable(),
+  createdAt: isoDate,
+});
+
+export type ShareLinkWire = z.infer<typeof shareLinkSchema>;
+
+export const shareLinksSchema = z.array(shareLinkSchema);
+
+/** The mint response. `token` and `path` appear here and in no later read. */
+export const mintedShareLinkSchema = z.object({
+  link: z.object({
+    id: z.string(),
+    entityType: z.string(),
+    entityId: z.string(),
+    tokenPrefix: z.string(),
+    includeChildren: z.boolean(),
+    includeTaskDetail: z.boolean(),
+    expiresAt: isoDate.nullable(),
+    createdAt: isoDate,
+  }),
+  token: z.string(),
+  path: z.string(),
+});
+
+export type MintedShareLinkWire = z.infer<typeof mintedShareLinkSchema>;
+
+/**
+ * What `POST /resparkable/invites/accept` answers.
+ *
+ * A flat shape with everything optional rather than a discriminated union,
+ * because the union's two arms are already discriminated by `accepted` and Zod
+ * would need the wire to carry a second tag to model that. The page reads
+ * `accepted` first and nothing else matters until it has.
+ *
+ * `expectedEmail` arrives **masked** (`a***@e***.com`) and there is no unmasked
+ * form of this field anywhere: the reader needs to recognise which of their own
+ * mailboxes to use, and a stranger holding a forwarded email must not be handed
+ * a working address.
+ */
+export const acceptInviteResponseSchema = z.object({
+  accepted: z.boolean(),
+  entityType: z.string().optional(),
+  entityId: z.string().optional(),
+  /** True when this account was already bound — a re-opened email. */
+  alreadyAccepted: z.boolean().optional(),
+  reason: z.string().optional(),
+  expectedEmail: z.string().optional(),
+});
+
+export type AcceptInviteResponse = z.infer<typeof acceptInviteResponseSchema>;
+
+/** One comment on a shared item. Author names only — never addresses. */
+export const commentSchema = z.object({
+  id: z.string(),
+  body: z.string(),
+  author: z.object({
+    id: z.string(),
+    name: z.string().nullable(),
+    /** Whether the writer is the person whose item this sits on. */
+    isOwner: z.boolean(),
+  }),
+  /** True for the reader's own comment, so the UI can offer edit and delete. */
+  mine: z.boolean(),
+  editedAt: isoDate.nullable(),
+  createdAt: isoDate,
+});
+
+export type CommentWire = z.infer<typeof commentSchema>;
+
+export const commentsSchema = z.array(commentSchema);

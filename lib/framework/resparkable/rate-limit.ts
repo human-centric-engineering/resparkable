@@ -8,7 +8,7 @@
  * one import and one call. When Resparkable adds a fifth expensive route, hosts get
  * it on upgrade without editing anything.
  *
- * ## Why these nine routes need their own caps at all
+ * ## Why these ten routes need their own caps at all
  *
  * `/api/v1/**` already inherits 100/min keyed on the session user from
  * `proxy.ts`, and CLAUDE.md is explicit that handlers must not call section
@@ -32,6 +32,10 @@
  *     registered ahead of it so the more specific path isn't shadowed.
  *   - **`/vault`** reads every table the brain has to build an export, and on
  *     import inflates an archive and plans thousands of row writes.
+ *   - **`/grants/[id]/invite`** is the odd one out: it costs this deployment
+ *     almost nothing and lands in somebody else's inbox. Its cap is about not
+ *     being a spam cannon with the deployment's domain attached, which is why
+ *     it is the only daily one.
  *
  * None of these is a per-second interaction — a person searches a few times a
  * minute and reindexes once a week — so the caps are comfortably above real use
@@ -48,6 +52,7 @@ import { registerRateLimitRule } from '@/lib/security/rate-limit-policy';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 /**
  * Search: 30/min. Generous for a human typing queries, and a hard ceiling on
@@ -174,6 +179,31 @@ const resparkablePublicLimiter = createRateLimiter({
 });
 
 /**
+ * Share invites: 20/day per user.
+ *
+ * The one cap here that is about **other people's inboxes** rather than about
+ * this deployment's bill. Every other tier in this file guards spend or load; a
+ * share invite costs almost nothing to send and is a spam cannon with the
+ * deployment's domain attached — one account, an unbounded list of addresses,
+ * and a message that looks exactly like a real product notification, because it
+ * is one.
+ *
+ * **Daily rather than per-minute**, unlike everything else registered here. The
+ * abuse shape is volume over time: a per-minute cap generous enough for a real
+ * session (sharing a project with six colleagues in one sitting) is thousands a
+ * day, which is the number that matters to a mail provider deciding whether this
+ * domain sends spam. Twenty a day is far past what anybody shares by hand and
+ * far below what would get a sending domain blocked.
+ *
+ * §13 asks for exactly this number.
+ */
+const resparkableInviteLimiter = createRateLimiter({
+  interval: DAY,
+  maxRequests: 20,
+  uniqueTokenPerInterval: 500,
+});
+
+/**
  * Register Resparkable's tiers and rules.
  *
  * Idempotent: both registrars dedupe (by identical limiter instance and by rule
@@ -190,6 +220,7 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitTier('resparkable-image', resparkableImageLimiter);
   registerRateLimitTier('resparkable-vault', resparkableVaultLimiter);
   registerRateLimitTier('resparkable-public', resparkablePublicLimiter);
+  registerRateLimitTier('resparkable-invite', resparkableInviteLimiter);
 
   // Keyed on the session user, not the IP: this is authenticated, per-person
   // work, and IP keying would make one household share a search budget.
@@ -209,6 +240,16 @@ export function registerResparkableRateLimits(): void {
     match: /^\/s\//,
     tier: 'resparkable-public',
     key: 'ip',
+  });
+
+  // Registered ahead of the generic `/grants` traffic, and matched on the
+  // `/invite` suffix rather than on the `/grants` prefix: creating, amending
+  // and revoking a grant are ordinary authenticated writes that belong on the
+  // section's 100/min, and only the one verb that sends mail needs a daily cap.
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/grants\/[^/]+\/invite$/,
+    tier: 'resparkable-invite',
+    key: 'session-user',
   });
 
   registerRateLimitRule({

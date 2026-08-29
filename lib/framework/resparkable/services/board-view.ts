@@ -40,12 +40,18 @@
  * breach and the UI colours the column; the drop always succeeds.
  */
 
-import { listBoardCards, findBoard } from '@/lib/framework/resparkable/repo/boards';
+import {
+  listBoardCards,
+  findBoard,
+  snapshotBoardMembership,
+} from '@/lib/framework/resparkable/repo/boards';
 import { listChecklistForTasks } from '@/lib/framework/resparkable/repo/checklist';
 import { findLatestStatusChanges } from '@/lib/framework/resparkable/repo/events';
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { findProject } from '@/lib/framework/resparkable/repo/projects';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
 import { findTasksByIds, listTasks } from '@/lib/framework/resparkable/repo/tasks';
+import { POSITION_STEP } from '@/lib/framework/resparkable/services/fractional-position';
 import { boardColumnsSchema, boardFilterSchema } from '@/lib/framework/resparkable/validations';
 import type {
   ResparkableBoard,
@@ -97,6 +103,55 @@ export interface BoardViewPayload {
   /** Cards whose status matches no configured column, so nothing is silently lost. */
   unplaced: BoardCardPayload[];
   totalCards: number;
+  /**
+   * The board's membership rule in plain English, for a filter board only.
+   *
+   * `null` on an explicit board, because there is nothing to warn about: its
+   * contents are exactly the cards the owner put on it.
+   *
+   * It exists for the share dialog, and §13 requires it there. Sharing a filter
+   * board does not share a fixed set of cards — it shares **every task matching
+   * the filter, including ones created next week**. That is what people expect
+   * from "share my board" and it is also a standing leak, so the dialog has to
+   * state the rule before somebody agrees to it. Resolved here rather than in
+   * the browser because the honest sentence needs the project's *name*, which
+   * the filter only holds an id for.
+   */
+  filterSummary: string | null;
+}
+
+/**
+ * A filter board's rule, as a sentence.
+ *
+ * Pure, so the wording can be asserted without a database. Deliberately ends by
+ * naming the consequence rather than the mechanism: "including ones you add
+ * later" is the part a person needs to have read, and a summary that stopped at
+ * the criteria would be accurate and useless.
+ */
+export function describeBoardFilter(
+  filter: unknown,
+  projectName: string | null,
+  columnStatuses: readonly string[]
+): string {
+  const parsed = boardFilterSchema.safeParse(filter ?? {});
+  const value = parsed.success ? parsed.data : {};
+
+  const clauses: string[] = [];
+  if (value.projectId) {
+    // The name when it resolves, and an honest "a project" when it does not —
+    // never the raw id, which tells the reader nothing and looks like a bug.
+    clauses.push(projectName ? `they are in ${projectName}` : 'they are in one project');
+  }
+  if (!value.includeDone && !columnStatuses.includes('done')) {
+    clauses.push('they are not finished');
+  }
+
+  const criteria =
+    clauses.length === 0
+      ? 'This board shows every task in your brain'
+      : `This board shows tasks where ${clauses.join(' and ')}`;
+
+  return `${criteria}. It is a live list, so anyone you share it with also sees tasks you add later that match.`;
 }
 
 export async function buildBoardView(
@@ -118,6 +173,15 @@ export async function buildBoardView(
     board.membership === 'explicit'
       ? await loadExplicitCards(scope, board.id)
       : await loadFilteredCards(scope, board, columnSpecs);
+
+  const filterSummary =
+    board.membership === 'explicit'
+      ? null
+      : describeBoardFilter(
+          board.filter,
+          await resolveFilterProjectName(scope, board.filter),
+          columnSpecs.map((column) => column.status)
+        );
 
   const taskIds = tasks.map((task) => task.id);
 
@@ -182,7 +246,26 @@ export async function buildBoardView(
     // still existing — the kind of disappearance that reads as data loss.
     unplaced: cards.filter((card) => !configured.has(card.task.status)),
     totalCards: cards.length,
+    filterSummary,
   };
+}
+
+/**
+ * The name behind a filter's `projectId`, or `null`.
+ *
+ * One extra query, and only on a filter board that names a project. `null`
+ * covers both "no project in the filter" and "the project is gone", which the
+ * summary renders the same way — a deleted project should not turn the sentence
+ * into an error.
+ */
+async function resolveFilterProjectName(
+  scope: OwnerScope,
+  filter: unknown
+): Promise<string | null> {
+  const parsed = boardFilterSchema.safeParse(filter ?? {});
+  if (!parsed.success || !parsed.data.projectId) return null;
+  const project = await findProject(scope, parsed.data.projectId);
+  return project?.name ?? null;
 }
 
 /** Curated membership: the join table decides which cards, and in what order. */
@@ -272,4 +355,58 @@ function resolveInColumnSince(
 ): number | null {
   if (!change || change.toStatus !== currentStatus) return null;
   return Math.max(0, now.getTime() - change.at.getTime());
+}
+
+/**
+ * Freeze a filter board into the cards it shows right now.
+ *
+ * §13's third required mitigation for the dynamic-filter trap, and the one that
+ * actually closes it. The first two — stating the rule and showing the count —
+ * make the owner aware that a shared filter board keeps handing out tasks they
+ * create afterwards. This is the button that stops it.
+ *
+ * **The membership comes from `buildBoardView`, not from a second query.** That
+ * is the whole reason this function is here rather than in the repo: the
+ * snapshot has to be exactly what the owner was looking at when they pressed
+ * the button, including the 300-card cap and the column order, and any second
+ * implementation of "which cards are on this board" would eventually disagree
+ * with the first.
+ *
+ * Returns `null` for a board that is not this owner's, does not exist, or is
+ * already explicit. The last is not an error worth a special code: a board
+ * somebody already curated by hand must not be re-pinned from a filter that no
+ * longer describes it, which would throw their arrangement away.
+ */
+export async function snapshotBoard(
+  scope: OwnerScope,
+  boardId: string,
+  now = new Date()
+): Promise<BoardViewPayload | null> {
+  const view = await buildBoardView(scope, boardId, now);
+  if (!view || view.board.membership !== 'filter') return null;
+
+  // Column order, then card order within a column, then anything unplaced — the
+  // board's own reading order, which is what the owner is looking at. Never
+  // `priorityScore`: the snapshot should freeze the arrangement, not re-rank it
+  // on the way past.
+  const taskIds = [
+    ...view.columns.flatMap((column) => column.cards.map((card) => card.task.id)),
+    ...view.unplaced.map((card) => card.task.id),
+  ];
+
+  const frozen = await snapshotBoardMembership(
+    scope,
+    boardId,
+    // Whole steps apart, the same spacing a fresh board gets, so the first drag
+    // after a snapshot lands between two cards without needing a
+    // renormalisation pass.
+    taskIds.map((taskId, index) => ({ taskId, position: (index + 1) * POSITION_STEP }))
+  );
+  if (!frozen) return null;
+
+  // Read back rather than patching the view in memory. The board is `explicit`
+  // now, which means a different load path with different ordering, and
+  // returning the filter view relabelled would show the caller a board that no
+  // longer exists.
+  return buildBoardView(scope, boardId, now);
 }

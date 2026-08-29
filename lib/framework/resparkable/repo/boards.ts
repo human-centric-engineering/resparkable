@@ -322,3 +322,76 @@ export async function renumberBoardCards(
     )
   );
 }
+
+/**
+ * Freeze a filter board: flip it to explicit and pin today's matches.
+ *
+ * §13's third required mitigation for the dynamic-filter trap. A filter board
+ * shared with someone keeps handing them tasks created afterwards; a snapshot
+ * ends that by making the membership a fixed set of rows.
+ *
+ * **One transaction, and the flip and the pinning are both inside it.** A board
+ * that had gone `explicit` with no cards written would render empty — a shared
+ * board that silently became blank is worse than the leak the snapshot was
+ * taken to close. A board still on `filter` with cards written would keep
+ * leaking while looking as though it had stopped, which is worse again.
+ *
+ * The caller resolves which tasks match **and where they sit**, because both are
+ * `services/`' job: a second copy of the filter predicate here is exactly what
+ * the access layer already warns against, and position arithmetic belongs with
+ * `fractional-position.ts` rather than in a file whose job is statements. This
+ * writes what it is given, so the snapshot preserves the order the owner was
+ * looking at.
+ *
+ * Returns `null` for a board that is not this owner's, does not exist, or is
+ * already explicit — the last so a double-press cannot re-pin a board somebody
+ * has since curated by hand, throwing their arrangement away.
+ */
+export async function snapshotBoardMembership(
+  scope: OwnerScope,
+  boardId: string,
+  cards: readonly { taskId: string; position: number }[]
+): Promise<ResparkableBoard | null> {
+  return prisma.$transaction(async (tx) => {
+    const board = await tx.resparkableBoard.findFirst({
+      where: { ...ownerWhere(scope), id: boardId, membership: 'filter' },
+    });
+    if (!board) return null;
+
+    // Cleared first. A filter board should hold no cards, but a board flipped
+    // to filter after having been explicit keeps its old rows (`board-view.ts`
+    // simply stops reading them), and inheriting those would pin tasks that are
+    // not on the board anybody is looking at.
+    await tx.resparkableBoardCard.deleteMany({ where: { ...ownerWhere(scope), boardId } });
+
+    if (cards.length > 0) {
+      await tx.resparkableBoardCard.createMany({
+        data: cards.map((card) => ({
+          ...ownerWhere(scope),
+          boardId,
+          taskId: card.taskId,
+          position: card.position,
+        })),
+        // Guards a **duplicate `(boardId, taskId)`**, not a missing task. That
+        // distinction was wrong in an earlier version of this comment and is
+        // worth being exact about: `skipDuplicates` skips unique-constraint
+        // conflicts only. A task deleted between the view being built and this
+        // running is a *foreign-key* violation (P2003), which aborts the
+        // transaction — the snapshot fails and the board stays on `filter`,
+        // which is a visible 500 rather than a silent half-write.
+        //
+        // Left as it is, because the window is one request wide (the ids come
+        // from the `buildBoardView` call directly above) and the failure is
+        // loud and retryable. Pre-filtering against a fresh existence check
+        // would only narrow the window, not close it, at the cost of another
+        // query on every snapshot.
+        skipDuplicates: true,
+      });
+    }
+
+    return tx.resparkableBoard.update({
+      where: { id: board.id },
+      data: { membership: 'explicit' },
+    });
+  });
+}

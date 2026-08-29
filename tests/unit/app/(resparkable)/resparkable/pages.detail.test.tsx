@@ -13,9 +13,15 @@
  * than using the global no-op stub from tests/setup.ts, so a test can assert
  * both "notFound was called" and "the page stopped executing there".
  *
+ * Also covers app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page.tsx,
+ * whose contract is stricter than the other three: it calls `notFound()` for
+ * EVERY read failure, never `<LoadError>` — a distinguishable failure on this
+ * route would tell a guesser which of another person's items exist.
+ *
  * @see app/(resparkable)/resparkable/projects/[id]/page.tsx
  * @see app/(resparkable)/resparkable/entities/[id]/page.tsx
  * @see app/(resparkable)/resparkable/boards/[slug]/page.tsx
+ * @see app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page.tsx
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -57,6 +63,12 @@ vi.mock('@/components/resparkable/entities/entity-detail', () => ({
 vi.mock('@/components/resparkable/board/board-view', () => ({
   BoardView: (props: { view: unknown; allTags: unknown[] }) => (
     <div data-testid="board-view" data-props={JSON.stringify(props)} />
+  ),
+}));
+
+vi.mock('@/components/resparkable/share/shared-item-detail', () => ({
+  SharedItemDetail: (props: { detail: unknown }) => (
+    <div data-testid="shared-item-detail" data-props={JSON.stringify(props)} />
   ),
 }));
 
@@ -360,5 +372,89 @@ describe('ResparkableBoardPage', () => {
     );
     // Live-query membership gets the other copy branch.
     expect(screen.getByText(/a live query, ordered by what matters most/)).toBeInTheDocument();
+  });
+});
+
+// ─── Shared item detail ─────────────────────────────────────────────────────
+
+describe('ResparkableSharedItemPage', () => {
+  const PROJECT_ID = 'clh0000000000000000000001';
+
+  it('awaits params and reads the shared-item endpoint for that type/id', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500));
+    const { default: ResparkableSharedItemPage } =
+      await import('@/app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page');
+
+    await expect(
+      ResparkableSharedItemPage({
+        params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+      })
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+
+    expect(callPaths()).toEqual([RESPARKABLE_API.sharedItem('project', PROJECT_ID)]);
+  });
+
+  it('calls notFound() on ANY read failure, never renders LoadError', async () => {
+    // Every failure is the same failure here: unknown type, unknown id, no
+    // grant, a revoked or expired grant, a deleted item and a load error all
+    // have to be indistinguishable, because a distinguishable one tells a
+    // guesser which of somebody else's items exist.
+    for (const failure of [
+      fail(404, 'not found'),
+      fail(500, 'server unwell'),
+      fail(null, 'network'),
+    ]) {
+      vi.clearAllMocks();
+      vi.mocked(readResparkable).mockResolvedValue(failure);
+      const { default: ResparkableSharedItemPage } =
+        await import('@/app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page');
+
+      await expect(
+        ResparkableSharedItemPage({
+          params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+        })
+      ).rejects.toThrow('NEXT_NOT_FOUND');
+      expect(notFound).toHaveBeenCalled();
+    }
+  });
+
+  it('never renders LoadError on failure', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500, 'server unwell'));
+    const { default: ResparkableSharedItemPage } =
+      await import('@/app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page');
+
+    await expect(
+      ResparkableSharedItemPage({
+        params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+      })
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('renders SharedItemDetail with the resolved detail on success', async () => {
+    const detail = {
+      item: { id: PROJECT_ID, title: 'Acme Redesign' },
+      children: [],
+      childrenTruncated: false,
+      includeTaskDetail: false,
+      owner: { id: 'user_owner', name: 'Priya', email: 'priya@example.com' },
+      basis: 'grant',
+      canComment: true,
+      via: null,
+    };
+    vi.mocked(readResparkable).mockResolvedValue(ok(detail));
+    const { default: ResparkableSharedItemPage } =
+      await import('@/app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page');
+
+    render(
+      await ResparkableSharedItemPage({
+        params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+      })
+    );
+
+    const view = screen.getByTestId('shared-item-detail');
+    expect(view.getAttribute('data-props')).toBe(JSON.stringify({ detail }));
+    expect(notFound).not.toHaveBeenCalled();
   });
 });
