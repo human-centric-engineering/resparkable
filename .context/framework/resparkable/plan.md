@@ -18,6 +18,8 @@ Nothing productivity-shaped exists in the repo yet — `prisma/schema/app.prisma
 
 > **Added 2026-08-25: Groups (§23).** The requirements line above says "multi-user-safe from day one but no team UI", and that is now half-superseded. A **group** becomes a principal that owns a Resparkable workspace exactly as an individual owns one today, with a group admin, group-to-group sharing built by generalising §13's grants rather than by adding a second mechanism, and a digest of the group's own activity that is deliberately never a ranking of its members. The "multi-user-safe from day one" half of that line is what makes it affordable: `OwnerScope` was built to grow a tenant field, and D1 put the whole cascade behind one satellite table. Full spec at §23; phased as Release 9 in §15, prerequisite Release 2.
 
+> **Extended 2026-08-29: Groups, the collaborative half (§23.10 to §23.13).** The 2026-08-25 scope covered a group owning a workspace, being administered, sharing with other groups and being summarised. Reviewing it against the requirement found four things it did not cover, all of them about people working in the space rather than the space existing: a **live activity feed** (23.10, deliberately polled rather than pushed, and deliberately not the Activity pane); **joining** as distinct from being invited (23.11: hashed join links with §13's public-link discipline, approval, a member cap, and a declined public directory); the **budget** as a cap rather than a record (23.12: who tops up, no fallback to a member's own balance, per-member sub-caps, admin-only thresholds); and **working on one item together** (23.13: task assignment, comments on the space basis, the dormant `rev` column earning its second use, leaving voluntarily, notifications, and a group admin audit log). Phases 57 to 59 in §15, tests 13i to 13m in §16. The same pass settled §24's switcher question (24.2: a header switcher, not a tab, with per-workspace tab state retained across a switch) and reconciled `SpaceRole` between 23.2 and 23.3.
+
 > **Added 2026-08-25: Workspaces (§24).** A person or a group may hold **several** workspaces, each a separate brain with its own items, connections and vectors, and no implicit read between them. This is deliberately cheap to leave open and expensive to retrofit: once §23 makes `spaceId` the partition key, the constraint forbidding a second workspace is a single `@unique` on a single column, so Release 9 phase 45 drops it and adds the columns multiplicity needs, and the tier's largest tables are never migrated twice. The product surface is Release 10. The one genuinely expensive consequence is background compute, which multiplies one for one with workspace count unless scheduled work becomes per owner (W2) and idle workspaces cost nothing (W3): §24.3 has the arithmetic.
 
 > **Landed, 2026-08-19 through 2026-08-20: the three-pane shell.** The UI/UX
@@ -1366,7 +1368,10 @@ adds a third consumer to the background layer, and a per-group job that drains a
 queue is the shape D7 asks for anyway. Independent of Releases 3, 4, 5 and 6.
 
 **Phase numbering starts at 45**, leaving 44 to the deferred context-digest tick
-noted at the end of Release 8.
+noted at the end of Release 8. The release then jumps from 50 to **57**, because
+51 to 55 are Release 10 and 56 is the job queue, which landed early (out of
+order, absorbed into Release 1.5). The four rows added on 2026-08-29 take the
+next free numbers rather than renumbering a table other documents already cite.
 
 | #   | Deliverable                                                                                                                                                                                                                                                                                                                                                                                                                                    | Verifiable by                                                                                                                                    |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -1375,7 +1380,10 @@ noted at the end of Release 8.
 | 47  | UI: space switcher in the shell header, an explicit space target on **every** capture path (quick capture, PWA share target, email token, voice, image, Sparkey composer), group Launcher, per-space workspace tab state                                                                                                                                                                                                                       | capture defaults to personal on every one of the six paths, asserted per path                                                                    |
 | 48  | Erasure and isolation: member-erased hook, admin succession, group deletion with typed confirmation + member notification, Art. 15 predicate export, probe B1 extended                                                                                                                                                                                                                                                                         | tests 13a–13e                                                                                                                                    |
 | 49  | Group-to-group sharing: `ResparkableGrant` re-keyed space-to-space, `resolveResparkableAccess` extended, `/shared-with-me` becomes per-space, share dialog names the grantee group and its member count                                                                                                                                                                                                                                        | tests 13f–13g; §13's tests 3–4 still pass unchanged                                                                                              |
-| 50  | Group digest: `ResparkableReview{horizon: 'group_digest'}`, workflow on the group's schedule, `createdByUserId` backfill-free activity feed in the Activity pane, `actorUserId` on the credit ledger                                                                                                                                                                                                                                           | test 13h, the one that asserts the digest is non-comparative                                                                                     |
+| 50  | Group digest: `ResparkableReview{horizon: 'group_digest'}`, registered as a **gated kind** on phase 56's queue so a quiet fortnight is not billed (23.12), workflow on the group's schedule, `actorUserId` on the credit ledger, and 23.12's budget policy in full: admin top-up, no fallback to a member's own balance, `dailyCreditCap`, viewer-spends-zero, the two admin-only thresholds                                                   | test 13h (the digest is non-comparative) and test 13k                                                                                            |
+| 57  | 23.11 joining: hashed join links with §13's public-link discipline (`maxUses`, expiry, revocation, role fixed at mint and never `admin`), open-vs-request approval as a `joinedAt: null` membership row, `maxMembers`, the two new rate-limit tiers                                                                                                                                                                                            | test 13i; a pending member resolves to no scope at all                                                                                           |
+| 58  | 23.13 collaboration: `ResparkableTask.assignedToUserId`, comments on the `space` basis with admin deletion, `rev` promoted from dormant to the group write path (409, no migration), leaving voluntarily, the three notification templates, `ResparkableGroupAuditEntry`, per-space storage quota                                                                                                                                              | test 13j; the `rev` coverage list is asserted rather than assumed                                                                                |
+| 59  | 23.10 activity feed: its own Workspace tab in `tab-registry.ts`, `GET` + `computeETag`/`checkConditional`, visibility-gated polling, `feedSeenAt` on `ResparkableGroupMember`, actor rendering with `source: 'system'` attributed to the workspace, unknown kinds dropped                                                                                                                                                                      | test 13l and test 13m, the second of which is the non-monitor assertion                                                                          |
 
 **Phase 45 ships behind no flag and changes no behaviour.** It is a rename plus
 some nullable columns, deliberately separated from every user-visible part of
@@ -1470,6 +1478,11 @@ migration with a customer-support tail.
     13f. **Group-to-group grants.** Every §13 assertion (tests 3 and 4) still passes unchanged with a personal grantor and grantee. With a group grantee: the item is readable by every current member, a member added afterwards can read it, a member removed afterwards cannot, and revocation is immediate for all of them. A grant to a group puts **zero** rows in that group's `ResparkableEmbedding`, asserted by query inspection rather than by mocking.
     13g. **Nothing crosses spaces implicitly.** A member of three spaces gets three separate lists, three separate searches and three separate context blocks. `searchResparkable` returns rows from exactly one space per call, and the built context for a group turn contains no row from the actor's personal space.
     13h. **The digest is non-comparative.** Given a group where one member wrote thirty items and another wrote one, the generated digest contains no per-member count, no ranking, no superlative about a member, and no phrasing that frames a member as behind. Asserted against the rendered output with the model stubbed to be maximally unhelpful, which is what proves the constraint lives in the gather step and the guardrails rather than in the prompt's manners. A group of thirty produces one digest run, not thirty.
+    13i. **A join link is a credential and behaves like one.** A link expires, revokes, and stops at `maxUses`; a redeemed link cannot be redeemed twice by the same account; no link can confer `admin`, asserted at the mint route rather than only in the UI; a `request` link produces a membership row that resolves to **no scope at all**, so a pending member's every read is a 404 and not a filtered list. A group at `maxMembers` refuses the join with a message rather than accepting it and dropping it.
+    13j. **Two people, one row.** A concurrent update with a stale `rev` returns 409 carrying the current row and writes nothing, on every model that carries `rev`; the set of models that carry it is asserted by enumeration, so a model added later is either in the list or fails the test. An assignee who is not a current member is refused where the scope is minted. A member who leaves loses access on the next request; their `createdByUserId` values are unchanged; their assignments are null rather than reassigned; their comments are still there. Erasing that same member instead removes the comment bodies and leaves the authored items, which is 23.5's asymmetry asserted rather than described.
+    13k. **The budget refuses before it spends.** An empty group balance refuses the run without a provider call, counted by provider-call count and not by inspecting configuration, and **never** debits the actor's personal balance instead. A member at their `dailyCreditCap` is refused the same way. A `viewer` is refused every billed action. A `group_digest` scheduled over a window whose only `ResparkableEvent` rows are `source: 'system'` does not run at all, which is the gated-kind rule from phase 56 applied to the one per-group model call in the tier.
+    13l. **The feed reads what is already there.** The feed route returns rows from exactly one space, is served by the existing `[spaceId, createdAt desc]` index with no new index added, and answers an unchanged feed with a **304**. An event whose `kind` the renderer does not know produces no line rather than a raw discriminator. A `source: 'system'` event is attributed to the workspace and never to a person. `feedSeenAt` changes what is styled unread and changes no query's `WHERE`, asserted by comparing the emitted SQL for a member who has read everything against one who has read nothing.
+    13m. **The feed is not a monitor.** Given a group where one member wrote thirty items and another wrote one, the rendered feed contains no per-member count, no total, no rate, no ordering by member, and no superlative. Filtering by a member returns rows and no aggregate over them. This is 13h's assertion moved to the surface where the constraint is harder to hold, and it is deliberately a rendering test rather than a data test: the rows are all there and always were, and the whole rule is about what is built on top of them.
 14. **Workspaces (§24).** Every assertion here needs a fixture with **two or more** workspaces per owner. A one-workspace fixture passes all of them vacuously, which is exactly how this would ship broken.
     14a. **Two brains, no bleed.** One user, two workspaces. An item in A never appears in B's lists, search, graph, connections, briefing or context block, **including when A's row is the better vector match**. This is test 2 (cross-user isolation) re-run within a single account, and it is the assertion the whole section rests on: the isolation that used to be between people is now also between one person's own brains.
     14b. **The default is singular and always present.** The partial unique index rejects a second live default at the database, not only in the service. Archiving the default promotes exactly one successor. A user cannot reach a state with zero live workspaces or two defaults, attempted concurrently as well as serially.
@@ -2053,7 +2066,13 @@ about breaking it once, deliberately, rather than a dozen times by accident.
 **The requirement**, in the words it was given in: a group can own a Resparkable
 workspace exactly as an individual user owns one today; a group's workspace can
 be shared with other groups; a group has an admin; a group gets summaries of its
-own activity.
+own activity. Restated 2026-08-29 with the half that was missing: people **join**
+a group as well as being invited to one (23.11); members **work on the same
+items**, so assignment, comments and concurrent edits are part of the feature
+rather than adjacent to it (23.13); the group's activity is visible **as it
+happens** and not only in a scheduled summary (23.10); and the group has a
+**budget**, which is a cap somebody sets and not merely a total somebody reads
+(23.12).
 
 ### 23.1 A Group is not a Circle, and not a grant
 
@@ -2126,6 +2145,16 @@ interface SpaceScope {
 moment it becomes one, a group space has a per-row ACL and `WHERE spaceId = $1`
 stops being the whole story, which is the failure 23.4 exists to prevent.
 
+**`SpaceRole` has four values and no space uses all four.** `owner` is the
+personal-space role: the sole actor on a space with `ownerUserId` set, holding
+every permission, and it never appears in a group. `admin | member | viewer` are
+the group roles (23.3) and never appear in a personal space. One union rather
+than two types, because every call site that checks a role is checking "may this
+actor write here" and would otherwise branch on space kind first, which is the
+branch that eventually gets forgotten. The invariant to assert is the exclusion,
+not the count: a `SpaceScope` for a `kind: 'personal'` space is always `owner`,
+and one for a `kind: 'group'` space is never `owner`.
+
 **D5 is restated, unchanged in force:** every brain query is either a space query
 or a shared query, and there is no third kind. Membership resolution happens
 **once**, at the trust boundary where `spaceScope()` is minted, and never again
@@ -2147,9 +2176,11 @@ cascade, because they describe the _relationship_ rather than the brain:
   `SUBJECT_DATA_SOURCES` so a data subject's export says which groups they
   belonged to. Both are landed in the same phase as the model, not after.
 
-Roles are `admin | member | viewer`. Admin can invite, remove, change roles,
-configure the space, and delete the group; member can read and write brain
-content; viewer can read. Invites reuse the **shape** of §13's grant invites
+Group roles are `admin | member | viewer`, three of `SpaceRole`'s four values
+(23.2 has the fourth, `owner`, and why a group never holds it). Admin can invite,
+remove, change roles, configure the space, mint join links (23.11), set the
+budget (23.12), and delete the group; member can read and write brain content;
+viewer can read, and spends nothing (23.12). Invites reuse the **shape** of §13's grant invites
 (sha256 `inviteTokenHash`, expiry discipline, identical response whether or not
 the email has an account, never `Verification`), because a second invite
 mechanism is exactly what §18 forbids itself and the reasoning does not change
@@ -2339,7 +2370,330 @@ the constant D7 exists to forbid.
   distinction is worth keeping visible: an admin sees spend, and nobody sees
   productivity.
 
-### 23.10 Open questions
+### 23.10 The activity feed, and the four things it is not
+
+23.8 gives a group a **digest**: a scheduled, LLM-written account of what the
+period meant. The requirement asks for something else alongside it: a member
+opens the group and sees what has happened since they last looked, now, without
+waiting for a scheduled run. These are one source and two cadences rather than
+two features, and the split is the useful one: the feed answers _what happened_
+and costs nothing, the digest answers _what it means_ and is the only half worth
+a model call.
+
+**The source already exists.** `ResparkableEvent` is written on every meaningful
+mutation, is already space-scoped, already carries `kind`, `entityType`,
+`entityId` and `metadata`, and already has `@@index([userId, createdAt(sort:
+Desc)])`, which becomes `[spaceId, createdAt desc]` at phase 45 and is exactly
+the index a feed reads. Nothing new is captured for this. What is added is one
+column's worth of meaning, below.
+
+**Attribution: on an event row, 23.5's `createdByUserId` is the actor.** The
+column is added to every satellite, so `ResparkableEvent` gets it with the rest,
+but it means something different there. On a task it records who created the
+task; on an event it records who did the thing the event describes, which is the
+only useful reading and is not the same person. A task Sam created and Priya
+completed produces one row attributed to Sam and one attributed to Priya, and a
+feed that read the task's author for both would put Sam's name on Priya's work.
+Say this in the column comment on `ResparkableEvent` specifically, because the
+name invites the wrong reading.
+
+**`source = 'system'` means the group did it, not that nobody did.** The column
+already exists and already drives phase 56's demand gate. A background run's
+events have no actor, and the feed renders them as the workspace acting
+("Nightly triage promoted 3 thoughts"), never as an unattributed line that reads
+like somebody hiding.
+
+Four things this surface is not:
+
+**1. It is not the Activity pane.** `components/resparkable/activity/activity-pane.tsx`
+today is the discovery feed: connections the sweep has proposed and nobody has
+decided about. That is a **decision queue**, and its whole interaction is accept
+or reject. An event feed is a **record**, and has no decision in it. Putting the
+second inside the first gives one surface two jobs and the queue wins, because a
+queue with unread items in it is louder than a log. The group feed is its own
+Workspace tab with an entry in `tab-registry.ts`. Phase 50 originally said "the
+Activity pane" and phase 59 replaces it.
+
+**2. It is not push.** Decision: **poll, with conditional requests.** SSE holds
+one connection per viewer per group for as long as the tab is open, and the
+tier's only existing stream (`/api/v1/resparkable/chat/stream`) is a bounded
+request that ends on its own, which this one never would. A thirty-member group
+with everyone's laptop open is thirty held connections to produce a line every
+few minutes. The query is cheap; the connection is the cost. So: a `GET` on the
+feed route, `computeETag` / `checkConditional` from `lib/api/etag.ts` so an
+unchanged feed is a 304 and not a payload, polled only while the tab is focused
+and the pane is visible, and stopped entirely when the document is hidden. A
+study class does not have a sub-second requirement, and inventing one costs a
+connection per member for the life of the session. 23.14 records what would make
+this worth revisiting.
+
+**3. It is not a per-row ACL, and the read watermark is not one either.** Every
+member sees every event in the space, per 23.4. What is per member is a single
+`feedSeenAt` on `ResparkableGroupMember`, so "4 new" is answerable. That is one
+column on a table that already holds exactly one row per member per group. It is
+not a filter in `repo/**`, it does not reach `SpaceScope`, and no query's `WHERE`
+gains a term. Stated explicitly because the shape resembles the thing 23.4
+forbids and is not it: 23.4 bans membership deciding **what a query returns**,
+and a watermark decides only what is styled as unread.
+
+**4. It is not a monitor, and this is the hard one.** 23.8 states the
+non-comparative rule for the digest and gives the reasoning, which does not
+weaken here: it gets harder. A digest can be gathered non-comparatively because a
+deterministic gather step chooses what the model sees. A feed is by construction
+a list of names next to actions ordered by recency, which is what a productivity
+monitor looks like, and it would arrive without anyone deciding to build one.
+Three rules, all asserted in tests the way 13h asserts the digest's:
+
+- **The subject of a line is the item, and the person is attribution.** "Chapter
+  4 notes, added by Sam" rather than a column of Sams. This is a rendering rule
+  and it is the one that decides whether the surface reads as a shared record or
+  as a feed of people.
+- **No count over members, anywhere, ever.** No per-member totals, no "12 this
+  week", no sort by member, no "most active", no streak. `ResparkableEvent` has
+  no index on the actor and does not get one, which makes the aggregate awkward
+  as well as forbidden. One `groupBy` is all that separates this surface from a
+  leaderboard at any moment, which is why the rule is written down rather than
+  assumed.
+- **Filtering by member is allowed; counting the filter is not.** "What did Priya
+  write about chapter 4" is a content question and a legitimate one. The line is
+  that the filter returns rows and never a total, a rate, or a comparison with
+  another member or another period. A filtered list is a search result; the same
+  list with "31 items" over it is a performance review.
+
+**An unknown event kind renders as nothing.** `ResparkableEvent.kind` is a
+`VarChar(24)` with an enumerated set in its schema comment, and a kind added in a
+later release must not put a raw discriminator in front of thirty people. The
+feed maps kinds to sentences and drops what it cannot render, which is the
+failure direction that costs a missing line rather than a leaked internal.
+
+---
+
+### 23.11 Joining, which is not the same as being invited
+
+23.3 gives a group invites: an admin names an address, the mail goes out, the
+grant is already live for that address before it is opened. That covers the case
+where the admin knows who is coming. A cohort of thirty is the case where they do
+not, or where typing thirty addresses is the reason the feature does not get
+used. Three mechanisms, and only two ship.
+
+**1. Invite by address** (23.3, unchanged).
+
+**2. A join link, which is a bearer credential and gets §13's public-link
+treatment rather than the invite's.** The difference matters enough to state in
+the UI, not only here: §13's invite token _grants nothing on its own_ because the
+grant already names the address, so a forwarded invite is useless without that
+mailbox. A join link names nobody, so **a forwarded join link is the whole
+thing**. It is the more dangerous of the two and takes the stricter defaults:
+
+- `randomBytes(24).toString('base64url')`, sha256 at rest, `tokenPrefix` for the
+  UI. Same deviation, same reasoning as §13: not a cuid, because cuids are
+  timestamp-prefixed and monotonic.
+- `expiresAt` defaulting to 30 days, max 365, `null` behind an explicit "never
+  expires" checkbox; `revokedAt`; `maxUses` with a use count.
+- **The role is fixed at mint time and cannot be `admin`.** There is no join link
+  that makes the holder an administrator of somebody's workspace. Promotion to
+  admin is an act by a named admin on a named member, and stays one.
+- Default role `member`, and `viewer` offered as the safer choice in the same
+  words the share dialog uses for snapshots.
+
+**3. A public group directory. Not built, and not deferred: declined.** A
+browsable list of groups is a product with moderation, reporting and abuse
+obligations attached, none of which are anywhere in this plan, and it would make
+this deployment's group names a public corpus. Groups are reachable by invite or
+by link, and by nothing else.
+
+**Approval.** A join link is either `open` (the link is the decision) or
+`request` (arriving creates a pending row an admin approves). `request` is the
+default for any link conferring more than `viewer`. A pending join is a
+`ResparkableGroupMember` row with `joinedAt: null` and a `requestedAt`, not a
+fourth table: the `@@unique([groupId, userId])` already prevents a double
+request, approval is one `UPDATE`, and a rejection leaves nothing behind. A
+pending member resolves to no scope at all, so the pending state cannot read the
+space.
+
+**A member cap per group.** `ResparkableGroup.maxMembers`, operator-configurable,
+defaulting low (fifty). Three reasons in weight order: 23.10's feed and 23.8's
+digest are both sized for a group somebody actually reads; a group's corpus grows
+roughly with its member count, so member count is a `scale.md` S4 vector-tiering
+knob whether or not it is presented as one (23.14 q5); and an uncapped group
+behind an open join link is a mailing list with a shared vector index and one
+person's credit balance. A group at its cap refuses the join and tells the admin,
+rather than silently dropping arrivals.
+
+**Rate limits.** Two, both keyed on the acting user, both in the tier's own
+`rate-limit.ts` beside `resparkable-invite`: link **minting**, because an
+unbounded set of live links is an unbounded set of credentials to one workspace,
+and link **redemption attempts**, because the token is a guessable-in-principle
+path parameter presented by a signed-in stranger. 23.3's invite cap is 20/day for
+the reason §13 gives, that the abuse shape is volume over time rather than burst,
+and the same shape applies here.
+
+---
+
+### 23.12 Budget: recording spend is not the same as capping it
+
+23.9 says billing comes almost free, and that is true of **recording**: the
+accounts are already space-keyed and the ledger gains `actorUserId`. It is not
+true of the cap. For one person the policy needs no words, because the balance is
+the budget and there is one straw in the bucket. A group is the same bucket with
+thirty. Four decisions.
+
+**The group's balance is the group's, and an admin tops it up.** Not a pool
+assembled from members' personal balances. A member's credits are theirs and
+travel with their account under `transfer/policy.ts`; a group space explicitly
+does not travel with an account (23.6); and splitting one run's cost across
+contributors is a settlement problem nobody asked for.
+
+**A member spends the group's balance and never falls back to their own.** The
+fallback is the tempting version and it is the one that produces a complaint: a
+member runs an expensive workflow shortly after the group balance empties,
+quietly pays for the group out of credits they bought for their own brain, and
+finds out afterwards. `assertPositiveBalance` resolves exactly one account, the
+space's, and a group space's empty balance is a refusal rather than a redirect.
+
+**Per-member sub-caps, and what they are for.** `ResparkableGroupMember.dailyCreditCap
+Float?`, `null` meaning uncapped and the default. This is **not** a productivity
+control and the distinction is worth defending, because it is the one place in
+this section where a surveillance-shaped mechanism is genuinely warranted: the
+cap is the blast radius for the single thing a group actually exposes, which is
+that any member can spend everyone's credits. It answers "a member left a
+workflow looping overnight". It does not answer "a member is using too much", and
+an admin UI that presents it as the latter has misread it. Enforced in the same
+pre-flight `assertPositiveBalance` sits in, so it refuses **before** the provider
+call: never debit for a run that cannot produce anything is the rule in
+[`design-principles.md`](./design-principles.md), and a run refused after the
+tokens are spent is the same waste wearing a policy.
+
+**A `viewer` spends nothing.** Zero, not a small cap. A viewer has no write
+capability bound (23.9), and every billed action in the tier is a write or
+produces one.
+
+**Thresholds, and who hears about them.** Two notifications, both admin-only: the
+balance crossing a configurable low-water mark, and a single run costing more
+than a configurable share of what remains. **Members see the balance and see
+nothing about who spent it.** Hiding the balance from members produces refusals
+they cannot explain; showing them the per-actor breakdown is the ranking 23.8
+refuses, reached through the invoice. Admins see per-actor spend via the ledger's
+`actorUserId`. 23.9 already draws that line and this paragraph only says which
+screen each half lands on: an admin sees spend, and nobody sees productivity.
+
+**The digest is billed to the group and must not run for nothing.** A
+`group_digest` over a window in which `ResparkableEvent` recorded no
+`source: 'user'` row is a charge nobody would agree to, and a group of thirty
+that had a quiet fortnight is a common case rather than an edge one. The digest
+registers as a **gated kind** on phase 56's queue, asking whether anything
+changed before it spends, exactly as the four personal workflows do. This is not
+a nicety: a group's balance is somebody's actual money and the digest is the
+tier's only per-group scheduled model call.
+
+---
+
+### 23.13 Working on one item together
+
+23.4 makes the whole space visible to every member, and that is a complete
+**read** model. What it does not describe is two people acting on one row, which
+is most of what a group workspace is for. Five things, four of them cheap.
+
+**Assignment.** `ResparkableTask.assignedToUserId String?`, FK to `"user"("id")`
+`ON DELETE SetNull`, indexed with `spaceId`. It is absent from every earlier
+draft of this plan and it is the first thing a class with a kanban board asks
+for. Three constraints:
+
+- The assignee must be a current member of the space's group, checked where the
+  scope is minted and not inside a repo query. D5 again: membership resolves
+  once, at the boundary.
+- `SetNull`, matching 23.5's reasoning: losing a member must not delete the card.
+- **Assignment is the item's field, not the person's list.** "Tasks assigned to
+  me on this board" is a filter and is fine. "Tasks per member, with counts" is
+  23.8's leaderboard arriving through the board instead of the digest, and takes
+  the same answer: no aggregate over members renders anywhere in a group space.
+  It is one `groupBy` away at all times.
+- In a personal space the field is null and renders nothing.
+
+**Comments inside the space.** `ResparkableComment` exists (phase 13) and today
+means "a grantee said something about an item shared with them". In a group it
+means something weaker and therefore safer: every member can comment on every
+item, because they can already **write** the item itself. One table, one route,
+and the only difference is the basis `resolveResparkableAccess` returns, `space`
+rather than `grant`. Two rules carry over and one deliberately does not:
+
+- Editing is the author's alone. Deleting is the author's or an **admin's**:
+  phase 13 gives deletion to the author or the owner, and in a group space the
+  admin role is what succeeds "the owner".
+- `authorUserId` stays `ON DELETE CASCADE`. Note the asymmetry with 23.5 out
+  loud, because this is where it becomes visible in a UI: **authored items
+  survive an erasure and comment bodies do not**, so a group thread will have
+  gaps in it. One is the group's record and the other is a person's speech, and
+  the gap is the correct outcome rather than a bug someone should later "fix" by
+  retaining the text.
+- What does not carry over: phase 13 keeps comments out of the owner's
+  embeddings and context because a grantee's text is third-party text pointed at
+  the owner's agent. Inside one group that is 23.9's already-accepted trade, so a
+  member's comment is in scope for the group's agent like everything else in the
+  space. The exclusion still holds, unchanged, for comments arriving through a
+  **grant into** the group: the same rule with "space" substituted for "owner".
+
+**Two people editing one row.** `rev Int @default(0)` already ships and is
+already dormant, added in phase 1 so Release 3's reconciler would not need a
+backfill against live data. It is an optimistic-concurrency token and this is its
+second use, at the cost of no column and no migration: a write sends the `rev` it
+read, the `UPDATE` matches on it, and a mismatch returns 409 with the current row
+rather than silently overwriting somebody mid-sentence. Seven models carry it
+today (`ResparkableArea`, `Goal`, `Project`, `Task`, `Thought`, `Entity`,
+`Review`); the phase-1 note says six because `ResparkableEntity` arrived later and
+picked it up. Rows without `rev` keep last-write-wins, which is right for a tag
+or a card position and should be a **listed** decision rather than an accident,
+so the list is asserted in a test.
+
+**Leaving voluntarily.** Distinct from erasure, and not covered by 23.6, which is
+about accounts ending rather than relationships. A member who leaves: the
+membership row goes; `createdByUserId` values **stay**, because the content is
+the group's (23.5); their assignments clear to null rather than silently moving
+to somebody who did not agree to them; their comments stay; and access ends at
+the next request rather than the next session (13c). Before leaving they may
+export what they contributed, and that set needs no new definition: 23.6's Art. 15
+predicate, rows in group spaces where `createdByUserId` is them, is exactly it.
+Reusing the predicate rather than writing a second one is the point, because two
+definitions of "what I contributed" would drift and one of them would be the one
+a regulator reads. The last admin cannot leave (23.3).
+
+**Notifications, scoped here rather than discovered in phase 48.** 23.6 requires
+notifying every member when a group is deleted, which assumes a mechanism the
+tier does not have. It is smaller than it sounds: the tier already ships one
+email of its own (`components/resparkable/emails/share-invite.tsx`, and the
+reasoning for it living there rather than in core `emails/` is in
+[`sharing.md`](./sharing.md)), so this is two more templates rather than
+infrastructure. **Exactly three events earn an email**: the group was deleted,
+your membership or role changed, and 23.12's admin-only budget thresholds.
+Everything else, the feed and the digest included, is in-app. An email per
+activity is precisely how a group workspace becomes a thing people mute, after
+which the three that mattered are muted too.
+
+**A group admin audit log.** Role changes, removals, join approvals, link minting
+and revocation, and budget changes are all actions one person takes that land on
+another, and none of them belong in `ResparkableEvent`, which records what
+happened to the brain's **content**. `AiAdminAuditLog` is the wrong home for the
+opposite reason: a group admin is not a deployment operator, and giving them a
+row in the operator's log either leaks the deployment's log or forks its meaning.
+So: `ResparkableGroupAuditEntry`, hanging off the group, append-only, admin-
+visible, recording actor, subject, action and time. It sits outside the D1
+cascade with the other two group tables. It is also **the one surface in this
+section where naming a member next to an action is correct**, and the reason is
+worth keeping straight: 23.8's rule protects people from having their work
+counted, and it has never protected an administrator from a record of
+administering. The subject of an administrative action has a right to see it.
+
+**The shared shelf costs something.** The book in the requirement is a real
+ingestion: parse, chunk and embed several hundred pages, charged to the group's
+balance, with the original retained under `framework-resparkable/<spaceId>/`.
+Two limits belong on the group rather than being discovered in production: a
+per-space **storage quota**, and upload restricted to `member` and above, because
+a viewer uploading a book is a write. Neither is new machinery. Both are numbers
+that currently have no owner.
+
+---
+
+### 23.14 Open questions
 
 Flagged rather than guessed at, on the §22 precedent:
 
@@ -2361,7 +2715,27 @@ Flagged rather than guessed at, on the §22 precedent:
 5. **Scale.** `scale.md`'s S4 makes exact per-space vector search a tier decision
    sized on a personal corpus. A group brain is larger than a personal one by
    roughly its member count, so a group space crosses that threshold sooner and
-   the tiering needs to be per space rather than per user.
+   the tiering needs to be per space rather than per user. 23.11's `maxMembers`
+   is the near-term answer and is a cap rather than a design.
+6. **Whether a group may hold a second workspace, and what membership means if it
+   does.** 23.3 says one group, one space, "and no route by which a group
+   acquires a second one". §24.1 then removes `ResparkableGroup.spaceId @unique`
+   in phase 45, for the good reason that the constraint and the migration that
+   would change it are the same migration and it happens once. Removing it is
+   right; what is unanswered is the product question it opens. If a group holds
+   three workspaces, is membership held against the **group** (a member is a
+   member of all three) or against each **workspace** (which is a per-space ACL
+   arriving through the front door, and 23.4's objection applies to it in full)?
+   The likely answer is per group, with the workspace list being what a member
+   sees rather than what a member is granted, but per-cohort teaching groups are
+   exactly the case that will press on it.
+7. **What would make 23.10's feed worth pushing.** The poll decision is sized on
+   a study class, where a line arriving forty seconds late costs nothing. The
+   trigger for revisiting it is a group whose members act on the same item within
+   seconds of each other often enough that 23.13's 409 becomes a routine
+   experience rather than a rare one, at which point the missing feature is
+   presence ("Priya is editing this") rather than a faster feed, and presence is
+   a different mechanism with a different cost.
 
 ---
 
@@ -2436,6 +2810,36 @@ phase 45 with everything else**, not when the second workspace ships.
 capture lands in, what the API-key default resolves to, and what the app opens
 on. A user may change it; a user may not have none. Deleting or archiving the
 default promotes the next-created live workspace and says so out loud.
+
+**The switcher is a switcher, and not a tab.** The requirement this section came
+from asked to "flick between workspaces using the tabbing system", and the
+answer is no, deliberately. The tab strip already answers one question, _which
+view of this brain_, and its state is held per surface in the shell. Putting
+workspaces in the same strip makes one row of tabs answer two questions at once,
+and the cost is not aesthetic: opening an item in workspace B would seat its tab
+next to workspace A's, and **closing a tab and leaving a workspace would become
+the same gesture**. Workspaces live in the shell header, above the strip, which
+is the level in the hierarchy they actually occupy.
+
+What "flick" survives as, and these are the parts that make the switcher feel
+like one:
+
+- **Keyboard-reachable**, and the active workspace is **in the URL**, so a
+  workspace is a link, the browser back button works, and a tab in the actual
+  browser can hold a different one.
+- **Tab state is per workspace, retained across a switch, and evicted with the
+  workspace.** This settles what §24.8 previously left open. Switching to
+  "Novel" and back to "Consulting" returns the panes exactly as they were, not to
+  a default view. Resetting on switch is the thing that would make three
+  workspaces feel like three logins, which is the failure the open question
+  named, and retaining is cheap because the state is already per surface.
+- **Personal and group workspaces sit in the same switcher**, grouped and
+  labelled by kind. A member should not have to know whose a workspace is in
+  order to open it. What differs after opening is the role, the capture default
+  (23.4) and the billing account (23.12), none of which is a different route in.
+- **The switcher names the workspace on every capture confirmation** (phase 54),
+  because the switcher is exactly the control that makes a mis-targeted capture
+  possible.
 
 ### 24.3 The background-compute multiplier
 
@@ -2528,7 +2932,7 @@ workspaces coherent, so none of them relax:
   "Novel", and that separation is most of why someone would want two.
 - **No cross-workspace links.** `ResparkableLink` stays inside one space. A
   connection between two brains is a §13 grant or a §18 facet, not an edge.
-- **Cross-workspace search remains the open question** it is in §23.10, now more
+- **Cross-workspace search remains the open question** it is in §23.14, now more
   pressing, with the same likely answer: a fan-out that groups results by
   workspace and never merges them into one ranked list, because a merged ranking
   would need a cross-space scorer and there is no meaningful shared scale.
@@ -2554,7 +2958,7 @@ these are asks that arrived before the feature did:
 ### 24.8 Open questions
 
 1. **Moving an item between workspaces.** The same cross-space write problem as
-   §23.10's first question, and the same answer is likely to serve both: one
+   §23.14's first question, and the same answer is likely to serve both: one
    mechanism for "promote this into another space", used by personal-to-group and
    workspace-to-workspace alike, rather than two.
 2. **Workspace templates.** A new workspace starts empty, which is honest and
@@ -2565,7 +2969,10 @@ these are asks that arrived before the feature did:
    to a group. Mechanically it is a `kind` flip and an `ownerUserId` clear;
    whether it is safe depends on 23.4, because everything in it becomes visible to
    every member at the moment of the flip.
-4. **The switcher's cost to the shell.** The three-pane shell holds tab state per
-   surface; whether that state is per workspace, or reset on switch, changes what
-   "switching" feels like, and getting it wrong makes several workspaces feel
-   like several logins.
+4. **Whether an archived workspace stays readable.** Archiving is offered as the
+   cheap end of an experiment (24.7), which only works if archiving is not
+   deletion. Whether an archived brain is read-only-but-searchable, or closed
+   until restored, changes what W3's "costs approximately nothing" has to mean:
+   a searchable archive keeps its vectors resident, and a closed one does not.
+   (The switcher question that stood here is answered in 24.2: tab state is per
+   workspace and retained across a switch.)
