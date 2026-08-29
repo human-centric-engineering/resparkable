@@ -41,13 +41,26 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-// FORK (Resparkable): `lib/app/data-export.ts` is filled here, and its collector
-// queries seventeen tables. This file is a seam test — it asserts what each
-// `lib/app/*` export IS, not what the tier does behind it — so the tier's data
-// access is stubbed rather than run. Without this the row below needs a live
-// database, which no other row here does.
+// FORK (Resparkable): `lib/app/data-export.ts` is filled here, and it runs TWO
+// collectors — one per side of the D5 boundary. `repo/subject-export.ts`
+// answers "what is in this person's brain?"; `access/subject-export.ts` answers
+// the two questions that are about them but live on somebody else's rows. This
+// file is a seam test — it asserts what each `lib/app/*` export IS, not what the
+// tier does behind it — so both are stubbed rather than run. Without them the
+// row below needs a live database, which no other row here does.
+//
+// Both mocks are load-bearing and neither is redundant: the seam awaits them in
+// a `Promise.all`, so an unmocked collector reaches Prisma no matter what the
+// other one does. A third collector added to the seam needs a third line here,
+// and will announce itself as a connection error rather than an assertion
+// failure — which is what happened when the access-layer collector landed.
 vi.mock('@/lib/framework/resparkable/repo/subject-export', () => ({
   collectResparkableSubjectData: vi.fn().mockResolvedValue({}),
+}));
+vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
+  collectResparkableCrossSubjectData: vi
+    .fn()
+    .mockResolvedValue({ sharedWithMe: [], commentsIWrote: [] }),
 }));
 
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
