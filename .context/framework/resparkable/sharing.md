@@ -180,6 +180,37 @@ An explicit-membership board has no such problem: its contents are exactly the r
 
 The membership comes from `buildBoardView`, never from a second query — the snapshot has to be what the owner was looking at when they pressed the button, cap and column order included, and a second implementation of "which cards are on this board" would eventually disagree with the first.
 
+### Where the control is, for each of the six types
+
+§13's shareable list is `area`, `goal`, `project`, `review`, `board`, `task`, and not `thought`. Release 2 built the access layer, the cascade, the redaction and the routes for all six, and shipped a **button** for two of them. The other four were reachable by API and by nothing a person could press, which is a gap of exactly the kind that stays open because every test passes. Five now have one. `review` is the exception and the reason is below. `components/resparkable/share/share-button.tsx` is the wrapper that closed it: `open` state, a button and a mounted `ShareDialog`, so no surface hand-rolls the three lines and gets the `entityType` wrong.
+
+| Type      | Where the control is                                                    |
+| --------- | ----------------------------------------------------------------------- |
+| `area`    | the row on Life, `components/resparkable/areas/areas-view.tsx`          |
+| `goal`    | the node in the tree, `components/resparkable/goals/goals-view.tsx`     |
+| `project` | the detail header, `components/resparkable/projects/project-detail.tsx` |
+| `board`   | the board header, `components/resparkable/board/board-view.tsx`         |
+| `task`    | the card sheet, `components/resparkable/board/card-detail-sheet.tsx`    |
+| `review`  | **none.** Shareable by API, no control. See below                       |
+
+Five things about that table are decisions rather than the shape it happened to take.
+
+**A `goal` control is on every node, not only on roots.** The cascade takes a goal to its **child goals**, and no further: deviation 1 below is the reason a project is not in that list, whatever §13 says. Sharing a parent and sharing one child are still different acts and both are things somebody means to do, so a control only on roots would have made the wider of the two the easier one.
+
+**An `area` control shares the statement and nothing under it.** The cascade is typed and one level, and `area` is the type it deliberately stops at: sharing "Career" hands over what matters and why, not the goals and projects filed beneath it, each of which is shareable on its own terms.
+
+**A `task` is shared from its card and not from a ranked list.** `TaskRow`, which Today and the project page both use, has no share button and should not get one: its own docblock is the reason, that a ranked list is a decision aid and a row that shows everything shows nothing. §13's stated reason for making `task` shareable at all was §12's, that a board is worthless if you cannot hand somebody a single card, and the card is where this puts it. The consequence is worth knowing: a task on no board has no share affordance, and putting it on one is the route.
+
+**The card sheet hands the card up rather than opening a dialog inside a dialog.** `CardDetailSheet` is itself a Radix dialog. Nesting `ShareDialog` inside it works in the sense that it renders, and fails in the sense that two focus traps are stacked, Escape means something different depending on which one holds focus, and the share flow ends with the card sheet still open behind a dialog the person has finished with. So the button calls `onShare`, `BoardView` closes the sheet and mounts the task's share dialog in its place. The dialog is rendered only while a card is being shared, so its panels fetch that task's grants rather than the previously shared card's.
+
+**A `review` gets no control, and the blocker is revocation rather than the missing list.** The morning briefing is the only stored review the owner has a surface for, so a button there was written and then taken out. `createReview` is a `create`, never an update (`POST /reviews` has no `PATCH`, deliberately, because "what did the strategist say three weeks ago" is the question the table exists to answer). So tomorrow the card renders a **different row**, and a link minted on today's briefing points at a row with no surface anywhere: no reviews list, and `/resparkable/shared` is the grantee's side. `ShareDialog` is only ever reachable through an entity's own control, so that link stays live with nothing able to revoke it.
+
+Granting is not the hard half of sharing. Being able to take it back is, and a share nobody can revoke is not a share, it is a publication. Expiry bounds it (30 days by default, 365 at most) but "never expires" is one checkbox away, and expiry is not revocation.
+
+**The fix is an owner-side "things I have shared" surface**, listing every live grant and link across all six types with a revoke on each, reachable without navigating to the entity. That is worth building on its own merits rather than for `review` alone: the same trap catches **any** entity that stops being reachable, and archiving one is the ordinary way that happens. Until it exists, `review` is shareable through `POST /grants` and `POST /share-links` and has no button, which is the honest state rather than a gap somebody should quietly close with two lines in `briefing-card.tsx`. Both that component and its test say so at the point where the button would go.
+
+**A `thought` has no control anywhere**, which is the feature §13 describes rather than an omission. The raw capture inbox is the likeliest place for something its author would be mortified to leak. Promote it to a task first, which is the workflow regardless.
+
 ---
 
 ## Invites: the token that grants nothing
@@ -381,6 +412,7 @@ Keep `rg 'grantOwnerScope\('` as short as `rg 'sharedOwnerScope\('`.
 | `/shared-with-me`, and its search        | `lib/framework/resparkable/services/shared-with-me.ts`                   |
 | Building a viewer from a session         | `lib/framework/resparkable/api/viewer.ts`                                |
 | The owner's share dialog                 | `components/resparkable/share/share-dialog.tsx`                          |
+| The control that opens it, on all six    | `components/resparkable/share/share-button.tsx`                          |
 | The filter-board sentence and snapshot   | `lib/framework/resparkable/services/board-view.ts`                       |
 | Minting, sending and accepting an invite | `lib/framework/resparkable/services/invites.ts`                          |
 | The invite email                         | `components/resparkable/emails/share-invite.tsx`                         |

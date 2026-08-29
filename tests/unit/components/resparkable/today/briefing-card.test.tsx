@@ -21,6 +21,10 @@
  * - No briefing yet reads as an invitation, not an error
  * - "Write a new one" posts with no override; "Surprise me" posts `exploratory`
  * - The outcome is announced in an `aria-live` region, and a failure says so
+ * - There is NO share control, on purpose. A briefing is a `ResparkableReview`
+ *   and `review` is shareable, but regeneration writes a new row, so a link
+ *   minted here would outlive the only surface that can revoke it. Asserted so
+ *   the button is not re-added without the surface that makes it safe
  *
  * @see components/resparkable/today/briefing-card.tsx
  */
@@ -54,6 +58,17 @@ beforeEach(() => {
 });
 
 describe('BriefingCard — reading', () => {
+  it('offers no share control, because a review share could not be revoked', () => {
+    render(<BriefingCard initial={wire()} />);
+
+    // Not an oversight and not a gap to fill: `createReview` is a create, so
+    // tomorrow this card renders a different row and a link minted today would
+    // point at a row with no surface able to revoke it. `review` waits for an
+    // owner-side "things I have shared" page. Asserted rather than commented,
+    // because the button is a two-line change somebody will otherwise make.
+    expect(screen.queryByRole('button', { name: /^Share/ })).toBeNull();
+  });
+
   it('makes no request when it is only rendering', () => {
     render(<BriefingCard initial={wire()} />);
 

@@ -23,6 +23,11 @@
  * - Notes render; the empty-labels case explains where labels come from
  * - Switching cards resets the optimistic state rather than carrying it over
  *
+ * - The share control calls `onShare` with the card rather than opening a
+ *   nested dialog. This is the only place a `task` can be shared, which §13
+ *   made shareable for §12's reason: a board is worthless if you cannot hand
+ *   somebody a single card.
+ *
  * @see components/resparkable/board/card-detail-sheet.tsx
  */
 
@@ -103,8 +108,26 @@ beforeEach(() => {
 });
 
 describe('CardDetailSheet', () => {
+  it('hands the card up rather than opening a dialog inside a dialog', async () => {
+    const user = userEvent.setup();
+    const onShare = vi.fn();
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={onShare} />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Share File the VAT return' }));
+
+    // This sheet IS a dialog. Nesting a second one stacks two focus traps whose
+    // Escape keys mean different things, so the board closes this and opens the
+    // share dialog in its place.
+    expect(onShare).toHaveBeenCalledTimes(1);
+    expect(onShare.mock.calls[0]?.[0]).toMatchObject({ task: { id: 'task_1' } });
+  });
+
   it('issues no requests when a card is opened', () => {
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     expect(screen.getByText('File the VAT return')).toBeInTheDocument();
     // The data was already in the board payload.
@@ -112,14 +135,18 @@ describe('CardDetailSheet', () => {
   });
 
   it('renders the notes as markdown', () => {
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     expect(screen.getByText('7th')).toBeInTheDocument();
   });
 
   it('ticks an item and reports it optimistically', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('checkbox', { name: 'Submit' }));
 
@@ -134,7 +161,9 @@ describe('CardDetailSheet', () => {
   it('rolls a failed tick back', async () => {
     const user = userEvent.setup();
     mockedPatch.mockRejectedValue(new Error('item not found'));
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('checkbox', { name: 'Submit' }));
 
@@ -144,7 +173,9 @@ describe('CardDetailSheet', () => {
 
   it('adds an item and clears the field', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.type(screen.getByLabelText('Add a checklist step'), 'Post it');
     await user.click(screen.getByRole('button', { name: 'Add this step' }));
@@ -160,7 +191,9 @@ describe('CardDetailSheet', () => {
   it('gives the text back when adding an item fails', async () => {
     const user = userEvent.setup();
     mockedPost.mockRejectedValue(new Error('nope'));
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.type(screen.getByLabelText('Add a checklist step'), 'Post it');
     await user.click(screen.getByRole('button', { name: 'Add this step' }));
@@ -172,7 +205,9 @@ describe('CardDetailSheet', () => {
 
   it('removes an item', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('button', { name: 'Remove Submit' }));
 
@@ -184,7 +219,9 @@ describe('CardDetailSheet', () => {
   it('surfaces an error and leaves the item in place when removing it fails', async () => {
     const user = userEvent.setup();
     mockedDelete.mockRejectedValue(new Error('could not remove'));
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('button', { name: 'Remove Submit' }));
 
@@ -196,7 +233,9 @@ describe('CardDetailSheet', () => {
 
   it('does not submit an add for text that is only whitespace', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     const input = screen.getByLabelText('Add a checklist step');
     await user.type(input, '   ');
@@ -210,7 +249,9 @@ describe('CardDetailSheet', () => {
 
   it('sends the whole label set when one is added', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('button', { name: 'client' }));
 
@@ -224,7 +265,9 @@ describe('CardDetailSheet', () => {
 
   it('sends the whole label set when one is removed', async () => {
     const user = userEvent.setup();
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('button', { name: 'urgent' }));
 
@@ -236,7 +279,9 @@ describe('CardDetailSheet', () => {
   });
 
   it('shows which labels are on the card', () => {
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     expect(screen.getByRole('button', { name: 'urgent' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'client' })).toHaveAttribute('aria-pressed', 'false');
@@ -245,7 +290,9 @@ describe('CardDetailSheet', () => {
   it('rolls a failed label change back', async () => {
     const user = userEvent.setup();
     mockedPut.mockRejectedValue(new Error('task not found'));
-    render(<CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
 
     await user.click(screen.getByRole('button', { name: 'client' }));
 
@@ -254,7 +301,7 @@ describe('CardDetailSheet', () => {
   });
 
   it('explains where labels come from when there are none', () => {
-    render(<CardDetailSheet card={card()} allTags={[]} onOpenChange={vi.fn()} />);
+    render(<CardDetailSheet card={card()} allTags={[]} onOpenChange={vi.fn()} onShare={vi.fn()} />);
 
     expect(screen.getByText(/No labels yet/i)).toBeInTheDocument();
   });
@@ -262,7 +309,7 @@ describe('CardDetailSheet', () => {
   it('does not carry optimistic state between cards', async () => {
     const user = userEvent.setup();
     const { rerender } = render(
-      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} />
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
     );
 
     await user.click(screen.getByRole('checkbox', { name: 'Submit' }));
@@ -290,6 +337,7 @@ describe('CardDetailSheet', () => {
         })}
         allTags={TAGS}
         onOpenChange={vi.fn()}
+        onShare={vi.fn()}
       />
     );
 
@@ -302,6 +350,7 @@ describe('CardDetailSheet', () => {
         card={card({ task: { ...card().task, manualBoost: 1 } })}
         allTags={TAGS}
         onOpenChange={vi.fn()}
+        onShare={vi.fn()}
       />
     );
 
@@ -314,6 +363,7 @@ describe('CardDetailSheet', () => {
         card={card({ task: { ...card().task, manualBoost: -1 } })}
         allTags={TAGS}
         onOpenChange={vi.fn()}
+        onShare={vi.fn()}
       />
     );
 
@@ -326,6 +376,7 @@ describe('CardDetailSheet', () => {
         card={card({ task: { ...card().task, manualBoost: 0 } })}
         allTags={TAGS}
         onOpenChange={vi.fn()}
+        onShare={vi.fn()}
       />
     );
 
@@ -334,7 +385,7 @@ describe('CardDetailSheet', () => {
   });
 
   it('renders nothing when there is no card', () => {
-    render(<CardDetailSheet card={null} allTags={TAGS} onOpenChange={vi.fn()} />);
+    render(<CardDetailSheet card={null} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />);
 
     expect(screen.queryByText('File the VAT return')).not.toBeInTheDocument();
   });

@@ -24,8 +24,25 @@
  * `POST /briefing/regenerate` queues a workflow run for the maintenance tick
  * rather than running it inline, so nothing here can await a result. The button
  * therefore reports that it has asked, and the page picks the new briefing up on
- * its next load. Pretending otherwise — a spinner that resolves to nothing —
- * would be worse than saying what actually happened.
+ * its next load. Pretending otherwise, a spinner that resolves to nothing, would
+ * be worse than saying what actually happened.
+ *
+ * ## There is deliberately no share control here, and the reason is revocation
+ *
+ * A briefing is a `ResparkableReview` row and `review` is one of §13's six
+ * shareable types, so a button here is the obvious move. It was written and
+ * then taken out, because of what regeneration does: `createReview` is a
+ * `create`, never an update, so tomorrow this card renders a **different row**.
+ * A link minted on today's briefing would then point at a row with no surface
+ * anywhere. The tier has no reviews list, and `/resparkable/shared` is the
+ * grantee's side, so `ShareDialog` is only ever reachable through an entity's
+ * own control. The link would stay live with nothing able to revoke it.
+ *
+ * Granting is not the hard half. **Being able to take it back is**, and a
+ * share you cannot revoke is not a share, it is a publication. So `review`
+ * waits for an owner-side "things I have shared" surface, which is the honest
+ * fix and is also what any archived entity needs. Recorded in
+ * [`sharing.md`](../../../.context/framework/resparkable/sharing.md).
  */
 
 import * as React from 'react';

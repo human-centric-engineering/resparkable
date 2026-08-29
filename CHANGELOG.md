@@ -18,6 +18,29 @@ release process.
 
 ### Added
 
+- **A share control for five of the six shareable types, not two.** Release 2 built the
+  access layer, the cascade, the redaction and the routes for §13's whole list
+  (`area`, `goal`, `project`, `review`, `board`, `task`) and shipped a button for
+  two of them. The other four were reachable by API and by nothing a person could
+  press, which is the kind of gap that stays open because every test still passes.
+  `review` is the one still without a button, and that is now a recorded decision
+  rather than the same gap: regeneration writes a **new** `ResparkableReview`
+  row, so a link minted on today's briefing would point at a row with no surface
+  able to revoke it. Granting is not the hard half of sharing; taking it back is.
+  It waits on an owner-side "things I have shared" surface, which the same trap
+  makes worth building for **any** entity that stops being reachable.
+  New `components/resparkable/share/share-button.tsx` owns the open state, the
+  button and the mounted dialog, so no surface hand-rolls the three lines and gets
+  the `entityType` wrong; the six surfaces are listed in
+  [`sharing.md`](./.context/framework/resparkable/sharing.md). A goal's control is
+  on every node rather than only on roots, because the cascade reaches children and
+  sharing a parent is the wider act. A task's is on the **card sheet**, which is
+  §12's reason `task` was made shareable at all, and `TaskRow` deliberately does
+  not get one. `CardDetailSheet` gains a required `onShare` prop rather than
+  opening a dialog inside a dialog: two stacked focus traps disagree about what
+  Escape does, so the board closes the sheet and opens the share dialog in its
+  place. A `thought` still has no control anywhere, which is the feature.
+
 - **Resparkable erasure, and Art. 15's other direction.** The tier registers an
   erasure cleanup hook again — deleted in phase 56 when the job queue removed
   the rows it existed for, back now for two things a cascade genuinely cannot
