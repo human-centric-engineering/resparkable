@@ -1757,6 +1757,32 @@ export const shareLinkListQuerySchema = z
 export type ShareLinkListQuery = z.infer<typeof shareLinkListQuerySchema>;
 
 /**
+ * The owner's outbound-share inventory. One flag, and no entity filter.
+ *
+ * Deliberately narrower than the two list schemas above: this surface exists
+ * precisely for shares whose entity the owner cannot name or navigate to, so
+ * an `entityType`/`entityId` filter would be a filter on the thing they came
+ * here because they could not find.
+ */
+export const mySharesQuerySchema = z
+  .object({
+    /**
+     * Include revoked and expired shares. Off by default.
+     *
+     * The `'true' | 'false'` enum rather than `z.coerce.boolean()`, for the
+     * reason every other query flag in this file spells out: `Boolean('false')`
+     * is `true`, so coercion turns the safe default into the wide one.
+     */
+    includeInactive: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
+  })
+  .strict();
+
+export type MySharesQuery = z.infer<typeof mySharesQuerySchema>;
+
+/**
  * A public-link token, as it arrives in a URL path segment.
  *
  * `base64url` of 24 random bytes is exactly 32 characters from the alphabet

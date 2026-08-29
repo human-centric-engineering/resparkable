@@ -27,27 +27,32 @@
  * its next load. Pretending otherwise, a spinner that resolves to nothing, would
  * be worse than saying what actually happened.
  *
- * ## There is deliberately no share control here, and the reason is revocation
+ * ## The share control, and what had to exist first
  *
  * A briefing is a `ResparkableReview` row and `review` is one of §13's six
- * shareable types, so a button here is the obvious move. It was written and
- * then taken out, because of what regeneration does: `createReview` is a
- * `create`, never an update, so tomorrow this card renders a **different row**.
- * A link minted on today's briefing would then point at a row with no surface
- * anywhere. The tier has no reviews list, and `/resparkable/shared` is the
- * grantee's side, so `ShareDialog` is only ever reachable through an entity's
- * own control. The link would stay live with nothing able to revoke it.
+ * shareable types, so a button here is the obvious move. It was written, taken
+ * out, and put back, and the round trip is worth recording because the reason
+ * was never about this component.
  *
- * Granting is not the hard half. **Being able to take it back is**, and a
- * share you cannot revoke is not a share, it is a publication. So `review`
- * waits for an owner-side "things I have shared" surface, which is the honest
- * fix and is also what any archived entity needs. Recorded in
+ * `createReview` is a `create`, never an update, so tomorrow this card renders
+ * a **different row**. A link minted on today's briefing then points at a row
+ * this card no longer shows, and while `ShareDialog` was only reachable through
+ * an entity's own control that link could not be revoked by anything. Granting
+ * is not the hard half; being able to take it back is, and a share nobody can
+ * revoke is not a share, it is a publication.
+ *
+ * `/resparkable/sharing` is what fixed it: an inventory keyed on the **share**
+ * rather than the entity, so a share outliving the surface that made it is
+ * still listed and still closable. That was worth building for its own sake,
+ * because archiving any item does the same thing, and a briefing is only the
+ * fastest way to reach the state. See
  * [`sharing.md`](../../../.context/framework/resparkable/sharing.md).
  */
 
 import * as React from 'react';
 import { Sparkles } from 'lucide-react';
 
+import { ShareButton } from '@/components/resparkable/share/share-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ClientDate } from '@/components/ui/client-date';
@@ -144,6 +149,13 @@ export function BriefingCard({ initial }: { initial: BriefingWire }): React.Reac
           >
             Surprise me today
           </Button>
+          {initial.review && (
+            <ShareButton
+              entityType="review"
+              entityId={initial.review.id}
+              title={initial.review.title}
+            />
+          )}
         </div>
 
         {/* An `aria-live` status line rather than a toast — the tier builds its

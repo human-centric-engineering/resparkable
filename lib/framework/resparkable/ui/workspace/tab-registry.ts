@@ -38,6 +38,7 @@ import {
   Share2,
   StickyNote,
   Handshake,
+  Send,
   Sun,
   Target,
   Users,
@@ -63,6 +64,7 @@ export type TabKind =
   | 'graph'
   | 'shared'
   | 'sharedItem'
+  | 'sharing'
   | 'vault'
   | 'settings'
   | 'archive'
@@ -351,6 +353,17 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
         requireParam(params, 'entityType', 'sharedItem'),
         requireParam(params, 'id', 'sharedItem')
       ),
+  },
+  sharing: {
+    kind: 'sharing',
+    // "by me", not "with me". The two tabs sit next to each other in a strip
+    // and mean opposite directions, so the titles have to disambiguate on
+    // their own rather than relying on the icon.
+    defaultTitle: 'Shared by me',
+    icon: Send,
+    routeBacked: true,
+    matchRoute: exact(RESPARKABLE_ROUTES.SHARING),
+    buildRoute: () => RESPARKABLE_ROUTES.SHARING,
   },
   vault: {
     kind: 'vault',

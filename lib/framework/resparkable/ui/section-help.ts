@@ -325,6 +325,34 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
+    href: RESPARKABLE_ROUTES.SHARING,
+    title: 'Shared by me',
+    blurb: 'Everything you have shared, and how to stop sharing it.',
+    blocks: [
+      {
+        heading: 'Every share you have made, in one list',
+        body: 'Named people you have shared with, and public links you have created, for every project, board, goal, life area, task and review. Grouped by the item they are on.',
+      },
+      {
+        heading: 'Why this page exists',
+        body: 'The share button lives on the item itself, so a share on an item you can no longer open could not be cancelled. That happens when a briefing is replaced by the next one, when a project is archived, or when an item is deleted. Those shares stay active until they expire. They are listed first here.',
+      },
+      {
+        heading: 'Revoking takes effect straight away',
+        body: 'A person loses access on their next request, not their next sign-in. A public link stops opening immediately. If it was the last live link on an item, the item stops being public too.',
+      },
+      {
+        heading: 'Revoking cannot be undone',
+        body: 'You can share the same item again afterwards, but that creates a new invitation or a new link. A revoked link never works again, even if you share the item again.',
+      },
+      {
+        heading: 'Comments are not removed',
+        body: 'If someone with a commenter role wrote comments, those stay after you revoke. Revoking ends their access; it does not delete what they wrote.',
+      },
+    ],
+  },
+
+  {
     href: RESPARKABLE_ROUTES.SHARED,
     title: 'Shared with me',
     blurb: 'Items other people have shared with you, kept separate from your own.',

@@ -30,6 +30,7 @@ import {
   LayoutGrid,
   Link2,
   Settings,
+  Send,
   Share2,
   Sun,
   Target,
@@ -99,6 +100,12 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
   {
     label: 'Manage',
     items: [
+      // Under Manage rather than beside "Shared with me" in Organise, and the
+      // two really are different jobs. That one is a place you go to read
+      // somebody else's material; this one is a place you go to audit and
+      // close your own outbound shares, which is housekeeping and sits with
+      // the vault and the settings.
+      { href: RESPARKABLE_ROUTES.SHARING, label: 'Shared by me', icon: Send },
       { href: RESPARKABLE_ROUTES.VAULT, label: 'Vault', icon: FolderSync },
       { href: RESPARKABLE_ROUTES.SETTINGS, label: 'Settings', icon: Settings },
     ],

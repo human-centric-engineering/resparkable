@@ -156,6 +156,14 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   // arrives as a fresh fetch or a 404 rather than as a local change.
   shared: { collections: [] },
   sharedItem: { collections: [] },
+  // Empty for a different reason than the two above. Revoking IS a write, but
+  // it writes `ResparkableGrant` and `ResparkableShareLink`, and neither is a
+  // `ResparkableChangeType`: every value in that union names a collection the
+  // brain's own lists render, and no list renders a grant. The one crossover
+  // is that revoking the last live link flips the entity's `visibility` back
+  // to private, which no surface currently displays. `ShareDialog` has always
+  // handled its own list locally for the same reason; this tab does the same.
+  sharing: { collections: [] },
   vault: { collections: [] },
   settings: { collections: ['space'] },
   archive: { collections: ['project', 'goal', 'task', 'thought', 'entity'] },
