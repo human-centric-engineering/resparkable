@@ -272,6 +272,49 @@ describe('readSharedWithMe', () => {
     );
   });
 
+  it('expands children for a directly granted item', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'grant',
+      ownerId: 'user_a',
+      redact: ['priorityScore'],
+      permissions: { read: true, comment: false },
+      via: null,
+    });
+    findSharedItem.mockResolvedValue(item());
+    findSharedChildIds.mockResolvedValue({ childType: 'task', ids: ['t_1'] });
+    findSharedItems.mockResolvedValue([item({ entityType: 'task', id: 't_1' })]);
+
+    const result = await readSharedWithMe(VIEWER, { entityType: 'project', entityId: 'p_1' }, NOW);
+
+    // Sharing a project DOES include its tasks. A project without them is a
+    // title and a paragraph.
+    expect(result?.payload.children).toHaveLength(1);
+  });
+
+  it('expands NOTHING for a cascaded item, so the cascade cannot be walked twice', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'grant-cascade',
+      ownerId: 'user_a',
+      redact: ['priorityScore', 'comments'],
+      permissions: { read: true, comment: false },
+      via: { entityType: 'goal', entityId: 'g_parent' },
+    });
+    findSharedItem.mockResolvedValue(item({ entityType: 'goal', id: 'g_child' }));
+    // A grandchild exists and the repo would happily return it.
+    findSharedChildIds.mockResolvedValue({ childType: 'goal', ids: ['g_grandchild'] });
+
+    const result = await readSharedWithMe(VIEWER, { entityType: 'goal', entityId: 'g_child' }, NOW);
+
+    // `goal → goal` is self-referential, so expanding a cascaded goal reaches a
+    // grandchild of the granted one — an item the resolver denies outright. The
+    // reader would have been handed, inside one payload, the very row their
+    // next request 404s on. A cascaded item is a leaf of the share.
+    expect(result?.payload.children).toEqual([]);
+    expect(findSharedChildIds).not.toHaveBeenCalled();
+  });
+
   it('withholds prose when the grant redacts notes', async () => {
     resolveResparkableAccess.mockResolvedValue({
       ok: true,
@@ -348,6 +391,86 @@ describe('searchSharedWithMe', () => {
     // The embedding repo is mocked to throw, so reaching it fails the run
     // rather than passing on a stubbed empty array.
     await expect(searchSharedWithMe(VIEWER, { q: 'redesign' }, NOW)).resolves.toBeDefined();
+  });
+
+  it('asks board-view for a shared board’s cards, never the repo', async () => {
+    resparkableVisibilityScope.mockResolvedValue(
+      scopeOf([grant({ entityType: 'board', entityId: 'b_1' })])
+    );
+    buildBoardView.mockResolvedValue({
+      columns: [{ cards: [{ task: { id: 't_1' } }] }],
+      unplaced: [{ task: { id: 't_2' } }],
+    });
+    findSharedItems.mockImplementation((_scope, type: string) =>
+      Promise.resolve(
+        type === 'task'
+          ? [item({ entityType: 'task', id: 't_1', title: 'Redesign the header', body: null })]
+          : [item({ entityType: 'board', id: 'b_1', title: 'Roadmap', body: null })]
+      )
+    );
+
+    const result = await searchSharedWithMe(VIEWER, { q: 'header' }, NOW);
+
+    // A filter-backed board's membership is a live query owned by the module
+    // that renders it. Resolving it here would be a second copy of the filter
+    // predicate, and the disagreement would show as a shared board displaying
+    // different cards from the owner's.
+    expect(buildBoardView).toHaveBeenCalled();
+    expect(findSharedChildIds).not.toHaveBeenCalled();
+    expect(result.items.map((hit) => hit.item.id)).toContain('t_1');
+  });
+
+  it('renders nothing for a board whose view has gone', async () => {
+    resparkableVisibilityScope.mockResolvedValue(
+      scopeOf([grant({ entityType: 'board', entityId: 'b_1' })])
+    );
+    buildBoardView.mockResolvedValue(null);
+    findSharedItems.mockResolvedValue([]);
+
+    await expect(searchSharedWithMe(VIEWER, { q: 'anything' }, NOW)).resolves.toEqual({
+      items: [],
+      truncated: false,
+    });
+  });
+
+  it('stops at the scan limit and says that it did', async () => {
+    // One grant per project, each contributing itself plus a cascade, well past
+    // SHARED_SEARCH_SCAN_LIMIT. A cap that truncated silently would read as
+    // "this is everything", which is the one thing a search must not imply.
+    const many = Array.from({ length: 40 }, (_, i) =>
+      grant({ id: `grant_${i}`, entityId: `p_${i}` })
+    );
+    resparkableVisibilityScope.mockResolvedValue(scopeOf(many));
+    findSharedChildIds.mockImplementation((_scope, _type: string, parentId: string) =>
+      Promise.resolve({
+        childType: 'task',
+        ids: Array.from({ length: 60 }, (_, i) => `${parentId}_t_${i}`),
+      })
+    );
+    findSharedItems.mockResolvedValue([]);
+
+    const result = await searchSharedWithMe(VIEWER, { q: 'anything' }, NOW);
+
+    expect(result.truncated).toBe(true);
+  });
+
+  it('does not scan the same ref twice when two grants reach it', async () => {
+    // Two grants on the same project — one direct, one whose cascade reaches
+    // the same task. The scan budget is finite, so a duplicate is a ref that
+    // pushes a real one out.
+    resparkableVisibilityScope.mockResolvedValue(
+      scopeOf([grant({ id: 'g1' }), grant({ id: 'g2' })])
+    );
+    findSharedChildIds.mockResolvedValue({ childType: 'task', ids: ['t_1'] });
+    findSharedItems.mockResolvedValue([]);
+
+    await searchSharedWithMe(VIEWER, { q: 'anything' }, NOW);
+
+    // Two grants on one owner and one type collapse to one query per (owner,
+    // type, detail) group, not one per grant.
+    const taskCalls = findSharedItems.mock.calls.filter((call) => call[1] === 'task');
+    expect(taskCalls).toHaveLength(1);
+    expect(taskCalls[0][2]).toEqual(['t_1']);
   });
 
   it('returns nothing and queries nothing for a viewer with no grants', async () => {

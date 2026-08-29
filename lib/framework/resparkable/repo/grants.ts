@@ -210,39 +210,6 @@ export async function revokeGrant(
 }
 
 /**
- * How many live grants exist on each of these items, for one owner.
- *
- * The list surfaces' "shared with 2 people" badge. A `groupBy` rather than a
- * count per row, because the alternative on a fifty-card board is fifty
- * queries — the same reasoning that made `resolveResparkableAccessMany` a
- * requirement rather than an optimisation.
- *
- * Expiry is applied in JS for the usual reason, which means the rows have to be
- * read rather than aggregated in SQL. Grants are issued in handfuls, not
- * thousands, so reading them is cheaper than a second definition of "live".
- */
-export async function countLiveGrantsByEntity(
-  scope: OwnerScope,
-  entityType: ResparkableShareableType,
-  entityIds: readonly string[],
-  now: Date = new Date()
-): Promise<Map<string, number>> {
-  if (entityIds.length === 0) return new Map();
-
-  const rows = await prisma.resparkableGrant.findMany({
-    where: { ...ownerWhere(scope), entityType, entityId: { in: [...entityIds] }, revokedAt: null },
-    select: { entityId: true, expiresAt: true, revokedAt: true },
-  });
-
-  const counts = new Map<string, number>();
-  for (const row of rows) {
-    if (!isShareActive(row, now)) continue;
-    counts.set(row.entityId, (counts.get(row.entityId) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/**
  * The account id behind an address, or `null` if there is no account.
  *
  * ## Why this is in the repo layer, and why it takes no scope

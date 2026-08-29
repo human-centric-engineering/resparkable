@@ -170,6 +170,34 @@ describe('sendGrantInvite', () => {
     warn.mockRestore();
   });
 
+  it('falls back to the owner’s address when they have set no name', async () => {
+    findOwnerContact.mockResolvedValue({
+      email: 'a@example.com',
+      name: null,
+      emailVerified: true,
+    });
+
+    await sendGrantInvite(OWNER, 'grant_1', NOW);
+
+    // An account with no display name is ordinary, not an edge case. "null
+    // shared a project with you" is the failure this guards, and it is the kind
+    // that only ever shows up in somebody's inbox.
+    expect(sendEmail.mock.calls[0][0].subject).toContain('a@example.com');
+    expect(sendEmail.mock.calls[0][0].subject).not.toContain('null');
+  });
+
+  it('falls back to "item" for a type it has no label for', async () => {
+    // `entityType` is a VarChar, so a row can hold a value the label table has
+    // never heard of — a type retired from the shareable list, say. The subject
+    // line still has to read as a sentence.
+    findOwnGrant.mockResolvedValue(grant({ entityType: 'gadget' }));
+
+    await sendGrantInvite(OWNER, 'grant_1', NOW);
+
+    expect(sendEmail.mock.calls[0][0].subject).toContain('shared a item with you');
+    expect(sendEmail.mock.calls[0][0].subject).not.toContain('undefined');
+  });
+
   it('sends nothing when the owner has been erased', async () => {
     findOwnerContact.mockResolvedValue(null);
 

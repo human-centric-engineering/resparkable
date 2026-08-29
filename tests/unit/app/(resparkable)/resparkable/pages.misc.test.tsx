@@ -109,6 +109,12 @@ vi.mock('@/components/resparkable/lifecycle/stale-digest', () => ({
   ),
 }));
 
+vi.mock('@/components/resparkable/share/accept-invite', () => ({
+  AcceptInvite: (props: { token: string }) => (
+    <div data-testid="accept-invite" data-props={JSON.stringify(props)} />
+  ),
+}));
+
 // One stub covers all five archived sections on the archive page — they're
 // told apart by `noun`, which is unique per collection ("project", "goal",
 // "task", "note", "person or company").
@@ -860,5 +866,35 @@ describe('Chat page', () => {
     expect(redirect).toHaveBeenCalledTimes(1);
     expect(redirect).toHaveBeenCalledWith(RESPARKABLE_ROUTES.TODAY);
     expect(readResparkable).not.toHaveBeenCalled();
+  });
+});
+
+describe('ResparkableInvitePage', () => {
+  const TOKEN = 'AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHH';
+
+  it('awaits params and passes the token through to AcceptInvite, without reading anything itself', async () => {
+    const { default: ResparkableInvitePage } =
+      await import('@/app/(resparkable)/resparkable/invite/[token]/page');
+
+    render(await ResparkableInvitePage({ params: Promise.resolve({ token: TOKEN }) }));
+
+    const view = screen.getByTestId('accept-invite');
+    expect(view.getAttribute('data-props')).toBe(JSON.stringify({ token: TOKEN }));
+    // The service, not the page, distinguishes a bad shape from an unknown or
+    // spent token — validating here would be the one distinguishable answer in
+    // a flow whose failures are deliberately identical.
+    expect(readResparkable).not.toHaveBeenCalled();
+  });
+
+  it('sets noindex metadata that names nothing about the shared item', async () => {
+    const { metadata } = await import('@/app/(resparkable)/resparkable/invite/[token]/page');
+
+    expect(metadata.robots).toMatchObject({ index: false, follow: false });
+    expect(metadata.referrer).toBe('no-referrer');
+    // The URL carries a token and the page is reached from an email; naming
+    // the item in <title> would put someone else's material in this reader's
+    // browser history and tab strip.
+    expect(typeof metadata.title).toBe('string');
+    expect(JSON.stringify(metadata.title)).not.toMatch(/project|task|goal|note|entity/i);
   });
 });

@@ -80,6 +80,12 @@ vi.mock('@/components/resparkable/board/boards-list', () => ({
   ),
 }));
 
+vi.mock('@/components/resparkable/share/shared-with-me-view', () => ({
+  SharedWithMeView: (props: { items: unknown[] }) => (
+    <div data-testid="shared-with-me-view" data-props={JSON.stringify(props)} />
+  ),
+}));
+
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
@@ -537,5 +543,42 @@ describe('ResparkableBoardsPage', () => {
     expect(props.boards).toEqual(boards);
     expect(props.projects).toEqual(projects);
     expect(props.tags).toEqual(tags);
+  });
+});
+
+// ─── Shared with me ─────────────────────────────────────────────────────────
+
+describe('ResparkableSharedPage', () => {
+  it('reads the shared endpoint', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500));
+    const { default: ResparkableSharedPage } =
+      await import('@/app/(resparkable)/resparkable/shared/page');
+
+    await ResparkableSharedPage();
+
+    expect(callPaths()).toEqual([RESPARKABLE_API.SHARED]);
+  });
+
+  it('renders LoadError when the read fails', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500, 'shared down'));
+    const { default: ResparkableSharedPage } =
+      await import('@/app/(resparkable)/resparkable/shared/page');
+
+    render(await ResparkableSharedPage());
+
+    expect(screen.getByRole('alert')).toHaveTextContent('shared down');
+    expect(screen.queryByTestId('shared-with-me-view')).not.toBeInTheDocument();
+  });
+
+  it('renders the view with the resolved items on success', async () => {
+    const items = [{ item: { id: 'p1' }, owner: { id: 'user_owner' } }];
+    vi.mocked(readResparkable).mockResolvedValue(ok(items));
+    const { default: ResparkableSharedPage } =
+      await import('@/app/(resparkable)/resparkable/shared/page');
+
+    render(await ResparkableSharedPage());
+
+    const view = screen.getByTestId('shared-with-me-view');
+    expect(view.getAttribute('data-props')).toBe(JSON.stringify({ items }));
   });
 });

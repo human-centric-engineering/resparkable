@@ -33,13 +33,13 @@
  */
 
 import {
+  isResparkableShareableType,
   resolveResparkableAccess,
   sharedOwnerScope,
   type ResparkableShareableType,
   type ResparkableViewer,
 } from '@/lib/framework/resparkable/access';
 import {
-  countCommentsByEntity,
   createComment,
   deleteComment,
   editComment,
@@ -70,37 +70,48 @@ export interface CommentView {
  * The comments on one item, for a viewer who may or may not be its owner.
  *
  * Returns `null` when the viewer cannot see the item at all, or when their
- * basis does not carry comments — a public link and a cascaded grant both read
- * the item and neither reads its thread. The route turns `null` into a 404, so
- * "no access" and "no such item" stay the same answer.
+ * basis does not carry comments — which means a **public link**. A cascaded
+ * grant does read the thread; see the note at the guard for why. The route
+ * turns `null` into a 404, so "no access" and "no such item" stay the same
+ * answer.
  */
 export async function listCommentsFor(
   viewer: ResparkableViewer,
   ref: { entityType: string; entityId: string },
   now: Date = new Date()
 ): Promise<CommentView[] | null> {
+  const entityType = shareableTypeOf(ref);
+  if (!entityType) return null;
+
   const access = await resolveResparkableAccess({
     viewer,
-    entityType: ref.entityType,
+    entityType,
     entityId: ref.entityId,
     need: 'read',
     now,
   });
   if (!access.ok) return null;
 
-  // `comments` in the redaction set is the whole answer. A public link and a
-  // cascaded grant both carry it, and re-deriving that from the basis here
-  // would be a second copy of a rule the resolver already applies.
+  // `comments` in the redaction set is the whole answer, and it is a **public
+  // link** this excludes — not a cascade.
+  //
+  // Worth stating precisely, because an earlier version of this comment said
+  // "a public link and a cascaded grant both carry it" and that is false.
+  // `redactionsFor` opens `comments` for `grant` and `grant-cascade` alike, and
+  // `access/types.ts` argues the case: the cascade only ever runs inside one
+  // brain the viewer was already given a door into, so a grantee who can read
+  // the project can already read what was said on it — and withholding the
+  // thread one level down would leave them looking at comments on a project and
+  // none on its tasks, which reads as a bug rather than as care.
+  //
+  // What a cascade does withhold is the ability to *write*: `permissions.comment`
+  // is false for it, which `addComment` asks about separately. Reading and
+  // writing are different questions and this file answers them with different
+  // fields on purpose.
   if (access.redact.includes('comments')) return null;
 
   const scope = sharedOwnerScope(access);
-  return hydrate(
-    scope,
-    ref.entityType as ResparkableShareableType,
-    ref.entityId,
-    viewer,
-    access.ownerId
-  );
+  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
 }
 
 /**
@@ -122,9 +133,12 @@ export async function addComment(
 ): Promise<CommentView[] | null> {
   if (!viewer.userId) return null;
 
+  const entityType = shareableTypeOf(ref);
+  if (!entityType) return null;
+
   const access = await resolveResparkableAccess({
     viewer,
-    entityType: ref.entityType,
+    entityType,
     entityId: ref.entityId,
     need: 'comment',
     now,
@@ -132,7 +146,6 @@ export async function addComment(
   if (!access.ok || !access.permissions.comment) return null;
 
   const scope = sharedOwnerScope(access);
-  const entityType = ref.entityType as ResparkableShareableType;
 
   await createComment(scope, {
     entityType,
@@ -170,9 +183,12 @@ export async function updateComment(
 ): Promise<CommentView[] | null> {
   if (!viewer.userId) return null;
 
+  const entityType = shareableTypeOf(ref);
+  if (!entityType) return null;
+
   const access = await resolveResparkableAccess({
     viewer,
-    entityType: ref.entityType,
+    entityType,
     entityId: ref.entityId,
     need: 'read',
     now,
@@ -180,16 +196,17 @@ export async function updateComment(
   if (!access.ok || access.redact.includes('comments')) return null;
 
   const scope = sharedOwnerScope(access);
-  const edited = await editComment(scope, commentId, viewer.userId, body, now);
+  const edited = await editComment(
+    scope,
+    { entityType, entityId: ref.entityId },
+    commentId,
+    viewer.userId,
+    body,
+    now
+  );
   if (!edited) return null;
 
-  return hydrate(
-    scope,
-    ref.entityType as ResparkableShareableType,
-    ref.entityId,
-    viewer,
-    access.ownerId
-  );
+  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
 }
 
 /**
@@ -209,9 +226,12 @@ export async function removeComment(
 ): Promise<CommentView[] | null> {
   if (!viewer.userId) return null;
 
+  const entityType = shareableTypeOf(ref);
+  if (!entityType) return null;
+
   const access = await resolveResparkableAccess({
     viewer,
-    entityType: ref.entityType,
+    entityType,
     entityId: ref.entityId,
     need: 'read',
     now,
@@ -223,30 +243,33 @@ export async function removeComment(
 
   // The author filter is dropped only for the owner, and only here. Everywhere
   // else in this file the writer's id travels into the query.
-  const removed = await deleteComment(scope, commentId, isOwner ? undefined : viewer.userId);
+  const removed = await deleteComment(
+    scope,
+    { entityType, entityId: ref.entityId },
+    commentId,
+    isOwner ? undefined : viewer.userId
+  );
   if (!removed) return null;
 
-  logger.info('Resparkable comment deleted', {
-    entityType: ref.entityType,
-    byOwner: isOwner,
-  });
+  logger.info('Resparkable comment deleted', { entityType, byOwner: isOwner });
 
-  return hydrate(
-    scope,
-    ref.entityType as ResparkableShareableType,
-    ref.entityId,
-    viewer,
-    access.ownerId
-  );
+  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
 }
 
-/** "3 comments" for a list of items, in one query. Owner surfaces only. */
-export async function countCommentsFor(
-  scope: OwnerScope,
-  entityType: ResparkableShareableType,
-  entityIds: readonly string[]
-): Promise<Map<string, number>> {
-  return countCommentsByEntity(scope, entityType, entityIds);
+/**
+ * Narrow a route's `entityType` to the shareable union, or refuse.
+ *
+ * A guard rather than a cast, and the difference is not cosmetic. `as` would
+ * assert something about a string that arrived from a URL segment; this asks.
+ * The resolver denies unshareable types anyway, so the cast happened to be true
+ * — but "true because something downstream would have caught it" is exactly the
+ * shape that stops being true when the something downstream is refactored.
+ *
+ * Returning `null` rather than throwing keeps every refusal on this surface the
+ * same refusal: an unshareable type and a missing item are one 404.
+ */
+function shareableTypeOf(ref: { entityType: string }): ResparkableShareableType | null {
+  return isResparkableShareableType(ref.entityType) ? ref.entityType : null;
 }
 
 // ─── Internals ───────────────────────────────────────────────────────────────

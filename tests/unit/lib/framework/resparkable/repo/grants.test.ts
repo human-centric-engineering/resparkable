@@ -24,14 +24,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/db/client', () => {
+  const resparkableGrant = {
+    upsert: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn().mockResolvedValue(null),
+    findUnique: vi.fn().mockResolvedValue(null),
+    update: vi.fn(),
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+  };
   const client = {
-    resparkableGrant: {
-      upsert: vi.fn(),
-      findMany: vi.fn().mockResolvedValue([]),
-      findFirst: vi.fn().mockResolvedValue(null),
-      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
-    },
+    resparkableGrant,
     user: { findUnique: vi.fn().mockResolvedValue(null) },
+    $transaction: vi.fn(async (arg: unknown) => {
+      if (typeof arg === 'function') {
+        return (arg as (tx: unknown) => Promise<unknown>)({ resparkableGrant });
+      }
+      return undefined;
+    }),
   };
   return { prisma: client };
 });
@@ -39,11 +48,13 @@ vi.mock('@/lib/db/client', () => {
 import { prisma } from '@/lib/db/client';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
-  countLiveGrantsByEntity,
+  acceptGrant,
   findAccountIdForEmail,
+  findGrantByInviteTokenHash,
   findOwnGrant,
   listOwnGrants,
   revokeGrant,
+  stampInviteToken,
   updateGrant,
   upsertGrant,
 } from '@/lib/framework/resparkable/repo/grants';
@@ -213,26 +224,118 @@ describe('revokeGrant', () => {
   });
 });
 
-describe('countLiveGrantsByEntity', () => {
-  it('asks nothing at all for an empty id list', async () => {
-    expect(await countLiveGrantsByEntity(OWNER, 'task', [], NOW)).toEqual(new Map());
-    expect(prisma.resparkableGrant.findMany).not.toHaveBeenCalled();
+describe('stampInviteToken', () => {
+  it('excludes revoked rows from the where, so a revoked grant cannot send a fresh invite', async () => {
+    await stampInviteToken(OWNER, 'grant_1', 'digest_1', NOW);
+
+    const args = vi.mocked(prisma.resparkableGrant.updateMany).mock.calls[0][0];
+    expect(args.where).toEqual({ userId: 'user_a', id: 'grant_1', revokedAt: null });
+    expect(args.data).toEqual({ inviteTokenHash: 'digest_1', inviteSentAt: NOW });
   });
 
-  it('counts in one query, and drops expired rows from the tally', async () => {
-    vi.mocked(prisma.resparkableGrant.findMany).mockResolvedValue([
-      { entityId: 't_1', expiresAt: null, revokedAt: null },
-      { entityId: 't_1', expiresAt: null, revokedAt: null },
-      { entityId: 't_2', expiresAt: new Date('2026-08-01T00:00:00.000Z'), revokedAt: null },
-    ] as never);
+  it('returns false when nothing moved', async () => {
+    vi.mocked(prisma.resparkableGrant.updateMany).mockResolvedValue({ count: 0 });
 
-    const counts = await countLiveGrantsByEntity(OWNER, 'task', ['t_1', 't_2'], NOW);
+    expect(await stampInviteToken(OWNER, 'grant_1', 'digest_1', NOW)).toBe(false);
+  });
+});
 
-    // One query whatever the list size — the same requirement that made the
-    // batched resolver mandatory rather than an optimisation.
-    expect(prisma.resparkableGrant.findMany).toHaveBeenCalledTimes(1);
-    expect(counts.get('t_1')).toBe(2);
-    expect(counts.has('t_2')).toBe(false);
+describe('findGrantByInviteTokenHash', () => {
+  it('finds by the unique digest column', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ inviteTokenHash: 'digest_1' }) as never
+    );
+
+    await findGrantByInviteTokenHash('digest_1');
+
+    expect(vi.mocked(prisma.resparkableGrant.findUnique).mock.calls[0][0]).toEqual({
+      where: { inviteTokenHash: 'digest_1' },
+    });
+  });
+
+  it('returns null for a revoked grant even when the digest matches', async () => {
+    // Excluded here rather than by the caller, so an accepted revocation
+    // cannot be undone by an old email still carrying the token.
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ inviteTokenHash: 'digest_1', revokedAt: NOW }) as never
+    );
+
+    await expect(findGrantByInviteTokenHash('digest_1')).resolves.toBeNull();
+  });
+
+  it('returns null for an unknown digest', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(null);
+
+    await expect(findGrantByInviteTokenHash('nope')).resolves.toBeNull();
+  });
+});
+
+describe('acceptGrant', () => {
+  it('runs inside a transaction', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ acceptedAt: null }) as never
+    );
+    vi.mocked(prisma.resparkableGrant.update).mockResolvedValue(row() as never);
+
+    await acceptGrant('grant_1', 'user_b', NOW);
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets acceptedAt when it is currently null', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ acceptedAt: null }) as never
+    );
+    vi.mocked(prisma.resparkableGrant.update).mockResolvedValue(row() as never);
+
+    await acceptGrant('grant_1', 'user_b', NOW);
+
+    const args = vi.mocked(prisma.resparkableGrant.update).mock.calls[0][0];
+    expect(args.data.acceptedAt).toBe(NOW);
+  });
+
+  it('does not rewrite acceptedAt when it is already set — re-opening an old email is not a new introduction', async () => {
+    const firstAccepted = new Date('2026-08-01T00:00:00.000Z');
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ acceptedAt: firstAccepted }) as never
+    );
+    vi.mocked(prisma.resparkableGrant.update).mockResolvedValue(row() as never);
+
+    await acceptGrant('grant_1', 'user_b', NOW);
+
+    const args = vi.mocked(prisma.resparkableGrant.update).mock.calls[0][0];
+    expect(args.data.acceptedAt).toBe(firstAccepted);
+    expect(args.data.acceptedAt).not.toBe(NOW);
+  });
+
+  it('clears the invite token on acceptance, so it is single-use', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ acceptedAt: null, inviteTokenHash: 'digest_1' }) as never
+    );
+    vi.mocked(prisma.resparkableGrant.update).mockResolvedValue(row() as never);
+
+    await acceptGrant('grant_1', 'user_b', NOW);
+
+    const args = vi.mocked(prisma.resparkableGrant.update).mock.calls[0][0];
+    expect(args.data.inviteTokenHash).toBeNull();
+    expect(args.data.granteeUserId).toBe('user_b');
+    expect(args.where).toEqual({ id: 'grant_1' });
+  });
+
+  it('returns null, without writing, when the grant was revoked between lookup and write', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(
+      row({ revokedAt: NOW }) as never
+    );
+
+    await expect(acceptGrant('grant_1', 'user_b', NOW)).resolves.toBeNull();
+    expect(prisma.resparkableGrant.update).not.toHaveBeenCalled();
+  });
+
+  it('returns null, without writing, when the grant no longer exists', async () => {
+    vi.mocked(prisma.resparkableGrant.findUnique).mockResolvedValue(null);
+
+    await expect(acceptGrant('grant_x', 'user_b', NOW)).resolves.toBeNull();
+    expect(prisma.resparkableGrant.update).not.toHaveBeenCalled();
   });
 });
 

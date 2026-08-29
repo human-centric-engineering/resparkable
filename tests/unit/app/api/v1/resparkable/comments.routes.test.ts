@@ -54,6 +54,10 @@ vi.mock('@/lib/framework/resparkable/services/comments', () => ({
   removeComment: vi.fn(),
 }));
 
+// PATCH/DELETE /comments/[id] are covered in this file rather than a new one:
+// they share the same services mock and SESSION/COMMENT fixtures as the
+// /comments POST/GET tests above.
+
 vi.mock('@/lib/framework/resparkable/services/invites', () => ({
   sendGrantInvite: vi.fn(),
   acceptInvite: vi.fn(),
@@ -63,9 +67,18 @@ import {
   GET as COMMENTS_GET,
   POST as COMMENTS_POST,
 } from '@/app/api/v1/resparkable/comments/route';
+import {
+  DELETE as COMMENT_DELETE,
+  PATCH as COMMENT_PATCH,
+} from '@/app/api/v1/resparkable/comments/[id]/route';
 import { POST as ACCEPT_POST } from '@/app/api/v1/resparkable/invites/accept/route';
 import { POST as INVITE_POST } from '@/app/api/v1/resparkable/grants/[id]/invite/route';
-import { addComment, listCommentsFor } from '@/lib/framework/resparkable/services/comments';
+import {
+  addComment,
+  listCommentsFor,
+  removeComment,
+  updateComment,
+} from '@/lib/framework/resparkable/services/comments';
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
 
 const SESSION = {
@@ -225,6 +238,152 @@ describe('POST /api/v1/resparkable/comments', () => {
     // Content, and a log line is the one place content most reliably outlives
     // the system that held it.
     expect(JSON.stringify(routeLog.info.mock.calls)).not.toContain('merger');
+  });
+});
+
+describe('PATCH /api/v1/resparkable/comments/[id]', () => {
+  it('404s when updateComment returns null — editing is the author’s alone', async () => {
+    vi.mocked(updateComment).mockResolvedValue(null);
+
+    const response = await invoke(
+      COMMENT_PATCH,
+      req('http://localhost/api/v1/resparkable/comments/c_1', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        body: 'edited text',
+      }),
+      { id: 'c_1' }
+    );
+
+    // The owner of the item cannot rewrite a grantee's words while leaving
+    // their name on it — enforced in the where clause, surfaced as a 404.
+    expect(response.status).toBe(404);
+  });
+
+  it('400s when the body is missing entityType/entityId', async () => {
+    const response = await invoke(
+      COMMENT_PATCH,
+      req('http://localhost/api/v1/resparkable/comments/c_1', { body: 'edited text' }),
+      { id: 'c_1' }
+    );
+
+    expect(response.status).toBe(400);
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it('400s on an empty/whitespace body', async () => {
+    const response = await invoke(
+      COMMENT_PATCH,
+      req('http://localhost/api/v1/resparkable/comments/c_1', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        body: '   ',
+      }),
+      { id: 'c_1' }
+    );
+
+    expect(response.status).toBe(400);
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it('returns the whole thread, not one row', async () => {
+    const OTHER_COMMENT = { ...COMMENT, id: 'c_2', body: 'a different remark' };
+    vi.mocked(updateComment).mockResolvedValue([COMMENT, OTHER_COMMENT]);
+
+    const response = await invoke(
+      COMMENT_PATCH,
+      req('http://localhost/api/v1/resparkable/comments/c_1', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        body: 'edited text',
+      }),
+      { id: 'c_1' }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toHaveLength(2);
+    expect(body.meta.count).toBe(2);
+  });
+
+  it('passes the comment id and edited body through to the service', async () => {
+    vi.mocked(updateComment).mockResolvedValue([COMMENT]);
+
+    await invoke(
+      COMMENT_PATCH,
+      req('http://localhost/api/v1/resparkable/comments/c_1', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        body: 'edited text',
+      }),
+      { id: 'c_1' }
+    );
+
+    const call = vi.mocked(updateComment).mock.calls[0];
+    expect(call[1]).toEqual({ entityType: 'project', entityId: PROJECT_ID });
+    expect(call[2]).toBe('c_1');
+    expect(call[3]).toBe('edited text');
+  });
+});
+
+describe('DELETE /api/v1/resparkable/comments/[id]', () => {
+  it('takes entityType/entityId as query params — access resolves against the item, not the comment', async () => {
+    vi.mocked(removeComment).mockResolvedValue([]);
+
+    await invoke(
+      COMMENT_DELETE,
+      req(
+        `http://localhost/api/v1/resparkable/comments/c_1?entityType=project&entityId=${PROJECT_ID}`
+      ),
+      { id: 'c_1' }
+    );
+
+    const call = vi.mocked(removeComment).mock.calls[0];
+    expect(call[1]).toEqual({ entityType: 'project', entityId: PROJECT_ID });
+    expect(call[2]).toBe('c_1');
+  });
+
+  it('400s when entityType/entityId are missing from the query string', async () => {
+    const response = await invoke(
+      COMMENT_DELETE,
+      req('http://localhost/api/v1/resparkable/comments/c_1'),
+      { id: 'c_1' }
+    );
+
+    expect(response.status).toBe(400);
+    expect(removeComment).not.toHaveBeenCalled();
+  });
+
+  it('404s when nothing was removed', async () => {
+    vi.mocked(removeComment).mockResolvedValue(null);
+
+    const response = await invoke(
+      COMMENT_DELETE,
+      req(
+        `http://localhost/api/v1/resparkable/comments/c_1?entityType=project&entityId=${PROJECT_ID}`
+      ),
+      { id: 'c_1' }
+    );
+
+    expect(response.status).toBe(404);
+  });
+
+  it('returns the whole thread on success', async () => {
+    vi.mocked(removeComment).mockResolvedValue([COMMENT]);
+
+    const response = await invoke(
+      COMMENT_DELETE,
+      req(
+        `http://localhost/api/v1/resparkable/comments/c_1?entityType=project&entityId=${PROJECT_ID}`
+      ),
+      { id: 'c_1' }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]).toMatchObject({ id: COMMENT.id, body: COMMENT.body });
+    expect(body.meta.count).toBe(1);
   });
 });
 

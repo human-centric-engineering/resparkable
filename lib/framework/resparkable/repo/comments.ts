@@ -57,28 +57,6 @@ export async function listComments(
 }
 
 /**
- * How many comments sit on each of these items, for one owner.
- *
- * A `groupBy` rather than a count per row, for the reason every batched read in
- * this tier gives: a fifty-card board would otherwise be fifty queries.
- */
-export async function countCommentsByEntity(
-  scope: OwnerScope,
-  entityType: ResparkableShareableType,
-  entityIds: readonly string[]
-): Promise<Map<string, number>> {
-  if (entityIds.length === 0) return new Map();
-
-  const rows = await prisma.resparkableComment.groupBy({
-    by: ['entityId'],
-    where: { ...ownerWhere(scope), entityType, entityId: { in: [...entityIds] } },
-    _count: { _all: true },
-  });
-
-  return new Map(rows.map((row) => [row.entityId, row._count._all]));
-}
-
-/**
  * Write a comment.
  *
  * `authorUserId` is passed rather than derived, because the writer is not
@@ -118,13 +96,30 @@ export async function createComment(
  */
 export async function editComment(
   scope: OwnerScope,
+  ref: { entityType: ResparkableShareableType; entityId: string },
   id: string,
   authorUserId: string,
   body: string,
   now: Date = new Date()
 ): Promise<ResparkableComment | null> {
+  const where = {
+    ...ownerWhere(scope),
+    id,
+    authorUserId,
+    // The thread the caller was authorised against, in the `where` too.
+    //
+    // Access is resolved against the ITEM, so a comment id that belongs to a
+    // different item was never covered by that resolution. Without these two
+    // the write would land on one thread while the response returned another —
+    // the caller sees an unchanged list and an unrelated comment has moved.
+    // Not a cross-user hole (the owner and author predicates still hold), but
+    // an edit is not authorised by "you own something somewhere".
+    entityType: ref.entityType,
+    entityId: ref.entityId,
+  };
+
   const result = await prisma.resparkableComment.updateMany({
-    where: { ...ownerWhere(scope), id, authorUserId },
+    where,
     data: { body, editedAt: now },
   });
   if (result.count === 0) return null;
@@ -147,6 +142,7 @@ export async function editComment(
  */
 export async function deleteComment(
   scope: OwnerScope,
+  ref: { entityType: ResparkableShareableType; entityId: string },
   id: string,
   authorUserId?: string
 ): Promise<ResparkableComment | null> {
@@ -155,6 +151,11 @@ export async function deleteComment(
       where: {
         id,
         ...ownerWhere(scope),
+        // Same reason as {@link editComment}: access was resolved against the
+        // item, so a comment on a different item was never in scope — even one
+        // this owner owns.
+        entityType: ref.entityType,
+        entityId: ref.entityId,
         ...(authorUserId ? { authorUserId } : {}),
       },
     })

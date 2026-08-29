@@ -146,6 +146,14 @@ task    → nothing
 
 Declared as data (`RESPARKABLE_CASCADE` in `access/cascade.ts`), so the whole cascade is one thing to read and a test can assert its shape directly rather than probing for absences one call at a time.
 
+### A cascaded item is a leaf of the share
+
+`/shared/[type]/[id]` expands children **only when `basis === 'grant'`** — when the reader is looking at the item its owner actually handed over. A `grant-cascade` item returns `children: []`.
+
+That is not tidiness, it is the "one level, never transitive" rule holding at the read surface as well as at the resolver. `goal → goal` is self-referential, so expanding a cascaded goal's children reaches a **grandchild** of the granted one — an item `resolveResparkableAccess` denies outright. Without the check, a reader was handed inside one payload the very row their next request would 404 on.
+
+Every other type happens to be safe by accident (`project`/`board` cascade to tasks, which are leaves; `area`, `review` and `task` cascade to nothing), which is exactly why the rule is stated on the basis rather than on the type. Found by the phase 12–14 gate run's security pass.
+
 **Sharing a project DOES include its tasks.** A project without its tasks is a title and a paragraph, and people work around that by pasting task lists into descriptions — strictly worse, because a paste goes stale, carries no redaction, and is invisible to revocation.
 
 ### The dynamic-filter trap

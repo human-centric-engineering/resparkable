@@ -46,8 +46,27 @@ type State =
 export function AcceptInvite({ token }: { token: string }): React.ReactElement {
   const router = useRouter();
   const [state, setState] = React.useState<State>({ kind: 'working' });
+  /**
+   * Accepting is single-use, so the effect must fire once per token — and in
+   * development it would otherwise fire twice.
+   *
+   * `reactStrictMode` is on (`next.config.js`), so React deliberately mounts,
+   * unmounts and remounts every effect in dev. `acceptGrant` clears
+   * `inviteTokenHash` on the first call, so the second POST finds no grant and
+   * renders "This is not available" — over the top of a token that was in fact
+   * accepted a millisecond earlier. The `cancelled` flag alone does not help:
+   * it suppresses the first run's `router.replace` and lets the second run's
+   * failure win.
+   *
+   * A ref rather than state, because it must be read synchronously on the
+   * remount and must not itself trigger a render.
+   */
+  const started = React.useRef(false);
 
   React.useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+
     let cancelled = false;
 
     async function accept(): Promise<void> {

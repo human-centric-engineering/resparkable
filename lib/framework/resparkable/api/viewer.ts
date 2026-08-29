@@ -12,8 +12,12 @@
  *      client "already knows" — any of them turns the access layer into a
  *      lookup service for other people's brains. There is no route in this tier
  *      that should build a viewer from anything but a session, and having one
- *      function makes `rg 'viewerFromSession\('` the complete list of places
- *      that build one at all.
+ *      function makes `rg 'viewerFromSession\('` the list of places that build
+ *      one — with a single deliberate exception: `invites/accept` constructs its
+ *      own `{ userId, email }`, because accepting requires **both** to be
+ *      present and a `ResparkableViewer` allows either to be null. It is not a
+ *      viewer and is not passed anywhere that takes one; `acceptInvite`
+ *      lower-cases the address itself.
  *   2. **Forgetting to lower-case the address.** A grant is addressed by email
  *      until it is accepted, and `granteeClauses` in `access/store.ts` matches
  *      the lower-cased form. A session carrying `Bob@Example.com` against a

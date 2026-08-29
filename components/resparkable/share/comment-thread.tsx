@@ -62,9 +62,11 @@ export function CommentThread({
 
   const load = React.useCallback(async () => {
     const result = await read(`${RESPARKABLE_API.COMMENTS}?${ref}`);
-    // A 404 here means this basis carries no comments — a public link or a
-    // cascaded grant. Not an error, and not something to explain: the thread
-    // simply is not part of what was shared.
+    // A 404 here means this basis carries no comments — a public link, which is
+    // a document rather than a relationship. A cascaded grant is NOT excluded:
+    // it reads the thread like any other grant, and only its ability to write
+    // differs (`canComment`). Not an error either way, and not something to
+    // explain: the thread simply is not part of what was shared.
     if (result === null) setUnavailable(true);
     else setComments(result);
   }, [ref]);

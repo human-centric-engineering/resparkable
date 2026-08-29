@@ -41,6 +41,7 @@
 
 import {
   grantOwnerScope,
+  isResparkableShareableType,
   refKey,
   resparkableVisibilityScope,
   sharedOwnerScope,
@@ -198,10 +199,16 @@ export async function readSharedWithMe(
   const owner = await identityFor(scope, access.ownerId);
   if (!owner) return null;
 
+  // Narrowed by a guard rather than asserted by a cast. The resolver has
+  // already denied anything not on the shareable list, so the assertion would
+  // have been true — but true-because-something-else-checked is the shape that
+  // stops being true when the something else moves.
+  if (!isResparkableShareableType(ref.entityType)) return null;
+
   const payload = await buildSharePayload(
     access,
     {
-      entityType: ref.entityType as ResparkableShareableType,
+      entityType: ref.entityType,
       entityId: ref.entityId,
       // The flag lives on the grant, and the resolver has already folded it
       // into `redact`: `notes` is absent from the list exactly when the grant
@@ -209,7 +216,22 @@ export async function readSharedWithMe(
       // re-querying the grant keeps one answer to "may this reader see prose".
       includeTaskDetail: !access.redact.includes('notes'),
     },
-    true,
+    // **Children only for a DIRECTLY granted item**, never for a cascaded one.
+    //
+    // A bare `true` here walked the cascade twice, and `goal → goal` is the
+    // shape that made it reachable: a grant on a top-level goal cascades to its
+    // children, and expanding a child's children then serialised a
+    // *grandchild* — an item `resolveResparkableAccess` denies outright, as
+    // `resolve.test.ts` asserts. The reader was handed, in one payload, the
+    // very row the next request would 404 on.
+    //
+    // A cascaded item is a leaf of the share by definition: it was never chosen
+    // for sharing by its owner, and it reaches the reader only because
+    // something above it was. That makes it exactly the wrong place to expand
+    // from. `access.basis` is where the resolver already recorded which of the
+    // two this is, so asking it keeps one answer to "how far does this share
+    // go" rather than a second one here.
+    access.basis === 'grant',
     now
   );
   if (!payload) return null;

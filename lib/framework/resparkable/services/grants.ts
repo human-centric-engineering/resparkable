@@ -43,7 +43,6 @@
 
 import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
-  countLiveGrantsByEntity,
   findAccountIdForEmail,
   findOwnGrant,
   listOwnGrants as listOwnGrantRows,
@@ -53,11 +52,7 @@ import {
   type GrantFilters,
 } from '@/lib/framework/resparkable/repo/grants';
 import { ownsEntity } from '@/lib/framework/resparkable/repo/share-links';
-import type {
-  CreateGrantInput,
-  ResparkableShareableType,
-  UpdateGrantInput,
-} from '@/lib/framework/resparkable/validations';
+import type { CreateGrantInput, UpdateGrantInput } from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { ResparkableGrant } from '@prisma/client';
@@ -240,21 +235,4 @@ export async function revokeGrant(
   logger.info('Resparkable grant revoked', { entityType: grant.entityType });
 
   return toGrantSummary(grant, now);
-}
-
-/**
- * "Shared with 2 people" for a list of items, in one query.
- *
- * Exposed as a service function rather than left to callers so the badge on a
- * board, a project list and a task list all mean the same thing: **live** named
- * grants, excluding revoked and expired, and never counting public links, which
- * are a different surface with a different badge.
- */
-export async function countGrantsForItems(
-  scope: OwnerScope,
-  entityType: ResparkableShareableType,
-  entityIds: readonly string[],
-  now: Date = new Date()
-): Promise<Map<string, number>> {
-  return countLiveGrantsByEntity(scope, entityType, entityIds, now);
 }

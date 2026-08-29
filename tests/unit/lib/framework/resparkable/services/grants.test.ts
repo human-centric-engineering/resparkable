@@ -31,7 +31,6 @@ const listOwnGrantRows = vi.fn();
 const findOwnGrant = vi.fn();
 const updateGrantRow = vi.fn();
 const revokeGrantRow = vi.fn();
-const countLiveGrantsByEntity = vi.fn();
 const findAccountIdForEmail = vi.fn();
 
 vi.mock('@/lib/framework/resparkable/repo/grants', () => ({
@@ -40,7 +39,6 @@ vi.mock('@/lib/framework/resparkable/repo/grants', () => ({
   findOwnGrant: (...args: unknown[]) => findOwnGrant(...args),
   updateGrant: (...args: unknown[]) => updateGrantRow(...args),
   revokeGrant: (...args: unknown[]) => revokeGrantRow(...args),
-  countLiveGrantsByEntity: (...args: unknown[]) => countLiveGrantsByEntity(...args),
   findAccountIdForEmail: (...args: unknown[]) => findAccountIdForEmail(...args),
 }));
 
@@ -208,6 +206,45 @@ describe('updateGrant', () => {
     expect(updateGrantRow).toHaveBeenCalledWith(OWNER, 'grant_1', { role: 'commenter' });
   });
 
+  it('sends includeTaskDetail and a resolved expiry when both are given', async () => {
+    updateGrantRow.mockResolvedValue(true);
+    findOwnGrant.mockResolvedValue(grantRow());
+
+    await updateGrant(
+      OWNER,
+      'grant_1',
+      { includeTaskDetail: true, expiry: { kind: 'days', days: 30 } },
+      NOW
+    );
+
+    expect(updateGrantRow).toHaveBeenCalledWith(OWNER, 'grant_1', {
+      includeTaskDetail: true,
+      expiresAt: new Date('2026-09-27T10:00:00.000Z'),
+    });
+  });
+
+  it('turns an explicit "never" expiry into null rather than omitting it', async () => {
+    updateGrantRow.mockResolvedValue(true);
+    findOwnGrant.mockResolvedValue(grantRow());
+
+    await updateGrant(OWNER, 'grant_1', { expiry: { kind: 'never' } }, NOW);
+
+    // The distinction the tagged union exists for: an ABSENT `expiry` leaves the
+    // column alone, while an explicit "never" clears it. Collapsing the two
+    // would make "never expires" reachable by omitting a field.
+    expect(updateGrantRow).toHaveBeenCalledWith(OWNER, 'grant_1', { expiresAt: null });
+  });
+
+  it('returns null when the row vanishes between the update and the read-back', async () => {
+    updateGrantRow.mockResolvedValue(true);
+    findOwnGrant.mockResolvedValue(null);
+
+    // A concurrent revoke-and-delete, or an erasure landing mid-request. The
+    // route's answer is a 404 either way, which is the same answer it gives for
+    // a grant that was never this owner's.
+    expect(await updateGrant(OWNER, 'grant_1', { role: 'viewer' }, NOW)).toBeNull();
+  });
+
   it('returns null for a grant that is not this owner’s', async () => {
     updateGrantRow.mockResolvedValue(false);
 
@@ -227,6 +264,15 @@ describe('revokeGrant', () => {
     // nothing — and the service turns that into a 404 rather than restamping
     // the timestamp that answers "when did access stop?".
     revokeGrantRow.mockResolvedValueOnce(false);
+    expect(await revokeGrant(OWNER, 'grant_1', NOW)).toBeNull();
+  });
+});
+
+describe('revokeGrant', () => {
+  it('returns null when the row vanishes between the revoke and the read-back', async () => {
+    revokeGrantRow.mockResolvedValue(true);
+    findOwnGrant.mockResolvedValue(null);
+
     expect(await revokeGrant(OWNER, 'grant_1', NOW)).toBeNull();
   });
 });

@@ -1067,6 +1067,14 @@ release process.
 
 ### Removed
 
+- **The share and comment count helpers nothing rendered.**
+  `countGrantsForItems` (`services/grants.ts`), `countCommentsFor`
+  (`services/comments.ts`), and the two repo queries behind them,
+  `countLiveGrantsByEntity` (`repo/grants.ts`) and `countCommentsByEntity`
+  (`repo/comments.ts`). Written for a "shared with 2 people" badge that no
+  surface asks for; a `groupBy` kept alive by its own docstring is a claim about
+  the product that is not true.
+
 - **The per-user `AiWorkflowSchedule` rows, and everything that existed to keep
   them correct.** `schedules/ensure.ts` (`ensureResparkableSchedules`),
   `schedules/cron.ts` (`dailyCron`, `weeklyCron`, `monthlyCron`,
@@ -1160,6 +1168,23 @@ release process.
 
 
 ### Fixed
+
+- **Sharing an item with yourself is refused rather than half-working.**
+  `POST /api/v1/resparkable/grants` accepted the owner's own address and wrote a
+  live grant: `granteeClauses` matches the session's own mailbox regardless of
+  who owns the item, so the item appeared under "Shared with me" and then 404'd
+  on open, because `readSharedWithMe` denies `basis: 'owner'` on purpose. Now a
+  400. Checked in the route rather than the schema because it needs the session,
+  and in the route rather than the service because it is a request-shape
+  complaint rather than an access decision.
+
+- **An invite is no longer spent twice by React's dev remount.**
+  `reactStrictMode` is on, so `AcceptInvite`'s effect mounts, unmounts and
+  remounts; `acceptGrant` clears `inviteTokenHash` on the first call, so the
+  second POST found no grant and rendered "This is not available" over a token
+  accepted a millisecond earlier. The existing `cancelled` flag could not help:
+  it suppressed the first run's redirect and let the second run's failure win. A
+  ref now guards the effect, read synchronously on the remount.
 
 
 - **`redact` could produce a table an import cannot write.** A column dropped on
@@ -1951,6 +1976,35 @@ release process.
 
 
 ### Security
+
+- **A cascaded item no longer hands the reader its own children.**
+  `GET /api/v1/resparkable/shared/[type]/[id]` expanded children
+  unconditionally, and `goal → goal` is the shape that made that reachable: a
+  grant on a top-level goal cascades one level to its children, and expanding a
+  child's children then serialised a *grandchild* — an item
+  `resolveResparkableAccess` denies outright. The reader was handed, in one
+  payload, the very row their next request would 404 on. Children now expand
+  only when `access.basis === 'grant'`, the item its owner actually chose to
+  share; a `grant-cascade` item is a leaf of the share by definition and returns
+  `children: []`. Every other type was safe by accident (`project` and `board`
+  cascade to tasks, which are leaves; `area`, `review` and `task` cascade to
+  nothing), which is exactly why the rule is stated on the **basis** rather than
+  on the type.
+
+- **A comment edit or delete is scoped to the thread it was authorised
+  against.** `editComment` and `deleteComment` matched on comment id, owner and
+  author, but not on the item — and access on this surface is resolved against
+  the *item*. A comment id belonging to a different item was therefore never
+  covered by that resolution: the write landed on one thread while the response
+  returned another, so the caller saw an unchanged list and an unrelated comment
+  had moved. Not a cross-user hole, since the owner and author predicates still
+  held, but an edit is not authorised by "you own something somewhere". Both now
+  take the `{ entityType, entityId }` the caller was authorised for and carry it
+  into the `where`. `services/comments.ts` and `services/shared-with-me.ts` also
+  narrow a route's `entityType` with `isResparkableShareableType` instead of
+  asserting it with `as`: the assertion happened to be true because the resolver
+  denies unshareable types, and true-because-something-downstream-checks is the
+  shape that stops being true when the something downstream moves.
 
 
 - **Live credentials are now dropped from transfer bundles, not merely left

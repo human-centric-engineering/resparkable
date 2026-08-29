@@ -372,9 +372,19 @@ export async function snapshotBoardMembership(
           taskId: card.taskId,
           position: card.position,
         })),
-        // A task deleted between the view being built and this running would
-        // otherwise abort the whole snapshot. Skipping it is the right answer:
-        // it is not on the board either.
+        // Guards a **duplicate `(boardId, taskId)`**, not a missing task. That
+        // distinction was wrong in an earlier version of this comment and is
+        // worth being exact about: `skipDuplicates` skips unique-constraint
+        // conflicts only. A task deleted between the view being built and this
+        // running is a *foreign-key* violation (P2003), which aborts the
+        // transaction — the snapshot fails and the board stays on `filter`,
+        // which is a visible 500 rather than a silent half-write.
+        //
+        // Left as it is, because the window is one request wide (the ids come
+        // from the `buildBoardView` call directly above) and the failure is
+        // loud and retryable. Pre-filtering against a fresh existence check
+        // would only narrow the window, not close it, at the cost of another
+        // query on every snapshot.
         skipDuplicates: true,
       });
     }

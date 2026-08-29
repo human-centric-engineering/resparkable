@@ -34,9 +34,11 @@ const { resparkableBoard, resparkableBoardCard, resparkableTask } = vi.hoisted((
     findFirst: vi.fn(),
     count: vi.fn(),
     create: vi.fn(),
+    createMany: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
     delete: vi.fn(),
+    deleteMany: vi.fn(),
   });
   return {
     resparkableBoard: delegate(),
@@ -80,6 +82,7 @@ import {
   removeBoardCard,
   renumberBoardCards,
   restoreBoard,
+  snapshotBoardMembership,
   updateBoard,
   updateBoardCardPosition,
   type BoardCreateData,
@@ -567,5 +570,109 @@ describe('renumberBoardCards', () => {
       where: { id: 'card_3', userId: 'user_a' },
       data: { position: 3000 },
     });
+  });
+});
+
+describe('snapshotBoardMembership', () => {
+  beforeEach(() => {
+    vi.mocked(resparkableBoardCard.deleteMany).mockResolvedValue({ count: 0 });
+  });
+
+  it('returns null for a board not on membership: filter — the where carries it', async () => {
+    vi.mocked(resparkableBoard.findFirst).mockResolvedValue(null);
+
+    const result = await snapshotBoardMembership(SCOPE, 'board_1', [
+      { taskId: 'task_1', position: 1000 },
+    ]);
+
+    expect(result).toBeNull();
+    const call = vi.mocked(resparkableBoard.findFirst).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ userId: 'user_a', id: 'board_1', membership: 'filter' });
+    // Nothing written when the board doesn't qualify — an already-explicit
+    // board must not be re-pinned, throwing a hand-curated arrangement away.
+    expect(resparkableBoardCard.deleteMany).not.toHaveBeenCalled();
+    expect(resparkableBoardCard.createMany).not.toHaveBeenCalled();
+    expect(resparkableBoard.update).not.toHaveBeenCalled();
+  });
+
+  it('deletes existing cards before creating the new ones, inside one transaction', async () => {
+    vi.mocked(resparkableBoard.findFirst).mockResolvedValue({
+      id: 'board_1',
+      membership: 'filter',
+    });
+    vi.mocked(resparkableBoard.update).mockResolvedValue({
+      id: 'board_1',
+      membership: 'explicit',
+    });
+
+    vi.mocked(resparkableBoardCard.deleteMany).mockResolvedValue({ count: 2 });
+    vi.mocked(resparkableBoardCard.createMany).mockResolvedValue({ count: 1 });
+
+    await snapshotBoardMembership(SCOPE, 'board_1', [{ taskId: 'task_1', position: 1000 }]);
+
+    // A board flipped to filter after being explicit keeps its stale rows —
+    // inheriting those would pin tasks nobody is looking at on this board.
+    expect(resparkableBoardCard.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      resparkableBoardCard.createMany.mock.invocationCallOrder[0]
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    const deleteCall = vi.mocked(resparkableBoardCard.deleteMany).mock.calls[0]?.[0];
+    expect(deleteCall?.where).toEqual({ userId: 'user_a', boardId: 'board_1' });
+  });
+
+  it('uses skipDuplicates on the createMany', async () => {
+    vi.mocked(resparkableBoard.findFirst).mockResolvedValue({
+      id: 'board_1',
+      membership: 'filter',
+    });
+    vi.mocked(resparkableBoard.update).mockResolvedValue({
+      id: 'board_1',
+      membership: 'explicit',
+    });
+
+    await snapshotBoardMembership(SCOPE, 'board_1', [
+      { taskId: 'task_1', position: 1000 },
+      { taskId: 'task_2', position: 2000 },
+    ]);
+
+    const createCall = vi.mocked(resparkableBoardCard.createMany).mock.calls[0]?.[0];
+    expect(createCall?.skipDuplicates).toBe(true);
+    expect(createCall?.data).toEqual([
+      { userId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1000 },
+      { userId: 'user_a', boardId: 'board_1', taskId: 'task_2', position: 2000 },
+    ]);
+  });
+
+  it('skips createMany entirely for an empty card list, but still clears stale rows', async () => {
+    vi.mocked(resparkableBoard.findFirst).mockResolvedValue({
+      id: 'board_1',
+      membership: 'filter',
+    });
+    vi.mocked(resparkableBoard.update).mockResolvedValue({
+      id: 'board_1',
+      membership: 'explicit',
+    });
+
+    await snapshotBoardMembership(SCOPE, 'board_1', []);
+
+    expect(resparkableBoardCard.deleteMany).toHaveBeenCalledTimes(1);
+    expect(resparkableBoardCard.createMany).not.toHaveBeenCalled();
+  });
+
+  it('flips membership to explicit', async () => {
+    vi.mocked(resparkableBoard.findFirst).mockResolvedValue({
+      id: 'board_1',
+      membership: 'filter',
+    });
+    vi.mocked(resparkableBoard.update).mockResolvedValue({
+      id: 'board_1',
+      membership: 'explicit',
+    });
+
+    await snapshotBoardMembership(SCOPE, 'board_1', [{ taskId: 'task_1', position: 1000 }]);
+
+    const updateCall = vi.mocked(resparkableBoard.update).mock.calls[0]?.[0];
+    expect(updateCall?.where).toEqual({ id: 'board_1' });
+    expect(updateCall?.data).toEqual({ membership: 'explicit' });
   });
 });

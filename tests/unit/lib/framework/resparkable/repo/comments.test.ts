@@ -35,7 +35,6 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
 import {
-  countCommentsByEntity,
   createComment,
   deleteComment,
   editComment,
@@ -80,31 +79,62 @@ describe('createComment', () => {
   });
 });
 
+const REF = { entityType: 'project' as const, entityId: 'p_1' };
+
 describe('editComment', () => {
-  it('puts the author in the where clause, not in a prior check', async () => {
+  it('puts the author AND the thread in the where clause, not in a prior check', async () => {
     vi.mocked(prisma.resparkableComment.updateMany).mockResolvedValue({ count: 0 });
 
-    expect(await editComment(OWNER, 'c_1', 'user_b', 'Changed', NOW)).toBeNull();
+    expect(await editComment(OWNER, REF, 'c_1', 'user_b', 'Changed', NOW)).toBeNull();
 
     const args = vi.mocked(prisma.resparkableComment.updateMany).mock.calls[0][0];
-    expect(args.where).toEqual({ userId: 'user_a', id: 'c_1', authorUserId: 'user_b' });
+    // `entityType`/`entityId` are in the `where` because access was resolved
+    // against the ITEM. A comment id belonging to a different item was never
+    // covered by that resolution, and without these two the write would land on
+    // one thread while the response returned another.
+    expect(args.where).toEqual({
+      userId: 'user_a',
+      id: 'c_1',
+      authorUserId: 'user_b',
+      entityType: 'project',
+      entityId: 'p_1',
+    });
     expect(args.data).toEqual({ body: 'Changed', editedAt: NOW });
+  });
+
+  it('cannot reach a comment on another of the owner’s own items', async () => {
+    vi.mocked(prisma.resparkableComment.updateMany).mockResolvedValue({ count: 0 });
+
+    // The row exists and the owner owns it — but it sits on a different thread,
+    // so it matches nothing and the caller gets the same null as a miss.
+    expect(
+      await editComment(
+        OWNER,
+        { entityType: 'task', entityId: 't_other' },
+        'c_1',
+        'user_a',
+        'x',
+        NOW
+      )
+    ).toBeNull();
   });
 });
 
 describe('deleteComment', () => {
   it('restricts to the author when one is given', async () => {
-    await deleteComment(OWNER, 'c_1', 'user_b');
+    await deleteComment(OWNER, REF, 'c_1', 'user_b');
 
     expect(vi.mocked(prisma.resparkableComment.delete).mock.calls[0][0].where).toEqual({
       id: 'c_1',
       userId: 'user_a',
       authorUserId: 'user_b',
+      entityType: 'project',
+      entityId: 'p_1',
     });
   });
 
   it('drops the author filter when the caller has owner authority', async () => {
-    await deleteComment(OWNER, 'c_1');
+    await deleteComment(OWNER, REF, 'c_1');
 
     // Still owner-scoped. What is dropped is the *author* predicate, which is
     // what lets an owner remove somebody else's words from their own brain —
@@ -113,26 +143,12 @@ describe('deleteComment', () => {
     expect(vi.mocked(prisma.resparkableComment.delete).mock.calls[0][0].where).toEqual({
       id: 'c_1',
       userId: 'user_a',
+      // The thread predicate stays even for the owner: dropping the AUTHOR
+      // filter is what owner authority buys, not the ability to reach a
+      // comment on some other item.
+      entityType: 'project',
+      entityId: 'p_1',
     });
-  });
-});
-
-describe('countCommentsByEntity', () => {
-  it('asks nothing for an empty id list', async () => {
-    expect(await countCommentsByEntity(OWNER, 'task', [])).toEqual(new Map());
-    expect(prisma.resparkableComment.groupBy).not.toHaveBeenCalled();
-  });
-
-  it('counts in one grouped query, owner-scoped', async () => {
-    vi.mocked(prisma.resparkableComment.groupBy).mockResolvedValue([
-      { entityId: 't_1', _count: { _all: 2 } },
-    ] as never);
-
-    const counts = await countCommentsByEntity(OWNER, 'task', ['t_1', 't_2']);
-
-    expect(prisma.resparkableComment.groupBy).toHaveBeenCalledTimes(1);
-    expect(counts.get('t_1')).toBe(2);
-    expect(counts.has('t_2')).toBe(false);
   });
 });
 

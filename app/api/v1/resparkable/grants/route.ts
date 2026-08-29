@@ -26,7 +26,7 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
@@ -52,6 +52,19 @@ export const POST = withAuth(async (request, session) => {
   const scope = ownerScope(session.user.id);
 
   const body = await validateRequestBody(request, createGrantSchema);
+
+  // Sharing with yourself produces a row nothing can render. The grant is live
+  // — `granteeClauses` matches the session's own address regardless of who owns
+  // the item — so it appears under "Shared with me", and opening it 404s,
+  // because `readSharedWithMe` denies `basis: 'owner'` on purpose. A 400 here
+  // is the honest answer to a gesture that cannot succeed.
+  //
+  // Checked in the route rather than the schema because it needs the session,
+  // and in the route rather than the service because it is a request-shape
+  // complaint rather than an access decision.
+  if (body.granteeEmail === session.user.email.toLowerCase()) {
+    throw new ValidationError('You already have access to this — it is yours.');
+  }
 
   const grant = await issueGrant(scope, body);
   // Not the caller's item, or no such item. 404 rather than 403, for the reason

@@ -41,7 +41,6 @@ const createComment = vi.fn();
 const editComment = vi.fn();
 const deleteComment = vi.fn();
 const findCommentAuthors = vi.fn();
-const countCommentsByEntity = vi.fn();
 
 vi.mock('@/lib/framework/resparkable/repo/comments', () => ({
   listComments: (...args: unknown[]) => listComments(...args),
@@ -49,7 +48,6 @@ vi.mock('@/lib/framework/resparkable/repo/comments', () => ({
   editComment: (...args: unknown[]) => editComment(...args),
   deleteComment: (...args: unknown[]) => deleteComment(...args),
   findCommentAuthors: (...args: unknown[]) => findCommentAuthors(...args),
-  countCommentsByEntity: (...args: unknown[]) => countCommentsByEntity(...args),
 }));
 
 import {
@@ -148,6 +146,50 @@ describe('listCommentsFor', () => {
     expect(listComments).not.toHaveBeenCalled();
   });
 
+  it('refuses an unshareable type without resolving anything', async () => {
+    // `thought` is not on the shareable list, so nothing there can be commented
+    // on. Narrowed by a guard before the resolver is asked, so the refusal costs
+    // no query — and it is the same `null` a denial gives, which is what keeps
+    // "wrong type" and "no access" one answer at the route.
+    expect(
+      await listCommentsFor(GRANTEE, { entityType: 'thought', entityId: 'th_1' }, NOW)
+    ).toBeNull();
+    expect(resolveResparkableAccess).not.toHaveBeenCalled();
+  });
+
+  it('renders a null author name rather than inventing one', async () => {
+    findCommentAuthors.mockResolvedValue(new Map());
+
+    const thread = await listCommentsFor(GRANTEE, REF, NOW);
+
+    // An author erased since writing cannot reach here — the row goes with them
+    // (probe B9) — so a missing name is an account with none set, and the UI
+    // decides what to show for it rather than the service guessing.
+    expect(thread?.[0].author.name).toBeNull();
+  });
+
+  it('DOES read the thread for a cascaded grant — only writing is withheld', async () => {
+    // Pinned because a comment on this file once claimed the opposite, and a
+    // false claim on an access-control path is what the next person trusts.
+    // `redactionsFor` opens `comments` for `grant` and `grant-cascade` alike:
+    // the cascade runs inside one brain the viewer was already given a door
+    // into, so a grantee who can read the project can already read what was
+    // said on it. Withholding the thread one level down would leave them
+    // looking at comments on a project and none on its tasks.
+    resolveResparkableAccess.mockResolvedValue(
+      commenterAccess({
+        basis: 'grant-cascade',
+        permissions: { read: true, comment: false },
+        redact: ['priorityScore', 'events', 'parent'],
+        via: { entityType: 'project', entityId: 'p_parent' },
+      })
+    );
+
+    const thread = await listCommentsFor(GRANTEE, { entityType: 'task', entityId: 't_1' }, NOW);
+
+    expect(thread).toHaveLength(1);
+  });
+
   it('returns null on a denial, without reading anything', async () => {
     resolveResparkableAccess.mockResolvedValue(DENIED);
 
@@ -201,6 +243,14 @@ describe('addComment', () => {
     expect(createComment).not.toHaveBeenCalled();
   });
 
+  it('refuses to comment on an unshareable type', async () => {
+    expect(
+      await addComment(GRANTEE, { entityType: 'thought', entityId: 'th_1' }, 'hi', NOW)
+    ).toBeNull();
+    expect(resolveResparkableAccess).not.toHaveBeenCalled();
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
   it('refuses an anonymous viewer, because a comment needs an author', async () => {
     expect(await addComment({ userId: null, email: null }, REF, 'hi', NOW)).toBeNull();
     expect(resolveResparkableAccess).not.toHaveBeenCalled();
@@ -234,6 +284,9 @@ describe('updateComment', () => {
 
     expect(editComment).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user_a' }),
+      // The thread the caller was authorised against travels into the query,
+      // so an edit cannot land on a comment sitting on some other item.
+      { entityType: 'project', entityId: 'p_1' },
       'c_1',
       'user_b',
       'Changed my mind',
@@ -254,7 +307,7 @@ describe('updateComment', () => {
     expect(
       await updateComment({ userId: 'user_a', email: 'a@example.com' }, REF, 'c_1', 'no', NOW)
     ).toBeNull();
-    expect(editComment.mock.calls[0][2]).toBe('user_a');
+    expect(editComment.mock.calls[0][3]).toBe('user_a');
   });
 });
 
@@ -264,6 +317,7 @@ describe('removeComment', () => {
 
     expect(deleteComment).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user_a' }),
+      { entityType: 'project', entityId: 'p_1' },
       'c_1',
       'user_b'
     );
@@ -281,6 +335,7 @@ describe('removeComment', () => {
     // makes people stop sharing.
     expect(deleteComment).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user_a' }),
+      { entityType: 'project', entityId: 'p_1' },
       'c_1',
       undefined
     );
