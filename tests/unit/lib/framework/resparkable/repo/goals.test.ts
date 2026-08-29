@@ -3,7 +3,7 @@
  *
  * `tests/unit/lib/framework/resparkable/repo/isolation.test.ts` already proves
  * every call here is owner-scoped, and `owner-scope.test.ts` already covers
- * `liveOwnerWhere`'s own true/false ternary — neither is re-proven below.
+ * `liveSpaceWhere`'s own true/false ternary — neither is re-proven below.
  * This file closes the branch gap `isolation.test.ts` leaves open: it calls
  * `listGoals`/`countGoals` with no filters, so only the falsy arm of each
  * optional-filter ternary in `goalWhere` ever runs, and `includeArchived`
@@ -33,9 +33,9 @@ vi.mock('@/lib/db/client', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { countGoals, listGoals } from '@/lib/framework/resparkable/repo/goals';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -93,7 +93,7 @@ describe('listGoals filters', () => {
     // Arrange / Act
     await listGoals(SCOPE, {}, { includeArchived: true });
 
-    // Assert — goals.ts threading the flag through to liveOwnerWhere
+    // Assert — goals.ts threading the flag through to liveSpaceWhere
     const call = vi.mocked(prisma.resparkableGoal.findMany).mock.calls[0]?.[0];
     expect(call?.where).toMatchObject({ userId: 'user_x' });
     expect(call?.where).not.toHaveProperty('archivedAt');

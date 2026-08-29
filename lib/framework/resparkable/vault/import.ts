@@ -44,7 +44,7 @@ import {
 } from '@/lib/framework/resparkable/repo/entities';
 import { createGoal, findGoalBySlug, updateGoal } from '@/lib/framework/resparkable/repo/goals';
 import { createSuggestedLinks, type LinkCreateData } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   createProject,
   findProjectBySlug,
@@ -80,7 +80,7 @@ import { readVaultZip } from '@/lib/framework/resparkable/vault/zip';
  * id; leaving it out would make a file that legitimately refers to it look new,
  * and a re-import would quietly duplicate everything the user had ever put away.
  */
-export async function buildImportIndex(scope: OwnerScope): Promise<ImportIndex> {
+export async function buildImportIndex(scope: SpaceScope): Promise<ImportIndex> {
   const collected = await collectVaultNotes(scope, { includeArchived: true });
 
   const byId = new Map<string, ImportIndex['byId'] extends Map<string, infer V> ? V : never>();
@@ -139,7 +139,7 @@ export interface VaultImportOptions extends ImportPlanOptions {
  *   reported per-file in the plan rather than failing the run.
  */
 export async function importVaultArchive(
-  scope: OwnerScope,
+  scope: SpaceScope,
   archive: Uint8Array,
   options: VaultImportOptions = {}
 ): Promise<VaultImportResult> {
@@ -190,7 +190,7 @@ const APPLY_ORDER: VaultNoteType[] = ['area', 'entity', 'project', 'goal', 'task
  * because identity is `resparkable-id` and a second pass sees the first pass's work.
  */
 export async function applyImportPlan(
-  scope: OwnerScope,
+  scope: SpaceScope,
   plan: VaultImportPlan
 ): Promise<VaultImportOutcome> {
   const outcome: VaultImportOutcome = {
@@ -330,7 +330,7 @@ export async function applyImportPlan(
 /** Tag name → id, so a hundred tagged tasks cost one read rather than a hundred. */
 type TagCache = Map<string, string>;
 
-async function loadTagCache(scope: OwnerScope): Promise<TagCache> {
+async function loadTagCache(scope: SpaceScope): Promise<TagCache> {
   const tags = await listTags(scope, { take: 1_000 });
   return new Map(tags.map((tag) => [normaliseTitle(tag.name), tag.id]));
 }
@@ -395,7 +395,7 @@ function when<T>(value: T | undefined, build: (value: T) => Record<string, unkno
  * update.
  */
 async function writeNote(
-  scope: OwnerScope,
+  scope: SpaceScope,
   note: PlannedNote,
   idFor: RefResolver,
   tagCache: TagCache
@@ -603,7 +603,7 @@ async function writeNote(
  * the behaviour the capture path already has.
  */
 async function resolveTagIds(
-  scope: OwnerScope,
+  scope: SpaceScope,
   names: string[],
   cache: TagCache
 ): Promise<string[]> {

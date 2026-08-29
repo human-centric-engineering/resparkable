@@ -2,7 +2,7 @@
  * Space repo — the one table keyed by `userId` rather than scoped by it.
  *
  * `ResparkableSpace` is where a scope *comes from*, so its reads take a plain
- * verified `userId` instead of an `OwnerScope`: `ensureResparkableSpace()` runs
+ * verified `userId` instead of an `SpaceScope`: `ensureResparkableSpace()` runs
  * before there is a space to scope to. That is the single exception to the D5
  * signature rule, and it is why this file is short enough to audit at a glance.
  *

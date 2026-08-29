@@ -52,10 +52,10 @@ vi.mock('@/lib/email/send', () => ({
 }));
 
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { logger } from '@/lib/logging';
 
-const OWNER = ownerScope('user_a');
+const OWNER = spaceScope('user_a');
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 
 /** The item's real name, which must appear in nothing this file produces. */

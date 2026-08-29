@@ -76,7 +76,7 @@ describe('resparkable_get_stale_digest — what it does', () => {
 
     // Anti-green-bar: prove the capability passed the caller's OWN scope
     // through, not just that it returned whatever the mock handed back.
-    expect(buildStaleDigest).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user_a' }));
+    expect(buildStaleDigest).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user_a' }));
     expect(buildStaleDigest).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ success: true, data: digest });
   });
@@ -87,9 +87,9 @@ describe('resparkable_get_stale_digest — what it does', () => {
 
     await cap.execute(cap.validate({}), { userId: 'user_b', agentId: 'workflow:wf_1' });
 
-    expect(buildStaleDigest).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user_b' }));
+    expect(buildStaleDigest).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user_b' }));
     expect(buildStaleDigest).not.toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' })
+      expect.objectContaining({ spaceId: 'user_a' })
     );
   });
 

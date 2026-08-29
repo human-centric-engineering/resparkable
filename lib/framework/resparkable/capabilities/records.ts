@@ -20,7 +20,7 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { runUpsert, type UpsertData } from '@/lib/framework/resparkable/capabilities/upsert';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   areaResource,
   entityResource,
@@ -81,7 +81,7 @@ export class ResparkableUpsertProjectCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertProjectInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(projectResource, scope, args, 'name');
     if (!outcome) return this.error('No project with that id.', 'not_found');
@@ -113,7 +113,7 @@ export class ResparkableUpsertAreaCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertAreaInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(areaResource, scope, args, 'name');
     if (!outcome) return this.error('No life area with that id.', 'not_found');
@@ -150,7 +150,7 @@ export class ResparkableUpsertGoalCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertGoalInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(goalResource, scope, args, 'title');
     if (!outcome) return this.error('No goal with that id.', 'not_found');
@@ -188,7 +188,7 @@ export class ResparkableUpsertEntityCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertEntityInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(entityResource, scope, args, 'name');
     if (!outcome) return this.error('No person, company or segment with that id.', 'not_found');
@@ -220,7 +220,7 @@ export class ResparkableUpsertTimeBlockCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertTimeBlockInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(timeBlockResource, scope, args, 'title');
     if (!outcome) return this.error('No time block with that id.', 'not_found');

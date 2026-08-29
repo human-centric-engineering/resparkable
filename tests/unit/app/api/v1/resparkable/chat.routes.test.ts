@@ -292,7 +292,7 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
       await response.text();
 
       expect(mockedRecordSpend).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'user_a' }),
+        expect.objectContaining({ spaceId: 'user_a' }),
         expect.objectContaining({ tokenCostUsd: 0.05, relatedConversationId: 'conv_1' })
       );
     });

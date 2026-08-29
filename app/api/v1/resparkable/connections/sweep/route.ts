@@ -19,12 +19,12 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const result = await sweepConnections(scope);
 

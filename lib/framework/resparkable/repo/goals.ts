@@ -13,11 +13,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -44,12 +44,12 @@ export type GoalCreateData = WithoutOwner<Prisma.ResparkableGoalUncheckedCreateI
 export type GoalUpdateData = WithoutOwner<Prisma.ResparkableGoalUncheckedUpdateInput>;
 
 function goalWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: GoalFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableGoalWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.horizon ? { horizon: filters.horizon } : {}),
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.areaId ? { areaId: filters.areaId } : {}),
@@ -65,7 +65,7 @@ function goalWhere(
  * neither is worth it.
  */
 export async function listGoals(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: GoalFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableGoal[]> {
@@ -77,7 +77,7 @@ export async function listGoals(
 }
 
 export async function countGoals(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: GoalFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
@@ -85,14 +85,14 @@ export async function countGoals(
 }
 
 /** Batched lookup for the scorer's project → goal walk. See `findProjectsByIds`. */
-export async function findGoalsByIds(scope: OwnerScope, ids: string[]): Promise<ResparkableGoal[]> {
+export async function findGoalsByIds(scope: SpaceScope, ids: string[]): Promise<ResparkableGoal[]> {
   if (ids.length === 0) return [];
 
-  return prisma.resparkableGoal.findMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  return prisma.resparkableGoal.findMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
 }
 
-export async function findGoal(scope: OwnerScope, id: string): Promise<ResparkableGoal | null> {
-  return prisma.resparkableGoal.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findGoal(scope: SpaceScope, id: string): Promise<ResparkableGoal | null> {
+  return prisma.resparkableGoal.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -103,27 +103,27 @@ export async function findGoal(scope: OwnerScope, id: string): Promise<Resparkab
  * cannot see.
  */
 export async function findGoalBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableGoal | null> {
-  return prisma.resparkableGoal.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableGoal.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
 export async function createGoal(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: GoalCreateData
 ): Promise<ResparkableGoal> {
-  return prisma.resparkableGoal.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableGoal.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateGoal(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: GoalUpdateData
 ): Promise<ResparkableGoal | null> {
   return nullOnMiss(() =>
     prisma.resparkableGoal.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -134,32 +134,32 @@ export async function updateGoal(
 }
 
 export async function archiveGoal(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableGoal | null> {
   return archiveAndDropVectors(scope, 'goal', id, () =>
     prisma.resparkableGoal.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
-export async function restoreGoal(scope: OwnerScope, id: string): Promise<ResparkableGoal | null> {
+export async function restoreGoal(scope: SpaceScope, id: string): Promise<ResparkableGoal | null> {
   return nullOnMiss(() =>
     prisma.resparkableGoal.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
 }
 
-export async function deleteGoal(scope: OwnerScope, id: string): Promise<ResparkableGoal | null> {
+export async function deleteGoal(scope: SpaceScope, id: string): Promise<ResparkableGoal | null> {
   // Vectors go in the SAME transaction: nothing cascades to the polymorphic
   // embedding table, and an orphan chunk makes the sweep propose links to a row
   // that no longer exists.
   return deleteAndDropVectors(scope, 'goal', id, () =>
-    prisma.resparkableGoal.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableGoal.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

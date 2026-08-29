@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const routeLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -123,7 +124,7 @@ describe('POST /api/v1/resparkable/boards/[id]/snapshot', () => {
     await invoke('board_1');
 
     const call = vi.mocked(snapshotBoard).mock.calls[0];
-    expect(call[0]).toEqual({ userId: 'user_a' });
+    expect(call[0]).toEqual(spaceScope('user_a'));
     expect(call[1]).toBe('board_1');
   });
 

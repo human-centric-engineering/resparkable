@@ -46,7 +46,7 @@ vi.mock('@/lib/db/client', () => {
 });
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   acceptGrant,
   findAccountIdForEmail,
@@ -59,7 +59,7 @@ import {
   upsertGrant,
 } from '@/lib/framework/resparkable/repo/grants';
 
-const OWNER = ownerScope('user_a');
+const OWNER = spaceScope('user_a');
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 
 const CREATE = {

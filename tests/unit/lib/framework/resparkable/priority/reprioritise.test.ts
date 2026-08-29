@@ -31,7 +31,7 @@ vi.mock('@/lib/framework/resparkable/context/invalidate', () => ({
 import { reprioritiseTasks, rescoreTask } from '@/lib/framework/resparkable/priority/reprioritise';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
 import { findAcceptedGoalLinks } from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import {
   findTasksForScoring,
@@ -49,7 +49,7 @@ import type {
   ResparkableTimeBlock,
 } from '@prisma/client';
 
-const scope = ownerScope('user_x');
+const scope = spaceScope('user_x');
 const NOW = new Date('2026-07-29T12:00:00.000Z');
 
 function task(overrides: Partial<TaskScoringRow> = {}): TaskScoringRow {

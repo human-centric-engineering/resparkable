@@ -171,8 +171,8 @@ describe('POST /api/v1/resparkable/capture', () => {
   it('scopes to the session user and nothing from the request', async () => {
     await invoke(CAPTURE, postReq('/api/v1/resparkable/capture', { content: 'x' }), SESSION_A);
 
-    const scope = mockedCapture.mock.calls[0]?.[0] as { userId: string };
-    expect(scope.userId).toBe('user_a');
+    const scope = mockedCapture.mock.calls[0]?.[0] as { spaceId: string };
+    expect(scope.spaceId).toBe('user_a');
   });
 
   it('rejects a userId smuggled into the body', async () => {
@@ -245,8 +245,8 @@ describe('GET /api/v1/resparkable/snapshot', () => {
   it('scopes to the session user', async () => {
     await invoke(SNAPSHOT, getReq('/api/v1/resparkable/snapshot'), SESSION_A);
 
-    const scope = mockedSnapshot.mock.calls[0]?.[0] as { userId: string };
-    expect(scope.userId).toBe('user_a');
+    const scope = mockedSnapshot.mock.calls[0]?.[0] as { spaceId: string };
+    expect(scope.spaceId).toBe('user_a');
   });
 });
 
@@ -358,7 +358,7 @@ describe('POST /api/v1/resparkable/ideate', () => {
       );
 
       expect(mockedRecordSpend).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'user_a' }),
+        expect.objectContaining({ spaceId: 'user_a' }),
         expect.objectContaining({ tokenCostUsd: 0.03 })
       );
     });
@@ -463,8 +463,8 @@ describe('GET /api/v1/resparkable/reviews/[id]', () => {
 
     await invoke(REVIEW_GET, getReq('/api/v1/resparkable/reviews/review_1'), SESSION_A, params);
 
-    const scope = mockedGetReview.mock.calls[0]?.[0] as { userId: string };
-    expect(scope.userId).toBe('user_a');
+    const scope = mockedGetReview.mock.calls[0]?.[0] as { spaceId: string };
+    expect(scope.spaceId).toBe('user_a');
     expect(mockedGetReview.mock.calls[0]?.[1]).toBe('review_1');
   });
 

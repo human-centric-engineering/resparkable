@@ -26,7 +26,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   archiveReview,
   countReviews,
@@ -37,7 +37,7 @@ import {
   listReviews,
 } from '@/lib/framework/resparkable/repo/reviews';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 const findFirst = vi.mocked(prisma.resparkableReview.findFirst);
 const findMany = vi.mocked(prisma.resparkableReview.findMany);
 const count = vi.mocked(prisma.resparkableReview.count);
@@ -103,7 +103,7 @@ describe('findLatestReview', () => {
 
 describe('createReview', () => {
   it('stamps the scope onto the row, and the scope wins', async () => {
-    // `ownerWhere` is spread LAST in `data` on purpose: the caller's fields go in
+    // `spaceWhere` is spread LAST in `data` on purpose: the caller's fields go in
     // first, then the scope overwrites anything that collided. A caller-supplied
     // `userId` must never survive.
     await createReview(SCOPE, {

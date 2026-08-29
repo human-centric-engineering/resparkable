@@ -57,9 +57,9 @@ import {
   upsertEmbeddings,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import { logger } from '@/lib/logging';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 function embeddingRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {

@@ -44,7 +44,7 @@ import { listDocuments } from '@/lib/framework/resparkable/repo/documents';
 import { listEntities } from '@/lib/framework/resparkable/repo/entities';
 import { listGoals } from '@/lib/framework/resparkable/repo/goals';
 import { listLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listProjects } from '@/lib/framework/resparkable/repo/projects';
 import { listReviews } from '@/lib/framework/resparkable/repo/reviews';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
@@ -59,7 +59,7 @@ import {
 } from '@/lib/framework/resparkable/vault/export';
 import { VAULT_MANIFEST_PATH, type VaultNoteType } from '@/lib/framework/resparkable/vault/layout';
 
-const SCOPE = { userId: 'user_a' } as unknown as OwnerScope;
+const SCOPE = { userId: 'user_a' } as unknown as SpaceScope;
 
 /** Every list the collector calls, so "scoped" is asserted across all of them. */
 const ALL_LISTS = [

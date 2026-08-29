@@ -16,7 +16,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { CanonicalSource } from '@/lib/framework/resparkable/embedding/canonical';
 
 /** A row flattened to what the indexer needs: identity plus semantic fields. */
@@ -71,11 +71,11 @@ const SELECTS = {
  * has no `extractedText` yet, and one that `failed` has nothing worth embedding.
  */
 export async function listUnindexed(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   limit: number
 ): Promise<IndexCandidate[]> {
-  const where = { ...ownerWhere(scope), archivedAt: null, indexedHash: null };
+  const where = { ...spaceWhere(scope), archivedAt: null, indexedHash: null };
   const args = { where, orderBy: { createdAt: 'asc' }, take: limit } as const;
 
   const rows = await (async () => {
@@ -104,8 +104,8 @@ export async function listUnindexed(
 }
 
 /** How many rows are waiting, for the reindex response and the logs. */
-export async function countUnindexed(scope: OwnerScope, entityType: EmbeddedType): Promise<number> {
-  const where = { ...ownerWhere(scope), archivedAt: null, indexedHash: null };
+export async function countUnindexed(scope: SpaceScope, entityType: EmbeddedType): Promise<number> {
+  const where = { ...spaceWhere(scope), archivedAt: null, indexedHash: null };
 
   switch (entityType) {
     case 'thought':
@@ -139,7 +139,7 @@ export async function countUnindexed(scope: OwnerScope, entityType: EmbeddedType
  * affected, which is exactly right: it no longer needs stamping.
  */
 export async function stampIndexedHash(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   stamps: Array<{ id: string; hash: string }>
 ): Promise<number> {
@@ -147,7 +147,7 @@ export async function stampIndexedHash(
 
   const results = await prisma.$transaction(
     stamps.map(({ id, hash }) => {
-      const where = { id, ...ownerWhere(scope) };
+      const where = { id, ...spaceWhere(scope) };
       const data = { indexedHash: hash };
 
       switch (entityType) {
@@ -178,11 +178,11 @@ export async function stampIndexedHash(
  * learns nothing beyond `false`.
  */
 export async function enqueueForReindex(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string
 ): Promise<boolean> {
-  const where = { id: entityId, ...ownerWhere(scope) };
+  const where = { id: entityId, ...spaceWhere(scope) };
   const data = { indexedHash: null };
 
   const result = await (async () => {
@@ -213,8 +213,8 @@ export async function enqueueForReindex(
  * It does not delete the existing vectors, so search keeps working on the old
  * ones until each row is re-embedded — a degraded index beats an empty one.
  */
-export async function enqueueAllForReindex(scope: OwnerScope): Promise<number> {
-  const where = { ...ownerWhere(scope), archivedAt: null };
+export async function enqueueAllForReindex(scope: SpaceScope): Promise<number> {
+  const where = { ...spaceWhere(scope), archivedAt: null };
   const data = { indexedHash: null };
 
   const results = await prisma.$transaction([

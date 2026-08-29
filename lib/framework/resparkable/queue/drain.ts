@@ -64,7 +64,7 @@ import {
   type ClaimedResparkableJob,
 } from '@/lib/framework/resparkable/repo/jobs';
 import { hasResparkableActivitySince } from '@/lib/framework/resparkable/repo/jobs';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { hasPositiveBalance } from '@/lib/framework/resparkable/services/billing';
 import { logger } from '@/lib/logging';
 
@@ -255,7 +255,7 @@ async function settleOne(
 
   const kind: ResparkableJobKind = job.kind;
   const spec = RESPARKABLE_JOB_SPECS[kind];
-  const scope = ownerScope(job.userId);
+  const scope = spaceScope(job.userId);
 
   // ── Gate 1: has anything changed? ─────────────────────────────────────────
   //

@@ -23,7 +23,7 @@
 
 import { ValidationError } from '@/lib/api/errors';
 import * as reviews from '@/lib/framework/resparkable/repo/reviews';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ListOptions } from '@/lib/framework/resparkable/repo/shared';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
@@ -81,10 +81,10 @@ function normalisePayload(payload: unknown): Prisma.InputJsonValue | undefined {
 
 /** Store a generated artefact. Always creates; never updates in place. */
 export async function writeReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: CreateReviewInput
 ): Promise<ResparkableReview> {
-  await ensureResparkableSpace(scope.userId);
+  await ensureResparkableSpace(scope.spaceId);
 
   const payload = normalisePayload(input.payload);
 
@@ -107,7 +107,7 @@ export async function writeReview(
 }
 
 export async function listResparkableReviews(
-  scope: OwnerScope,
+  scope: SpaceScope,
   query: ReviewListQuery
 ): Promise<ReviewListResult> {
   const filters = { horizon: query.horizon };
@@ -126,7 +126,7 @@ export async function listResparkableReviews(
 }
 
 export async function getResparkableReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableReview | null> {
   return reviews.findReview(scope, id);
@@ -141,7 +141,7 @@ export async function getResparkableReview(
  * just stops appearing by default.
  */
 export async function dismissReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'dismissed'
 ): Promise<ResparkableReview | null> {

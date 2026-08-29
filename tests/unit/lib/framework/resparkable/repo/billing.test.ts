@@ -46,7 +46,7 @@ vi.mock('@/lib/db/client', () => ({
   },
 }));
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   applyLedgerEntry,
   ensureCreditAccount,
@@ -56,7 +56,7 @@ import {
   listCreditAccountsForAdmin,
 } from '@/lib/framework/resparkable/repo/billing';
 
-const scope = ownerScope('user_a');
+const scope = spaceScope('user_a');
 
 /** Prisma's unique-constraint violation, as the client actually throws it. */
 function uniqueViolation() {

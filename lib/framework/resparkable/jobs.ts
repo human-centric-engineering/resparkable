@@ -42,9 +42,9 @@ import {
   type BillableWorkflowExecution,
 } from '@/lib/framework/resparkable/repo/billing';
 import {
-  ownerScope,
+  spaceScope,
   readResparkableScheduleSpaceId,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
@@ -178,7 +178,7 @@ async function billResparkableWorkflowExecutions(): Promise<{ billed: number; sk
     }
 
     try {
-      const entry = await recordAgentSpend(ownerScope(ownerUserId), {
+      const entry = await recordAgentSpend(spaceScope(ownerUserId), {
         tokenCostUsd: execution.totalCostUsd,
         relatedWorkflowExecutionId: execution.id,
       });

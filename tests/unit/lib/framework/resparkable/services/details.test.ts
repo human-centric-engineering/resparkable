@@ -60,7 +60,7 @@ import { listLinksForEntity } from '@/lib/framework/resparkable/repo/links';
 import { findProject } from '@/lib/framework/resparkable/repo/projects';
 import { countTasks, findTask, listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { hydrateLinks } from '@/lib/framework/resparkable/services/link-hydration';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedFindProject = vi.mocked(findProject);
 const mockedFindArea = vi.mocked(findArea);
@@ -72,7 +72,7 @@ const mockedCountTasks = vi.mocked(countTasks);
 const mockedListLinks = vi.mocked(listLinksForEntity);
 const mockedHydrate = vi.mocked(hydrateLinks);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 /** Plain objects so tests can spread them; cast at the mock boundary instead. */
 const PROJECT = { id: 'proj_1', name: 'Q4 launch', areaId: 'area_1' };

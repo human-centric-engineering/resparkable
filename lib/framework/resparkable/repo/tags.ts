@@ -20,7 +20,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -33,42 +33,42 @@ export type TagCreateData = WithoutOwner<Prisma.ResparkableTagUncheckedCreateInp
 export type TagUpdateData = WithoutOwner<Prisma.ResparkableTagUncheckedUpdateInput>;
 
 export async function listTags(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: ListOptions = {}
 ): Promise<ResparkableTag[]> {
   return prisma.resparkableTag.findMany({
-    where: ownerWhere(scope),
+    where: spaceWhere(scope),
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     ...pageArgs(options),
   });
 }
 
-export async function countTags(scope: OwnerScope): Promise<number> {
-  return prisma.resparkableTag.count({ where: ownerWhere(scope) });
+export async function countTags(scope: SpaceScope): Promise<number> {
+  return prisma.resparkableTag.count({ where: spaceWhere(scope) });
 }
 
-export async function findTag(scope: OwnerScope, id: string): Promise<ResparkableTag | null> {
-  return prisma.resparkableTag.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findTag(scope: SpaceScope, id: string): Promise<ResparkableTag | null> {
+  return prisma.resparkableTag.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 export async function findTagBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableTag | null> {
-  return prisma.resparkableTag.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableTag.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
-export async function createTag(scope: OwnerScope, data: TagCreateData): Promise<ResparkableTag> {
-  return prisma.resparkableTag.create({ data: { ...data, ...ownerWhere(scope) } });
+export async function createTag(scope: SpaceScope, data: TagCreateData): Promise<ResparkableTag> {
+  return prisma.resparkableTag.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateTag(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: TagUpdateData
 ): Promise<ResparkableTag | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTag.update({ where: { id, ...ownerWhere(scope) }, data })
+    prisma.resparkableTag.update({ where: { id, ...spaceWhere(scope) }, data })
   );
 }
 
@@ -78,19 +78,19 @@ export async function updateTag(
  * `ResparkableTaskTag` cascades on the tag's own FK, so every task loses the label
  * without a second statement — and without leaving rows pointing at nothing.
  */
-export async function deleteTag(scope: OwnerScope, id: string): Promise<ResparkableTag | null> {
-  return nullOnMiss(() => prisma.resparkableTag.delete({ where: { id, ...ownerWhere(scope) } }));
+export async function deleteTag(scope: SpaceScope, id: string): Promise<ResparkableTag | null> {
+  return nullOnMiss(() => prisma.resparkableTag.delete({ where: { id, ...spaceWhere(scope) } }));
 }
 
 /** Tag rows for a batch of tasks — one query for a whole board, never one per card. */
 export async function listTagsForTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskIds: string[]
 ): Promise<Array<{ taskId: string; tag: ResparkableTag }>> {
   if (taskIds.length === 0) return [];
 
   const rows = await prisma.resparkableTaskTag.findMany({
-    where: { ...ownerWhere(scope), taskId: { in: taskIds } },
+    where: { ...spaceWhere(scope), taskId: { in: taskIds } },
     include: { tag: true },
   });
 
@@ -106,13 +106,13 @@ export async function listTagsForTasks(
  * theirs; the task would not.
  */
 export async function setTaskTags(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskId: string,
   tagIds: string[]
 ): Promise<ResparkableTag[] | null> {
   return prisma.$transaction(async (tx) => {
     const task = await tx.resparkableTask.findFirst({
-      where: { ...ownerWhere(scope), id: taskId },
+      where: { ...spaceWhere(scope), id: taskId },
       select: { id: true },
     });
     if (!task) return null;
@@ -121,18 +121,18 @@ export async function setTaskTags(
     // than attached. Filtering here rather than erroring keeps a stale board tab
     // from failing outright when a tag was deleted in another window.
     const owned = await tx.resparkableTag.findMany({
-      where: { ...ownerWhere(scope), id: { in: tagIds } },
+      where: { ...spaceWhere(scope), id: { in: tagIds } },
       select: { id: true },
     });
     const ownedIds = owned.map((row) => row.id);
 
     await tx.resparkableTaskTag.deleteMany({
-      where: { ...ownerWhere(scope), taskId, tagId: { notIn: ownedIds } },
+      where: { ...spaceWhere(scope), taskId, tagId: { notIn: ownedIds } },
     });
 
     if (ownedIds.length > 0) {
       await tx.resparkableTaskTag.createMany({
-        data: ownedIds.map((tagId) => ({ ...ownerWhere(scope), taskId, tagId })),
+        data: ownedIds.map((tagId) => ({ ...spaceWhere(scope), taskId, tagId })),
         // The unique `[taskId, tagId]` makes re-adding an existing tag a no-op
         // rather than an error, which is what a set-replacement needs.
         skipDuplicates: true,
@@ -140,7 +140,7 @@ export async function setTaskTags(
     }
 
     return tx.resparkableTag.findMany({
-      where: { ...ownerWhere(scope), id: { in: ownedIds } },
+      where: { ...spaceWhere(scope), id: { in: ownedIds } },
       orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     });
   });

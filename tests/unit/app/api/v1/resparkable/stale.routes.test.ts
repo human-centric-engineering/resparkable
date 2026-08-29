@@ -135,7 +135,7 @@ describe('GET /resparkable/stale', () => {
   it('scopes the digest build to the session user', async () => {
     await getStale(get(), SESSION_A, undefined);
 
-    expect(mockedBuild.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(mockedBuild.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('excludes generatedAt from the ETag — two digests differing only there hash the same', async () => {
@@ -207,7 +207,7 @@ describe('POST /resparkable/stale/still-live', () => {
     expect(body.data).toEqual({ type: 'project', id: 'proj_1', stillLive: true });
 
     const [scope, type, id] = mockedConfirm.mock.calls[0] ?? [];
-    expect(scope).toMatchObject({ userId: 'user_a' });
+    expect(scope).toMatchObject({ spaceId: 'user_a' });
     expect(type).toBe('project');
     expect(id).toBe('proj_1');
   });

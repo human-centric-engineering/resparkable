@@ -24,7 +24,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findTasksForScoring,
   listTasks,
@@ -32,7 +32,7 @@ import {
   writeTaskScores,
 } from '@/lib/framework/resparkable/repo/tasks';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 const findMany = vi.mocked(prisma.resparkableTask.findMany);
 const update = vi.mocked(prisma.resparkableTask.update);

@@ -82,7 +82,7 @@ import { createArea, updateArea } from '@/lib/framework/resparkable/repo/areas';
 import { createEntity, updateEntity } from '@/lib/framework/resparkable/repo/entities';
 import { createGoal, updateGoal } from '@/lib/framework/resparkable/repo/goals';
 import { createSuggestedLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { createProject, updateProject } from '@/lib/framework/resparkable/repo/projects';
 import {
   createTag,
@@ -101,7 +101,7 @@ import {
 import type { PlannedNote, VaultImportPlan } from '@/lib/framework/resparkable/vault/import-plan';
 import { readVaultZip } from '@/lib/framework/resparkable/vault/zip';
 
-const SCOPE = { userId: 'user_a' } as unknown as OwnerScope;
+const SCOPE = { userId: 'user_a' } as unknown as SpaceScope;
 
 /**
  * Every repo function this module can reach, so "nothing else was touched" is a

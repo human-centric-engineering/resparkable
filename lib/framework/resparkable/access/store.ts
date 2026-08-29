@@ -4,7 +4,7 @@
  * ## Why this file may import Prisma when almost nothing else in the tier can
  *
  * The tier-wide ESLint rule keeps `@/lib/db/client` unreachable outside
- * `repo/**`, because a repo function takes an `OwnerScope` and therefore cannot
+ * `repo/**`, because a repo function takes an `SpaceScope` and therefore cannot
  * express a cross-user read. This directory is the deliberate second case (D5):
  * **shared queries opt in explicitly**, and a shared query is by definition one
  * that reads rows belonging to someone other than the caller. Routing it
@@ -13,7 +13,7 @@
  *
  * So the boundary is not "one layer touches the database". It is:
  *
- *   • `repo/**` — owner queries. Takes an `OwnerScope`. Cannot cross a user.
+ *   • `repo/**` — owner queries. Takes an `SpaceScope`. Cannot cross a user.
  *   • `access/**` — shared queries. Takes a viewer. Crosses a user only by
  *     following a grant or a link, and every function here is named for the
  *     grant or link it follows.

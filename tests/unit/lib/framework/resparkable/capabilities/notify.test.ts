@@ -76,7 +76,7 @@ describe('resparkable_notify — what it sends', () => {
 
     await cap.execute(cap.validate({ notification: 'briefing_ready' }), CONTEXT);
 
-    expect(mockedContact).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user_a' }));
+    expect(mockedContact).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user_a' }));
     expect(mockedSend.mock.calls[0]?.[0].to).toBe('owner@example.com');
   });
 

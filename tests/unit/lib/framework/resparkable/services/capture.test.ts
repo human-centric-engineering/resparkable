@@ -31,7 +31,7 @@ import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { captureThought as captureThoughtRow } from '@/lib/framework/resparkable/repo/thoughts';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableThought } from '@prisma/client';
 
 const mockedCapture = vi.mocked(captureThoughtRow);
@@ -39,7 +39,7 @@ const mockedEvent = vi.mocked(recordResparkableEvent);
 const mockedSpace = vi.mocked(ensureResparkableSpace);
 
 /** A scope is a branded type minted from a verified session id; cast for the test. */
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const THOUGHT = {
   id: 'thought_1',

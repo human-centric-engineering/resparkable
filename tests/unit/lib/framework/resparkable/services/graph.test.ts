@@ -35,12 +35,12 @@ vi.mock('@/lib/framework/resparkable/services/link-hydration', () => ({ hydrateL
 import { buildGraph, GRAPH_MAX_NODES } from '@/lib/framework/resparkable/services/graph';
 import { listLinksForEntities } from '@/lib/framework/resparkable/repo/links';
 import { hydrateLinks } from '@/lib/framework/resparkable/services/link-hydration';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedLinks = vi.mocked(listLinksForEntities);
 const mockedHydrate = vi.mocked(hydrateLinks);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const FOCUS = { type: 'project', id: 'proj_1' };
 
 function edge(id: string, source: string, target: string, overrides: Record<string, unknown> = {}) {

@@ -29,6 +29,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 vi.mock('@/lib/auth/guards', () => ({
   withAuth:
@@ -154,8 +155,8 @@ describe('GET /resparkable/links', () => {
   it('scopes the list and the count to the session user', async () => {
     await invoke(LINKS_GET, req('http://x/api/v1/resparkable/links'), SESSION_A);
 
-    expect(vi.mocked(listLinks).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
-    expect(vi.mocked(countLinks).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
+    expect(vi.mocked(listLinks).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
+    expect(vi.mocked(countLinks).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
   });
 
   it('builds filters only from the query fields that were actually supplied', async () => {
@@ -177,7 +178,7 @@ describe('GET /resparkable/links', () => {
   it('does not let a userId query param override the session-derived scope', async () => {
     await invoke(LINKS_GET, req('http://x/api/v1/resparkable/links?userId=user_b'), SESSION_A);
 
-    expect(vi.mocked(listLinks).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
+    expect(vi.mocked(listLinks).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
   });
 
   it('reports the unpaginated total distinct from the returned page size', async () => {
@@ -207,8 +208,8 @@ describe('POST /resparkable/links', () => {
     );
 
     expect(response.status).toBe(201);
-    expect(entityExists).toHaveBeenCalledWith({ userId: 'user_a' }, 'project', SOURCE_ID);
-    expect(entityExists).toHaveBeenCalledWith({ userId: 'user_a' }, 'goal', TARGET_ID);
+    expect(entityExists).toHaveBeenCalledWith(spaceScope('user_a'), 'project', SOURCE_ID);
+    expect(entityExists).toHaveBeenCalledWith(spaceScope('user_a'), 'goal', TARGET_ID);
   });
 
   it('forces origin: user and status: accepted server-side — a hand-made link has no measured similarity', async () => {
@@ -368,7 +369,7 @@ describe('POST /resparkable/connections/sweep', () => {
   it('scopes the sweep to the session user', async () => {
     await invoke(SWEEP_POST, req('http://x/api/v1/resparkable/connections/sweep'), SESSION_A);
 
-    expect(vi.mocked(sweepConnections).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
+    expect(vi.mocked(sweepConnections).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
   });
 
   it('surfaces cappedTypes so a partial sweep does not read as "no more connections"', async () => {

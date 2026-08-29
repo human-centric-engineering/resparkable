@@ -89,8 +89,8 @@ describe('GET /api/v1/resparkable/graph', () => {
   it('scopes to the session user', async () => {
     await invoke(GRAPH_GET, `focus=${ID}&focusType=project`);
 
-    const input = mockedGraph.mock.calls[0]?.[0] as { scope: { userId: string } };
-    expect(input.scope.userId).toBe('user_a');
+    const input = mockedGraph.mock.calls[0]?.[0] as { scope: { spaceId: string } };
+    expect(input.scope.spaceId).toBe('user_a');
   });
 
   it('requires a focus — there is no show-everything mode', async () => {
@@ -198,8 +198,8 @@ describe('GET /api/v1/resparkable/connections', () => {
   it('scopes to the session user', async () => {
     await invoke(CONNECTIONS_GET, '');
 
-    const scope = mockedConnections.mock.calls[0]?.[0] as { userId: string };
-    expect(scope.userId).toBe('user_a');
+    const scope = mockedConnections.mock.calls[0]?.[0] as { spaceId: string };
+    expect(scope.spaceId).toBe('user_a');
   });
 
   it('passes status and kind filters through', async () => {

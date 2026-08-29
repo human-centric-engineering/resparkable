@@ -53,7 +53,7 @@ vi.mock('@/lib/db/client', () => {
 });
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   countShareLinkView,
   createShareLink,
@@ -63,7 +63,7 @@ import {
   revokeShareLink,
 } from '@/lib/framework/resparkable/repo/share-links';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-26T12:00:00Z');
 
 const db = prisma as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>> & {

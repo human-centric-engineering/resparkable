@@ -31,13 +31,13 @@ import {
   listBoardCardsWithStatus,
   renumberBoardCards,
 } from '@/lib/framework/resparkable/repo/boards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { planMove } from '@/lib/framework/resparkable/services/fractional-position';
 import { placeBoardCardSchema } from '@/lib/framework/resparkable/validations';
 
 export const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, placeBoardCardSchema);

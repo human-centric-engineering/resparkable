@@ -110,7 +110,7 @@ describe.each(CASES)('GET /resparkable/$name/[id]/view', ({ handler, builder, id
     await invoke(handler, id);
 
     const [scope, passedId] = builder.mock.calls[0] ?? [];
-    expect((scope as { userId: string }).userId).toBe('user_a');
+    expect((scope as { spaceId: string }).spaceId).toBe('user_a');
     expect(passedId).toBe(id);
   });
 

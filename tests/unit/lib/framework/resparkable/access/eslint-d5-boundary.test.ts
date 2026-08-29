@@ -4,7 +4,7 @@
  * D5 says every brain query is an **owner query** or a **shared query**, and
  * there is no third kind:
  *
- *   • `repo/**` takes an `OwnerScope`, spreads it into every `where`, and
+ *   • `repo/**` takes an `SpaceScope`, spreads it into every `where`, and
  *     cannot express a cross-user read.
  *   • `access/**` (Release 2) is the deliberate second case: a shared query is
  *     by definition one that reads rows belonging to someone other than the
@@ -30,7 +30,7 @@
  * - The alias ban is restated in every block
  *
  * @see lib/framework/eslint.config.mjs
- * @see lib/framework/resparkable/repo/owner-scope.ts
+ * @see lib/framework/resparkable/repo/space-scope.ts
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -145,7 +145,7 @@ describe('the tier-wide Prisma ban, and its two exemptions', () => {
     );
 
     expect(msgs).toHaveLength(1);
-    expect(msgs[0].message).toMatch(/OwnerScope/);
+    expect(msgs[0].message).toMatch(/SpaceScope/);
   });
 
   it('names BOTH layers in the message, so the fix is obvious', () => {

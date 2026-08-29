@@ -57,7 +57,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   archiveAgedClosedProjects,
   archiveAgedCompletedTasks,
@@ -72,9 +72,9 @@ import {
   RETENTION_BATCH,
 } from '@/lib/framework/resparkable/repo/retention';
 
-// Minted, never cast — `OwnerScope` is branded so that `rg 'ownerScope\('` is
+// Minted, never cast — `SpaceScope` is branded so that `rg 'spaceScope\('` is
 // the complete list of trust boundaries, and a test that fakes it leaves it.
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** One fixed instant. Every window below is measured from exactly this. */
 const NOW = new Date('2026-08-05T09:00:00.000Z');

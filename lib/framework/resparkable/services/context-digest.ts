@@ -23,7 +23,7 @@
 import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
 import { listLinksForEntity } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import { findThoughtsByIds } from '@/lib/framework/resparkable/repo/thoughts';
 
@@ -56,7 +56,7 @@ const MAX_NOTE_CHARS = 600;
 const MAX_NOTES = 30;
 
 async function findEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ContextDigestEntityType,
   entityId: string
 ): Promise<{ name: string; description: string | null } | null> {
@@ -85,7 +85,7 @@ async function findEntity(
  * answer with one message for both.
  */
 export async function buildContextDigest(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ContextDigestEntityType,
   entityId: string
 ): Promise<ContextDigest | null> {

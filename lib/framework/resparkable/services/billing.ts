@@ -11,7 +11,7 @@ import {
   type LedgerEntryInput,
 } from '@/lib/framework/resparkable/repo/billing';
 import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { resolveBillingSettings } from '@/lib/framework/resparkable/settings';
 import { InsufficientCreditsError } from '@/lib/api/errors';
 import type { ResparkableCreditLedgerEntry } from '@prisma/client';
@@ -23,7 +23,7 @@ import type { ResparkableCreditLedgerEntry } from '@prisma/client';
  * no retroactive `newUserGrantCredits` (that grant is for genuinely new
  * users, minted in `ensureResparkableSpace`'s create branch).
  */
-export async function assertPositiveBalance(scope: OwnerScope): Promise<void> {
+export async function assertPositiveBalance(scope: SpaceScope): Promise<void> {
   const account = await ensureCreditAccount(scope);
   if (account.balanceCredits <= 0) {
     throw new InsufficientCreditsError();
@@ -31,7 +31,7 @@ export async function assertPositiveBalance(scope: OwnerScope): Promise<void> {
 }
 
 /** Cheap, non-throwing variant for the Site B tick job's queue-skip check. */
-export async function hasPositiveBalance(scope: OwnerScope): Promise<boolean> {
+export async function hasPositiveBalance(scope: SpaceScope): Promise<boolean> {
   const account = await findCreditAccount(scope);
   return (account?.balanceCredits ?? 0) > 0;
 }
@@ -55,7 +55,7 @@ export interface RecordAgentSpendInput {
  * early return) are skipped rather than writing a zero-delta ledger row.
  */
 export async function recordAgentSpend(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: RecordAgentSpendInput
 ): Promise<ResparkableCreditLedgerEntry | null> {
   // `!Number.isFinite`, not just `<= 0`: `NaN <= 0` is false, so a NaN cost

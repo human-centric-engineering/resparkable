@@ -25,13 +25,13 @@ vi.mock('@/lib/framework/resparkable/repo/links', () => ({
 vi.mock('@/lib/framework/resparkable/repo/projects', () => ({ findProjectsByIds: vi.fn() }));
 
 import { listSuggestedLinksForSources } from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { countThoughts, listThoughts } from '@/lib/framework/resparkable/repo/thoughts';
 import { buildInbox } from '@/lib/framework/resparkable/services/inbox';
 import type { ResparkableLink, ResparkableProject, ResparkableThought } from '@prisma/client';
 
-const scope = ownerScope('user_x');
+const scope = spaceScope('user_x');
 const NOW = new Date('2026-07-29T12:00:00.000Z');
 
 function fakeThought(id: string): ResparkableThought {

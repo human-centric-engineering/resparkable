@@ -5,12 +5,12 @@
  * ESLint boundary forbids importing Prisma anywhere except `repo/**`, and that
  * constraint is worth more than the file layout: it means the raw SQL — the one
  * place a `WHERE "spaceId" = …` can be forgotten — can only be written in the
- * layer whose every function takes an `OwnerScope`. So the SQL lives here and
+ * layer whose every function takes an `SpaceScope`. So the SQL lives here and
  * `search/*` orchestrates around it.
  *
  * Four rules, all load-bearing:
  *
- *   1. **`scope.userId` is the first predicate of every statement, always as a
+ *   1. **`scope.spaceId` is the first predicate of every statement, always as a
  *      bound parameter.** Never interpolated, never optional, never derived from
  *      an argument. Isolation test: user B's search must not return A's rows
  *      *even when A's row is the better vector match* (§16.2).
@@ -29,7 +29,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
 import { getActiveEmbeddingModelSummary } from '@/lib/orchestration/knowledge/embedder';
@@ -150,7 +150,7 @@ function typeList(types: readonly string[]): Prisma.Sql {
  * `embedding/indexer.ts` deletes before writing for exactly that reason.
  */
 export async function upsertEmbeddings(
-  scope: OwnerScope,
+  scope: SpaceScope,
   rows: EmbeddingWriteRow[]
 ): Promise<number> {
   if (rows.length === 0) return 0;
@@ -164,7 +164,7 @@ export async function upsertEmbeddings(
           "embeddingProvider", "embeddingDimension", "embeddedAt",
           "createdAt", "updatedAt"
         ) VALUES (
-          gen_random_uuid()::text, ${scope.userId}, ${row.entityType}, ${row.entityId},
+          gen_random_uuid()::text, ${scope.spaceId}, ${row.entityType}, ${row.entityId},
           ${row.chunkIndex}, ${row.content}, ${row.sensitivity},
           ${toVectorLiteral(row.embedding)}::halfvec,
           ${row.contentHash}, ${row.embeddingModel}, ${row.embeddingProvider},
@@ -197,11 +197,11 @@ export async function upsertEmbeddings(
  * month and never in a test.
  */
 export function embeddingDeleteArgs(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string
 ): Prisma.ResparkableEmbeddingDeleteManyArgs {
-  return { where: { ...ownerWhere(scope), entityType, entityId } };
+  return { where: { ...spaceWhere(scope), entityType, entityId } };
 }
 
 /**
@@ -221,13 +221,13 @@ export function embeddingDeleteArgs(
  * gets there.
  */
 export function embeddingSensitivityUpdateArgs(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string,
   sensitivity: string
 ): Prisma.ResparkableEmbeddingUpdateManyArgs {
   return {
-    where: { ...ownerWhere(scope), entityType, entityId },
+    where: { ...spaceWhere(scope), entityType, entityId },
     data: { sensitivity },
   };
 }
@@ -248,7 +248,7 @@ export function embeddingSensitivityUpdateArgs(
  * gesture, and it has to put the vectors back (§11).
  */
 export async function archiveAndDropVectors<T>(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string,
   archive: () => Prisma.PrismaPromise<T>
@@ -274,7 +274,7 @@ export async function archiveAndDropVectors<T>(
  * exists — so the connections view fills with suggestions that resolve to nothing.
  */
 export async function deleteAndDropVectors<T>(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string,
   remove: () => Prisma.PrismaPromise<T>
@@ -290,7 +290,7 @@ export async function deleteAndDropVectors<T>(
 
 /** Standalone delete, for the paths that aren't already in a transaction. */
 export async function deleteEmbeddingsFor(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string
 ): Promise<number> {
@@ -302,13 +302,13 @@ export async function deleteEmbeddingsFor(
 
 /** Drop chunks at or above an index — the re-chunk shrink case. */
 export async function deleteEmbeddingsFromIndex(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string,
   fromChunkIndex: number
 ): Promise<number> {
   const { count } = await prisma.resparkableEmbedding.deleteMany({
-    where: { ...ownerWhere(scope), entityType, entityId, chunkIndex: { gte: fromChunkIndex } },
+    where: { ...spaceWhere(scope), entityType, entityId, chunkIndex: { gte: fromChunkIndex } },
   });
   return count;
 }
@@ -329,14 +329,14 @@ export async function deleteEmbeddingsFromIndex(
  * from the same canonical text in the same pass, so they share a hash.
  */
 export async function findStoredContentHashes(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityIds: string[]
 ): Promise<Map<string, string>> {
   if (entityIds.length === 0) return new Map();
 
   const rows = await prisma.resparkableEmbedding.findMany({
-    where: { ...ownerWhere(scope), entityType, entityId: { in: entityIds }, chunkIndex: 0 },
+    where: { ...spaceWhere(scope), entityType, entityId: { in: entityIds }, chunkIndex: 0 },
     select: { entityId: true, contentHash: true },
   });
 
@@ -345,12 +345,12 @@ export async function findStoredContentHashes(
 
 /** Chunk counts per entity, for the document `chunkCount` column. */
 export async function countChunks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string
 ): Promise<number> {
   return prisma.resparkableEmbedding.count({
-    where: { ...ownerWhere(scope), entityType, entityId },
+    where: { ...spaceWhere(scope), entityType, entityId },
   });
 }
 
@@ -413,7 +413,7 @@ export interface HybridSearchInput {
  * was never consulted either.
  */
 export async function hybridSearchRows(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: HybridSearchInput
 ): Promise<EmbeddingSearchRow[]> {
   if (input.entityTypes.length === 0) return [];
@@ -445,7 +445,7 @@ export async function hybridSearchRows(
           0.0
         ) AS keyword_score
       FROM "framework_resparkable_embedding" e
-      WHERE e."spaceId" = ${scope.userId}
+      WHERE e."spaceId" = ${scope.spaceId}
         AND e."embedding" IS NOT NULL
         AND e."entityType" IN (${typeList(input.entityTypes)})
         AND (${input.excludeSensitive} = FALSE OR e."sensitivity" <> 'sensitive')
@@ -481,7 +481,7 @@ export async function hybridSearchRows(
  * vectors, which are deleted), so the archived corpus stays keyword-searchable.
  */
 export async function searchTaskKeywords(
-  scope: OwnerScope,
+  scope: SpaceScope,
   query: string,
   limit: number,
   includeArchived = false
@@ -490,7 +490,7 @@ export async function searchTaskKeywords(
     SELECT t."id",
            ts_rank_cd(t."searchVector", plainto_tsquery('english', ${query}), 32) AS score
     FROM "framework_resparkable_task" t
-    WHERE t."spaceId" = ${scope.userId}
+    WHERE t."spaceId" = ${scope.spaceId}
       AND t."searchVector" @@ plainto_tsquery('english', ${query})
       AND (${includeArchived} OR t."archivedAt" IS NULL)
     ORDER BY score DESC
@@ -536,7 +536,7 @@ export interface NeighbourInput {
  * document surfaces once rather than filling the whole result set.
  */
 export async function nearestNeighbourRows(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: NeighbourInput
 ): Promise<NeighbourRow[]> {
   if (input.targetTypes.length === 0) return [];
@@ -549,7 +549,7 @@ export async function nearestNeighbourRows(
     WITH src AS (
       SELECT s."embedding" AS embedding
       FROM "framework_resparkable_embedding" s
-      WHERE s."spaceId" = ${scope.userId}
+      WHERE s."spaceId" = ${scope.spaceId}
         AND s."entityType" = ${input.entityType}
         AND s."entityId" = ${input.entityId}
         AND s."embedding" IS NOT NULL
@@ -560,7 +560,7 @@ export async function nearestNeighbourRows(
            e."entityId",
            MIN(e."embedding" <=> (SELECT embedding FROM src)) AS distance
     FROM "framework_resparkable_embedding" e
-    WHERE e."spaceId" = ${scope.userId}
+    WHERE e."spaceId" = ${scope.spaceId}
       AND e."embedding" IS NOT NULL
       AND e."entityType" IN (${typeList(input.targetTypes)})
       AND NOT (e."entityType" = ${input.entityType} AND e."entityId" = ${input.entityId})
@@ -568,7 +568,7 @@ export async function nearestNeighbourRows(
       AND NOT EXISTS (
         SELECT 1
         FROM "framework_resparkable_link" l
-        WHERE l."spaceId" = ${scope.userId}
+        WHERE l."spaceId" = ${scope.spaceId}
           AND (
             (l."sourceType" = ${input.entityType} AND l."sourceId" = ${input.entityId}
               AND l."targetType" = e."entityType" AND l."targetId" = e."entityId")
@@ -603,14 +603,14 @@ export async function nearestNeighbourRows(
  * Nulls first: a never-swept row outranks anything already looked at.
  */
 export async function listEmbeddedEntityIds(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   limit: number,
   since?: Date
 ): Promise<string[]> {
   const rows = await prisma.resparkableEmbedding.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       entityType,
       chunkIndex: 0,
       ...(since ? { embeddedAt: { gte: since } } : {}),
@@ -631,7 +631,7 @@ export async function listEmbeddedEntityIds(
  * sweep into N extra writes.
  */
 export async function markSwept(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityIds: string[],
   now: Date
@@ -639,7 +639,7 @@ export async function markSwept(
   if (entityIds.length === 0) return 0;
 
   const { count } = await prisma.resparkableEmbedding.updateMany({
-    where: { ...ownerWhere(scope), entityType, entityId: { in: entityIds } },
+    where: { ...spaceWhere(scope), entityType, entityId: { in: entityIds } },
     data: { sweptAt: now },
   });
 
@@ -685,7 +685,7 @@ export async function markSwept(
  * *which* model produced the stale vectors without reading exception text. The
  * catch/rethrow is the price of keeping that while sharing the guard.
  */
-export async function assertResparkableModelMatchesStoredVectors(scope: OwnerScope): Promise<void> {
+export async function assertResparkableModelMatchesStoredVectors(scope: SpaceScope): Promise<void> {
   /** Filled by `groupByDimension` on the way past, so the log can name buckets. */
   const buckets: Array<{ dimension: number | null; count: number }> = [];
   /**
@@ -704,7 +704,7 @@ export async function assertResparkableModelMatchesStoredVectors(scope: OwnerSco
       groupByDimension: async () => {
         const groups = await prisma.resparkableEmbedding.groupBy({
           by: ['embeddingDimension'],
-          where: { ...ownerWhere(scope), embeddingDimension: { not: null } },
+          where: { ...spaceWhere(scope), embeddingDimension: { not: null } },
           _count: { _all: true },
         });
         buckets.push(
@@ -717,7 +717,7 @@ export async function assertResparkableModelMatchesStoredVectors(scope: OwnerSco
       },
       exemplarModel: async (dimension) => {
         const row = await prisma.resparkableEmbedding.findFirst({
-          where: { ...ownerWhere(scope), embeddingDimension: dimension },
+          where: { ...spaceWhere(scope), embeddingDimension: dimension },
           select: { embeddingModel: true },
         });
         const model = row?.embeddingModel ?? null;

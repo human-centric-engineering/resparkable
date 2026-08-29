@@ -21,7 +21,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   buildStaleDigest,
   type StaleDigest,
@@ -67,7 +67,7 @@ export class ResparkableGetStaleDigestCapability extends ResparkableCapability<
 
   protected async run(
     _args: StaleDigestArgs,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<StaleDigest>> {
     return this.success(await buildStaleDigest(scope));
   }

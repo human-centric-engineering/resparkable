@@ -25,7 +25,7 @@ import {
   type EmbeddedType,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import { createSuggestedLinks, type LinkCreateData } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
 import { logger } from '@/lib/logging';
 
@@ -121,7 +121,7 @@ export interface Connection {
 }
 
 export interface FindConnectionsInput {
-  scope: OwnerScope;
+  scope: SpaceScope;
   entityType: EmbeddedType;
   entityId: string;
   targetTypes?: readonly EmbeddedType[];
@@ -189,13 +189,13 @@ export interface SweepResult {
  * early: a user with 900 projects would have had 700 of them permanently
  * unreachable, with the log asserting the opposite.
  */
-export async function sweepConnections(scope: OwnerScope, now = new Date()): Promise<SweepResult> {
+export async function sweepConnections(scope: SpaceScope, now = new Date()): Promise<SweepResult> {
   const result: SweepResult = { examined: 0, candidates: 0, created: 0, cappedTypes: [] };
   const pairs: Connection[] = [];
 
   // Read once per sweep, not per pair. `null` means "use the measured default",
   // which keeps that number in one place rather than copied into every space row.
-  const floor = (await getResparkableSettings(scope.userId)).connectionStrengthFloor;
+  const floor = (await getResparkableSettings(scope.spaceId)).connectionStrengthFloor;
   const maxDistance = 1 - floor;
 
   // ── The well-formed types, swept against each other ────────────────────────

@@ -25,11 +25,11 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -71,37 +71,37 @@ function jsonFields(fields: BoardJsonFields): {
 }
 
 export async function listBoards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: ListOptions = {}
 ): Promise<ResparkableBoard[]> {
   return prisma.resparkableBoard.findMany({
-    where: liveOwnerWhere(scope, options.includeArchived),
+    where: liveSpaceWhere(scope, options.includeArchived),
     orderBy: { name: 'asc' },
     ...pageArgs(options),
   });
 }
 
 export async function countBoards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
-  return prisma.resparkableBoard.count({ where: liveOwnerWhere(scope, includeArchived) });
+  return prisma.resparkableBoard.count({ where: liveSpaceWhere(scope, includeArchived) });
 }
 
-export async function findBoard(scope: OwnerScope, id: string): Promise<ResparkableBoard | null> {
-  return prisma.resparkableBoard.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findBoard(scope: SpaceScope, id: string): Promise<ResparkableBoard | null> {
+  return prisma.resparkableBoard.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /** Boards are addressed by slug in the UI — a URL people keep should read. */
 export async function findBoardBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableBoard | null> {
-  return prisma.resparkableBoard.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableBoard.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
 export async function createBoard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: Omit<BoardCreateData, 'columns' | 'filter'> & BoardJsonFields
 ): Promise<ResparkableBoard> {
   const { columns, filter, ...rest } = data;
@@ -113,36 +113,36 @@ export async function createBoard(
       columns: columns ?? [],
       ...jsonFields({ filter }),
       // Scope spreads LAST so it beats anything the caller sent — see the rule
-      // in `repo/owner-scope.ts`. `WithoutOwner<…>` already keeps `userId` out
+      // in `repo/space-scope.ts`. `WithoutOwner<…>` already keeps `userId` out
       // of the create types, so this is the second line of defence, not the first.
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
     },
   });
 }
 
 export async function updateBoard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: Omit<BoardUpdateData, 'columns' | 'filter'> & BoardJsonFields
 ): Promise<ResparkableBoard | null> {
   const { columns, filter, ...rest } = data;
   return nullOnMiss(() =>
     prisma.resparkableBoard.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { ...rest, ...jsonFields({ columns, filter }) },
     })
   );
 }
 
 export async function archiveBoard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason: string,
   now = new Date()
 ): Promise<ResparkableBoard | null> {
   return nullOnMiss(() =>
     prisma.resparkableBoard.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // No embeddings to drop, unlike the other archivable types — a board is a
       // saved query, and nothing in it is part of the semantic layer.
       data: { archivedAt: now, archivedReason: reason },
@@ -151,32 +151,32 @@ export async function archiveBoard(
 }
 
 export async function restoreBoard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableBoard | null> {
   return nullOnMiss(() =>
     prisma.resparkableBoard.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null },
     })
   );
 }
 
-export async function deleteBoard(scope: OwnerScope, id: string): Promise<ResparkableBoard | null> {
+export async function deleteBoard(scope: SpaceScope, id: string): Promise<ResparkableBoard | null> {
   // `ResparkableBoardCard` cascades on the board FK, so the membership rows go with it
   // — and the tasks themselves, which the board only ever referenced, do not.
-  return nullOnMiss(() => prisma.resparkableBoard.delete({ where: { id, ...ownerWhere(scope) } }));
+  return nullOnMiss(() => prisma.resparkableBoard.delete({ where: { id, ...spaceWhere(scope) } }));
 }
 
 // ─── Explicit membership ─────────────────────────────────────────────────────
 
 /** Cards on an explicit board, in their hand-set order. */
 export async function listBoardCards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string
 ): Promise<ResparkableBoardCard[]> {
   return prisma.resparkableBoardCard.findMany({
-    where: { ...ownerWhere(scope), boardId },
+    where: { ...spaceWhere(scope), boardId },
     orderBy: { position: 'asc' },
   });
 }
@@ -201,11 +201,11 @@ export interface BoardCardWithStatus {
  * space the client dropped in.
  */
 export async function listBoardCardsWithStatus(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string
 ): Promise<BoardCardWithStatus[]> {
   const rows = await prisma.resparkableBoardCard.findMany({
-    where: { ...ownerWhere(scope), boardId },
+    where: { ...spaceWhere(scope), boardId },
     orderBy: { position: 'asc' },
     select: {
       id: true,
@@ -224,10 +224,10 @@ export async function listBoardCardsWithStatus(
 }
 
 export async function findBoardCard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   cardId: string
 ): Promise<ResparkableBoardCard | null> {
-  return prisma.resparkableBoardCard.findFirst({ where: { ...ownerWhere(scope), id: cardId } });
+  return prisma.resparkableBoardCard.findFirst({ where: { ...spaceWhere(scope), id: cardId } });
 }
 
 /**
@@ -243,7 +243,7 @@ export async function findBoardCard(
  * everywhere else.
  */
 export async function addBoardCard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string,
   taskId: string,
   position: number
@@ -251,11 +251,11 @@ export async function addBoardCard(
   return prisma.$transaction(async (tx) => {
     const [board, task] = await Promise.all([
       tx.resparkableBoard.findFirst({
-        where: { ...ownerWhere(scope), id: boardId },
+        where: { ...spaceWhere(scope), id: boardId },
         select: { id: true },
       }),
       tx.resparkableTask.findFirst({
-        where: { ...ownerWhere(scope), id: taskId },
+        where: { ...spaceWhere(scope), id: taskId },
         select: { id: true },
       }),
     ]);
@@ -263,7 +263,7 @@ export async function addBoardCard(
     if (!board || !task) return null;
 
     const existing = await tx.resparkableBoardCard.findFirst({
-      where: { ...ownerWhere(scope), boardId, taskId },
+      where: { ...spaceWhere(scope), boardId, taskId },
     });
     // Adding a card that is already there is a move, not a duplicate — two rows
     // for one task would render it twice on the same board.
@@ -272,30 +272,30 @@ export async function addBoardCard(
     }
 
     return tx.resparkableBoardCard.create({
-      data: { ...ownerWhere(scope), boardId, taskId, position },
+      data: { ...spaceWhere(scope), boardId, taskId, position },
     });
   });
 }
 
 export async function updateBoardCardPosition(
-  scope: OwnerScope,
+  scope: SpaceScope,
   cardId: string,
   position: number
 ): Promise<ResparkableBoardCard | null> {
   return nullOnMiss(() =>
     prisma.resparkableBoardCard.update({
-      where: { id: cardId, ...ownerWhere(scope) },
+      where: { id: cardId, ...spaceWhere(scope) },
       data: { position },
     })
   );
 }
 
 export async function removeBoardCard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   cardId: string
 ): Promise<ResparkableBoardCard | null> {
   return nullOnMiss(() =>
-    prisma.resparkableBoardCard.delete({ where: { id: cardId, ...ownerWhere(scope) } })
+    prisma.resparkableBoardCard.delete({ where: { id: cardId, ...spaceWhere(scope) } })
   );
 }
 
@@ -308,7 +308,7 @@ export async function removeBoardCard(
  * like the drag had gone wrong rather than like a maintenance pass had.
  */
 export async function renumberBoardCards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   positions: Array<{ id: string; position: number }>
 ): Promise<void> {
   if (positions.length === 0) return;
@@ -316,7 +316,7 @@ export async function renumberBoardCards(
   await prisma.$transaction(
     positions.map((entry) =>
       prisma.resparkableBoardCard.updateMany({
-        where: { id: entry.id, ...ownerWhere(scope) },
+        where: { id: entry.id, ...spaceWhere(scope) },
         data: { position: entry.position },
       })
     )
@@ -348,13 +348,13 @@ export async function renumberBoardCards(
  * has since curated by hand, throwing their arrangement away.
  */
 export async function snapshotBoardMembership(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string,
   cards: readonly { taskId: string; position: number }[]
 ): Promise<ResparkableBoard | null> {
   return prisma.$transaction(async (tx) => {
     const board = await tx.resparkableBoard.findFirst({
-      where: { ...ownerWhere(scope), id: boardId, membership: 'filter' },
+      where: { ...spaceWhere(scope), id: boardId, membership: 'filter' },
     });
     if (!board) return null;
 
@@ -362,12 +362,12 @@ export async function snapshotBoardMembership(
     // to filter after having been explicit keeps its old rows (`board-view.ts`
     // simply stops reading them), and inheriting those would pin tasks that are
     // not on the board anybody is looking at.
-    await tx.resparkableBoardCard.deleteMany({ where: { ...ownerWhere(scope), boardId } });
+    await tx.resparkableBoardCard.deleteMany({ where: { ...spaceWhere(scope), boardId } });
 
     if (cards.length > 0) {
       await tx.resparkableBoardCard.createMany({
         data: cards.map((card) => ({
-          ...ownerWhere(scope),
+          ...spaceWhere(scope),
           boardId,
           taskId: card.taskId,
           position: card.position,

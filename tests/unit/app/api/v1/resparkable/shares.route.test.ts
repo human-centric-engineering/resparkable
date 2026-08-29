@@ -90,7 +90,7 @@ describe('GET /api/v1/resparkable/shares', () => {
     await invoke(request(), { ...SESSION, user: { id: 'user_a', email: 'a@example.com' } });
 
     expect(mocked).toHaveBeenCalledTimes(1);
-    expect(mocked.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(mocked.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
 
     // A different session, a different scope, and nothing in between reads the
     // request. This route lists grants, so a scope taken from input would list
@@ -98,7 +98,7 @@ describe('GET /api/v1/resparkable/shares', () => {
     mocked.mockClear();
     await invoke(request(), { ...SESSION, user: { id: 'user_b', email: 'b@example.com' } });
 
-    expect(mocked.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_b' });
+    expect(mocked.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_b' });
   });
 
   it('rejects a query parameter that looks like a scope', async () => {

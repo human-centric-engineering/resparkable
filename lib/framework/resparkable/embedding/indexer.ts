@@ -52,7 +52,7 @@ import {
   stampIndexedHash,
   type IndexCandidate,
 } from '@/lib/framework/resparkable/repo/indexing';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { splitForEmbedding } from '@/lib/framework/resparkable/documents/chunking';
 import { logger } from '@/lib/logging';
 import { embedBatch } from '@/lib/orchestration/knowledge/embedder';
@@ -100,7 +100,7 @@ const EMPTY_RESULT: ReindexResult = {
  * rather than an in-memory list.
  */
 export async function enqueueReindex(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   entityId: string
 ): Promise<boolean> {
@@ -113,7 +113,7 @@ export async function enqueueReindex(
 }
 
 /** Queue every live row of every embedded type for re-examination. */
-export async function enqueueFullReindex(scope: OwnerScope): Promise<number> {
+export async function enqueueFullReindex(scope: SpaceScope): Promise<number> {
   const queued = await enqueueAllForReindex(scope);
   logger.info('Resparkable full reindex queued', { queued });
   return queued;
@@ -133,7 +133,7 @@ export async function enqueueFullReindex(scope: OwnerScope): Promise<number> {
  * change mid-pass.
  */
 export async function reindexType(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   limit = DEFAULT_LIMIT_PER_TYPE,
   skipDimensionCheck = false
@@ -225,7 +225,7 @@ export async function reindexType(
  * fix when a counter is added.
  */
 export async function reindexPending(
-  scope: OwnerScope,
+  scope: SpaceScope,
   limitPerType = DEFAULT_LIMIT_PER_TYPE,
   types: readonly EmbeddedType[] = EMBEDDED_TYPES
 ): Promise<ReindexResult> {
@@ -263,7 +263,7 @@ interface HashedCandidate {
  * also what makes the spend legible afterwards.
  */
 async function embedAndWrite(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   changed: HashedCandidate[]
 ): Promise<{ entities: number; chunks: number }> {

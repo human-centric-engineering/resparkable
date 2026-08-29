@@ -22,7 +22,7 @@
  */
 
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 /** What an upsert reports back. Deliberately small — the model does not need the row. */
 export interface UpsertData {
@@ -50,7 +50,7 @@ function readString(row: unknown, key: string): string | null {
 
 export async function runUpsert<TCreate, TUpdate, TQuery>(
   resource: ResparkableResource<TCreate, TUpdate, TQuery>,
-  scope: OwnerScope,
+  scope: SpaceScope,
   args: { id?: string | undefined },
   /** `title` for tasks, goals and reviews; `name` for projects, areas and entities. */
   labelField: 'title' | 'name'

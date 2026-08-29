@@ -34,7 +34,7 @@
  * The block is an orientation, not a corpus.
  */
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { buildSnapshot, type SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 import { logger } from '@/lib/logging';
 
@@ -216,7 +216,7 @@ export async function loadResparkableContext(
   if (!userId) return '';
 
   try {
-    return renderResparkableContext(await buildSnapshot(ownerScope(userId)));
+    return renderResparkableContext(await buildSnapshot(spaceScope(userId)));
   } catch (error) {
     // `buildContext` already degrades a throwing contributor to a placeholder,
     // but it logs it as an unexplained failure. Logging here first names the

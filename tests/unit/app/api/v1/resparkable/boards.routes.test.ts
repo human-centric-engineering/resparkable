@@ -133,7 +133,7 @@ describe('POST /resparkable/boards/[id]/cards', () => {
 
     expect(response.status).toBe(201);
     expect(mockedAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'board_1',
       TASK_ID,
       expect.any(Number)
@@ -196,7 +196,7 @@ describe('POST /resparkable/boards/[id]/cards', () => {
 
     await invoke(CARDS_POST, { id: 'board_1' }, { taskId: TASK_ID, targetIndex: 1 });
 
-    expect(mockedRenumber).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user_a' }), [
+    expect(mockedRenumber).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user_a' }), [
       { id: 'c1', position: 1000 },
       { id: 'c2', position: 2000 },
     ]);

@@ -87,9 +87,9 @@ import {
   updateBoardCardPosition,
   type BoardCreateData,
 } from '@/lib/framework/resparkable/repo/boards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** Prisma's "record required but not found" error shape. */
 const p2025 = Object.assign(new Error('not found'), { code: 'P2025' });

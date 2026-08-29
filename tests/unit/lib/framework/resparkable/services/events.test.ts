@@ -31,9 +31,9 @@ import {
   eventKindForUpdate,
   recordResparkableEvent,
 } from '@/lib/framework/resparkable/services/events';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();

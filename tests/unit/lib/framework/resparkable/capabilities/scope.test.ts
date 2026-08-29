@@ -77,7 +77,7 @@ import {
   MissingResparkableUserError,
   requireResparkableUser,
 } from '@/lib/framework/resparkable/capabilities/base';
-import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
+import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/space-scope';
 import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { buildContextDigest } from '@/lib/framework/resparkable/services/context-digest';
@@ -167,7 +167,7 @@ const ALL_SERVICES = [
 describe('requireResparkableUser', () => {
   it('mints a scope carrying the context user id', () => {
     expect(requireResparkableUser({ userId: 'user-a', agentId: 'agent-1' })).toMatchObject({
-      userId: 'user-a',
+      spaceId: 'user-a',
     });
   });
 
@@ -191,7 +191,7 @@ describe('requireResparkableUser', () => {
         agentId: 'workflow:wf_1',
         scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user-b' },
       })
-    ).toMatchObject({ userId: 'user-b' });
+    ).toMatchObject({ spaceId: 'user-b' });
   });
 
   it('prefers the session user over the scope when both are present', () => {
@@ -204,7 +204,7 @@ describe('requireResparkableUser', () => {
         agentId: 'agent-1',
         scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user-b' },
       })
-    ).toMatchObject({ userId: 'user-a' });
+    ).toMatchObject({ spaceId: 'user-a' });
   });
 
   it('ignores a scope that names no owner key', () => {

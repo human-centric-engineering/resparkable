@@ -18,7 +18,7 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { runUpsert, type UpsertData } from '@/lib/framework/resparkable/capabilities/upsert';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { taskResource } from '@/lib/framework/resparkable/services/resources';
 import {
   agentListTasksSchema,
@@ -120,7 +120,7 @@ export class ResparkableListTasksCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentListTasksInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<ListTasksData>> {
     const { items, total } = await taskResource.list(scope, {
       limit: args.limit,
@@ -169,7 +169,7 @@ export class ResparkableUpsertTaskCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentUpsertTaskInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<UpsertData>> {
     const outcome = await runUpsert(taskResource, scope, args, 'title');
     if (!outcome) return this.error('No task with that id.', 'not_found');

@@ -44,9 +44,9 @@ import {
   listUnreviewedLinks,
   reviewLink,
 } from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 const NOW = new Date('2026-07-29T12:00:00.000Z');
 
 const findMany = vi.mocked(prisma.resparkableLink.findMany);
@@ -316,7 +316,7 @@ describe('listLinksForEntity', () => {
   });
 
   it('resolves a different owner to their own scope, not a hard-coded one', async () => {
-    await listLinksForEntity(ownerScope('user_y'), 'project', 'proj_1');
+    await listLinksForEntity(spaceScope('user_y'), 'project', 'proj_1');
 
     expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({ userId: 'user_y' });
   });

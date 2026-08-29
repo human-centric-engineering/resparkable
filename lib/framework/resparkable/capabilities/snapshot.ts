@@ -21,7 +21,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { buildSnapshot, type SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 import type { ProvenanceRedaction } from '@/lib/orchestration/capabilities/base-capability';
 import type {
@@ -69,7 +69,7 @@ export class ResparkableGetSnapshotCapability extends ResparkableCapability<
 
   protected async run(
     _args: SnapshotArgs,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<SnapshotPayload>> {
     return this.success(await buildSnapshot(scope));
   }

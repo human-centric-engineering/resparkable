@@ -11,7 +11,7 @@
  * project → **404 not 403**".
  */
 
-import type { ArchiveVisibility, OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { ArchiveVisibility, SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 /** Sort direction accepted by the list endpoints. */
 export type SortDirection = 'asc' | 'desc';
@@ -76,4 +76,4 @@ export function pageArgs(options: PageOptions = {}): { take: number; skip: numbe
 export type WithoutOwner<T> = Omit<T, 'userId' | 'id' | 'createdAt' | 'updatedAt'>;
 
 /** Re-exported for repo modules so they import one path, not two. */
-export type { ArchiveVisibility, OwnerScope };
+export type { ArchiveVisibility, SpaceScope };

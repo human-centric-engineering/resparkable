@@ -18,7 +18,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -42,14 +42,14 @@ export interface ProjectGoalEdge {
  * keeps `manualBoost` out of every capability (§10).
  */
 export async function findAcceptedGoalLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   projectIds: string[]
 ): Promise<ProjectGoalEdge[]> {
   if (projectIds.length === 0) return [];
 
   const links = await prisma.resparkableLink.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       status: 'accepted',
       OR: [
         { sourceType: 'project', sourceId: { in: projectIds }, targetType: 'goal' },
@@ -70,9 +70,9 @@ export async function findAcceptedGoalLinks(
  * user already accepted; the snooze check is what makes "not this pair, not now"
  * stick, and without it the connections view re-nags every time it loads.
  */
-function unreviewedWhere(scope: OwnerScope, now: Date): Prisma.ResparkableLinkWhereInput {
+function unreviewedWhere(scope: SpaceScope, now: Date): Prisma.ResparkableLinkWhereInput {
   return {
-    ...ownerWhere(scope),
+    ...spaceWhere(scope),
     status: 'suggested',
     reviewedAt: null,
     OR: [{ snoozedUntil: null }, { snoozedUntil: { lte: now } }],
@@ -81,7 +81,7 @@ function unreviewedWhere(scope: OwnerScope, now: Date): Prisma.ResparkableLinkWh
 
 /** Strongest-first, because a weak suggestion is not worth the first look. */
 export async function listUnreviewedLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   limit: number,
   now = new Date()
 ): Promise<ResparkableLink[]> {
@@ -92,7 +92,7 @@ export async function listUnreviewedLinks(
   });
 }
 
-export async function countUnreviewedLinks(scope: OwnerScope, now = new Date()): Promise<number> {
+export async function countUnreviewedLinks(scope: SpaceScope, now = new Date()): Promise<number> {
   return prisma.resparkableLink.count({ where: unreviewedWhere(scope, now) });
 }
 
@@ -104,7 +104,7 @@ export async function countUnreviewedLinks(scope: OwnerScope, now = new Date()):
  * what makes `GET /resparkable/inbox` a single call (CLAUDE.md: no N+1).
  */
 export async function listSuggestedLinksForSources(
-  scope: OwnerScope,
+  scope: SpaceScope,
   sourceType: string,
   sourceIds: string[],
   now = new Date()
@@ -134,7 +134,7 @@ export async function listSuggestedLinksForSources(
  * rows.
  */
 export async function listLinksForEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: string,
   entityId: string,
   options: { statuses?: string[]; take?: number } = {}
@@ -143,7 +143,7 @@ export async function listLinksForEntity(
 
   return prisma.resparkableLink.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       ...(statuses && statuses.length > 0 ? { status: { in: statuses } } : {}),
       OR: [
         { sourceType: entityType, sourceId: entityId },
@@ -174,7 +174,7 @@ export interface EntityRef {
  * the query sane and it belongs where the traversal decides to stop.
  */
 export async function listLinksForEntities(
-  scope: OwnerScope,
+  scope: SpaceScope,
   refs: EntityRef[],
   options: { statuses?: string[]; take?: number } = {}
 ): Promise<ResparkableLink[]> {
@@ -184,7 +184,7 @@ export async function listLinksForEntities(
 
   return prisma.resparkableLink.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       ...(statuses && statuses.length > 0 ? { status: { in: statuses } } : {}),
       OR: refs.flatMap((ref) => [
         { sourceType: ref.type, sourceId: ref.id },
@@ -217,9 +217,9 @@ export interface LinkFilters {
 
 export type LinkCreateData = WithoutOwner<Prisma.ResparkableLinkUncheckedCreateInput>;
 
-function linkWhere(scope: OwnerScope, filters: LinkFilters = {}): Prisma.ResparkableLinkWhereInput {
+function linkWhere(scope: SpaceScope, filters: LinkFilters = {}): Prisma.ResparkableLinkWhereInput {
   return {
-    ...ownerWhere(scope),
+    ...spaceWhere(scope),
     ...(filters.status
       ? { status: filters.status }
       : filters.statuses && filters.statuses.length > 0
@@ -232,7 +232,7 @@ function linkWhere(scope: OwnerScope, filters: LinkFilters = {}): Prisma.Respark
 }
 
 export async function listLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: LinkFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableLink[]> {
@@ -243,12 +243,12 @@ export async function listLinks(
   });
 }
 
-export async function countLinks(scope: OwnerScope, filters: LinkFilters = {}): Promise<number> {
+export async function countLinks(scope: SpaceScope, filters: LinkFilters = {}): Promise<number> {
   return prisma.resparkableLink.count({ where: linkWhere(scope, filters) });
 }
 
-export async function findLink(scope: OwnerScope, id: string): Promise<ResparkableLink | null> {
-  return prisma.resparkableLink.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findLink(scope: SpaceScope, id: string): Promise<ResparkableLink | null> {
+  return prisma.resparkableLink.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -257,10 +257,10 @@ export async function findLink(scope: OwnerScope, id: string): Promise<Resparkab
  * against swept suggestions as though it were one.
  */
 export async function createLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: LinkCreateData
 ): Promise<ResparkableLink> {
-  return prisma.resparkableLink.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableLink.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 /**
@@ -277,13 +277,13 @@ export async function createLink(
  * both exist.
  */
 export async function createSuggestedLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   rows: LinkCreateData[]
 ): Promise<number> {
   if (rows.length === 0) return 0;
 
   const { count } = await prisma.resparkableLink.createMany({
-    data: rows.map((row) => ({ ...row, ...ownerWhere(scope) })),
+    data: rows.map((row) => ({ ...row, ...spaceWhere(scope) })),
     skipDuplicates: true,
   });
 
@@ -303,12 +303,12 @@ export async function createSuggestedLinks(
  * number mean two different things.
  */
 export async function reviewLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: { status?: string; kind?: string; snoozedUntil?: Date | null; reviewedAt?: Date | null }
 ): Promise<ResparkableLink | null> {
   return nullOnMiss(() =>
-    prisma.resparkableLink.update({ where: { id, ...ownerWhere(scope) }, data })
+    prisma.resparkableLink.update({ where: { id, ...spaceWhere(scope) }, data })
   );
 }
 

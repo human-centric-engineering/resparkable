@@ -24,7 +24,7 @@
  *      `VaultZipError` and `VaultExportError` both become 400s carrying the
  *      specific reason, so the UI can say what to fix.
  *
- * Both routes are owner-scoped by construction — `ownerScope(session.user.id)`
+ * Both routes are owner-scoped by construction — `spaceScope(session.user.id)`
  * is the only scope they can reach — and the tests assert the scope reaches the
  * service, because that is the seam a future refactor could quietly widen.
  *
@@ -51,8 +51,8 @@ vi.mock('@/lib/logging', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('@/lib/framework/resparkable/repo/owner-scope', () => ({
-  ownerScope: vi.fn((userId: string) => ({ userId, scoped: true })),
+vi.mock('@/lib/framework/resparkable/repo/space-scope', () => ({
+  spaceScope: vi.fn((userId: string) => ({ userId, scoped: true })),
 }));
 
 vi.mock('@/lib/framework/resparkable/vault/export', async (importOriginal) => {
@@ -65,7 +65,7 @@ vi.mock('@/lib/framework/resparkable/vault/import', () => ({ importVaultArchive:
 import { GET as EXPORT_GET } from '@/app/api/v1/resparkable/vault/export/route';
 import { POST as IMPORT_POST } from '@/app/api/v1/resparkable/vault/import/route';
 import { getRouteLogger } from '@/lib/api/context';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { buildVaultArchive, VaultExportError } from '@/lib/framework/resparkable/vault/export';
 import { importVaultArchive } from '@/lib/framework/resparkable/vault/import';
 import { VaultZipError } from '@/lib/framework/resparkable/vault/zip';
@@ -137,7 +137,7 @@ function importResult(over: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getRouteLogger).mockResolvedValue(makeLog() as never);
-  vi.mocked(ownerScope).mockImplementation((userId: string) => ({ userId, scoped: true }) as never);
+  vi.mocked(spaceScope).mockImplementation((userId: string) => ({ userId, scoped: true }) as never);
 });
 
 describe('GET /api/v1/resparkable/vault/export', () => {
@@ -178,7 +178,7 @@ describe('GET /api/v1/resparkable/vault/export', () => {
   it('builds the archive against the session owner’s scope only', async () => {
     await invoke(EXPORT_GET, getRequest('http://localhost/x/export'));
 
-    expect(ownerScope).toHaveBeenCalledWith('user_a');
+    expect(spaceScope).toHaveBeenCalledWith('user_a');
     expect(buildVaultArchive).toHaveBeenCalledWith(SCOPE, { includeArchived: false });
   });
 
@@ -446,7 +446,7 @@ describe('POST /api/v1/resparkable/vault/import', () => {
 
     await invoke(IMPORT_POST, request);
 
-    expect(ownerScope).toHaveBeenCalledWith('user_a');
+    expect(spaceScope).toHaveBeenCalledWith('user_a');
     expect(vi.mocked(importVaultArchive).mock.calls[0]?.[0]).toEqual(SCOPE);
   });
 });

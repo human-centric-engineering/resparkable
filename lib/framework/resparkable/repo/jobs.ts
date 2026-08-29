@@ -23,7 +23,7 @@
  *
  * ## Why the claim is unscoped
  *
- * `claimResparkableJobs` takes no `OwnerScope`, because its whole job is to
+ * `claimResparkableJobs` takes no `SpaceScope`, because its whole job is to
  * *choose* one. It is the same deliberate exception `listSpacesDueSweep` used
  * to be, and it is safe for the same reason: it returns an owner id, a kind and
  * a timezone, and no brain content whatsoever. Each id is minted into its own

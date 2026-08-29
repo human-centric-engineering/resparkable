@@ -49,9 +49,9 @@ import {
   renumberChecklistItems,
   updateChecklistItem,
 } from '@/lib/framework/resparkable/repo/checklist';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const mockedFindMany = vi.mocked(prisma.resparkableChecklistItem.findMany);
 const mockedFindFirst = vi.mocked(prisma.resparkableChecklistItem.findFirst);

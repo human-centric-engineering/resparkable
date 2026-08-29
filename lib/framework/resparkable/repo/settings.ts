@@ -1,6 +1,6 @@
 /**
  * Instance-settings repo — **the one repo function in the tier that takes no
- * `OwnerScope`**, and the only place that is true.
+ * `SpaceScope`**, and the only place that is true.
  *
  * Everything else in `repo/**` is owner-scoped by construction (D5). This table
  * is not, because what it holds is not user data: "does this deployment's

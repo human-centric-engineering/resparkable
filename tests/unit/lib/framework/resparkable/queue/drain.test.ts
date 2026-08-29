@@ -40,6 +40,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 vi.mock('@/lib/framework/resparkable/repo/jobs', () => ({
   claimResparkableJobs: vi.fn(),
@@ -230,7 +231,7 @@ describe('the demand gate — the billing rule, not a budget lever', () => {
     await drainResparkableJobs({ now: NOW, maxJobs: 5 });
 
     expect(hasResparkableActivitySince).not.toHaveBeenCalled();
-    expect(runResparkableJob).toHaveBeenCalledWith('retention', { userId: 'user_a' }, NOW);
+    expect(runResparkableJob).toHaveBeenCalledWith('retention', spaceScope('user_a'), NOW);
   });
 
   it('never gates a first-ever run', async () => {

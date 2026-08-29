@@ -47,9 +47,9 @@ vi.mock('@/lib/framework/resparkable/repo/shared-view', () => ({
 }));
 
 import { listMyShares, summariseShares } from '@/lib/framework/resparkable/services/my-shares';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const scope = ownerScope('user_1');
+const scope = spaceScope('user_1');
 
 function grant(overrides: Record<string, unknown> = {}) {
   return {

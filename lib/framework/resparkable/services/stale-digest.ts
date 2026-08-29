@@ -24,7 +24,7 @@
  * workflow prompt does the wording.
  */
 
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findDormantEntities,
   findDormantProjects,
@@ -83,7 +83,7 @@ export interface StaleDigest {
  * here would be invisible until someone had two hundred entities.
  */
 export async function buildStaleDigest(
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date = new Date()
 ): Promise<StaleDigest> {
   const [projects, goals, entities] = await Promise.all([
@@ -143,7 +143,7 @@ function daysBetween(from: Date, to: Date): number {
  * 404 — not-found and not-yours are the same answer everywhere in this tier.
  */
 export async function confirmStillLive(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: StillLiveType,
   id: string,
   now: Date = new Date()

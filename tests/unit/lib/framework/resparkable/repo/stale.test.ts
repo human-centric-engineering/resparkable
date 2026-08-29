@@ -37,7 +37,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findDormantEntities,
   findDormantProjects,
@@ -45,7 +45,7 @@ import {
   markStillLive,
 } from '@/lib/framework/resparkable/repo/stale';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-05T09:00:00.000Z');
 const CUTOFF = new Date('2026-05-07T09:00:00.000Z');
 

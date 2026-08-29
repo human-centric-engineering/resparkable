@@ -95,8 +95,21 @@ describe('ensureResparkableSpace', () => {
 
     expect(result).toMatchObject({ userId: 'user_a' });
     expect(create).toHaveBeenCalledTimes(1);
+    // The full personal-space shape, not just the key. `ownerUserId` is what
+    // carries the GDPR cascade (§23.2), and it cannot be defaulted in the schema
+    // because it has to equal the key and a group space's is deliberately NULL.
+    // A space created without it is a brain no erasure can ever reach, and
+    // nothing errors: that shipped for an hour during phase 45 and was caught by
+    // a real-database smoke rather than by anything here.
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ userId: 'user_a' }) })
+      expect.objectContaining({
+        data: expect.objectContaining({
+          userId: 'user_a',
+          ownerUserId: 'user_a',
+          kind: 'personal',
+          isDefault: true,
+        }),
+      })
     );
   });
 
@@ -108,7 +121,7 @@ describe('ensureResparkableSpace', () => {
     await ensureResparkableSpace('user_a');
 
     expect(mockedEnsureCreditAccount).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       0
     );
     // No ledger entry for a zero grant: an unexplained starting balance would
@@ -133,7 +146,7 @@ describe('ensureResparkableSpace', () => {
     await ensureResparkableSpace('user_a');
 
     expect(mockedApplyLedgerEntry).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       expect.objectContaining({ kind: 'admin_grant', creditsDelta: 50 })
     );
   });

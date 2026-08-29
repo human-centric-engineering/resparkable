@@ -37,11 +37,11 @@
  * ## 3. Reading a granted item is NOT here
  *
  * That is a shared query — the caller is not the owner — and it lives in
- * `services/shared-with-me.ts`. Everything in this file takes an `OwnerScope`
+ * `services/shared-with-me.ts`. Everything in this file takes an `SpaceScope`
  * and answers a question about the owner's own brain.
  */
 
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findAccountIdForEmail,
   findOwnGrant,
@@ -138,7 +138,7 @@ export function toGrantSummary(grant: ResparkableGrant, now: Date = new Date()):
  * had access and does not.
  */
 export async function issueGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: CreateGrantInput,
   now: Date = new Date()
 ): Promise<GrantSummary | null> {
@@ -171,7 +171,7 @@ export async function issueGrant(
 
 /** Every grant this owner has issued, newest first. */
 export async function listOwnGrants(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: GrantFilters = {},
   now: Date = new Date()
 ): Promise<GrantSummary[]> {
@@ -188,7 +188,7 @@ export async function listOwnGrants(
  * guessing at whatever the database actually stored.
  */
 export async function updateGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   input: UpdateGrantInput,
   now: Date = new Date()
@@ -222,7 +222,7 @@ export async function updateGrant(
  * "when did access stop?" should not move because somebody clicked twice.
  */
 export async function revokeGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   now: Date = new Date()
 ): Promise<GrantSummary | null> {

@@ -38,9 +38,9 @@ import {
   insertEvent,
   listEvents,
 } from '@/lib/framework/resparkable/repo/events';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -140,14 +140,14 @@ describe('findLatestStatusChanges', () => {
     // Arrange / Act
     await findLatestStatusChanges(SCOPE, ['task_1']);
 
-    // Assert — the first interpolated value in the template is `${scope.userId}`.
+    // Assert — the first interpolated value in the template is `${scope.spaceId}`.
     const call = vi.mocked(prisma.$queryRaw).mock.calls[0];
     expect(call?.[1]).toBe('user_x');
   });
 
   it('scopes a different owner to their own id, not a hard-coded one', async () => {
     // Arrange
-    const otherScope = ownerScope('user_y');
+    const otherScope = spaceScope('user_y');
 
     // Act
     await findLatestStatusChanges(otherScope, ['task_1']);

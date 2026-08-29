@@ -53,7 +53,7 @@ import {
   upsertEmbeddings,
   type EmbeddedType,
 } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerScope, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import { keywordSummaries } from '@/lib/framework/resparkable/repo/summaries';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
@@ -135,7 +135,7 @@ function syntheticVector(topic: number, wobble: number): number[] {
 }
 
 async function seedBrain(
-  scope: OwnerScope
+  scope: SpaceScope
 ): Promise<{ projectId: string; taskId: string; thoughtTopics: Map<string, number> }> {
   const thoughtTopics = new Map<string, number>();
 
@@ -167,7 +167,7 @@ async function seedBrain(
  * all the production ones — only the numbers are fake.
  */
 async function seedSyntheticVectors(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   rows: Array<{ id: string; text: string; topic: number }>
 ): Promise<number> {
@@ -204,8 +204,8 @@ async function main(): Promise<void> {
     userA = await createUser('a');
     userB = await createUser('b');
 
-    const scopeA = ownerScope(userA);
-    const scopeB = ownerScope(userB);
+    const scopeA = spaceScope(userA);
+    const scopeB = spaceScope(userB);
 
     await ensureResparkableSpace(userA);
     await ensureResparkableSpace(userB);

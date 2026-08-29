@@ -22,7 +22,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss, type WithoutOwner } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableChecklistItem, Prisma } from '@prisma/client';
 
@@ -30,11 +30,11 @@ export type ChecklistCreateData = WithoutOwner<Prisma.ResparkableChecklistItemUn
 
 /** Every item on one task, in order. */
 export async function listChecklist(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskId: string
 ): Promise<ResparkableChecklistItem[]> {
   return prisma.resparkableChecklistItem.findMany({
-    where: { ...ownerWhere(scope), taskId },
+    where: { ...spaceWhere(scope), taskId },
     orderBy: { position: 'asc' },
   });
 }
@@ -46,22 +46,22 @@ export async function listChecklist(
  * query per card, which is the N+1 a board makes most visible.
  */
 export async function listChecklistForTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskIds: string[]
 ): Promise<ResparkableChecklistItem[]> {
   if (taskIds.length === 0) return [];
 
   return prisma.resparkableChecklistItem.findMany({
-    where: { ...ownerWhere(scope), taskId: { in: taskIds } },
+    where: { ...spaceWhere(scope), taskId: { in: taskIds } },
     orderBy: { position: 'asc' },
   });
 }
 
 export async function findChecklistItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableChecklistItem | null> {
-  return prisma.resparkableChecklistItem.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableChecklistItem.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -73,12 +73,12 @@ export async function findChecklistItem(
  * perfectly legitimate.
  */
 export async function createChecklistItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskId: string,
   data: Omit<ChecklistCreateData, 'taskId'>
 ): Promise<ResparkableChecklistItem | null> {
   const task = await prisma.resparkableTask.findFirst({
-    where: { ...ownerWhere(scope), id: taskId },
+    where: { ...spaceWhere(scope), id: taskId },
     select: { id: true },
   });
   if (!task) return null;
@@ -86,10 +86,10 @@ export async function createChecklistItem(
   return prisma.resparkableChecklistItem.create({
     // The caller's fields go first; the verified `taskId` and the scope both
     // spread after them, so neither can be overridden by the payload. That is
-    // the ordering rule in `repo/owner-scope.ts`, and here it is what keeps the
+    // the ordering rule in `repo/space-scope.ts`, and here it is what keeps the
     // ownership check above meaningful — a `taskId` arriving in `data` would
     // otherwise replace the one just verified.
-    data: { ...data, taskId, ...ownerWhere(scope) },
+    data: { ...data, taskId, ...spaceWhere(scope) },
   });
 }
 
@@ -101,14 +101,14 @@ export interface ChecklistUpdate {
 
 /** Update one item. `completedAt` follows `isDone` rather than being sent. */
 export async function updateChecklistItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: ChecklistUpdate,
   now = new Date()
 ): Promise<ResparkableChecklistItem | null> {
   return nullOnMiss(() =>
     prisma.resparkableChecklistItem.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: {
         ...(data.text !== undefined ? { text: data.text } : {}),
         ...(data.position !== undefined ? { position: data.position } : {}),
@@ -121,11 +121,11 @@ export async function updateChecklistItem(
 }
 
 export async function deleteChecklistItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableChecklistItem | null> {
   return nullOnMiss(() =>
-    prisma.resparkableChecklistItem.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableChecklistItem.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }
 
@@ -142,7 +142,7 @@ export async function deleteChecklistItem(
  * Atomic, so a checklist is never observed half-renumbered.
  */
 export async function renumberChecklistItems(
-  scope: OwnerScope,
+  scope: SpaceScope,
   positions: Array<{ id: string; position: number }>
 ): Promise<void> {
   if (positions.length === 0) return;
@@ -150,7 +150,7 @@ export async function renumberChecklistItems(
   await prisma.$transaction(
     positions.map((entry) =>
       prisma.resparkableChecklistItem.updateMany({
-        where: { id: entry.id, ...ownerWhere(scope) },
+        where: { id: entry.id, ...spaceWhere(scope) },
         data: { position: entry.position },
       })
     )
@@ -159,11 +159,11 @@ export async function renumberChecklistItems(
 
 /** The last position on a task, so an append lands after everything. */
 export async function findLastChecklistPosition(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskId: string
 ): Promise<number | null> {
   const last = await prisma.resparkableChecklistItem.findFirst({
-    where: { ...ownerWhere(scope), taskId },
+    where: { ...spaceWhere(scope), taskId },
     orderBy: { position: 'desc' },
     select: { position: true },
   });

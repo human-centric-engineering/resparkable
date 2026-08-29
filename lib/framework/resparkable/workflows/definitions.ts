@@ -34,7 +34,7 @@
  *
  * No step here names a user. `processDueSchedules` stamps
  * `execution.userId = schedule.createdBy`, the engine threads it into
- * `CapabilityContext.userId`, and `ResparkableCapability` mints the `OwnerScope`
+ * `CapabilityContext.userId`, and `ResparkableCapability` mints the `SpaceScope`
  * from that. A `userId` in a step config would be a second, weaker path to the
  * same thing — and the one an LLM could influence.
  *

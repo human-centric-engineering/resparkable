@@ -21,7 +21,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { searchResparkable } from '@/lib/framework/resparkable/search/hybrid-search';
 import { agentSearchSchema, type AgentSearchInput } from '@/lib/framework/resparkable/validations';
 import type { ProvenanceRedaction } from '@/lib/orchestration/capabilities/base-capability';
@@ -94,7 +94,7 @@ export class ResparkableSearchCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentSearchInput,
-    scope: OwnerScope,
+    scope: SpaceScope,
     context: CapabilityContext
   ): Promise<CapabilityResult<SearchData>> {
     const { hits } = await searchResparkable({

@@ -30,7 +30,7 @@
 
 import { reindexPending } from '@/lib/framework/resparkable/embedding/indexer';
 import type { ResparkableJobKind } from '@/lib/framework/resparkable/queue/kinds';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
@@ -96,7 +96,7 @@ const WORKFLOW_SLUG_BY_KIND: Record<WorkflowJobKind, string> = {
  */
 export async function runResparkableJob(
   kind: ResparkableJobKind,
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date
 ): Promise<JobRunOutcome> {
   switch (kind) {
@@ -156,16 +156,16 @@ export async function runResparkableJob(
  */
 async function queueWorkflow(
   slug: string,
-  scope: OwnerScope,
+  scope: SpaceScope,
   kind: WorkflowJobKind
 ): Promise<JobRunOutcome> {
-  const executionId = await queueResparkableWorkflowRun(slug, scope.userId, {});
+  const executionId = await queueResparkableWorkflowRun(slug, scope.spaceId, {});
 
   if (!executionId) {
     logger.warn('Resparkable job found no published workflow to queue', {
       kind,
       slug,
-      userId: scope.userId,
+      userId: scope.spaceId,
     });
     return { ...NOTHING, incomplete: true };
   }

@@ -68,10 +68,10 @@ import {
   embeddingSensitivityUpdateArgs,
   hybridSearchRows,
 } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { updateThought } from '@/lib/framework/resparkable/repo/thoughts';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** Flatten a tagged-template call into the SQL a reviewer would read. */
 function sqlOf(call: unknown[]): string {

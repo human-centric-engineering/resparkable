@@ -26,7 +26,7 @@
 import { NotFoundError } from '@/lib/api/errors';
 import { logger } from '@/lib/logging';
 import { findAgentBinding } from '@/lib/framework/resparkable/repo/agents';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   entityExists,
   findSummaries,
@@ -173,7 +173,7 @@ function describe(summary: EntitySummary, strength?: number): string {
   return `[${summary.id}] ${summary.entityType}: ${summary.title}${subtitle}${suffix}`;
 }
 
-export async function ideate(scope: OwnerScope, input: IdeateInput): Promise<IdeateResult> {
+export async function ideate(scope: SpaceScope, input: IdeateInput): Promise<IdeateResult> {
   // The seed must be the caller's own. Same identical-404 discipline as the
   // links route: "not yours" and "doesn't exist" are one answer.
   const exists = await entityExists(scope, input.seedType, input.seedId);

@@ -8,7 +8,7 @@
  *      is `string | null` — null for a system-initiated run with no owner — and
  *      a tool that shrugged and read "everything" would be the largest leak in
  *      the product. Subclasses implement {@link ResparkableCapability.run}, which
- *      receives an already-minted `OwnerScope` and has no way to ask for another
+ *      receives an already-minted `SpaceScope` and has no way to ask for another
  *      one. There is no code path from a subclass to an unscoped read.
  *   2. **The user id is never an argument.** It arrives from the session
  *      (`withAuth`), from the MCP key's owner, or from the schedule row's `scope`
@@ -31,9 +31,9 @@
 
 import {
   readResparkableScheduleSpaceId,
-  ownerScope,
-  type OwnerScope,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+  spaceScope,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   BaseCapability,
   type ProvenanceRedaction,
@@ -57,7 +57,7 @@ export class MissingResparkableUserError extends Error {
 }
 
 /**
- * The one place a capability's `OwnerScope` comes from.
+ * The one place a capability's `SpaceScope` comes from.
  *
  * The owner arrives by one of two platform-set routes, never from an LLM
  * argument — which is what makes this the trust boundary rather than a
@@ -80,7 +80,7 @@ export class MissingResparkableUserError extends Error {
  * Exported so a capability that needs the scope before validating (none do
  * today) can reach it directly; the base class calls it for everything else.
  */
-export function requireResparkableUser(context: CapabilityContext): OwnerScope {
+export function requireResparkableUser(context: CapabilityContext): SpaceScope {
   // TODO(release-10): after §24 this value is a SPACE id while `context.userId`
   // is a USER id. They are the same string today, and phase 45 renamed the
   // column but did not, and could not, make one workspace per person into
@@ -88,7 +88,7 @@ export function requireResparkableUser(context: CapabilityContext): OwnerScope {
   // *default* workspace rather than assume it.
   const userId = context.userId ?? readResparkableScheduleSpaceId(context.scope);
   if (!userId) throw new MissingResparkableUserError();
-  return ownerScope(userId);
+  return spaceScope(userId);
 }
 
 /**
@@ -242,7 +242,7 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
    * they asked for it — and must still wake a dormant brain.
    */
   async execute(args: TArgs, context: CapabilityContext): Promise<CapabilityResult<TData>> {
-    let scope: OwnerScope;
+    let scope: SpaceScope;
     try {
       scope = requireResparkableUser(context);
     } catch (error) {
@@ -261,7 +261,7 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
 
   protected abstract run(
     args: TArgs,
-    scope: OwnerScope,
+    scope: SpaceScope,
     context: CapabilityContext
   ): Promise<CapabilityResult<TData>>;
 }

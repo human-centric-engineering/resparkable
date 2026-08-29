@@ -42,7 +42,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findSharedChildIds,
   findSharedItem,
@@ -54,7 +54,7 @@ import {
   type ResparkableShareableType,
 } from '@/lib/framework/resparkable/access/types';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const delegates = prisma as unknown as Record<string, { findMany: ReturnType<typeof vi.fn> }>;
 

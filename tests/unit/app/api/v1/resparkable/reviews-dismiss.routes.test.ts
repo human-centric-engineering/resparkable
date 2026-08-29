@@ -75,7 +75,7 @@ describe('POST /api/v1/resparkable/reviews/[id]/dismiss', () => {
     await invoke('review_1');
 
     const [scope, id] = mockedDismiss.mock.calls[0] ?? [];
-    expect((scope as { userId: string }).userId).toBe('user_a');
+    expect((scope as { spaceId: string }).spaceId).toBe('user_a');
     expect(id).toBe('review_1');
   });
 

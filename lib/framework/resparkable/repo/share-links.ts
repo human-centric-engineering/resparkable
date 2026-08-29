@@ -2,7 +2,7 @@
  * Share-link repo — the OWNER's side of a public link.
  *
  * Minting, listing and revoking are owner queries: they are things a person
- * does to their own brain, so they take an `OwnerScope` and live here. Reading
+ * does to their own brain, so they take an `SpaceScope` and live here. Reading
  * a link **by its token** is a shared query — the caller is a stranger holding
  * a URL — and lives in `access/store.ts`. The split is D5, and it is why this
  * file has no function taking a token.
@@ -22,7 +22,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss } from '@/lib/framework/resparkable/repo/shared';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableShareLink } from '@prisma/client';
@@ -63,12 +63,12 @@ export interface ShareLinkFilters {
  */
 async function setVisibility(
   tx: Prisma.TransactionClient,
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string,
   visibility: 'private' | 'link'
 ): Promise<void> {
-  const args = { where: { ...ownerWhere(scope), id: entityId }, data: { visibility } };
+  const args = { where: { ...spaceWhere(scope), id: entityId }, data: { visibility } };
 
   switch (entityType) {
     case 'area':
@@ -110,11 +110,11 @@ async function setVisibility(
  * the layer that cannot express a cross-user read.
  */
 export async function ownsEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string
 ): Promise<boolean> {
-  const where = { ...ownerWhere(scope), id: entityId };
+  const where = { ...spaceWhere(scope), id: entityId };
 
   switch (entityType) {
     case 'area':
@@ -144,12 +144,12 @@ export async function ownsEntity(
  * a property of the code rather than of somebody's care.
  */
 export async function createShareLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: ShareLinkCreateData
 ): Promise<ResparkableShareLink> {
   return prisma.$transaction(async (tx) => {
     const created = await tx.resparkableShareLink.create({
-      data: { ...data, ...ownerWhere(scope) },
+      data: { ...data, ...spaceWhere(scope) },
     });
     await setVisibility(tx, scope, data.entityType, data.entityId, 'link');
     return created;
@@ -169,13 +169,13 @@ export async function createShareLink(
  * second copy that could drift.
  */
 export async function listShareLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ShareLinkFilters = {},
   now: Date = new Date()
 ): Promise<ResparkableShareLink[]> {
   const rows = await prisma.resparkableShareLink.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       ...(filters.entityType ? { entityType: filters.entityType } : {}),
       ...(filters.entityId ? { entityId: filters.entityId } : {}),
     },
@@ -187,10 +187,10 @@ export async function listShareLinks(
 
 /** One of the owner's links, or `null` — never another owner's. */
 export async function findShareLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableShareLink | null> {
-  return prisma.resparkableShareLink.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableShareLink.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -205,14 +205,14 @@ export async function findShareLink(
  * changes nothing.
  */
 export async function revokeShareLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   now: Date = new Date()
 ): Promise<ResparkableShareLink | null> {
   return nullOnMiss(async () =>
     prisma.$transaction(async (tx) => {
       const link = await tx.resparkableShareLink.findFirst({
-        where: { ...ownerWhere(scope), id },
+        where: { ...spaceWhere(scope), id },
       });
       if (!link) return null;
 
@@ -222,7 +222,7 @@ export async function revokeShareLink(
 
       const siblings = await tx.resparkableShareLink.findMany({
         where: {
-          ...ownerWhere(scope),
+          ...spaceWhere(scope),
           entityType: link.entityType,
           entityId: link.entityId,
           id: { not: id },

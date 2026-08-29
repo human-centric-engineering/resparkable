@@ -18,6 +18,33 @@ release process.
 
 ### Added
 
+- **`OwnerScope` is now `SpaceScope`, and the partition key is no longer the
+  acting person.** `repo/owner-scope.ts` becomes `repo/space-scope.ts` and the
+  branded type carries three fields instead of one: `spaceId` (what every `WHERE`
+  in `repo/**` uses), `actorUserId` (attribution and role checks, **never** a
+  filter) and `role: 'owner' | 'admin' | 'member' | 'viewer'`. `ownerScope()`,
+  `ownerWhere()` and `liveOwnerWhere()` are renamed `spaceScope()`, `spaceWhere()`
+  and `liveSpaceWhere()`; a second constructor `spaceScopeFor()` mints a scope for
+  an actor who is not the owner, which is what `access/**` has been doing since
+  Release 2.
+
+  Separating the key from the actor is the whole point. The moment `actorUserId`
+  appears in a `where`, a group space has a per-row ACL: a membership join on the
+  hot path of forty list endpoints, `priorityScore`'s single indexed `ORDER BY`
+  defeated, and every one of those endpoints a potential leak (§23.4). So it is
+  asserted structurally rather than documented: `repo/isolation.test.ts` now
+  sweeps every exported repo function and every raw statement for it, and it does
+  so now, while nothing yet has an actor to filter on.
+
+  `sharedOwnerScope()` and `grantOwnerScope()` become `sharedSpaceScope()` and
+  `grantSpaceScope()` and take the reading actor, producing `role: 'viewer'`.
+  They used to mint an owner scope for a grantee, which was harmless while the
+  role was one value and would not be. The actor is nullable, because the public
+  reader has no session to name.
+
+  This commit contains no migration. The database column moved with the previous
+  one; the Prisma field is still `userId`, mapped to `spaceId`, and follows next.
+
 - **The Resparkable brain's owner key is now `spaceId`, and the GDPR cascade
   hangs off a new `ownerUserId`.** Release 9 phase 45 (`plan.md` §23.2), the
   structural half of Groups: `ResparkableSpace.userId` and the `userId` column on

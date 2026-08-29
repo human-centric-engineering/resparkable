@@ -129,7 +129,7 @@ describe('collection handlers', () => {
     expect(response.status).toBe(200);
     expect(payload.data).toEqual([{ id: 'task_1' }]);
     // The scope object handed to the service carries the SESSION id.
-    expect(spy(resource.list).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(spy(resource.list).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('returns the unpaginated total alongside the page', async () => {
@@ -171,7 +171,7 @@ describe('collection handlers', () => {
     );
 
     expect(response.status).toBe(201);
-    expect(spy(resource.create).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(spy(resource.create).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
     expect(spy(resource.create).mock.calls[0]?.[1]).toMatchObject({ title: 'Write the thing' });
   });
 
@@ -245,7 +245,7 @@ describe('item handlers', () => {
     );
 
     expect(response.status).toBe(404);
-    expect(spy(resource.update).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(spy(resource.update).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('archives on DELETE by default', async () => {
@@ -324,7 +324,7 @@ describe('restore handler', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(spy(resource.restore).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(spy(resource.restore).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it("404s when the row isn't the caller's", async () => {
@@ -362,7 +362,7 @@ describe('snooze handlers (phase 3)', () => {
 
     // Assert
     expect(response.status).toBe(200);
-    expect(vi.mocked(snoozeItem).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(snoozeItem).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
     expect(vi.mocked(snoozeItem).mock.calls[0]?.[3]).toEqual({ preset: 'tomorrow' });
   });
 
@@ -463,7 +463,7 @@ describe('unsnooze handlers (phase 3)', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
     expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[1]).toBe('thought');
   });
 

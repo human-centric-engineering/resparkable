@@ -30,12 +30,12 @@ import { getRouteLogger } from '@/lib/api/context';
 import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
 
 export const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
   const { id } = await params;
 
   const outcome = await sendGrantInvite(scope, id);

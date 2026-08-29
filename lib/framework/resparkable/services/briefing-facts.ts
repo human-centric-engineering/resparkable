@@ -32,7 +32,7 @@
  * surface nobody re-reads.
  */
 
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { buildSnapshot, type SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 import {
   getRecentWins,
@@ -145,7 +145,7 @@ function renderOverdue(overdue: OverdueTask[]): string[] {
  * entity type present). Both are already bounded, so this is too.
  */
 export async function buildBriefingFacts(
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date = new Date(),
   windowDays: number = RECENT_WINS_WINDOW_DAYS
 ): Promise<BriefingFacts> {

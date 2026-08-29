@@ -21,10 +21,10 @@
  * would say why.
  *
  * **The owner scope is the invariant underneath all of it.** Every arm above
- * is optional; `liveOwnerWhere(scope, ...)` is not. It is asserted here on
+ * is optional; `liveSpaceWhere(scope, ...)` is not. It is asserted here on
  * every filter combination, not just the empty case, because the risk is a
  * future edit that spreads a caller-supplied object where it can clobber the
- * scope key (see `ownerWhere`'s own docstring on why spread order matters).
+ * scope key (see `spaceWhere`'s own docstring on why spread order matters).
  *
  * Test Coverage:
  * - `capturedBefore` produces `createdAt: { lt: <date> }`, not `lte` or a
@@ -49,12 +49,12 @@ vi.mock('@/lib/db/client', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { listThoughts } from '@/lib/framework/resparkable/repo/thoughts';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-// Minted, never cast. `OwnerScope` is branded precisely so that
-// `rg 'ownerScope\('` is the complete list of trust boundaries in the brain —
+// Minted, never cast. `SpaceScope` is branded precisely so that
+// `rg 'spaceScope\('` is the complete list of trust boundaries in the brain —
 // a test that fakes the brand takes itself off that list.
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 beforeEach(() => {
   vi.clearAllMocks();

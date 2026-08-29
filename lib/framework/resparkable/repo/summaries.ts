@@ -22,11 +22,11 @@
 import { prisma } from '@/lib/db/client';
 import type { EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 
 /** Everything a search result needs to render, whatever type it came from. */
 export interface EntitySummary {
@@ -58,7 +58,7 @@ function excerpt(value: string | null, max = 200): string | null {
  * path where an id crosses from raw SQL back into the ORM.
  */
 export async function findSummaries(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType | 'task',
   ids: string[],
   includeArchived: ArchiveVisibility = false,
@@ -72,7 +72,7 @@ export async function findSummaries(
 ): Promise<EntitySummary[]> {
   if (ids.length === 0) return [];
 
-  const where = { ...liveOwnerWhere(scope, includeArchived), id: { in: ids } };
+  const where = { ...liveSpaceWhere(scope, includeArchived), id: { in: ids } };
 
   switch (entityType) {
     case 'thought': {
@@ -223,7 +223,7 @@ export async function findSummaries(
  * what it is: exact matching, not ranking.
  */
 export async function keywordSummaries(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   query: string,
   limit: number,
@@ -231,7 +231,7 @@ export async function keywordSummaries(
   /** Passed straight through to {@link findSummaries} — a no-op off `thought`. */
   excludeSensitive = false
 ): Promise<EntitySummary[]> {
-  const scoped = liveOwnerWhere(scope, includeArchived);
+  const scoped = liveSpaceWhere(scope, includeArchived);
   const like = { contains: query, mode: 'insensitive' } as const;
   const take = limit;
 
@@ -335,11 +335,11 @@ export async function keywordSummaries(
 
 /** Owner-scoped existence check for a link endpoint id, used by `POST /links`. */
 export async function entityExists(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType | 'task',
   id: string
 ): Promise<boolean> {
-  const where = { ...ownerWhere(scope), id };
+  const where = { ...spaceWhere(scope), id };
 
   switch (entityType) {
     case 'thought':

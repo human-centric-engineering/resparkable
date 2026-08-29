@@ -13,7 +13,7 @@
  * leading/trailing hyphen, 60 chars) so the two cannot diverge in behaviour.
  */
 
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 /** Same rule as `lib/orchestration/knowledge/chunker.ts` — see the note above. */
 export function slugify(text: string): string {
@@ -40,7 +40,7 @@ const MAX_SUFFIX_ATTEMPTS = 50;
  * database error rather than "we couldn't name this".
  */
 export async function resolveUniqueSlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   {
     preferred,
     fallbackFrom,
@@ -48,7 +48,7 @@ export async function resolveUniqueSlug(
   }: {
     preferred?: string | null;
     fallbackFrom: string;
-    exists: (scope: OwnerScope, slug: string) => Promise<unknown>;
+    exists: (scope: SpaceScope, slug: string) => Promise<unknown>;
   }
 ): Promise<string> {
   const base = slugify(preferred ?? fallbackFrom) || 'item';
@@ -75,7 +75,7 @@ export async function resolveUniqueSlug(
  * request explicitly sets one.
  */
 export async function resolveSlugOnUpdate(
-  scope: OwnerScope,
+  scope: SpaceScope,
   {
     current,
     requested,
@@ -83,7 +83,7 @@ export async function resolveSlugOnUpdate(
   }: {
     current: string;
     requested?: string | null;
-    exists: (scope: OwnerScope, slug: string) => Promise<unknown>;
+    exists: (scope: SpaceScope, slug: string) => Promise<unknown>;
   }
 ): Promise<string> {
   if (!requested) return current;

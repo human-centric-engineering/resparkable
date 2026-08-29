@@ -83,14 +83,14 @@ import * as events from '@/lib/framework/resparkable/repo/events';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
 import * as indexing from '@/lib/framework/resparkable/repo/indexing';
 import * as links from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import * as summaries from '@/lib/framework/resparkable/repo/summaries';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
 import * as thoughts from '@/lib/framework/resparkable/repo/thoughts';
 import * as timeBlocks from '@/lib/framework/resparkable/repo/time-blocks';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const OTHER = 'user_b';
 
 /**
@@ -369,7 +369,7 @@ describe('raw SQL binds userId as a parameter, never interpolates it', () => {
   /**
    * Two separate properties, and both matter.
    *
-   * **Scoped**: the statement filters on `"spaceId" = $n` and `scope.userId` is
+   * **Scoped**: the statement filters on `"spaceId" = $n` and `scope.spaceId` is
    * among the bound values. A vector search that forgets this returns whichever
    * rows are nearest across *every* user's brain — the exact leak §16.2 calls out
    * ("B's search never returns A's rows, including when A's row is the better
@@ -400,7 +400,7 @@ describe('raw SQL binds userId as a parameter, never interpolates it', () => {
       // Same rule as the Prisma sweep above: the actor is attribution, never a
       // filter. Raw SQL is where it would be easiest to slip one in unnoticed.
       expect(sql, 'raw SQL must not filter on the actor').not.toContain('actorUserId');
-      expect(values, 'scope.userId must be a bound parameter').toContain('user_a');
+      expect(values, 'scope.spaceId must be a bound parameter').toContain('user_a');
       expect(sql, 'the user id must never be interpolated into the SQL text').not.toContain(
         'user_a'
       );

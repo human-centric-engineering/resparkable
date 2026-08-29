@@ -128,7 +128,7 @@ vi.mock('@/lib/framework/resparkable/priority/reprioritise', () => ({
 import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
 import * as thoughts from '@/lib/framework/resparkable/repo/thoughts';
@@ -161,7 +161,7 @@ import type {
   ResparkableTimeBlock,
 } from '@prisma/client';
 
-const scope = ownerScope('user_x');
+const scope = spaceScope('user_x');
 
 // Local aliases for each descriptor's generic payload types — pulled off the
 // resource itself rather than importing every Create/Update/Query type by

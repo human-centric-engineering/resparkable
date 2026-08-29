@@ -31,7 +31,7 @@
  * "3 finished" above two lines is showing the truth, not a bug.
  */
 
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listEvents } from '@/lib/framework/resparkable/repo/events';
 import { findSummaries } from '@/lib/framework/resparkable/repo/summaries';
 import { EMBEDDED_TYPES, type EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
@@ -87,7 +87,7 @@ function isSummarisable(type: string): type is SummarisableType {
  * dropped those would omit precisely the week's biggest wins.
  */
 export async function getRecentWins(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number = RECENT_WINS_WINDOW_DAYS,
   now: Date = new Date()
 ): Promise<RecentWins> {

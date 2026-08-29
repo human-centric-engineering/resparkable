@@ -19,7 +19,7 @@
  */
 
 import { createLink } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
@@ -36,7 +36,7 @@ import type { ResparkableLink } from '@prisma/client';
  * people's rows.
  */
 export async function linkEntities(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: CreateLinkInput
 ): Promise<ResparkableLink | null> {
   // Independent reads, so they go in parallel.
@@ -47,7 +47,7 @@ export async function linkEntities(
 
   if (!sourceOk || !targetOk) return null;
 
-  await ensureResparkableSpace(scope.userId);
+  await ensureResparkableSpace(scope.spaceId);
 
   const link = await createLink(scope, {
     sourceType: input.sourceType,

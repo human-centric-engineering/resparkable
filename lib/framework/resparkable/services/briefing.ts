@@ -35,7 +35,7 @@
  */
 
 import { listUnreviewedLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { listThoughts } from '@/lib/framework/resparkable/repo/thoughts';
 import {
@@ -128,7 +128,7 @@ function resolveWorkStyle(value: string | undefined): ResparkableWorkStyle {
  * be instant and the API decide — from `stale` — whether to offer regeneration.
  */
 export async function getStoredBriefing(
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date = new Date()
 ): Promise<StoredBriefing> {
   const review = await findLatestReview(scope, BRIEFING_HORIZON);
@@ -149,11 +149,11 @@ export async function getStoredBriefing(
  * be overridden would become a cage.
  */
 export async function buildBriefingInputs(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: { workStyleOverride?: string } = {},
   now: Date = new Date()
 ): Promise<BriefingInputs> {
-  const settings = await getResparkableSettings(scope.userId);
+  const settings = await getResparkableSettings(scope.spaceId);
 
   const stored = resolveWorkStyle(settings.workStyle);
   const requested = options.workStyleOverride
@@ -196,7 +196,7 @@ export async function buildBriefingInputs(
  * write a sentence about.
  */
 async function topConnections(
-  scope: OwnerScope,
+  scope: SpaceScope,
   limit: number,
   now: Date
 ): Promise<BriefingConnection[]> {
@@ -231,7 +231,7 @@ async function topConnections(
  * without anyone tending it.
  */
 async function resurfacedThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date
 ): Promise<BriefingInputs['selection']['resurfaced']> {
   const cutoff = new Date(now.getTime() - RESURFACE_MIN_AGE_DAYS * 24 * 60 * 60 * 1000);

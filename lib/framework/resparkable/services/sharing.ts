@@ -23,7 +23,7 @@
 import {
   resolveResparkableShareLink,
   shareLinkAccess,
-  sharedOwnerScope,
+  sharedSpaceScope,
 } from '@/lib/framework/resparkable/access';
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
 import type {
@@ -31,7 +31,7 @@ import type {
   ResparkableAccessResult,
   ResparkableShareableType,
 } from '@/lib/framework/resparkable/access/types';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   createShareLink,
   countShareLinkView,
@@ -99,7 +99,7 @@ function resolveExpiry(expiry: CreateShareLinkInput['expiry'], now: Date): Date 
  * than minting a token that would 404 for its own creator.
  */
 export async function mintShareLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: CreateShareLinkInput,
   now: Date = new Date()
 ): Promise<MintedShareLink | null> {
@@ -133,7 +133,7 @@ export async function mintShareLink(
 
 /** The owner's own links. Never includes a token or a digest — see below. */
 export async function listOwnShareLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ShareLinkFilters = {},
   now: Date = new Date()
 ): Promise<PublicShareLinkSummary[]> {
@@ -142,7 +142,7 @@ export async function listOwnShareLinks(
 }
 
 export async function revokeShareLink(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   now: Date = new Date()
 ): Promise<ResparkableShareLink | null> {
@@ -256,7 +256,10 @@ export async function buildSharePayload(
 ): Promise<PublicSharePayload | null> {
   // Throws rather than returns null on a denial — a caller that reached here
   // without a positive result has a bug, and returning a 404 would hide it.
-  const scope = sharedOwnerScope(access);
+  // `null`: this is the public reader, and it has no session to name. The
+  // scope's actor is attribution, so an anonymous one is an honest answer
+  // rather than a gap.
+  const scope = sharedSpaceScope(access, null);
   const withDetail = !access.redact.includes('notes') && ref.includeTaskDetail;
 
   const item = await findSharedItem(scope, ref.entityType, ref.entityId, withDetail);
@@ -292,7 +295,7 @@ export async function buildSharePayload(
  * is more to see when there is not.
  */
 async function loadChildren(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string,
   withDetail: boolean,

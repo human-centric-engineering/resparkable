@@ -34,7 +34,7 @@
  */
 
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   archiveAgedClosedProjects,
   archiveAgedCompletedTasks,
@@ -120,13 +120,13 @@ const ARCHIVE_RULES: readonly RetentionRuleName[] = [
  * empty report rather than creating a space as a side effect of a cleanup job.
  */
 export async function enforceResparkableRetention(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: EnforceRetentionOptions = {}
 ): Promise<RetentionReport> {
   const now = options.now ?? new Date();
   const dryRun = options.dryRun ?? false;
 
-  const space = await getResparkableSpace(scope.userId);
+  const space = await getResparkableSpace(scope.spaceId);
   if (!space) return emptyReport(dryRun);
 
   const policy = resolveRetentionPolicy(space.retentionPolicy);
@@ -170,13 +170,13 @@ export async function enforceResparkableRetention(
   // `createMany` in the repo, which never goes near the service that clears the
   // cache. Without this line an agent would keep citing an archived project for
   // as long as the entry lived.
-  if (!dryRun && archived > 0) invalidateResparkableContext(scope.userId);
+  if (!dryRun && archived > 0) invalidateResparkableContext(scope.spaceId);
 
   const capped = RETENTION_RULES.some((rule) => rules[rule].capped);
 
   if (archived > 0 || pruned > 0) {
     logger.info('Resparkable retention pass', {
-      userId: scope.userId,
+      userId: scope.spaceId,
       archived,
       pruned,
       capped,

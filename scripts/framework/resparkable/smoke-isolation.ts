@@ -33,7 +33,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
 import * as links from '@/lib/framework/resparkable/repo/links';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
@@ -84,8 +84,8 @@ async function main(): Promise<void> {
     userA = await createUser('a');
     userB = await createUser('b');
 
-    const scopeA = ownerScope(userA);
-    const scopeB = ownerScope(userB);
+    const scopeA = spaceScope(userA);
+    const scopeB = spaceScope(userB);
 
     console.log('\nSpaces');
     const spaceA = await ensureResparkableSpace(userA);

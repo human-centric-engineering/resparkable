@@ -23,7 +23,7 @@
  */
 
 import { countUnreviewedLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { countTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { countThoughts } from '@/lib/framework/resparkable/repo/thoughts';
 
@@ -39,7 +39,7 @@ export interface ResparkableCounts {
   openTasks: number;
 }
 
-export async function buildCounts(scope: OwnerScope, now = new Date()): Promise<ResparkableCounts> {
+export async function buildCounts(scope: SpaceScope, now = new Date()): Promise<ResparkableCounts> {
   const [inbox, connections, openTasks] = await Promise.all([
     countThoughts(scope, { status: 'inbox', hideSnoozed: true }),
     countUnreviewedLinks(scope, now),

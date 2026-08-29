@@ -63,10 +63,10 @@ import {
   reindexPending,
   reindexType,
 } from '@/lib/framework/resparkable/embedding/indexer';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { logger } from '@/lib/logging';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** A thought whose canonical text is exactly its content. */
 const THOUGHT = { id: 't_1', entityType: 'thought' as const, content: 'Call the accountant' };

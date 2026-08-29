@@ -18,11 +18,11 @@ import {
   embeddingSensitivityUpdateArgs,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   isUniqueConstraintViolation,
   nullOnMiss,
@@ -57,12 +57,12 @@ export type ThoughtCreateData = WithoutOwner<Prisma.ResparkableThoughtUncheckedC
 export type ThoughtUpdateData = WithoutOwner<Prisma.ResparkableThoughtUncheckedUpdateInput>;
 
 function thoughtWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ThoughtFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableThoughtWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.source ? { source: filters.source } : {}),
     ...(filters.hideSnoozed
@@ -74,7 +74,7 @@ function thoughtWhere(
 }
 
 export async function listThoughts(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ThoughtFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableThought[]> {
@@ -86,7 +86,7 @@ export async function listThoughts(
 }
 
 export async function countThoughts(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ThoughtFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
@@ -94,22 +94,22 @@ export async function countThoughts(
 }
 
 export async function findThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableThought | null> {
-  return prisma.resparkableThought.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableThought.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 export async function createThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: ThoughtCreateData
 ): Promise<ResparkableThought> {
-  return prisma.resparkableThought.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableThought.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 /** Batch lookup, for hydrating a set of thought ids from a link walk (context-digest.ts). */
 export async function findThoughtsByIds(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ids: string[],
   options: { excludeSensitive?: boolean } = {}
 ): Promise<ResparkableThought[]> {
@@ -117,7 +117,7 @@ export async function findThoughtsByIds(
 
   return prisma.resparkableThought.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       id: { in: ids },
       ...(options.excludeSensitive ? { sensitivity: { not: 'sensitive' } } : {}),
     },
@@ -130,7 +130,7 @@ export async function findThoughtsByIds(
  * index does the work, so concurrent deliveries resolve correctly.
  */
 export async function captureThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: ThoughtCreateData
 ): Promise<{ thought: ResparkableThought; deduped: boolean }> {
   try {
@@ -138,7 +138,7 @@ export async function captureThought(
   } catch (error) {
     if (data.externalId && isUniqueConstraintViolation(error)) {
       const existing = await prisma.resparkableThought.findFirst({
-        where: { ...ownerWhere(scope), externalId: data.externalId },
+        where: { ...spaceWhere(scope), externalId: data.externalId },
       });
       if (existing) return { thought: existing, deduped: true };
     }
@@ -147,13 +147,13 @@ export async function captureThought(
 }
 
 export async function updateThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: ThoughtUpdateData
 ): Promise<ResparkableThought | null> {
   const update = () =>
     prisma.resparkableThought.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -198,38 +198,38 @@ function plainSensitivity(value: ThoughtUpdateData['sensitivity']): string | und
 }
 
 export async function archiveThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableThought | null> {
   return archiveAndDropVectors(scope, 'thought', id, () =>
     prisma.resparkableThought.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
 export async function restoreThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableThought | null> {
   return nullOnMiss(() =>
     prisma.resparkableThought.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
 }
 
 export async function deleteThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableThought | null> {
   // Vectors go in the SAME transaction: nothing cascades to the polymorphic
   // embedding table, and an orphan chunk makes the sweep propose links to a row
   // that no longer exists.
   return deleteAndDropVectors(scope, 'thought', id, () =>
-    prisma.resparkableThought.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableThought.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

@@ -130,7 +130,7 @@ describe('GET /resparkable/today', () => {
     // path — a body or query field cannot reach it.
     await invoke(TODAY_GET, req('http://x/api/v1/resparkable/today'), SESSION_A);
 
-    expect(vi.mocked(buildToday).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(buildToday).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('returns the payload with an ETag', async () => {
@@ -240,7 +240,7 @@ describe('GET /resparkable/inbox', () => {
   it('scopes the build to the session user', async () => {
     await invoke(INBOX_GET, req('http://x/api/v1/resparkable/inbox'), SESSION_A);
 
-    expect(vi.mocked(buildInbox).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(buildInbox).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('forwards validated pagination', async () => {

@@ -30,11 +30,11 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { updateSpaceSettings } from '@/lib/framework/resparkable/repo/space';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();

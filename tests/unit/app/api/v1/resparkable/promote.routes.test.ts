@@ -81,7 +81,7 @@ describe('POST /api/v1/resparkable/thoughts/[id]/promote', () => {
     await invoke({ target: 'task' });
 
     const [scope, id] = mockedPromote.mock.calls[0] ?? [];
-    expect((scope as { userId: string }).userId).toBe('user_a');
+    expect((scope as { spaceId: string }).spaceId).toBe('user_a');
     expect(id).toBe('th_1');
   });
 

@@ -41,9 +41,9 @@ import {
   findSummaries,
   keywordSummaries,
 } from '@/lib/framework/resparkable/repo/summaries';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const UPDATED_AT = new Date('2026-01-01T00:00:00Z');
 
 beforeEach(() => {

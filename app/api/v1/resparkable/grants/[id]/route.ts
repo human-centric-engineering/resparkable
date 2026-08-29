@@ -25,13 +25,13 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { revokeGrant, updateGrant } from '@/lib/framework/resparkable/services/grants';
 import { updateGrantSchema } from '@/lib/framework/resparkable/validations';
 
 export const PATCH = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, updateGrantSchema);
@@ -46,7 +46,7 @@ export const PATCH = withAuth<{ id: string }>(async (request, session, { params 
 
 export const DELETE = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
   const { id } = await params;
 
   const grant = await revokeGrant(scope, id);

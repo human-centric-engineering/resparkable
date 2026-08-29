@@ -44,9 +44,9 @@ import {
   listUnindexed,
   stampIndexedHash,
 } from '@/lib/framework/resparkable/repo/indexing';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const EMBEDDED_TYPES = [
   ['thought', 'resparkableThought'],

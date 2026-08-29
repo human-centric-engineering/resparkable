@@ -12,7 +12,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -35,11 +35,11 @@ export type TimeBlockCreateData = WithoutOwner<Prisma.ResparkableTimeBlockUnchec
 export type TimeBlockUpdateData = WithoutOwner<Prisma.ResparkableTimeBlockUncheckedUpdateInput>;
 
 function timeBlockWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TimeBlockFilters = {}
 ): Prisma.ResparkableTimeBlockWhereInput {
   return {
-    ...ownerWhere(scope),
+    ...spaceWhere(scope),
     ...(filters.from ? { endAt: { gte: filters.from } } : {}),
     ...(filters.to ? { startAt: { lte: filters.to } } : {}),
     ...(filters.source ? { source: filters.source } : {}),
@@ -49,7 +49,7 @@ function timeBlockWhere(
 }
 
 export async function listTimeBlocks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TimeBlockFilters = {},
   options: PageOptions = {}
 ): Promise<ResparkableTimeBlock[]> {
@@ -61,41 +61,41 @@ export async function listTimeBlocks(
 }
 
 export async function countTimeBlocks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TimeBlockFilters = {}
 ): Promise<number> {
   return prisma.resparkableTimeBlock.count({ where: timeBlockWhere(scope, filters) });
 }
 
 export async function findTimeBlock(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableTimeBlock | null> {
-  return prisma.resparkableTimeBlock.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableTimeBlock.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 export async function createTimeBlock(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: TimeBlockCreateData
 ): Promise<ResparkableTimeBlock> {
-  return prisma.resparkableTimeBlock.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableTimeBlock.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateTimeBlock(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: TimeBlockUpdateData
 ): Promise<ResparkableTimeBlock | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTimeBlock.update({ where: { id, ...ownerWhere(scope) }, data })
+    prisma.resparkableTimeBlock.update({ where: { id, ...spaceWhere(scope) }, data })
   );
 }
 
 export async function deleteTimeBlock(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableTimeBlock | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTimeBlock.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableTimeBlock.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

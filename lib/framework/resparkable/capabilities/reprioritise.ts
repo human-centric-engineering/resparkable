@@ -18,7 +18,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
 import {
   agentReprioritiseSchema,
@@ -62,7 +62,7 @@ export class ResparkableReprioritiseCapability extends ResparkableCapability<
 
   protected async run(
     _args: AgentReprioritiseInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<ReprioritiseData>> {
     const { scored } = await reprioritiseTasks(scope);
     return this.success({ scored });

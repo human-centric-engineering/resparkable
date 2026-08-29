@@ -1,6 +1,6 @@
 /**
  * Unit Tests: the instance-settings repo — the one repo function with NO
- * `OwnerScope` (Release 1, phase 4).
+ * `SpaceScope` (Release 1, phase 4).
  *
  * Everything else in `repo/**` takes a scope and filters on `userId`; this
  * table deliberately does not, because it holds a deployment fact ("does this

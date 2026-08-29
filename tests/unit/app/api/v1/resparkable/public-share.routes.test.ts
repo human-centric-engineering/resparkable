@@ -27,6 +27,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const routeLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -459,7 +460,7 @@ describe('DELETE /api/v1/resparkable/share-links/[id]', () => {
     // this route could have taken it from instead, so this proves the route
     // reads `session.user.id` and not, say, a header or body field it forgot
     // to strip.
-    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[0]).toEqual({ userId: 'user_b' });
+    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[0]).toEqual(spaceScope('user_b'));
     expect(vi.mocked(revokeShareLink).mock.calls[0]?.[1]).toBe('link_1');
   });
 

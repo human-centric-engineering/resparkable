@@ -13,9 +13,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 import { resolveSlugOnUpdate, resolveUniqueSlug } from '@/lib/framework/resparkable/services/slug';
-import { ownerScope, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 describe('resolveUniqueSlug', () => {
   afterEach(() => {
@@ -42,7 +42,7 @@ describe('resolveUniqueSlug', () => {
   it('returns the first open suffix slot when the base is taken', async () => {
     // Arrange: 'foo' is taken, 'foo-2' is free — proves the loop returns the
     // first available candidate, not some later one.
-    const exists = vi.fn((_scope: OwnerScope, slug: string) => Promise.resolve(slug === 'foo'));
+    const exists = vi.fn((_scope: SpaceScope, slug: string) => Promise.resolve(slug === 'foo'));
 
     // Act
     const result = await resolveUniqueSlug(SCOPE, {
@@ -59,13 +59,13 @@ describe('resolveUniqueSlug', () => {
     // Arrange: two different users creating the same-named item concurrently
     // — each must probe their own namespace, which is what lets them both
     // hold 'acme' without either learning the other exists.
-    const seenScopes: OwnerScope[] = [];
-    const exists = vi.fn((scope: OwnerScope) => {
+    const seenScopes: SpaceScope[] = [];
+    const exists = vi.fn((scope: SpaceScope) => {
       seenScopes.push(scope);
       return Promise.resolve(false);
     });
-    const scopeA = ownerScope('user_a');
-    const scopeB = ownerScope('user_b');
+    const scopeA = spaceScope('user_a');
+    const scopeB = spaceScope('user_b');
 
     // Act
     await resolveUniqueSlug(scopeA, { preferred: 'acme', fallbackFrom: 'acme', exists });
@@ -92,7 +92,7 @@ describe('resolveUniqueSlug', () => {
       `${base}-8`,
       `${base}-9`,
     ]);
-    const exists = vi.fn((_scope: OwnerScope, slug: string) => Promise.resolve(taken.has(slug)));
+    const exists = vi.fn((_scope: SpaceScope, slug: string) => Promise.resolve(taken.has(slug)));
 
     // Act
     const result = await resolveUniqueSlug(SCOPE, { preferred: base, fallbackFrom: base, exists });

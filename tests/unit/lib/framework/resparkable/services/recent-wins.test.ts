@@ -41,13 +41,13 @@ vi.mock('@/lib/framework/resparkable/repo/summaries', () => ({ findSummaries: vi
 import { getRecentWins } from '@/lib/framework/resparkable/services/recent-wins';
 import { listEvents } from '@/lib/framework/resparkable/repo/events';
 import { findSummaries, type EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableEvent } from '@prisma/client';
 
 const mockedEvents = vi.mocked(listEvents);
 const mockedSummaries = vi.mocked(findSummaries);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-04T09:00:00.000Z');
 
 function event(overrides: Partial<ResparkableEvent> = {}): ResparkableEvent {

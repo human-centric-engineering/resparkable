@@ -4,7 +4,7 @@
  * functions for the allocation UI.
  *
  * The admin functions are the one deliberate exception to D5's "every repo
- * function takes an `OwnerScope`" rule in this file. Admin billing management
+ * function takes an `SpaceScope`" rule in this file. Admin billing management
  * is inherently cross-user by nature, the same reasoning `lib/privacy/erase-user.ts`
  * and the admin user-management routes already rely on, gated by `withAdminAuth`
  * at the route rather than by the repo signature. They are named and grouped
@@ -13,14 +13,14 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  ownerScope,
-  ownerWhere,
-  type OwnerScope,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+  spaceScope,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   RESPARKABLE_SCHEDULE_OWNER_KEY,
   RESPARKABLE_SCHEDULE_SPACE_KEY,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { logger } from '@/lib/logging';
 import { Prisma } from '@prisma/client';
@@ -46,9 +46,9 @@ export interface LedgerEntryInput {
  * Read the caller's credit account, or `null` when none exists yet.
  */
 export async function findCreditAccount(
-  scope: OwnerScope
+  scope: SpaceScope
 ): Promise<ResparkableCreditAccount | null> {
-  return prisma.resparkableCreditAccount.findUnique({ where: { userId: scope.userId } });
+  return prisma.resparkableCreditAccount.findUnique({ where: { userId: scope.spaceId } });
 }
 
 /**
@@ -59,7 +59,7 @@ export async function findCreditAccount(
  * the loser catches the constraint violation and re-reads.
  */
 export async function ensureCreditAccount(
-  scope: OwnerScope,
+  scope: SpaceScope,
   initialBalance = 0
 ): Promise<ResparkableCreditAccount> {
   const existing = await findCreditAccount(scope);
@@ -67,7 +67,7 @@ export async function ensureCreditAccount(
 
   try {
     return await prisma.resparkableCreditAccount.create({
-      data: { userId: scope.userId, balanceCredits: initialBalance },
+      data: { userId: scope.spaceId, balanceCredits: initialBalance },
     });
   } catch (error) {
     if (isUniqueConstraintViolation(error)) {
@@ -92,16 +92,16 @@ export async function ensureCreditAccount(
  * (chat, ideate: they never pass `relatedWorkflowExecutionId`) don't need to.
  */
 export async function applyLedgerEntry(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entry: LedgerEntryInput
 ): Promise<ResparkableCreditLedgerEntry> {
   return prisma.$transaction(async (tx) => {
     await tx.resparkableCreditAccount.update({
-      where: { userId: scope.userId },
+      where: { userId: scope.spaceId },
       data: { balanceCredits: { increment: entry.creditsDelta } },
     });
     return tx.resparkableCreditLedgerEntry.create({
-      data: { ...entry, ...ownerWhere(scope) },
+      data: { ...entry, ...spaceWhere(scope) },
     });
   });
 }
@@ -240,7 +240,7 @@ export async function findUnbilledTerminalResparkableExecutions(
 }
 
 // ─── Admin cross-user functions ────────────────────────────────────────────
-// See the file-level doc comment: intentionally not OwnerScope-shaped.
+// See the file-level doc comment: intentionally not SpaceScope-shaped.
 
 export interface AdminCreditAccountRow {
   userId: string;
@@ -300,13 +300,13 @@ export async function grantCreditsAsAdmin(
   note: string | undefined,
   adminId: string
 ): Promise<ResparkableCreditLedgerEntry> {
-  // `ownerScope()` is normally reserved for a *verified session's own*
+  // `spaceScope()` is normally reserved for a *verified session's own*
   // identity (see its doc comment); the admin grant is the one legitimate
   // exception, minting a scope for a target user id that came from an
   // admin-only, Zod-validated request body rather than the caller's own
   // session. That is exactly why this call is confined to this
   // admin-only function rather than exposed as a general helper.
-  const scope = ownerScope(userId);
+  const scope = spaceScope(userId);
   await ensureCreditAccount(scope);
 
   logger.info('Resparkable admin credit grant', { userId, amount, adminId });

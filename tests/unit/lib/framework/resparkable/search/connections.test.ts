@@ -43,7 +43,7 @@ vi.mock('@/lib/orchestration/knowledge/embedder', () => ({
   embedText: (...args: unknown[]) => embedText(...args),
 }));
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
 import {
   findConnections,
@@ -51,7 +51,7 @@ import {
   sweepConnections,
 } from '@/lib/framework/resparkable/search/connections';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-07-29T12:00:00Z');
 
 beforeEach(() => {

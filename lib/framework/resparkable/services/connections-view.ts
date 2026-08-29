@@ -25,7 +25,7 @@
  */
 
 import { countLinks, listLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   hydrateLinks,
   type LinkEndpoint,
@@ -60,7 +60,7 @@ export interface ConnectionsQuery {
 }
 
 export async function buildConnections(
-  scope: OwnerScope,
+  scope: SpaceScope,
   query: ConnectionsQuery = {}
 ): Promise<ConnectionsPayload> {
   // Both the list and the count go through the same filter, so `total` describes

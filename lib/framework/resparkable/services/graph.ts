@@ -31,7 +31,7 @@
  */
 
 import { listLinksForEntities, type EntityRef } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { hydrateLinks } from '@/lib/framework/resparkable/services/link-hydration';
 
 /** Statuses worth drawing. Rejected is deliberately absent — see the header. */
@@ -75,7 +75,7 @@ export interface GraphPayload {
 }
 
 export interface BuildGraphInput {
-  scope: OwnerScope;
+  scope: SpaceScope;
   focus: EntityRef;
   depth?: number;
   limit?: number;

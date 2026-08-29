@@ -91,7 +91,7 @@ describe('resparkable_capture_for_token — owner resolution', () => {
     expect(mockedSpace).toHaveBeenCalledWith(TOKEN);
     // The capture lands on the *space's* owner, not the context's.
     expect(mockedCapture).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_owner' }),
+      expect.objectContaining({ spaceId: 'user_owner' }),
       expect.anything()
     );
   });

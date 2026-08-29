@@ -38,6 +38,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   findUnbilledTerminalResparkableExecutions: vi.fn(),
@@ -56,7 +57,7 @@ import { runResparkableTick } from '@/lib/framework/resparkable/jobs';
 import { drainResparkableJobs } from '@/lib/framework/resparkable/queue/drain';
 import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { findUnbilledTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
-import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/owner-scope';
+import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/space-scope';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { WorkflowStatus } from '@/types/orchestration';
@@ -123,10 +124,10 @@ describe('the billing pass', () => {
 
     const result = await runResparkableTick();
 
-    expect(recordAgentSpend).toHaveBeenCalledWith(
-      { userId: 'user_a' },
-      { tokenCostUsd: 0.12, relatedWorkflowExecutionId: 'exec_1' }
-    );
+    expect(recordAgentSpend).toHaveBeenCalledWith(spaceScope('user_a'), {
+      tokenCostUsd: 0.12,
+      relatedWorkflowExecutionId: 'exec_1',
+    });
     expect(result.executionsBilled).toBe(1);
   });
 
@@ -141,7 +142,7 @@ describe('the billing pass', () => {
 
     await runResparkableTick();
 
-    expect(vi.mocked(recordAgentSpend).mock.calls[0]?.[0]).toEqual({ userId: 'user_b' });
+    expect(vi.mocked(recordAgentSpend).mock.calls[0]?.[0]).toEqual(spaceScope('user_b'));
   });
 
   it('skips an execution it cannot attribute rather than billing somebody', async () => {

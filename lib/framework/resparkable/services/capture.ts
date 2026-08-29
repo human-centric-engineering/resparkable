@@ -28,7 +28,7 @@ import { recordResparkableEvent } from '@/lib/framework/resparkable/services/eve
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { classifyThoughtSensitivity } from '@/lib/framework/resparkable/services/sensitivity';
 import { captureThought as captureThoughtRow } from '@/lib/framework/resparkable/repo/thoughts';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { CaptureInput } from '@/lib/framework/resparkable/validations';
 import type { ResparkableThought } from '@prisma/client';
 
@@ -46,10 +46,10 @@ export interface CaptureResult {
  * the weekly review, which reads `ResparkableEvent` rather than scanning tables (§6).
  */
 export async function captureThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: CaptureInput
 ): Promise<CaptureResult> {
-  await ensureResparkableSpace(scope.userId);
+  await ensureResparkableSpace(scope.spaceId);
 
   const { thought, deduped } = await captureThoughtRow(scope, {
     content: input.content,

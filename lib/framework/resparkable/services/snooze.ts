@@ -19,7 +19,7 @@
  */
 
 import { rescoreTask } from '@/lib/framework/resparkable/priority/reprioritise';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { updateProject } from '@/lib/framework/resparkable/repo/projects';
 import { updateTask } from '@/lib/framework/resparkable/repo/tasks';
 import { updateThought } from '@/lib/framework/resparkable/repo/thoughts';
@@ -100,13 +100,13 @@ export interface SnoozeResult {
  * into a 404 (§16.2).
  */
 export async function snoozeItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: SnoozableType,
   id: string,
   input: SnoozeInput,
   now = new Date()
 ): Promise<SnoozeResult | null> {
-  const space = await getResparkableSpace(scope.userId);
+  const space = await getResparkableSpace(scope.spaceId);
   // No space means no rows to snooze — the FK cascade guarantees it.
   if (!space) return null;
 
@@ -129,7 +129,7 @@ export async function snoozeItem(
 }
 
 async function applySnooze(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: SnoozableType,
   id: string,
   until: Date,
@@ -171,7 +171,7 @@ async function applySnooze(
  * pattern that is worth noticing.
  */
 export async function unsnoozeItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: SnoozableType,
   id: string,
   now = new Date()
@@ -187,7 +187,7 @@ export async function unsnoozeItem(
 }
 
 async function clearSnooze(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: SnoozableType,
   id: string,
   now: Date

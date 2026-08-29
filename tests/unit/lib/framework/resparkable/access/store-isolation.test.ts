@@ -8,7 +8,7 @@
  *
  * `access/**` is the second of the two layers allowed to touch Prisma (D5), and
  * it is the one that reads across users on purpose. That makes it the place a
- * missing predicate does the most damage — the repo layer's `OwnerScope` cannot
+ * missing predicate does the most damage — the repo layer's `SpaceScope` cannot
  * express a cross-user read at all, and this layer's whole job is to express
  * exactly one, following a grant or a link and nothing else.
  *
