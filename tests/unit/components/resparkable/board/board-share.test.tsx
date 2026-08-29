@@ -13,6 +13,13 @@
  * opens in its place. Two stacked focus traps is the failure that avoids, and it
  * is invisible until somebody presses Escape.
  *
+ * One thing this environment cannot see: in a real browser the closing card
+ * sheet stays mounted for its ~200ms exit animation, overlapping the share
+ * dialog, and its `FocusScope` cleanup then fires `onCloseAutoFocus`. The
+ * share dialog's own trap bounces focus back, so the symptom is a flicker
+ * rather than a stuck trap. jsdom unmounts synchronously, so that window
+ * does not exist here and no assertion below can be about it.
+ *
  * `DndContext` is mocked away for the same reason `board-drag-end.test.tsx`
  * mocks it: nothing here is about pointer maths, and the real context wants a
  * layout this environment does not have.
@@ -155,11 +162,17 @@ describe('BoardView sharing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Share File the VAT return' }));
 
-    // The card sheet is gone: one dialog on screen, and it is the share one.
-    await waitFor(() => {
-      expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    });
-    expect(screen.getByRole('heading', { name: /Share/ })).toBeInTheDocument();
+    // The card sheet is gone and the share dialog replaced it. Asserted on the
+    // *content* rather than on a dialog count, because a count cannot fail
+    // here: jsdom reports `animationName: none`, so Radix's `Presence`
+    // unmounts the closing sheet synchronously and the two can never overlap.
+    // In a real browser they do overlap for the ~200ms exit animation
+    // `components/ui/dialog.tsx` sets, which is the reason the handoff exists
+    // and not something this environment can observe.
+    expect(await screen.findByRole('heading', { name: /Share/ })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'File the VAT return' })).toBeNull();
+    // The sheet's own controls are gone with it.
+    expect(screen.queryByRole('button', { name: 'Add this step' })).toBeNull();
 
     // The task, at its own id. Sharing the board here would hand over every
     // other card on it.

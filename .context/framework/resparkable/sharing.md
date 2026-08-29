@@ -182,7 +182,7 @@ The membership comes from `buildBoardView`, never from a second query — the sn
 
 ### Where the control is, for each of the six types
 
-§13's shareable list is `area`, `goal`, `project`, `review`, `board`, `task`, and not `thought`. Release 2 built the access layer, the cascade, the redaction and the routes for all six, and shipped a **button** for two of them. The other four were reachable by API and by nothing a person could press, which is a gap of exactly the kind that stays open because every test passes. `components/resparkable/share/share-button.tsx` is the wrapper that closed it: `open` state, a button and a mounted `ShareDialog`, so no surface hand-rolls the three lines and gets the `entityType` wrong.
+§13's shareable list is `area`, `goal`, `project`, `review`, `board`, `task`, and not `thought`. Release 2 built the access layer, the cascade, the redaction and the routes for all six, and shipped a **button** for two of them. The other four were reachable by API and by nothing a person could press, which is a gap of exactly the kind that stays open because every test passes. Five now have one. `review` is the exception and the reason is below. `components/resparkable/share/share-button.tsx` is the wrapper that closed it: `open` state, a button and a mounted `ShareDialog`, so no surface hand-rolls the three lines and gets the `entityType` wrong.
 
 | Type      | Where the control is                                                    |
 | --------- | ----------------------------------------------------------------------- |
@@ -191,11 +191,11 @@ The membership comes from `buildBoardView`, never from a second query — the sn
 | `project` | the detail header, `components/resparkable/projects/project-detail.tsx` |
 | `board`   | the board header, `components/resparkable/board/board-view.tsx`         |
 | `task`    | the card sheet, `components/resparkable/board/card-detail-sheet.tsx`    |
-| `review`  | the morning briefing, `components/resparkable/today/briefing-card.tsx`  |
+| `review`  | **none.** Shareable by API, no control. See below                       |
 
-Four things about that table are decisions rather than the shape it happened to take.
+Five things about that table are decisions rather than the shape it happened to take.
 
-**A `goal` control is on every node, not only on roots.** The cascade takes a goal to its child goals and projects and their tasks, so sharing a parent and sharing one child are different acts and both are things somebody means to do. A control only on roots would have made the wider of the two the easier one.
+**A `goal` control is on every node, not only on roots.** The cascade takes a goal to its **child goals**, and no further: deviation 1 below is the reason a project is not in that list, whatever §13 says. Sharing a parent and sharing one child are still different acts and both are things somebody means to do, so a control only on roots would have made the wider of the two the easier one.
 
 **An `area` control shares the statement and nothing under it.** The cascade is typed and one level, and `area` is the type it deliberately stops at: sharing "Career" hands over what matters and why, not the goals and projects filed beneath it, each of which is shareable on its own terms.
 
@@ -203,7 +203,11 @@ Four things about that table are decisions rather than the shape it happened to 
 
 **The card sheet hands the card up rather than opening a dialog inside a dialog.** `CardDetailSheet` is itself a Radix dialog. Nesting `ShareDialog` inside it works in the sense that it renders, and fails in the sense that two focus traps are stacked, Escape means something different depending on which one holds focus, and the share flow ends with the card sheet still open behind a dialog the person has finished with. So the button calls `onShare`, `BoardView` closes the sheet and mounts the task's share dialog in its place. The dialog is rendered only while a card is being shared, so its panels fetch that task's grants rather than the previously shared card's.
 
-**A `review` is shared from the briefing because that is the only review surface.** The tier has no reviews list and needs none for the type to be shareable. One thing to keep in view: regenerating writes a **new** row rather than editing this one (`POST /reviews` has no `PATCH`, deliberately), and a grant names a row, so a share stays pointed at the briefing that was shared. A new briefing is not silently published to whoever held the old link.
+**A `review` gets no control, and the blocker is revocation rather than the missing list.** The morning briefing is the only stored review the owner has a surface for, so a button there was written and then taken out. `createReview` is a `create`, never an update (`POST /reviews` has no `PATCH`, deliberately, because "what did the strategist say three weeks ago" is the question the table exists to answer). So tomorrow the card renders a **different row**, and a link minted on today's briefing points at a row with no surface anywhere: no reviews list, and `/resparkable/shared` is the grantee's side. `ShareDialog` is only ever reachable through an entity's own control, so that link stays live with nothing able to revoke it.
+
+Granting is not the hard half of sharing. Being able to take it back is, and a share nobody can revoke is not a share, it is a publication. Expiry bounds it (30 days by default, 365 at most) but "never expires" is one checkbox away, and expiry is not revocation.
+
+**The fix is an owner-side "things I have shared" surface**, listing every live grant and link across all six types with a revoke on each, reachable without navigating to the entity. That is worth building on its own merits rather than for `review` alone: the same trap catches **any** entity that stops being reachable, and archiving one is the ordinary way that happens. Until it exists, `review` is shareable through `POST /grants` and `POST /share-links` and has no button, which is the honest state rather than a gap somebody should quietly close with two lines in `briefing-card.tsx`. Both that component and its test say so at the point where the button would go.
 
 **A `thought` has no control anywhere**, which is the feature §13 describes rather than an omission. The raw capture inbox is the likeliest place for something its author would be mortified to leak. Promote it to a task first, which is the workflow regardless.
 

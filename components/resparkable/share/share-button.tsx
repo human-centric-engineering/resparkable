@@ -11,14 +11,17 @@
  * types shipped with no affordance at all, which is the gap this closes. Five
  * hand-rolled copies is how one of them ends up with a different label, a
  * missing `aria-label`, or a dialog that never gets the `entityType` right.
+ * That last one is now the type's job rather than this comment's:
+ * `ShareDialogProps.entityType` is `ResparkableShareableType`, so a typo or a
+ * `thought` fails to compile instead of failing at the grants POST.
  *
  * The dialog itself is unchanged and stays the place all the reasoning lives.
  * This is a wrapper.
  *
- * ## The six shareable types, and the two surfaces that deliberately have no button
+ * ## Where the control goes, and the three places it deliberately does not
  *
  * §13's list is `area`, `goal`, `project`, `review`, `board`, `task`, and not
- * `thought`. All six now have a control:
+ * `thought`. Five of the six have a control:
  *
  *   | Type      | Where                                                        |
  *   | --------- | ------------------------------------------------------------ |
@@ -27,9 +30,9 @@
  *   | `project` | the project detail header (`project-detail.tsx`)              |
  *   | `board`   | the board header (`board-view.tsx`)                           |
  *   | `task`    | the card detail sheet (`card-detail-sheet.tsx`)               |
- *   | `review`  | the morning briefing on Today (`briefing-card.tsx`)           |
+ *   | `review`  | nowhere, on purpose. See below                                |
  *
- * Two omissions are decisions rather than oversights:
+ * Three omissions, all decisions rather than oversights:
  *
  *   • **`TaskRow` has no share button**, so a task is shared from its card and
  *     not from a ranked list. That component's own docblock is the reason: a
@@ -38,6 +41,11 @@
  *     reason for making `task` shareable at all was §12's, that a board is
  *     worthless if you cannot hand somebody a single card, and the card is
  *     exactly where this puts it.
+ *   • **`review` has none anywhere**, because regeneration writes a new row
+ *     and a link minted on today's briefing would outlive the only surface
+ *     that could revoke it. It waits for an owner-side "things I have shared"
+ *     page. `briefing-card.tsx` carries the full reasoning at the point where
+ *     the button would otherwise go, and its test asserts the absence.
  *   • **A `thought` has no share button anywhere**, because it is not
  *     shareable and that is a feature (§13). The raw capture inbox is the
  *     likeliest place for something its author would be mortified to leak.

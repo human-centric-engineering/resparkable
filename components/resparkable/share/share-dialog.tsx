@@ -65,6 +65,7 @@ import {
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import {
   createdGrantSchema,
   grantsSchema,
@@ -78,7 +79,15 @@ import {
 export interface ShareDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  entityType: string;
+  /**
+   * One of §13's six, not a string. It was `string` while two call sites passed
+   * two literals; now that `ShareButton` fans it out to six surfaces, an
+   * `entityType="thought"` or a plural typo would compile and fail only at the
+   * grants POST, where `z.enum(RESPARKABLE_SHAREABLE_TYPES)` rejects it. A
+   * share button that silently does nothing on one surface is exactly the
+   * failure the wrapper exists to prevent, so the union does the preventing.
+   */
+  entityType: ResparkableShareableType;
   entityId: string;
   /** What is being shared, for the dialog's own heading. */
   title: string;
@@ -220,7 +229,7 @@ function PeoplePanel({
   entityType,
   entityId,
 }: {
-  entityType: string;
+  entityType: ResparkableShareableType;
   entityId: string;
 }): React.ReactElement {
   const [grants, setGrants] = React.useState<GrantWire[] | null>(null);
@@ -449,7 +458,7 @@ function LinkPanel({
   entityType,
   entityId,
 }: {
-  entityType: string;
+  entityType: ResparkableShareableType;
   entityId: string;
 }): React.ReactElement {
   const [links, setLinks] = React.useState<ShareLinkWire[] | null>(null);

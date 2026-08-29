@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { ShareDialog } from '@/components/resparkable/share/share-dialog';
+import { ShareDialog, type ShareDialogProps } from '@/components/resparkable/share/share-dialog';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { GrantWire, ShareLinkWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -83,7 +83,10 @@ function makeShareLink(overrides: Partial<ShareLinkWire> = {}): ShareLinkWire {
   };
 }
 
-const props = {
+// Typed as the props, not inferred: `entityType` widens to `string` on a bare
+// object literal, which is what let this helper drift from the component's own
+// union until the union was tightened.
+const props: Omit<ShareDialogProps, 'filterBoard' | 'onSnapshot'> = {
   open: true,
   onOpenChange: vi.fn(),
   entityType: 'project',

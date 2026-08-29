@@ -27,21 +27,27 @@
  * its next load. Pretending otherwise, a spinner that resolves to nothing, would
  * be worse than saying what actually happened.
  *
- * ## This is where a `review` is shared from
+ * ## There is deliberately no share control here, and the reason is revocation
  *
- * A briefing is a `ResparkableReview` row, and `review` is one of §13's six
- * shareable types. It is also the only stored review the owner has a surface
- * for, so the share control lives here: the tier has no reviews list and does
- * not need one to make the type shareable. Regenerating writes a **new** row
- * rather than editing this one, which matters for anything already shared. The
- * grant names a row, so a share stays pointed at the briefing that was shared
- * and a new one is not silently published to whoever held the old link.
+ * A briefing is a `ResparkableReview` row and `review` is one of §13's six
+ * shareable types, so a button here is the obvious move. It was written and
+ * then taken out, because of what regeneration does: `createReview` is a
+ * `create`, never an update, so tomorrow this card renders a **different row**.
+ * A link minted on today's briefing would then point at a row with no surface
+ * anywhere. The tier has no reviews list, and `/resparkable/shared` is the
+ * grantee's side, so `ShareDialog` is only ever reachable through an entity's
+ * own control. The link would stay live with nothing able to revoke it.
+ *
+ * Granting is not the hard half. **Being able to take it back is**, and a
+ * share you cannot revoke is not a share, it is a publication. So `review`
+ * waits for an owner-side "things I have shared" surface, which is the honest
+ * fix and is also what any archived entity needs. Recorded in
+ * [`sharing.md`](../../../.context/framework/resparkable/sharing.md).
  */
 
 import * as React from 'react';
 import { Sparkles } from 'lucide-react';
 
-import { ShareButton } from '@/components/resparkable/share/share-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ClientDate } from '@/components/ui/client-date';
@@ -138,13 +144,6 @@ export function BriefingCard({ initial }: { initial: BriefingWire }): React.Reac
           >
             Surprise me today
           </Button>
-          {initial.review && (
-            <ShareButton
-              entityType="review"
-              entityId={initial.review.id}
-              title={initial.review.title}
-            />
-          )}
         </div>
 
         {/* An `aria-live` status line rather than a toast — the tier builds its

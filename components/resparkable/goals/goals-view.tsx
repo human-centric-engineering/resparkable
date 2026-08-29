@@ -217,11 +217,13 @@ function GoalNode({
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
-          {/* On the node, not on the root only. §13's cascade takes a goal to
-              its child goals and projects (and their tasks), so sharing a
-              parent and sharing one child are different acts and both are
-              things somebody means to do. Putting the control only on roots
-              would make the wider of the two the easier one. */}
+          {/* On the node, not on the root only. The cascade takes a goal to
+              its child goals and stops: `RESPARKABLE_CASCADE.goal` is
+              `['goal']`, and `sharing.md` deviation 1 is why a project is not
+              on that list despite §13 saying so. Sharing a parent and sharing
+              one child are still different acts and both are things somebody
+              means to do, so putting the control only on roots would make the
+              wider of the two the easier one. */}
           <ShareButton compact entityType="goal" entityId={goal.id} title={goal.title} />
           <ArchiveControls
             collection={RESPARKABLE_API.GOALS}

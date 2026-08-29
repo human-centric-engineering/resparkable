@@ -1383,7 +1383,7 @@ next free numbers rather than renumbering a table other documents already cite.
 | 50  | Group digest: `ResparkableReview{horizon: 'group_digest'}`, registered as a **gated kind** on phase 56's queue so a quiet fortnight is not billed (23.12), workflow on the group's schedule, `actorUserId` on the credit ledger, and 23.12's budget policy in full: admin top-up, no fallback to a member's own balance, `dailyCreditCap`, viewer-spends-zero, the two admin-only thresholds                                                   | test 13h (the digest is non-comparative) and test 13k                                                                                            |
 | 57  | 23.11 joining: hashed join links with §13's public-link discipline (`maxUses`, expiry, revocation, role fixed at mint and never `admin`), open-vs-request approval as a `joinedAt: null` membership row, `maxMembers`, the two new rate-limit tiers                                                                                                                                                                                            | test 13i; a pending member resolves to no scope at all                                                                                           |
 | 58  | 23.13 collaboration: `ResparkableTask.assignedToUserId`, comments on the `space` basis with admin deletion, `rev` promoted from dormant to the group write path (409, no migration), leaving voluntarily, the three notification templates, `ResparkableGroupAuditEntry`, per-space storage quota                                                                                                                                              | test 13j; the `rev` coverage list is asserted rather than assumed                                                                                |
-| 59  | 23.10 activity feed: its own Workspace tab in `tab-registry.ts`, `GET` + `computeETag`/`checkConditional`, visibility-gated polling, `feedSeenAt` on `ResparkableGroupMember`, actor rendering with `source: 'system'` attributed to the workspace, unknown kinds dropped                                                                                                                                                                      | test 13l and test 13m, the second of which is the non-monitor assertion                                                                          |
+| 59  | 23.10 activity feed: its own Workspace tab (a `tab-registry.ts` entry **and** a `change-scope.ts` one, or `tab-registry.test.ts`'s coverage block fails: [`ui.md`](./ui.md) step 6), `GET` + `computeETag`/`checkConditional`, visibility-gated polling, `feedSeenAt` on `ResparkableGroupMember`, actor rendering with `source: 'system'` attributed to the workspace, unknown kinds dropped                                                  | test 13l and test 13m, the second of which is the non-monitor assertion                                                                          |
 
 **Phase 45 ships behind no flag and changes no behaviour.** It is a rename plus
 some nullable columns, deliberately separated from every user-visible part of
@@ -2411,8 +2411,9 @@ decided about. That is a **decision queue**, and its whole interaction is accept
 or reject. An event feed is a **record**, and has no decision in it. Putting the
 second inside the first gives one surface two jobs and the queue wins, because a
 queue with unread items in it is louder than a log. The group feed is its own
-Workspace tab with an entry in `tab-registry.ts`. Phase 50 originally said "the
-Activity pane" and phase 59 replaces it.
+Workspace tab, which per [`ui.md`](./ui.md) means an entry in `tab-registry.ts`
+**and** one in `change-scope.ts`, not just the first. Phase 50 originally said
+"the Activity pane" and phase 59 replaces it.
 
 **2. It is not push.** Decision: **poll, with conditional requests.** SSE holds
 one connection per viewer per group for as long as the tab is open, and the
