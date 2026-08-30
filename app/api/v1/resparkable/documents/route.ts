@@ -35,7 +35,7 @@ import {
   resolveIngestPolicy,
 } from '@/lib/framework/resparkable/documents/ingest';
 import { countDocuments, listDocuments } from '@/lib/framework/resparkable/repo/documents';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   documentListQuerySchema,
   documentUploadSchema,
@@ -55,7 +55,7 @@ function summarise(document: ResparkableDocument) {
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const query = validateQueryParams(new URL(request.url).searchParams, documentListQuerySchema);
   const filters = query.status ? { status: query.status } : {};
@@ -76,7 +76,7 @@ export const GET = withAuth(async (request, session) => {
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const policy = await resolveIngestPolicy();
 

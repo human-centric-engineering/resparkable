@@ -162,7 +162,7 @@ describe('PATCH /resparkable/checklist/[id]', () => {
 
     expect(response.status).toBe(200);
     expect(mockedUpdateItem).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'item_1',
       { isDone: true }
     );
@@ -272,7 +272,7 @@ describe('DELETE /resparkable/checklist/[id]', () => {
     // resolves to the deleted row, not this shape.
     expect(body.data).toEqual({ id: 'item_1', deleted: true });
     expect(mockedDeleteItem).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'item_1'
     );
   });
@@ -313,11 +313,11 @@ describe('GET /resparkable/tasks/[id]/checklist', () => {
     await invoke(CHECKLIST_GET, { id: 'task_1' });
 
     expect(mockedFindTask).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'task_1'
     );
     expect(mockedListChecklist).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'task_1'
     );
   });
@@ -371,7 +371,7 @@ describe('PUT /resparkable/tasks/[id]/tags', () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(mockedSetTags).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       TASK_ID,
       [TAG_ID_1, TAG_ID_2]
     );

@@ -39,10 +39,10 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { WorkflowStatus } from '@/types/orchestration';
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 beforeEach(() => {
   vi.clearAllMocks();

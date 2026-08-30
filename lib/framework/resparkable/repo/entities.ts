@@ -19,11 +19,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -41,19 +41,19 @@ export type EntityCreateData = WithoutOwner<Prisma.ResparkableEntityUncheckedCre
 export type EntityUpdateData = WithoutOwner<Prisma.ResparkableEntityUncheckedUpdateInput>;
 
 function entityWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: EntityFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableEntityWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.kind ? { kind: filters.kind } : {}),
     ...(filters.status ? { status: filters.status } : {}),
   };
 }
 
 export async function listEntities(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: EntityFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableEntity[]> {
@@ -65,39 +65,39 @@ export async function listEntities(
 }
 
 export async function countEntities(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: EntityFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
   return prisma.resparkableEntity.count({ where: entityWhere(scope, filters, includeArchived) });
 }
 
-export async function findEntity(scope: OwnerScope, id: string): Promise<ResparkableEntity | null> {
-  return prisma.resparkableEntity.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findEntity(scope: SpaceScope, id: string): Promise<ResparkableEntity | null> {
+  return prisma.resparkableEntity.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 export async function findEntityBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableEntity | null> {
-  return prisma.resparkableEntity.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableEntity.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
 export async function createEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: EntityCreateData
 ): Promise<ResparkableEntity> {
-  return prisma.resparkableEntity.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableEntity.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: EntityUpdateData
 ): Promise<ResparkableEntity | null> {
   return nullOnMiss(() =>
     prisma.resparkableEntity.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -113,38 +113,38 @@ export async function updateEntity(
  * is the manual path.
  */
 export async function archiveEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableEntity | null> {
   return archiveAndDropVectors(scope, 'entity', id, () =>
     prisma.resparkableEntity.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
 export async function restoreEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableEntity | null> {
   return nullOnMiss(() =>
     prisma.resparkableEntity.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
 }
 
 export async function deleteEntity(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableEntity | null> {
   // Vectors go in the SAME transaction: nothing cascades to the polymorphic
   // embedding table, and an orphan chunk makes the sweep propose links to a row
   // that no longer exists.
   return deleteAndDropVectors(scope, 'entity', id, () =>
-    prisma.resparkableEntity.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableEntity.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

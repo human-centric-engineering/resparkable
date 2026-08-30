@@ -1,7 +1,7 @@
 /**
  * Unit Tests: `resparkable_capture_for_token`.
  *
- * The one capability in the tier that does not trust `context.userId` — see
+ * The one capability in the tier that does not trust `context.spaceId` — see
  * the class's own header for why. That inversion is what this file exists to
  * pin down: everywhere else, "who is this for" is a platform guarantee before
  * `run()` is ever reached; here it is two checks the capability makes itself,
@@ -14,7 +14,7 @@
  * than template-interpolated args.
  *
  * Test Coverage:
- * - `context.userId` is never read — the owner comes from `trigger.mailboxHash` alone
+ * - `context.spaceId` is never read — the owner comes from `trigger.mailboxHash` alone
  * - An unknown token captures nothing and never reaches the contact lookup
  * - A `from.email` that doesn't match the resolved owner's email captures nothing
  * - An unverified account email refuses the message even if the address matches
@@ -70,7 +70,7 @@ function args(trigger: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedSpace.mockResolvedValue({ id: 'space_1', userId: 'user_owner' } as never);
+  mockedSpace.mockResolvedValue({ id: 'space_1', spaceId: 'user_owner' } as never);
   mockedContact.mockResolvedValue({
     email: 'owner@example.com',
     name: 'Owner',
@@ -83,7 +83,7 @@ beforeEach(() => {
 });
 
 describe('resparkable_capture_for_token — owner resolution', () => {
-  it('resolves the owner from trigger.mailboxHash, never from context.userId', async () => {
+  it('resolves the owner from trigger.mailboxHash, never from context.spaceId', async () => {
     const cap = capability();
 
     await cap.execute(args(), CONTEXT);
@@ -91,12 +91,12 @@ describe('resparkable_capture_for_token — owner resolution', () => {
     expect(mockedSpace).toHaveBeenCalledWith(TOKEN);
     // The capture lands on the *space's* owner, not the context's.
     expect(mockedCapture).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_owner' }),
+      expect.objectContaining({ spaceId: 'user_owner' }),
       expect.anything()
     );
   });
 
-  it('runs even when context.userId is null — the platform guard other capabilities need does not apply here', async () => {
+  it('runs even when context.spaceId is null — the platform guard other capabilities need does not apply here', async () => {
     const cap = capability();
 
     const result = await cap.execute(args(), { userId: null, agentId: 'workflow:wf_1' });
@@ -270,7 +270,7 @@ describe('resparkable_capture_for_token — what it cannot be made to accept', (
           messageId: 'm1',
           strippedTextReply: 'hi',
         },
-        userId: 'attacker_supplied',
+        spaceId: 'attacker_supplied',
       })
     ).not.toThrow();
   });

@@ -9,7 +9,7 @@
  *
  * ## Why pages read through the API rather than calling services
  *
- * A server component *could* call `buildToday(ownerScope(session.user.id))`
+ * A server component *could* call `buildToday(spaceScope(session.user.id))`
  * directly and save a round trip. Resparkable deliberately doesn't, for the same
  * reason `/admin/resparkable/settings` doesn't: it would create a second
  * implementation of "what does this surface show", and the two drift. The API is

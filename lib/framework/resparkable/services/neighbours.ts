@@ -18,7 +18,7 @@
  */
 
 import { countChunks, type EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findSummaries, type EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
 import { findConnections, type Connection } from '@/lib/framework/resparkable/search/connections';
 
@@ -58,7 +58,7 @@ export interface NeighbourResult {
  * transaction deletes vectors, so this is a race rather than a state.
  */
 export async function hydrateNeighbours(
-  scope: OwnerScope,
+  scope: SpaceScope,
   connections: readonly Connection[]
 ): Promise<Neighbour[]> {
   const idsByType = new Map<EmbeddedType, string[]>();
@@ -93,7 +93,7 @@ export async function hydrateNeighbours(
  * for it.
  */
 export async function findNeighbours(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: FindNeighboursInput
 ): Promise<NeighbourResult | null> {
   const [seed] = await findSummaries(scope, input.entityType, [input.entityId]);

@@ -142,7 +142,7 @@ export async function backfillMissingResparkableJobs(
 
   let enqueued = 0;
   for (const space of missing) {
-    enqueued += await ensureResparkableJobs(space.userId, space.timezone, now);
+    enqueued += await ensureResparkableJobs(space.spaceId, space.timezone, now);
   }
 
   logger.info('Resparkable backfilled job rows for brains that had none', {

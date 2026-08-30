@@ -177,7 +177,7 @@ describe('listSharedWithMe', () => {
     // Two calls, each carrying its own owner scope. One call with both ids
     // would be a projection spanning two brains.
     expect(findSharedItems).toHaveBeenCalledTimes(2);
-    const scopes = findSharedItems.mock.calls.map((call) => call[0].userId);
+    const scopes = findSharedItems.mock.calls.map((call) => call[0].spaceId);
     expect(new Set(scopes)).toEqual(new Set(['user_a', 'user_c']));
   });
 
@@ -265,7 +265,7 @@ describe('readSharedWithMe', () => {
 
     expect(result?.payload.includeTaskDetail).toBe(true);
     expect(findSharedItem).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       'project',
       'p_1',
       true

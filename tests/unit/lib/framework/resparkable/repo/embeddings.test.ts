@@ -57,9 +57,9 @@ import {
   upsertEmbeddings,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import { logger } from '@/lib/logging';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 function embeddingRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -108,7 +108,7 @@ describe('upsertEmbeddings', () => {
     const sql = (template as unknown as string[]).join('?');
 
     expect(sql).toContain('ON CONFLICT');
-    expect(sql).toContain('"userId", "entityType", "entityId", "chunkIndex"');
+    expect(sql).toContain('"spaceId", "entityType", "entityId", "chunkIndex"');
     expect(sql).toContain('DO UPDATE SET');
   });
 
@@ -133,7 +133,7 @@ describe('deleteEmbeddingsFromIndex', () => {
     expect(count).toBe(2);
     expect(prisma.resparkableEmbedding.deleteMany).toHaveBeenCalledWith({
       where: {
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'document',
         entityId: 'd_1',
         chunkIndex: { gte: 3 },
@@ -272,7 +272,7 @@ describe('markSwept', () => {
     expect(count).toBe(2);
     expect(prisma.resparkableEmbedding.updateMany).toHaveBeenCalledTimes(1);
     expect(prisma.resparkableEmbedding.updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', entityType: 'thought', entityId: { in: ['t_1', 't_2'] } },
+      where: { spaceId: 'user_a', entityType: 'thought', entityId: { in: ['t_1', 't_2'] } },
       data: { sweptAt: now },
     });
   });
@@ -430,10 +430,10 @@ describe('assertResparkableModelMatchesStoredVectors', () => {
     await expect(assertResparkableModelMatchesStoredVectors(SCOPE)).rejects.toThrow();
 
     const groupByCall = vi.mocked(prisma.resparkableEmbedding.groupBy).mock.calls[0]?.[0];
-    expect(groupByCall?.where).toMatchObject({ userId: 'user_a' });
+    expect(groupByCall?.where).toMatchObject({ spaceId: 'user_a' });
 
     const findFirstCall = vi.mocked(prisma.resparkableEmbedding.findFirst).mock.calls[0]?.[0];
-    expect(findFirstCall?.where).toMatchObject({ userId: 'user_a' });
+    expect(findFirstCall?.where).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('names the model "unknown" when no exemplar row can be found for a mismatched dimension', async () => {

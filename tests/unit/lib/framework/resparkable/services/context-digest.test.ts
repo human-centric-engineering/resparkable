@@ -29,14 +29,14 @@ import { buildContextDigest } from '@/lib/framework/resparkable/services/context
 import { findArea } from '@/lib/framework/resparkable/repo/areas';
 import { listLinksForEntity } from '@/lib/framework/resparkable/repo/links';
 import { findThoughtsByIds } from '@/lib/framework/resparkable/repo/thoughts';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableArea, ResparkableLink, ResparkableThought } from '@prisma/client';
 
 const mockedFindArea = vi.mocked(findArea);
 const mockedListLinks = vi.mocked(listLinksForEntity);
 const mockedFindThoughts = vi.mocked(findThoughtsByIds);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const AREA = {
   id: 'area_1',

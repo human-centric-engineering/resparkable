@@ -33,7 +33,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   createComment,
   deleteComment,
@@ -42,7 +42,7 @@ import {
   listComments,
 } from '@/lib/framework/resparkable/repo/comments';
 
-const OWNER = ownerScope('user_a');
+const OWNER = spaceScope('user_a');
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 
 beforeEach(() => {
@@ -54,7 +54,7 @@ describe('listComments', () => {
     await listComments(OWNER, 'project', 'p_1');
 
     const args = vi.mocked(prisma.resparkableComment.findMany).mock.calls[0][0];
-    expect(args?.where).toEqual({ userId: 'user_a', entityType: 'project', entityId: 'p_1' });
+    expect(args?.where).toEqual({ spaceId: 'user_a', entityType: 'project', entityId: 'p_1' });
     // Every other list in this tier is newest-first. Those are queues; this is
     // a conversation, and a conversation is read in the order it was said.
     expect(args?.orderBy).toEqual({ createdAt: 'asc' });
@@ -73,7 +73,7 @@ describe('createComment', () => {
     // The two must not be confused at any point: the scope says whose brain
     // this lands in, the author says who said it.
     expect(vi.mocked(prisma.resparkableComment.create).mock.calls[0][0].data).toMatchObject({
-      userId: 'user_a',
+      spaceId: 'user_a',
       authorUserId: 'user_b',
     });
   });
@@ -93,7 +93,7 @@ describe('editComment', () => {
     // covered by that resolution, and without these two the write would land on
     // one thread while the response returned another.
     expect(args.where).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       id: 'c_1',
       authorUserId: 'user_b',
       entityType: 'project',
@@ -126,7 +126,7 @@ describe('deleteComment', () => {
 
     expect(vi.mocked(prisma.resparkableComment.delete).mock.calls[0][0].where).toEqual({
       id: 'c_1',
-      userId: 'user_a',
+      spaceId: 'user_a',
       authorUserId: 'user_b',
       entityType: 'project',
       entityId: 'p_1',
@@ -142,7 +142,7 @@ describe('deleteComment', () => {
     // stop sharing.
     expect(vi.mocked(prisma.resparkableComment.delete).mock.calls[0][0].where).toEqual({
       id: 'c_1',
-      userId: 'user_a',
+      spaceId: 'user_a',
       // The thread predicate stays even for the owner: dropping the AUTHOR
       // filter is what owner authority buys, not the ability to reach a
       // comment on some other item.

@@ -22,7 +22,7 @@
  *
  * ## Scoped, like everything else
  *
- * `findSummaries` takes the caller's `OwnerScope`, so an id belonging to someone
+ * `findSummaries` takes the caller's `SpaceScope`, so an id belonging to someone
  * else hydrates to nothing rather than to their content. That should be impossible
  * — the links were read through a scoped query — but this is the one path where an
  * id crosses back from a polymorphic column into a fresh lookup, and defence in
@@ -30,7 +30,7 @@
  */
 
 import { EMBEDDED_TYPES, type EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findSummaries, type EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
 
 /** Everything `findSummaries` can hydrate. */
@@ -77,7 +77,7 @@ function isSummarisable(type: string): type is SummarisableType {
  * daily briefing's `topConnections`, see services/briefing.ts).
  */
 export async function hydrateLinks<T extends HydratableLink>(
-  scope: OwnerScope,
+  scope: SpaceScope,
   links: T[],
   includeArchived = true,
   excludeSensitive = false

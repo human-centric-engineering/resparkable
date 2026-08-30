@@ -20,11 +20,11 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -40,29 +40,29 @@ export interface ReviewFilters {
 export type ReviewCreateData = WithoutOwner<Prisma.ResparkableReviewUncheckedCreateInput>;
 
 function reviewWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ReviewFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableReviewWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.horizon ? { horizon: filters.horizon } : {}),
   };
 }
 
 /** The most recently generated review, optionally of one horizon. */
 export async function findLatestReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   horizon?: string
 ): Promise<ResparkableReview | null> {
   return prisma.resparkableReview.findFirst({
-    where: { ...liveOwnerWhere(scope), ...(horizon ? { horizon } : {}) },
+    where: { ...liveSpaceWhere(scope), ...(horizon ? { horizon } : {}) },
     orderBy: { generatedAt: 'desc' },
   });
 }
 
 export async function listReviews(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ReviewFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableReview[]> {
@@ -74,26 +74,26 @@ export async function listReviews(
 }
 
 export async function countReviews(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ReviewFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
   return prisma.resparkableReview.count({ where: reviewWhere(scope, filters, includeArchived) });
 }
 
-export async function findReview(scope: OwnerScope, id: string): Promise<ResparkableReview | null> {
-  return prisma.resparkableReview.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findReview(scope: SpaceScope, id: string): Promise<ResparkableReview | null> {
+  return prisma.resparkableReview.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 export async function createReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: ReviewCreateData
 ): Promise<ResparkableReview> {
-  return prisma.resparkableReview.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableReview.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function archiveReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableReview | null> {
@@ -102,15 +102,15 @@ export async function archiveReview(
   // column on the model is dormant, carried for the same reason `rev` is.
   return nullOnMiss(() =>
     prisma.resparkableReview.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason },
     })
   );
 }
 
 export async function deleteReview(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableReview | null> {
-  return nullOnMiss(() => prisma.resparkableReview.delete({ where: { id, ...ownerWhere(scope) } }));
+  return nullOnMiss(() => prisma.resparkableReview.delete({ where: { id, ...spaceWhere(scope) } }));
 }

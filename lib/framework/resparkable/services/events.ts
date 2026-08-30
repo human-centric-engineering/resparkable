@@ -24,7 +24,7 @@ import {
   type ResparkableEventKind,
   type RecordEventInput,
 } from '@/lib/framework/resparkable/repo/events';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { currentEventSource } from '@/lib/framework/resparkable/services/authorship';
 import { wakeResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 
@@ -40,14 +40,14 @@ export type { ResparkableEventKind };
  * an activity log with holes in it.
  */
 export async function recordResparkableEvent(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: RecordEventInput
 ): Promise<void> {
   // Before the write, not after: the cache drop is what stops an agent
   // confidently reporting a task the person finished a minute ago, and it must
   // happen even on the branch where the log insert loses a race. It is a
   // synchronous `Map.delete` — there is nothing to fail and nothing to await.
-  invalidateResparkableContext(scope.userId);
+  invalidateResparkableContext(scope.spaceId);
 
   // Resolved here rather than taken from the caller: authorship is a property
   // of how this call arrived, and every service between the entry point and
@@ -91,7 +91,7 @@ export async function recordResparkableEvent(
   // is the run authorising its own successor, and it re-arms every OTHER kind
   // as well. Waking is the mirror of the demand gate and has to read the same
   // signal, or a brain nobody has touched never goes quiet.
-  if (source === 'user') await wakeResparkableJobs(scope.userId);
+  if (source === 'user') await wakeResparkableJobs(scope.spaceId);
 }
 
 /**

@@ -29,6 +29,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableDocument } from '@prisma/client';
 import { assertDefined } from '@/tests/helpers/assertions';
 import type { StorageProvider } from '@/lib/storage/providers/types';
@@ -133,7 +134,8 @@ function makeLog() {
 function makeDocument(overrides: Partial<ResparkableDocument> = {}): ResparkableDocument {
   return {
     id: 'doc_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
+    createdByUserId: null,
     title: 'Meeting notes',
     fileName: 'notes.md',
     fileHash: 'a'.repeat(64),
@@ -215,14 +217,14 @@ describe('GET /resparkable/documents', () => {
   it('scopes the list to the session user', async () => {
     await invoke(DOCS_GET, req('http://x/api/v1/resparkable/documents'), SESSION_A);
 
-    expect(vi.mocked(listDocuments).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
-    expect(vi.mocked(countDocuments).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
+    expect(vi.mocked(listDocuments).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
+    expect(vi.mocked(countDocuments).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
   });
 
   it('does not let a userId query param override the session-derived scope', async () => {
     await invoke(DOCS_GET, req('http://x/api/v1/resparkable/documents?userId=user_b'), SESSION_A);
 
-    expect(vi.mocked(listDocuments).mock.calls[0]?.[0]).toEqual({ userId: 'user_a' });
+    expect(vi.mocked(listDocuments).mock.calls[0]?.[0]).toEqual(spaceScope('user_a'));
   });
 
   it('strips extractedText and storageKey, exposing hasOriginal instead', async () => {
@@ -326,7 +328,7 @@ describe('POST /resparkable/documents', () => {
     const call = vi.mocked(ingestDocument).mock.calls[0];
     assertDefined(call);
     const [scope, input] = call;
-    expect(scope).toEqual({ userId: 'user_a' });
+    expect(scope).toEqual(spaceScope('user_a'));
     expect(input.fileName).toBe('plan.md');
     expect(input.mimeType).toBe('text/markdown');
     expect(Buffer.isBuffer(input.buffer)).toBe(true);
@@ -443,7 +445,7 @@ describe('GET /resparkable/documents/[id]', () => {
       id: 'doc_1',
     });
 
-    expect(findDocument).toHaveBeenCalledWith({ userId: 'user_a' }, 'doc_1');
+    expect(findDocument).toHaveBeenCalledWith(spaceScope('user_a'), 'doc_1');
   });
 
   it('strips storageKey and exposes hasOriginal on a single-document read', async () => {
@@ -487,7 +489,7 @@ describe('DELETE /resparkable/documents/[id]', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(archiveDocument).toHaveBeenCalledWith({ userId: 'user_a' }, 'doc_1');
+    expect(archiveDocument).toHaveBeenCalledWith(spaceScope('user_a'), 'doc_1');
     expect(deleteDocument).not.toHaveBeenCalled();
   });
 
@@ -515,7 +517,7 @@ describe('DELETE /resparkable/documents/[id]', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(deleteDocument).toHaveBeenCalledWith({ userId: 'user_a' }, 'doc_1');
+    expect(deleteDocument).toHaveBeenCalledWith(spaceScope('user_a'), 'doc_1');
     expect(archiveDocument).not.toHaveBeenCalled();
   });
 

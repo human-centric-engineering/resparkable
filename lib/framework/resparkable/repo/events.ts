@@ -14,7 +14,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { ResparkableEventSource } from '@/lib/framework/resparkable/services/authorship';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { pageArgs, type PageOptions } from '@/lib/framework/resparkable/repo/shared';
 import { Prisma } from '@prisma/client';
 import type { ResparkableEvent } from '@prisma/client';
@@ -56,12 +56,12 @@ export interface RecordEventInput {
  * `services/events.ts`).
  */
 export async function insertEvent(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: RecordEventInput
 ): Promise<ResparkableEvent> {
   return prisma.resparkableEvent.create({
     data: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       kind: input.kind,
       entityType: input.entityType,
       entityId: input.entityId,
@@ -96,7 +96,7 @@ export async function insertEvent(
  * date.
  */
 export async function findLatestStatusChanges(
-  scope: OwnerScope,
+  scope: SpaceScope,
   taskIds: string[]
 ): Promise<Map<string, { at: Date; toStatus: string }>> {
   if (taskIds.length === 0) return new Map();
@@ -109,7 +109,7 @@ export async function findLatestStatusChanges(
            "createdAt",
            "metadata"->>'statusTo' AS "statusTo"
     FROM "framework_resparkable_event"
-    WHERE "userId" = ${scope.userId}
+    WHERE "spaceId" = ${scope.spaceId}
       AND "entityType" = 'task'
       AND "entityId" IN (${Prisma.join(taskIds)})
       AND "metadata" ? 'statusTo'
@@ -131,13 +131,13 @@ export interface EventFilters {
 }
 
 export async function listEvents(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: EventFilters = {},
   options: PageOptions = {}
 ): Promise<ResparkableEvent[]> {
   return prisma.resparkableEvent.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       ...(filters.kind ? { kind: filters.kind } : {}),
       ...(filters.entityType ? { entityType: filters.entityType } : {}),
       ...(filters.entityId ? { entityId: filters.entityId } : {}),

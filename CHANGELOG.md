@@ -18,6 +18,99 @@ release process.
 
 ### Added
 
+- **The Prisma field catches up with the column: `spaceId` everywhere.** The
+  transitional `@map("spaceId")` is gone, so `ResparkableSpace.spaceId` and the
+  same field on all 23 satellites are named the same thing in the schema, the
+  client, the raw SQL and `psql`. `spaceWhere()` returns `{ spaceId }`,
+  `WithoutOwner<T>` omits `spaceId`, and `transfer/policy.ts`'s `ownerColumn` and
+  `mergeKeys` name it too.
+
+  **This commit carries no migration**: the column moved two commits ago. It is
+  the churny half of the split, deliberately isolated so it could be reviewed as
+  what it is.
+
+  One finding worth recording, because it invalidates an obvious plan: **the
+  compiler does not catch an unknown key in a Prisma `where` literal.** Prisma 7's
+  generic argument types absorb excess properties, so `where: { userId }` on a
+  model that no longer has that column type-checks cleanly and fails only at
+  runtime. `access/store.ts` was entirely broken by this for a while (every
+  cascade read matching nothing, which fails closed but fails), and it was the
+  mocked tests asserting the argument shape, plus a real-database smoke, that
+  found it rather than `tsc`. Anyone doing a similar rename should sweep Prisma
+  literals by hand and treat the compiler as a partial net.
+
+- **`OwnerScope` is now `SpaceScope`, and the partition key is no longer the
+  acting person.** `repo/owner-scope.ts` becomes `repo/space-scope.ts` and the
+  branded type carries three fields instead of one: `spaceId` (what every `WHERE`
+  in `repo/**` uses), `actorUserId` (attribution and role checks, **never** a
+  filter) and `role: 'owner' | 'admin' | 'member' | 'viewer'`. `ownerScope()`,
+  `ownerWhere()` and `liveOwnerWhere()` are renamed `spaceScope()`, `spaceWhere()`
+  and `liveSpaceWhere()`; a second constructor `spaceScopeFor()` mints a scope for
+  an actor who is not the owner, which is what `access/**` has been doing since
+  Release 2.
+
+  Separating the key from the actor is the whole point. The moment `actorUserId`
+  appears in a `where`, a group space has a per-row ACL: a membership join on the
+  hot path of forty list endpoints, `priorityScore`'s single indexed `ORDER BY`
+  defeated, and every one of those endpoints a potential leak (§23.4). So it is
+  asserted structurally rather than documented: `repo/isolation.test.ts` now
+  sweeps every exported repo function and every raw statement for it, and it does
+  so now, while nothing yet has an actor to filter on.
+
+  `sharedOwnerScope()` and `grantOwnerScope()` become `sharedSpaceScope()` and
+  `grantSpaceScope()` and take the reading actor, producing `role: 'viewer'`.
+  They used to mint an owner scope for a grantee, which was harmless while the
+  role was one value and would not be. The actor is nullable, because the public
+  reader has no session to name.
+
+  This commit contains no migration. The database column moved with the previous
+  one; the Prisma field is still `userId`, mapped to `spaceId`, and follows next.
+
+- **The Resparkable brain's owner key is now `spaceId`, and the GDPR cascade
+  hangs off a new `ownerUserId`.** Release 9 phase 45 (`plan.md` §23.2), the
+  structural half of Groups: `ResparkableSpace.userId` and the `userId` column on
+  all 23 satellites are renamed, `ResparkableSpace` gains
+  `kind: 'personal' | 'group'` plus a nullable, deliberately **non-unique**
+  `ownerUserId`, and the hand-written `→ "user"("id") ON DELETE CASCADE` FK moves
+  onto that column. A group space has `ownerUserId` NULL and is therefore,
+  correctly, unreachable by the personal cascade: one member closing their
+  account must not take a shared workspace with them. Nothing creates a group
+  space yet; that is phase 46.
+
+  **The migration rewrites no rows.** Every satellite referenced
+  `ResparkableSpace.userId` and nothing referenced its `id`, so a personal space
+  keeps its existing key value (which happens to be a user id) and the change is
+  a catalog rename rather than an `UPDATE` over the largest tables in the
+  database. Proved rather than asserted, by
+  `npm run framework:resparkable:key-checksum`, which compares row counts,
+  content digests, `pg_class.relfilenode` and `pg_stat_user_tables` tuple
+  counters either side: a checksum alone passes on a full rewrite, so the
+  relfilenode is the measure that actually answers the question.
+
+  Also landed here, because the migration that would add them is the migration
+  over 23 tables and it happens once: §24.1's workspace columns (`isDefault`,
+  `name`, `slug`, `archivedAt`) with a partial unique index enforcing at most one
+  live default per owner, and §23.5's `createdByUserId` on every satellite with
+  `ON DELETE SetNull`, so an erased member loses their authorship and the group
+  keeps its content.
+
+  New drift probes: **B1b** (the pre-phase-45 FK must be gone, which is what
+  distinguishes "the migration ran" from "it ran to completion"), **B10** (the
+  partial unique, asserted by definition: a plain index of the same name
+  satisfies existence and enforces nothing), **B11** (all 23 authorship keys in
+  one probe, checking the action, because `Cascade` here would let a departing
+  member delete a group's shared material), and **B12**, a `CHECK` making the
+  ownership invariant a database rule rather than a convention. B12 is not
+  decoration: two writers produced a personal space with a NULL `ownerUserId`
+  within an hour of the column existing, and every such row is a brain no erasure
+  can ever reach.
+
+  `RESPARKABLE_SCHEDULE_OWNER_KEY` gains a sibling `RESPARKABLE_SCHEDULE_SPACE_KEY`
+  (§24.2). Both keys are written and either is read, via the new
+  `readResparkableScheduleSpaceId()`: replacing the old one outright would open a
+  window at deploy, before the new code is on every pod, in which an old reader
+  silently resolves no owner.
+
 - **`/resparkable/sharing`: every share is now revocable, including the ones you
   cannot navigate to.** `ShareDialog` is the only place a share is revoked and it
   is reachable only through the entity's own control, which holds until the

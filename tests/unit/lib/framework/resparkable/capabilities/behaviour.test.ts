@@ -147,7 +147,7 @@ describe('resparkable_capture', () => {
     await call(capability, { content: 'ship the pricing page' });
 
     expect(captureThought).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-a' }),
+      expect.objectContaining({ spaceId: 'user-a' }),
       expect.objectContaining({ content: 'ship the pricing page', source: 'agent' })
     );
   });
@@ -440,7 +440,7 @@ describe('resparkable_promote_thought', () => {
     const result = await call(capability, { thoughtId: ID(1), target: 'task', projectId: ID(3) });
 
     expect(promoteThought).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-a' }),
+      expect.objectContaining({ spaceId: 'user-a' }),
       ID(1),
       {
         target: 'task',
@@ -835,7 +835,7 @@ describe('resparkable_reprioritise', () => {
 
     const result = await call(capability, {});
 
-    expect(reprioritiseTasks).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-a' }));
+    expect(reprioritiseTasks).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user-a' }));
     expect(result).toMatchObject({ success: true, data: { scored: 42 } });
   });
 });

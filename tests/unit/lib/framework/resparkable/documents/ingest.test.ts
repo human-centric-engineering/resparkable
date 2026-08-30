@@ -54,9 +54,9 @@ import {
   isAllowedDocumentFile,
   resolveIngestPolicy,
 } from '@/lib/framework/resparkable/documents/ingest';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 function upload(overrides: Partial<{ fileName: string; buffer: Buffer; mimeType: string }> = {}) {
   return {

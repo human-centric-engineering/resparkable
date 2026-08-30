@@ -47,7 +47,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 /** Oldest first, so a bundle reads as a history rather than a bag of rows. */
 const CHRONOLOGICAL = { createdAt: 'asc' } as const;
@@ -64,7 +64,7 @@ interface ResparkableSubjectSource {
   section: string;
   /** Why this table holds the subject's data — shown to a reader of this file. */
   holds: string;
-  fetch: (scope: OwnerScope) => Promise<unknown[]>;
+  fetch: (scope: SpaceScope) => Promise<unknown[]>;
 }
 
 /**
@@ -81,7 +81,7 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     holds: 'The brain itself: timezone, capacity, energy profile and retention settings.',
     fetch: (scope) =>
       prisma.resparkableSpace.findMany({
-        where: ownerWhere(scope),
+        where: spaceWhere(scope),
         // `inboxToken` is a live bearer secret — anyone holding it can write
         // into this person's inbox. Core omits credential material from an
         // export even though the subject owns it, because the bundle is a file
@@ -94,69 +94,69 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     section: 'areas',
     holds: 'The life areas they organise their work under.',
     fetch: (scope) =>
-      prisma.resparkableArea.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableArea.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableGoal: {
     section: 'goals',
     holds: 'Goals and their horizons, including the parent/child structure.',
     fetch: (scope) =>
-      prisma.resparkableGoal.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableGoal.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableProject: {
     section: 'projects',
     holds: 'Projects, their status and the priority the system computed for them.',
     fetch: (scope) =>
-      prisma.resparkableProject.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableProject.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableTask: {
     section: 'tasks',
     holds: 'Tasks with their notes, scheduling, snooze history and priority factors.',
     fetch: (scope) =>
-      prisma.resparkableTask.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableTask.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableThought: {
     section: 'thoughts',
     holds: 'Raw captured thoughts — the most personal free text in the product.',
     fetch: (scope) =>
-      prisma.resparkableThought.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableThought.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableLink: {
     section: 'links',
     holds:
       'Connections between items, including the rationale the model wrote for a suggested one.',
     fetch: (scope) =>
-      prisma.resparkableLink.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableLink.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableBoard: {
     section: 'boards',
     holds: 'Kanban boards, their columns and filters.',
     fetch: (scope) =>
-      prisma.resparkableBoard.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableBoard.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableBoardCard: {
     section: 'boardCards',
     holds: 'Where each task sits on a board — the arrangement, not just the tasks.',
     fetch: (scope) =>
-      prisma.resparkableBoardCard.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableBoardCard.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableTag: {
     section: 'tags',
     holds: 'Their own tag vocabulary.',
     fetch: (scope) =>
-      prisma.resparkableTag.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableTag.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableTaskTag: {
     section: 'taskTags',
     holds: 'Which tags they put on which tasks.',
     fetch: (scope) =>
-      prisma.resparkableTaskTag.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableTaskTag.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableChecklistItem: {
     section: 'checklistItems',
     holds: 'Checklist steps inside tasks, with their own free text.',
     fetch: (scope) =>
       prisma.resparkableChecklistItem.findMany({
-        where: ownerWhere(scope),
+        where: spaceWhere(scope),
         orderBy: CHRONOLOGICAL,
       }),
   },
@@ -165,32 +165,32 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     holds:
       'Notes about OTHER people and companies. Third-party personal data the subject recorded — included because it is their record, and it is the section a reader is most likely to be surprised by.',
     fetch: (scope) =>
-      prisma.resparkableEntity.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableEntity.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableDocument: {
     section: 'documents',
     holds: 'Uploaded documents and the full text extracted from them.',
     fetch: (scope) =>
-      prisma.resparkableDocument.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableDocument.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableTimeBlock: {
     section: 'timeBlocks',
     holds: 'What they planned or recorded working on, and when.',
     fetch: (scope) =>
-      prisma.resparkableTimeBlock.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableTimeBlock.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableReview: {
     section: 'reviews',
     holds: 'Generated weekly and monthly reviews, including their full body text.',
     fetch: (scope) =>
-      prisma.resparkableReview.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableReview.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableEvent: {
     section: 'activity',
     holds:
       'The activity log — what they did in the product and when. Behavioural data, and squarely within Art. 15.',
     fetch: (scope) =>
-      prisma.resparkableEvent.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableEvent.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableCreditAccount: {
     // Distinct from ResparkableCreditLedgerEntry's section below:
@@ -203,14 +203,14 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     // array, and matching that shape keeps this fetch exhaustively coverable
     // by the same owner-scoping test harness the other sixteen sources share.
     fetch: (scope) =>
-      prisma.resparkableCreditAccount.findMany({ where: ownerWhere(scope), take: 1 }),
+      prisma.resparkableCreditAccount.findMany({ where: spaceWhere(scope), take: 1 }),
   },
   ResparkableCreditLedgerEntry: {
     section: 'billingLedger',
     holds: 'Their spend and grant history: what they were charged, when, and by whom.',
     fetch: (scope) =>
       prisma.resparkableCreditLedgerEntry.findMany({
-        where: ownerWhere(scope),
+        where: spaceWhere(scope),
         orderBy: CHRONOLOGICAL,
       }),
   },
@@ -232,7 +232,7 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     // `inviteSentAt` and `acceptedAt` beside it.
     fetch: (scope) =>
       prisma.resparkableGrant.findMany({
-        where: ownerWhere(scope),
+        where: spaceWhere(scope),
         omit: { inviteTokenHash: true },
         orderBy: CHRONOLOGICAL,
       }),
@@ -251,7 +251,7 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     // Nothing is omitted. A comment is a body, an author and two timestamps;
     // there is no credential on the row and no derived column.
     fetch: (scope) =>
-      prisma.resparkableComment.findMany({ where: ownerWhere(scope), orderBy: CHRONOLOGICAL }),
+      prisma.resparkableComment.findMany({ where: spaceWhere(scope), orderBy: CHRONOLOGICAL }),
   },
   ResparkableShareLink: {
     section: 'shareLinks',
@@ -264,7 +264,7 @@ export const RESPARKABLE_SUBJECT_SOURCES: Record<string, ResparkableSubjectSourc
     // two of their own links apart, which is the point of the section.
     fetch: (scope) =>
       prisma.resparkableShareLink.findMany({
-        where: ownerWhere(scope),
+        where: spaceWhere(scope),
         omit: { tokenHash: true },
         orderBy: CHRONOLOGICAL,
       }),
@@ -316,7 +316,7 @@ export const RESPARKABLE_EXPORT_SECTIONS = Object.values(RESPARKABLE_SUBJECT_SOU
  * tables cannot collide with a section name here.
  */
 export async function collectResparkableSubjectData(
-  scope: OwnerScope
+  scope: SpaceScope
 ): Promise<Record<string, unknown>> {
   const entries = Object.values(RESPARKABLE_SUBJECT_SOURCES);
 

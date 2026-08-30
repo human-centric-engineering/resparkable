@@ -36,7 +36,7 @@ vi.mock('@/lib/logging', () => ({
 
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { insertEvent } from '@/lib/framework/resparkable/repo/events';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { invalidateContext } from '@/lib/orchestration/chat/context-builder';
@@ -67,7 +67,7 @@ describe('invalidateResparkableContext', () => {
 
 describe('recordResparkableEvent', () => {
   it('invalidates on every event, so no service has to remember to', async () => {
-    await recordResparkableEvent(ownerScope('user-a'), {
+    await recordResparkableEvent(spaceScope('user-a'), {
       kind: 'created',
       entityType: 'task',
       entityId: 'task-1',
@@ -86,7 +86,7 @@ describe('recordResparkableEvent', () => {
   it('invalidates even when the event write fails', async () => {
     mockedInsert.mockRejectedValue(new Error('deadlock'));
 
-    await recordResparkableEvent(ownerScope('user-a'), {
+    await recordResparkableEvent(spaceScope('user-a'), {
       kind: 'completed',
       entityType: 'task',
       entityId: 'task-1',
@@ -96,7 +96,7 @@ describe('recordResparkableEvent', () => {
   });
 
   it('drops only that user’s entry', async () => {
-    await recordResparkableEvent(ownerScope('user-a'), {
+    await recordResparkableEvent(spaceScope('user-a'), {
       kind: 'created',
       entityType: 'task',
       entityId: 'task-1',

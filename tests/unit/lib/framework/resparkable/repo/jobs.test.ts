@@ -219,7 +219,7 @@ describe('enqueueResparkableJobs', () => {
     // Without this an enqueue that ran twice — on signup and again from the
     // backfill net — would violate the unique index and throw on a path that
     // must never fail a user's request.
-    expect(sql).toContain('ON CONFLICT ("userId", "kind") DO NOTHING');
+    expect(sql).toContain('ON CONFLICT ("spaceId", "kind") DO NOTHING');
     for (const kind of RESPARKABLE_JOB_KINDS) {
       expect(lastValues(vi.mocked(prisma.$executeRaw))).toContain(kind);
     }

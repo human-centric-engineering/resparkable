@@ -75,8 +75,8 @@ describe('GET /api/v1/resparkable/counts', () => {
   it('scopes to the session user and nothing from the request', async () => {
     await invoke(req(), SESSION_A);
 
-    const scope = mockedBuildCounts.mock.calls[0]?.[0] as { userId: string };
-    expect(scope.userId).toBe('user_a');
+    const scope = mockedBuildCounts.mock.calls[0]?.[0] as { spaceId: string };
+    expect(scope.spaceId).toBe('user_a');
   });
 
   it('carries an ETag and a private cache directive', async () => {

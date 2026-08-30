@@ -53,7 +53,7 @@ import {
   upsertEmbeddings,
   type EmbeddedType,
 } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerScope, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import { keywordSummaries } from '@/lib/framework/resparkable/repo/summaries';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
@@ -135,7 +135,7 @@ function syntheticVector(topic: number, wobble: number): number[] {
 }
 
 async function seedBrain(
-  scope: OwnerScope
+  scope: SpaceScope
 ): Promise<{ projectId: string; taskId: string; thoughtTopics: Map<string, number> }> {
   const thoughtTopics = new Map<string, number>();
 
@@ -167,7 +167,7 @@ async function seedBrain(
  * all the production ones — only the numbers are fake.
  */
 async function seedSyntheticVectors(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: EmbeddedType,
   rows: Array<{ id: string; text: string; topic: number }>
 ): Promise<number> {
@@ -204,8 +204,8 @@ async function main(): Promise<void> {
     userA = await createUser('a');
     userB = await createUser('b');
 
-    const scopeA = ownerScope(userA);
-    const scopeB = ownerScope(userB);
+    const scopeA = spaceScope(userA);
+    const scopeB = spaceScope(userB);
 
     await ensureResparkableSpace(userA);
     await ensureResparkableSpace(userB);
@@ -263,7 +263,7 @@ async function main(): Promise<void> {
     // Queue everything again without changing anything. The gate should examine
     // and spend nothing — true in both modes, since the hash is real either way.
     await prisma.resparkableThought.updateMany({
-      where: { userId: userA },
+      where: { spaceId: userA },
       data: { indexedHash: null },
     });
     if (realProvider) {
@@ -314,7 +314,7 @@ async function main(): Promise<void> {
     // whole reason every update can null the column without knowing which fields
     // are semantic.
     const queuedAfterEdit = await prisma.resparkableThought.count({
-      where: { userId: userA, indexedHash: null },
+      where: { spaceId: userA, indexedHash: null },
     });
     check(queuedAfterEdit >= 1, `${queuedAfterEdit} thought(s) queued for re-examination`);
 
@@ -404,7 +404,7 @@ async function main(): Promise<void> {
       `swept ${sweep.examined} entities, ${sweep.created} suggestions written`
     );
 
-    const links = await prisma.resparkableLink.findMany({ where: { userId: userA } });
+    const links = await prisma.resparkableLink.findMany({ where: { spaceId: userA } });
     check(
       links.every((link) => link.origin === 'rule' && link.status === 'suggested'),
       'every swept link is origin:rule / status:suggested, never pre-accepted'
@@ -414,7 +414,7 @@ async function main(): Promise<void> {
       `every suggestion clears the ${STRENGTH_FLOOR} strength floor`
     );
     check(
-      links.every((link) => link.userId === userA),
+      links.every((link) => link.spaceId === userA),
       'every suggestion belongs to A; the sweep never crossed into B'
     );
 
@@ -434,10 +434,10 @@ async function main(): Promise<void> {
       SELECT MAX(1 - (a."embedding" <=> b."embedding")) AS similarity
       FROM "framework_resparkable_embedding" a
       JOIN "framework_resparkable_embedding" b
-        ON a."userId" = b."userId"
+        ON a."spaceId" = b."spaceId"
        AND a."entityType" = 'thought' AND b."entityType" = 'thought'
        AND a."entityId" < b."entityId"
-      WHERE a."userId" = ${userA}
+      WHERE a."spaceId" = ${userA}
         AND a."embedding" IS NOT NULL AND b."embedding" IS NOT NULL
     `;
     const bestSimilarity = best?.similarity ?? 0;
@@ -472,7 +472,7 @@ async function main(): Promise<void> {
     // for ever, so anything past the cap was permanently unreachable while the log
     // claimed the next run would continue. `sweptAt` is what makes the claim true.
     const unswept = await prisma.resparkableEmbedding.count({
-      where: { userId: userA, entityType: 'thought', sweptAt: null },
+      where: { spaceId: userA, entityType: 'thought', sweptAt: null },
     });
     check(unswept === 0, 'every swept entity got a sweptAt stamp, so a capped run would advance');
 
@@ -511,7 +511,7 @@ async function main(): Promise<void> {
 
     check(
       (await prisma.resparkableEmbedding.count({
-        where: { userId: userA, entityType: 'thought', entityId: targetId },
+        where: { spaceId: userA, entityType: 'thought', entityId: targetId },
       })) > 0,
       'the thought has embedding rows before archiving'
     );
@@ -520,7 +520,7 @@ async function main(): Promise<void> {
 
     check(
       (await prisma.resparkableEmbedding.count({
-        where: { userId: userA, entityType: 'thought', entityId: targetId },
+        where: { spaceId: userA, entityType: 'thought', entityId: targetId },
       })) === 0,
       'archiving deleted its embedding rows in the SAME transaction (§17 risk 5b)'
     );
@@ -566,7 +566,7 @@ async function main(): Promise<void> {
     const doomedId = [...moneyIds][1] ?? [...otherIds][0];
     check(
       (await prisma.resparkableEmbedding.count({
-        where: { userId: userA, entityType: 'thought', entityId: doomedId },
+        where: { spaceId: userA, entityType: 'thought', entityId: doomedId },
       })) > 0,
       'the thought has embedding rows before deletion'
     );
@@ -579,14 +579,14 @@ async function main(): Promise<void> {
     );
     check(
       (await prisma.resparkableEmbedding.count({
-        where: { userId: userA, entityType: 'thought', entityId: doomedId },
+        where: { spaceId: userA, entityType: 'thought', entityId: doomedId },
       })) === 0,
       'and its embedding rows went with it, in the same transaction'
     );
 
     const orphanSweep = await sweepConnections(scopeA);
     const dangling = await prisma.resparkableLink.count({
-      where: { userId: userA, OR: [{ sourceId: doomedId }, { targetId: doomedId }] },
+      where: { spaceId: userA, OR: [{ sourceId: doomedId }, { targetId: doomedId }] },
     });
     check(
       orphanSweep.created === 0 || dangling === 0,

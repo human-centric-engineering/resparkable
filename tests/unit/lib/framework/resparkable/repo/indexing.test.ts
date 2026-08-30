@@ -44,9 +44,9 @@ import {
   listUnindexed,
   stampIndexedHash,
 } from '@/lib/framework/resparkable/repo/indexing';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const EMBEDDED_TYPES = [
   ['thought', 'resparkableThought'],
@@ -71,7 +71,7 @@ describe('listUnindexed', () => {
       const rows = await listUnindexed(SCOPE, type, 10);
 
       const call = client[delegateName].findMany.mock.calls[0]?.[0];
-      expect(call.where).toMatchObject({ userId: 'user_a', archivedAt: null, indexedHash: null });
+      expect(call.where).toMatchObject({ spaceId: 'user_a', archivedAt: null, indexedHash: null });
       expect(call.orderBy).toEqual({ createdAt: 'asc' });
       expect(call.take).toBe(10);
       // The flattened shape the indexer needs: every row carries its type.
@@ -104,7 +104,7 @@ describe('countUnindexed', () => {
       await expect(countUnindexed(SCOPE, type)).resolves.toBe(3);
 
       const call = client[delegateName].count.mock.calls[0]?.[0];
-      expect(call.where).toMatchObject({ userId: 'user_a', archivedAt: null, indexedHash: null });
+      expect(call.where).toMatchObject({ spaceId: 'user_a', archivedAt: null, indexedHash: null });
     }
   );
 
@@ -141,11 +141,11 @@ describe('stampIndexedHash', () => {
     expect(count).toBe(2);
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.resparkableThought.updateMany).toHaveBeenCalledWith({
-      where: { id: 't_1', userId: 'user_a' },
+      where: { id: 't_1', spaceId: 'user_a' },
       data: { indexedHash: 'hash_1' },
     });
     expect(prisma.resparkableThought.updateMany).toHaveBeenCalledWith({
-      where: { id: 't_2', userId: 'user_a' },
+      where: { id: 't_2', spaceId: 'user_a' },
       data: { indexedHash: 'hash_2' },
     });
   });
@@ -189,7 +189,7 @@ describe('enqueueForReindex', () => {
 
     expect(matched).toBe(true);
     expect(prisma.resparkableThought.updateMany).toHaveBeenCalledWith({
-      where: { id: 't_1', userId: 'user_a' },
+      where: { id: 't_1', spaceId: 'user_a' },
       data: { indexedHash: null },
     });
   });
@@ -224,7 +224,7 @@ describe('enqueueAllForReindex', () => {
     for (const [, delegateName] of EMBEDDED_TYPES) {
       const client = prisma as unknown as Record<string, { updateMany: ReturnType<typeof vi.fn> }>;
       expect(client[delegateName].updateMany).toHaveBeenCalledWith({
-        where: { userId: 'user_a', archivedAt: null },
+        where: { spaceId: 'user_a', archivedAt: null },
         data: { indexedHash: null },
       });
     }

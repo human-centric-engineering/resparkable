@@ -53,7 +53,7 @@ vi.mock('@/lib/db/client', () => {
 });
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   countShareLinkView,
   createShareLink,
@@ -63,7 +63,7 @@ import {
   revokeShareLink,
 } from '@/lib/framework/resparkable/repo/share-links';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-26T12:00:00Z');
 
 const db = prisma as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>> & {
@@ -73,7 +73,7 @@ const db = prisma as unknown as Record<string, Record<string, ReturnType<typeof 
 function linkRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'link_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     entityType: 'project',
     entityId: 'p_1',
     tokenHash: 'digest',
@@ -113,7 +113,7 @@ describe('minting', () => {
 
     expect(db.$transaction).toHaveBeenCalledTimes(1);
     expect(db.resparkableProject.updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 'p_1' },
+      where: { spaceId: 'user_a', id: 'p_1' },
       data: { visibility: 'link' },
     });
   });
@@ -129,8 +129,8 @@ describe('minting', () => {
       expiresAt: null,
     });
 
-    const [args] = db.resparkableShareLink.create.mock.calls[0] as [{ data: { userId: string } }];
-    expect(args.data.userId).toBe('user_a');
+    const [args] = db.resparkableShareLink.create.mock.calls[0] as [{ data: { spaceId: string } }];
+    expect(args.data.spaceId).toBe('user_a');
   });
 });
 
@@ -142,7 +142,7 @@ describe('revoking', () => {
     await revokeShareLink(SCOPE, 'link_1', NOW);
 
     expect(db.resparkableProject.updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 'p_1' },
+      where: { spaceId: 'user_a', id: 'p_1' },
       data: { visibility: 'private' },
     });
   });
@@ -239,7 +239,7 @@ describe('listing', () => {
     const [args] = db.resparkableShareLink.findMany.mock.calls[0] as [
       { where: Record<string, unknown> },
     ];
-    expect(args.where).toEqual({ userId: 'user_a', entityType: 'board', entityId: 'b_1' });
+    expect(args.where).toEqual({ spaceId: 'user_a', entityType: 'board', entityId: 'b_1' });
   });
 });
 
@@ -252,7 +252,7 @@ describe('ownsEntity', () => {
 
     await expect(ownsEntity(SCOPE, 'task', 't_1')).resolves.toBe(true);
     expect(db.resparkableTask.count).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 't_1' },
+      where: { spaceId: 'user_a', id: 't_1' },
     });
   });
 
@@ -277,7 +277,7 @@ describe('ownsEntity', () => {
     for (const [entityType, delegate] of cases) {
       delegate.count.mockResolvedValue(1);
       await expect(ownsEntity(SCOPE, entityType, 'x_1')).resolves.toBe(true);
-      expect(delegate.count).toHaveBeenCalledWith({ where: { userId: 'user_a', id: 'x_1' } });
+      expect(delegate.count).toHaveBeenCalledWith({ where: { spaceId: 'user_a', id: 'x_1' } });
     }
   });
 
@@ -319,7 +319,7 @@ describe('setVisibility routes every shareable type to its own table', () => {
     });
 
     expect(getDelegate().updateMany).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 'x_1' },
+      where: { spaceId: 'user_a', id: 'x_1' },
       data: { visibility: 'link' },
     });
   });
@@ -333,7 +333,7 @@ describe('findShareLink', () => {
 
     expect(link?.id).toBe('link_1');
     expect(db.resparkableShareLink.findFirst).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 'link_1' },
+      where: { spaceId: 'user_a', id: 'link_1' },
     });
   });
 

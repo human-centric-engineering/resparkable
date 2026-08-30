@@ -33,7 +33,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
 import * as links from '@/lib/framework/resparkable/repo/links';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
@@ -84,8 +84,8 @@ async function main(): Promise<void> {
     userA = await createUser('a');
     userB = await createUser('b');
 
-    const scopeA = ownerScope(userA);
-    const scopeB = ownerScope(userB);
+    const scopeA = spaceScope(userA);
+    const scopeB = spaceScope(userB);
 
     console.log('\nSpaces');
     const spaceA = await ensureResparkableSpace(userA);
@@ -117,7 +117,7 @@ async function main(): Promise<void> {
       "B's findThought on A's id returns null"
     );
     check(
-      (await tasks.listTasks(scopeB)).every((task) => task.userId === userB),
+      (await tasks.listTasks(scopeB)).every((task) => task.spaceId === userB),
       "B's list contains none of A's rows"
     );
     check((await tasks.countTasks(scopeB)) === 0, "B's count excludes A's rows");
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
     // their own row rather than a pointer into A's brain.
     const bSame = await thoughts.captureThought(scopeB, { content: 'once', externalId: external });
     check(!bSame.deduped, "B's identical externalId is not deduped against A's row");
-    check(bSame.thought.userId === userB, "B's thought belongs to B");
+    check(bSame.thought.spaceId === userB, "B's thought belongs to B");
 
     // ── §16.8b: the entity view returns only that entity's links ────────────
     //
@@ -249,24 +249,24 @@ async function main(): Promise<void> {
     check(bView?.related.length === 0, "B's entity view carries none of A's links");
 
     console.log('\nErasure cascade (the hand-written FK, probe B1)');
-    const beforeCount = await prisma.resparkableTask.count({ where: { userId: userA } });
+    const beforeCount = await prisma.resparkableTask.count({ where: { spaceId: userA } });
     check(beforeCount > 0, 'A has rows before erasure');
     await prisma.user.delete({ where: { id: userA } });
     userA = null;
     check(
-      (await prisma.resparkableTask.count({ where: { userId: spaceA.userId } })) === 0,
+      (await prisma.resparkableTask.count({ where: { spaceId: spaceA.spaceId } })) === 0,
       "deleting the user cascades away A's tasks"
     );
     check(
-      (await prisma.resparkableSpace.count({ where: { userId: spaceA.userId } })) === 0,
+      (await prisma.resparkableSpace.count({ where: { spaceId: spaceA.spaceId } })) === 0,
       "deleting the user cascades away A's space"
     );
     check(
-      (await prisma.resparkableThought.count({ where: { userId: spaceA.userId } })) === 0,
+      (await prisma.resparkableThought.count({ where: { spaceId: spaceA.spaceId } })) === 0,
       "deleting the user cascades away A's thoughts"
     );
     check(
-      (await prisma.resparkableThought.count({ where: { userId: userB } })) > 0,
+      (await prisma.resparkableThought.count({ where: { spaceId: userB } })) > 0,
       "B's data survives A's erasure"
     );
 

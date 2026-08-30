@@ -15,7 +15,7 @@
  * guard reads the schema rather than trusting the manifest to be current.
  *
  * Test Coverage:
- * - Every model carrying a `userId` is exported or excluded with a reason
+ * - Every model carrying a `spaceId` is exported or excluded with a reason
  * - The manifest names only models that actually exist (catches a rename)
  * - No model is both exported and excluded
  * - Exclusion reasons are substantive, not a shrug
@@ -43,9 +43,12 @@ const SCHEMA_PATH = path.join(process.cwd(), 'prisma/schema/framework-resparkabl
 
 const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
 /** A plain column holding the owner's id. Every scoped Resparkable table has one. */
-const USER_SCALAR_FIELD = /^\s*userId\s+String/;
+// Phase 45 renamed the tier's owner key. The guard-on-the-guard below is what
+// caught this: the regex went blind, `scoped` emptied, and every check in the
+// file passed while protecting nothing. That is the whole reason it is there.
+const SPACE_SCALAR_FIELD = /^\s*spaceId\s+String/;
 
-/** Models in the tier's schema that carry a `userId`, read from the file itself. */
+/** Models in the tier's schema that carry a `spaceId`, read from the file itself. */
 function scanScopedModels(): Set<string> {
   const source = readFileSync(SCHEMA_PATH, 'utf8');
   const scoped = new Set<string>();
@@ -61,7 +64,7 @@ function scanScopedModels(): Set<string> {
       current = null;
       continue;
     }
-    if (current && USER_SCALAR_FIELD.test(line)) scoped.add(current);
+    if (current && SPACE_SCALAR_FIELD.test(line)) scoped.add(current);
   }
 
   return scoped;
@@ -93,7 +96,7 @@ describe('the schema scan itself', () => {
   });
 
   it('does not treat the operator singleton as scoped', () => {
-    // `ResparkableSettings` is keyed by `slug` and holds no `userId`, so it is not a
+    // `ResparkableSettings` is keyed by `slug` and holds no `spaceId`, so it is not a
     // subject's data and must not be demanded of the manifest.
     expect(allModels.has('ResparkableSettings')).toBe(true);
     expect(scoped.has('ResparkableSettings')).toBe(false);

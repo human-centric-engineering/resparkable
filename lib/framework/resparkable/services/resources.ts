@@ -23,7 +23,7 @@ import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as boards from '@/lib/framework/resparkable/repo/boards';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import * as tags from '@/lib/framework/resparkable/repo/tags';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
@@ -87,14 +87,14 @@ export interface ResparkableResource<TCreate, TUpdate, TQuery> {
   createSchema: z.ZodType<TCreate>;
   updateSchema: z.ZodType<TUpdate>;
   listQuerySchema: z.ZodType<TQuery>;
-  list(scope: OwnerScope, query: TQuery): Promise<ListResult>;
-  get(scope: OwnerScope, id: string): Promise<unknown>;
-  create(scope: OwnerScope, input: TCreate): Promise<unknown>;
-  update(scope: OwnerScope, id: string, input: TUpdate): Promise<unknown>;
+  list(scope: SpaceScope, query: TQuery): Promise<ListResult>;
+  get(scope: SpaceScope, id: string): Promise<unknown>;
+  create(scope: SpaceScope, input: TCreate): Promise<unknown>;
+  update(scope: SpaceScope, id: string, input: TUpdate): Promise<unknown>;
   /** Absent for derived types (time blocks) that are pruned rather than archived. */
-  archive?(scope: OwnerScope, id: string, reason: string): Promise<unknown>;
-  restore?(scope: OwnerScope, id: string): Promise<unknown>;
-  remove(scope: OwnerScope, id: string): Promise<unknown>;
+  archive?(scope: SpaceScope, id: string, reason: string): Promise<unknown>;
+  restore?(scope: SpaceScope, id: string): Promise<unknown>;
+  remove(scope: SpaceScope, id: string): Promise<unknown>;
 }
 
 /**
@@ -206,7 +206,7 @@ const taskResourceOps: ResparkableResource<
 };
 
 /** `lastActivityAt` is the input to `projectMomentum` — exp(-days/14) (§10). */
-async function touchProject(scope: OwnerScope, projectId: string): Promise<void> {
+async function touchProject(scope: SpaceScope, projectId: string): Promise<void> {
   await projects.updateProject(scope, projectId, { lastActivityAt: new Date() });
 }
 
@@ -726,7 +726,7 @@ function withSpaceBootstrap<TCreate, TUpdate, TQuery>(
   return {
     ...resource,
     async create(scope, input) {
-      await ensureResparkableSpace(scope.userId);
+      await ensureResparkableSpace(scope.spaceId);
       return resource.create(scope, input);
     },
   };
@@ -764,7 +764,7 @@ function withTaskRescore<TCreate, TUpdate, TQuery>(
   };
 }
 
-async function rescoreIfIdentifiable(scope: OwnerScope, row: unknown): Promise<void> {
+async function rescoreIfIdentifiable(scope: SpaceScope, row: unknown): Promise<void> {
   if (typeof row === 'object' && row !== null && 'id' in row && typeof row.id === 'string') {
     await rescoreTask(scope, row.id);
   }

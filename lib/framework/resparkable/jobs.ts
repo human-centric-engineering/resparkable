@@ -42,9 +42,9 @@ import {
   type BillableWorkflowExecution,
 } from '@/lib/framework/resparkable/repo/billing';
 import {
-  ownerScope,
-  RESPARKABLE_SCHEDULE_OWNER_KEY,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+  spaceScope,
+  readResparkableScheduleSpaceId,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
@@ -144,8 +144,10 @@ function resolveExecutionOwner(execution: BillableWorkflowExecution): string | n
   const scope: unknown = execution.scope;
   if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
 
-  const scoped = (scope as Record<string, unknown>)[RESPARKABLE_SCHEDULE_OWNER_KEY];
-  return typeof scoped === 'string' && scoped.length > 0 ? scoped : null;
+  // Either key: phase 45 writes `resparkableSpaceId` alongside the old
+  // `resparkableUserId` rather than replacing it, so a schedule row created
+  // before the migration still resolves here.
+  return readResparkableScheduleSpaceId(scope as Record<string, unknown>) ?? null;
 }
 
 /**
@@ -176,7 +178,7 @@ async function billResparkableWorkflowExecutions(): Promise<{ billed: number; sk
     }
 
     try {
-      const entry = await recordAgentSpend(ownerScope(ownerUserId), {
+      const entry = await recordAgentSpend(spaceScope(ownerUserId), {
         tokenCostUsd: execution.totalCostUsd,
         relatedWorkflowExecutionId: execution.id,
       });

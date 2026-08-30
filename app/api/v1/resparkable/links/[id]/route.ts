@@ -21,12 +21,12 @@ import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { reviewLink } from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { updateLinkSchema } from '@/lib/framework/resparkable/validations';
 
 export const PATCH = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, updateLinkSchema);

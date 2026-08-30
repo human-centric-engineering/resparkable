@@ -27,6 +27,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const routeLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -163,7 +164,8 @@ beforeEach(() => {
 function shareLinkRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'link_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
+    createdByUserId: null,
     entityType: 'project',
     entityId: 'clh0000000000000000000001',
     tokenHash: 'digest',
@@ -302,7 +304,8 @@ describe('POST /api/v1/resparkable/share-links', () => {
       token: LIVE_TOKEN,
       link: {
         id: 'link_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
+        createdByUserId: null,
         entityType: 'project',
         entityId: BODY.entityId,
         tokenHash: 'digest',
@@ -448,7 +451,7 @@ describe('DELETE /api/v1/resparkable/share-links/[id]', () => {
   });
 
   it('builds the owner scope from the session user id, never the request', async () => {
-    vi.mocked(revokeShareLink).mockResolvedValue(shareLinkRow({ userId: 'user_b' }));
+    vi.mocked(revokeShareLink).mockResolvedValue(shareLinkRow({ spaceId: 'user_b' }));
 
     await invokeDelete('link_1', { user: { id: 'user_b' }, session: { userId: 'user_b' } });
 
@@ -457,7 +460,7 @@ describe('DELETE /api/v1/resparkable/share-links/[id]', () => {
     // this route could have taken it from instead, so this proves the route
     // reads `session.user.id` and not, say, a header or body field it forgot
     // to strip.
-    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[0]).toEqual({ userId: 'user_b' });
+    expect(vi.mocked(revokeShareLink).mock.calls[0]?.[0]).toEqual(spaceScope('user_b'));
     expect(vi.mocked(revokeShareLink).mock.calls[0]?.[1]).toBe('link_1');
   });
 

@@ -61,6 +61,7 @@
     "framework:resparkable:eval-triage": "tsx --env-file=.env.local scripts/framework/resparkable/eval-triage.ts",
     "framework:resparkable:build-pwa-icons": "tsx scripts/framework/resparkable/build-pwa-icons.ts",
     "framework:resparkable:worker": "tsx --env-file=.env.local scripts/framework/resparkable/worker.ts",
+    "framework:resparkable:key-checksum": "tsx --env-file=.env.local scripts/framework/resparkable/key-migration-checksum.ts",
     "framework:resparkable:smoke-queue": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-queue.ts"
   },
   "repository": {

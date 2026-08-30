@@ -54,7 +54,7 @@ import { listThoughts } from '@/lib/framework/resparkable/repo/thoughts';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
 import { hydrateLinks } from '@/lib/framework/resparkable/services/link-hydration';
 import { buildBriefingFacts } from '@/lib/framework/resparkable/services/briefing-facts';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedReview = vi.mocked(findLatestReview);
 const mockedLinks = vi.mocked(listUnreviewedLinks);
@@ -63,7 +63,7 @@ const mockedSettings = vi.mocked(getResparkableSettings);
 const mockedHydrate = vi.mocked(hydrateLinks);
 const mockedFacts = vi.mocked(buildBriefingFacts);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-04T09:00:00.000Z');
 
 function task(id: string) {

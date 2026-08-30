@@ -33,18 +33,18 @@
  * ## Every read is per-owner
  *
  * A viewer may hold grants from several people at once, and `findSharedItems`
- * takes an `OwnerScope` — deliberately, because a projection that could span
+ * takes an `SpaceScope` — deliberately, because a projection that could span
  * owners is a projection that could be handed the wrong one. So the work here is
  * grouped by owner first and queried per owner, and the group key is a real
  * `ownerId` read off a live grant, never anything from the request.
  */
 
 import {
-  grantOwnerScope,
+  grantSpaceScope,
   isResparkableShareableType,
   refKey,
   resparkableVisibilityScope,
-  sharedOwnerScope,
+  sharedSpaceScope,
   type LiveGrant,
   type ResparkableAccessResult,
   type ResparkableShareableType,
@@ -52,7 +52,7 @@ import {
 } from '@/lib/framework/resparkable/access';
 import { RESPARKABLE_CASCADE } from '@/lib/framework/resparkable/access/cascade';
 import { resolveResparkableAccess } from '@/lib/framework/resparkable/access/resolve';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
 import {
   findSharedChildIds,
@@ -131,11 +131,11 @@ export async function listSharedWithMe(
     : scope.grants;
   if (grants.length === 0) return [];
 
-  const owners = await loadOwnerIdentities(grants);
+  const owners = await loadOwnerIdentities(grants, viewer.userId);
 
   // One query per (owner, type) pair rather than per grant. A person granted
   // twelve projects by one colleague costs one query, not twelve.
-  const views = await loadViewsByOwnerAndType(grants);
+  const views = await loadViewsByOwnerAndType(grants, viewer.userId);
 
   const items: SharedWithMeItem[] = [];
   for (const grant of grants) {
@@ -195,7 +195,7 @@ export async function readSharedWithMe(
 
   // A public link cannot reach this route — `ResparkableViewer` has no token
   // field — so a positive result here is always a grant or a grant cascade.
-  const scope = sharedOwnerScope(access);
+  const scope = sharedSpaceScope(access, viewer.userId);
   const owner = await identityFor(scope, access.ownerId);
   if (!owner) return null;
 
@@ -277,8 +277,13 @@ export async function searchSharedWithMe(
   const scope = await resparkableVisibilityScope(viewer, now);
   if (scope.grants.length === 0) return { items: [], truncated: false };
 
-  const owners = await loadOwnerIdentities(scope.grants);
-  const { refs, truncated } = await collectSearchableRefs(scope.grants, query.entityType, now);
+  const owners = await loadOwnerIdentities(scope.grants, viewer.userId);
+  const { refs, truncated } = await collectSearchableRefs(
+    scope.grants,
+    query.entityType,
+    now,
+    viewer.userId
+  );
   if (refs.length === 0) return { items: [], truncated };
 
   const needle = query.q.toLowerCase();
@@ -311,13 +316,14 @@ function viewKey(ownerId: string, entityType: string, entityId: string): string 
 /**
  * The owners behind a set of grants, one contact lookup each.
  *
- * `findOwnerContact` takes an `OwnerScope`, and the id it is given comes off a
+ * `findOwnerContact` takes an `SpaceScope`, and the id it is given comes off a
  * live grant row — never off the request. That is the same discipline
- * `sharedOwnerScope` documents, reached without a resolution because a grant
+ * `sharedSpaceScope` documents, reached without a resolution because a grant
  * the viewer holds already *is* the resolution.
  */
 async function loadOwnerIdentities(
-  grants: readonly LiveGrant[]
+  grants: readonly LiveGrant[],
+  actorUserId: string | null
 ): Promise<Map<string, SharedOwnerIdentity>> {
   // One grant per distinct owner is enough to mint that owner's scope, and
   // asking twice for the same address would be two queries for one answer.
@@ -329,7 +335,10 @@ async function loadOwnerIdentities(
   const entries = await Promise.all(
     [...firstPerOwner.values()].map(
       async (grant) =>
-        [grant.ownerId, await identityFor(grantOwnerScope(grant), grant.ownerId)] as const
+        [
+          grant.ownerId,
+          await identityFor(grantSpaceScope(grant, actorUserId), grant.ownerId),
+        ] as const
     )
   );
 
@@ -341,7 +350,7 @@ async function loadOwnerIdentities(
 }
 
 async function identityFor(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ownerId: string
 ): Promise<SharedOwnerIdentity | null> {
   const contact = await findOwnerContact(scope);
@@ -351,7 +360,8 @@ async function identityFor(
 
 /** Load the directly-granted items, one query per (owner, type) pair. */
 async function loadViewsByOwnerAndType(
-  grants: readonly LiveGrant[]
+  grants: readonly LiveGrant[],
+  actorUserId: string | null
 ): Promise<Map<string, SharedItemView>> {
   // Detail is per grant, so a pair holding one grant with prose and one without
   // has to be asked twice. Grouping by the flag as well keeps that honest
@@ -361,7 +371,7 @@ async function loadViewsByOwnerAndType(
     {
       ownerId: string;
       /** Minted from the first grant in the group — never from a loop variable. */
-      scope: OwnerScope;
+      scope: SpaceScope;
       entityType: ResparkableShareableType;
       withDetail: boolean;
       ids: string[];
@@ -375,7 +385,7 @@ async function loadViewsByOwnerAndType(
     else
       groups.set(key, {
         ownerId: grant.ownerId,
-        scope: grantOwnerScope(grant),
+        scope: grantSpaceScope(grant, actorUserId),
         entityType: grant.entityType,
         withDetail: grant.includeTaskDetail,
         ids: [grant.entityId],
@@ -399,7 +409,7 @@ interface SearchableRef {
    * rather than rebuilt from `ownerId` at query time, so the only way a scope
    * exists in this file is via a grant the viewer actually holds.
    */
-  scope: OwnerScope;
+  scope: SpaceScope;
   entityType: ResparkableShareableType;
   entityId: string;
   withDetail: boolean;
@@ -421,7 +431,8 @@ interface SearchableRef {
 async function collectSearchableRefs(
   grants: readonly LiveGrant[],
   entityType: ResparkableShareableType | undefined,
-  now: Date
+  now: Date,
+  actorUserId: string | null
 ): Promise<{ refs: SearchableRef[]; truncated: boolean }> {
   const refs: SearchableRef[] = [];
   const seen = new Set<string>();
@@ -440,7 +451,7 @@ async function collectSearchableRefs(
   };
 
   for (const grant of grants) {
-    const scope = grantOwnerScope(grant);
+    const scope = grantSpaceScope(grant, actorUserId);
 
     if (!entityType || grant.entityType === entityType) {
       if (
@@ -484,7 +495,7 @@ async function collectSearchableRefs(
 }
 
 async function childRefsFor(
-  scope: OwnerScope,
+  scope: SpaceScope,
   grant: LiveGrant,
   now: Date
 ): Promise<Array<{ entityType: ResparkableShareableType; entityId: string; via: string }>> {
@@ -507,7 +518,7 @@ async function childRefsFor(
 
 interface RefGroup {
   ownerId: string;
-  scope: OwnerScope;
+  scope: SpaceScope;
   entityType: ResparkableShareableType;
   withDetail: boolean;
   ids: string[];

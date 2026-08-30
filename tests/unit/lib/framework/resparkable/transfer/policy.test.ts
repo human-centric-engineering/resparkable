@@ -159,7 +159,13 @@ describe('ResparkableReview.softMergeKey', () => {
 describe('BRAIN_TYPE_MAP, derived from SEARCHABLE_ENTITY_TYPES', () => {
   // Read indirectly through ResparkableLink.softRefs, the one place the map is
   // actually used — there is no exported name for it to import directly.
-  const [sourceRef] = policyFor('ResparkableLink').softRefs ?? [];
+  //
+  // Selected by column rather than by position. It used to destructure the first
+  // element, and phase 45 adding a shared `createdByUserId` reference to every
+  // policy broke four assertions here without breaking anything it was testing.
+  const sourceRef = policyFor('ResparkableLink').softRefs?.find(
+    (ref) => ref.idColumn === 'sourceId'
+  );
 
   it('maps every searchable entity type onto Resparkable<Capitalised>', () => {
     expect(sourceRef?.typeMap).toBeDefined();
@@ -182,7 +188,10 @@ describe('BRAIN_TYPE_MAP, derived from SEARCHABLE_ENTITY_TYPES', () => {
 
 describe('PROMOTION_TYPE_MAP, via ResparkableThought.softRefs', () => {
   it('maps a promotion target to its Prisma model', () => {
-    const [promotionRef] = policyFor('ResparkableThought').softRefs ?? [];
+    // By column, not by position — see the note in the BRAIN_TYPE_MAP block.
+    const promotionRef = policyFor('ResparkableThought').softRefs?.find(
+      (ref) => ref.idColumn === 'promotedToId'
+    );
 
     expect(promotionRef?.typeMap).toEqual({
       task: 'ResparkableTask',

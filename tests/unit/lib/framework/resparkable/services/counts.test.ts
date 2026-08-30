@@ -28,7 +28,7 @@ import { buildCounts } from '@/lib/framework/resparkable/services/counts';
 import { countUnreviewedLinks } from '@/lib/framework/resparkable/repo/links';
 import { countTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { countThoughts } from '@/lib/framework/resparkable/repo/thoughts';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 // `vi.mocked` keeps each repo function's real signature, so the concurrency test
 // below can hand back a promise without the lint rule reading it as a void slot.
@@ -37,7 +37,7 @@ const mockedTasks = vi.mocked(countTasks);
 const mockedLinks = vi.mocked(countUnreviewedLinks);
 
 /** A scope is a branded type minted from a verified session id; cast for the test. */
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const NOW = new Date('2026-07-30T12:00:00.000Z');
 

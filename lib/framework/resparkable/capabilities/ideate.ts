@@ -18,7 +18,7 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { NotFoundError } from '@/lib/api/errors';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { ideateSchema, type IdeateInput } from '@/lib/framework/resparkable/validations';
 import type { ProvenanceRedaction } from '@/lib/orchestration/capabilities/base-capability';
@@ -78,7 +78,7 @@ export class ResparkableIdeateCapability extends ResparkableCapability<IdeateInp
     };
   }
 
-  protected async run(args: IdeateInput, scope: OwnerScope): Promise<CapabilityResult<IdeateData>> {
+  protected async run(args: IdeateInput, scope: SpaceScope): Promise<CapabilityResult<IdeateData>> {
     try {
       const result = await ideate(scope, args);
       return this.success({

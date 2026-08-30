@@ -118,7 +118,7 @@ describe('GET /resparkable/briefing', () => {
   it('scopes the read to the session user', async () => {
     await getBriefing(get(), SESSION_A, undefined);
 
-    expect(mockedStored.mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(mockedStored.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('reports "no briefing yet" as data, not as an error', async () => {

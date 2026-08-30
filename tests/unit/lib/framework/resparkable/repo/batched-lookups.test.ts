@@ -30,11 +30,11 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { updateSpaceSettings } from '@/lib/framework/resparkable/repo/space';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -56,7 +56,7 @@ describe('batched by-id lookups', () => {
     // Assert: another user's id in the list simply matches no row — the same
     // property every other repo call has (D5).
     expect(mock().mock.calls[0]?.[0]?.where).toEqual({
-      userId: 'user_x',
+      spaceId: 'user_x',
       id: { in: ['id_1', 'id_2'] },
     });
   });
@@ -84,7 +84,7 @@ describe('updateSpaceSettings', () => {
 
     // Assert
     expect(vi.mocked(prisma.resparkableSpace.update).mock.calls[0]?.[0]).toEqual({
-      where: { userId: 'user_x' },
+      where: { spaceId: 'user_x' },
       data: { timezone: 'Europe/London' },
     });
   });

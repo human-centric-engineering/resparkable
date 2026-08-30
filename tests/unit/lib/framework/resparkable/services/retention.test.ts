@@ -57,7 +57,7 @@ vi.mock('@/lib/logging', () => ({
 }));
 
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   archiveAgedClosedProjects,
   archiveAgedCompletedTasks,
@@ -72,7 +72,7 @@ import {
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
 import { getResparkableSpace } from '@/lib/framework/resparkable/services/space';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-05T09:00:00.000Z');
 
 const mockedSpace = vi.mocked(getResparkableSpace);

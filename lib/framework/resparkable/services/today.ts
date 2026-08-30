@@ -17,7 +17,7 @@
 import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { listGoals } from '@/lib/framework/resparkable/repo/goals';
 import { countUnreviewedLinks, listUnreviewedLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { getStoredBriefing } from '@/lib/framework/resparkable/services/briefing';
@@ -101,10 +101,10 @@ export interface TodayPayload {
   };
 }
 
-export async function buildToday(scope: OwnerScope, now = new Date()): Promise<TodayPayload> {
+export async function buildToday(scope: SpaceScope, now = new Date()): Promise<TodayPayload> {
   // Also the space bootstrap: the dashboard is usually a new user's first
   // authenticated request, so their space exists before their first write.
-  const settings = await getResparkableSettings(scope.userId);
+  const settings = await getResparkableSettings(scope.spaceId);
   const { timezone } = settings;
 
   const dayEnd = endOfZonedDay(now, timezone);

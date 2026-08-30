@@ -9,7 +9,7 @@
  * user's brain to whoever asked.
  *
  * That is why the scoping assertion here is exhaustive rather than a spot-check.
- * `OwnerScope` makes an unscoped read hard to write, but `ownerWhere` still has
+ * `SpaceScope` makes an unscoped read hard to write, but `spaceWhere` still has
  * to actually be spread into each `where`, and nineteen near-identical fetches
  * is exactly the shape where one gets pasted wrong.
  *
@@ -88,9 +88,9 @@ import {
   RESPARKABLE_SUBJECT_SOURCES,
   RESPARKABLE_EXPORT_SECTIONS,
 } from '@/lib/framework/resparkable/repo/subject-export';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** Every mocked delegate, so a test can assert across the whole manifest. */
 function delegates() {
@@ -114,7 +114,7 @@ describe('owner scoping', () => {
     for (const { model, findMany } of delegates()) {
       expect(findMany, `${model} was never queried`).toHaveBeenCalledTimes(1);
       expect(findMany.mock.calls[0]?.[0]?.where, `${model} is not owner-scoped`).toEqual({
-        userId: 'user_a',
+        spaceId: 'user_a',
       });
     }
   });

@@ -53,9 +53,9 @@ import { findLatestStatusChanges } from '@/lib/framework/resparkable/repo/events
 import { findProject } from '@/lib/framework/resparkable/repo/projects';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const OWNER = ownerScope('user_a');
+const OWNER = spaceScope('user_a');
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 const PROJECT_ID = 'clh0000000000000000000001';
 

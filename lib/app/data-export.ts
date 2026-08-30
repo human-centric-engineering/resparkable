@@ -46,7 +46,7 @@
  * Full guide: .context/privacy/data-export.md · CUSTOMIZATION.md §4
  */
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
 import { collectResparkableSubjectData } from '@/lib/framework/resparkable/repo/subject-export';
 
@@ -79,7 +79,7 @@ export type AppSubjectData = Record<string, unknown>;
  * IS the Resparkable tier so the path always resolves. A host project adds the same
  * two lines; see `.context/framework/resparkable/install.md`.
  *
- * `ownerScope()` is the tier's greppable trust boundary, and this is a
+ * `spaceScope()` is the tier's greppable trust boundary, and this is a
  * legitimate mint site: `userId` reaches here from `exportUserData()`, which
  * takes it from the session (self-service) or an admin route's validated path
  * param — never from a request body or a model.
@@ -100,7 +100,7 @@ export async function collectAppSubjectData(subject: AppSubjectQuery): Promise<A
   // invite is addressed by address alone and dropping those would silently omit
   // the grants most likely to have been forgotten about.
   const [own, crossSubject] = await Promise.all([
-    collectResparkableSubjectData(ownerScope(subject.userId)),
+    collectResparkableSubjectData(spaceScope(subject.userId)),
     collectResparkableCrossSubjectData({ userId: subject.userId, email: subject.email }),
   ]);
 

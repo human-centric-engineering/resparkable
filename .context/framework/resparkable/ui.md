@@ -47,7 +47,7 @@ view.tsx (client)  → apiClient.patch(...) → optimistic update
 ```
 
 **Pages read through the API, not through the services.** A server component
-could call `buildToday(ownerScope(session.user.id))` directly and save a
+could call `buildToday(spaceScope(session.user.id))` directly and save a
 localhost round trip. It doesn't, because that would create a second
 implementation of "what does this surface show" — and the API is the contract the
 agent layer and MCP will use too. One path, exercised by everything.

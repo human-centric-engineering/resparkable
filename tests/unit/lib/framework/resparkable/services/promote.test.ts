@@ -54,7 +54,7 @@ import {
   projectResource,
   taskResource,
 } from '@/lib/framework/resparkable/services/resources';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedFind = vi.mocked(findThought);
 const mockedUpdate = vi.mocked(updateThought);
@@ -64,7 +64,7 @@ const mockedTaskCreate = vi.mocked(taskResource.create);
 const mockedProjectCreate = vi.mocked(projectResource.create);
 const mockedGoalCreate = vi.mocked(goalResource.create);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 function thought(overrides: Record<string, unknown> = {}) {
   return {

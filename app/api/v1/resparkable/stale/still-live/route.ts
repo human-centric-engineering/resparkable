@@ -22,13 +22,13 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { confirmStillLive } from '@/lib/framework/resparkable/services/stale-digest';
 import { staleStillLiveSchema } from '@/lib/framework/resparkable/validations';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const { type, id } = await validateRequestBody(request, staleStillLiveSchema);
 

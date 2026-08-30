@@ -10,7 +10,7 @@
  * express anything else. Giving the shared-query layer the ability to read
  * arbitrary content would widen it from "follow a grant" to "read a brain".
  *
- * The `OwnerScope` comes from `sharedOwnerScope()`, which mints one only from a
+ * The `SpaceScope` comes from `sharedSpaceScope()`, which mints one only from a
  * positive `ResparkableAccessResult`. There is no path from a token or a route
  * param to a scope.
  *
@@ -40,7 +40,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 /** One item, rendered. Deliberately uniform across six very different tables. */
 export interface SharedItemView {
@@ -90,14 +90,14 @@ const CHILD_PROBE = SHARED_CHILD_LIMIT + 1;
  * nothing.
  */
 export async function findSharedItems(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityIds: readonly string[],
   withDetail: boolean
 ): Promise<SharedItemView[]> {
   if (entityIds.length === 0) return [];
 
-  const where = { ...ownerWhere(scope), id: { in: [...entityIds] } };
+  const where = { ...spaceWhere(scope), id: { in: [...entityIds] } };
 
   switch (entityType) {
     case 'area': {
@@ -222,7 +222,7 @@ export async function findSharedItems(
 
 /** Singular form, for the one-item route. */
 export async function findSharedItem(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string,
   withDetail: boolean
@@ -248,14 +248,14 @@ export async function findSharedItem(
  * exactly the thing `access/cascade.ts` already warns about.
  */
 export async function findSharedChildIds(
-  scope: OwnerScope,
+  scope: SpaceScope,
   parentType: ResparkableShareableType,
   parentId: string
 ): Promise<{ childType: ResparkableShareableType; ids: string[] } | null> {
   switch (parentType) {
     case 'project': {
       const rows = await prisma.resparkableTask.findMany({
-        where: { ...ownerWhere(scope), projectId: parentId, archivedAt: null },
+        where: { ...spaceWhere(scope), projectId: parentId, archivedAt: null },
         select: { id: true },
         orderBy: [{ dueAt: 'asc' }, { createdAt: 'asc' }],
         take: CHILD_PROBE,
@@ -264,7 +264,7 @@ export async function findSharedChildIds(
     }
     case 'goal': {
       const rows = await prisma.resparkableGoal.findMany({
-        where: { ...ownerWhere(scope), parentGoalId: parentId, archivedAt: null },
+        where: { ...spaceWhere(scope), parentGoalId: parentId, archivedAt: null },
         select: { id: true },
         orderBy: [{ targetDate: 'asc' }, { createdAt: 'asc' }],
         take: CHILD_PROBE,

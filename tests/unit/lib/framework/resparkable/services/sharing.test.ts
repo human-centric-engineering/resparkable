@@ -64,7 +64,7 @@ vi.mock('@/lib/logging', () => ({
 }));
 
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 // The mocked value above, read back rather than retyped, so the two cannot drift.
 import { SHARED_CHILD_LIMIT } from '@/lib/framework/resparkable/repo/shared-view';
 import {
@@ -74,7 +74,7 @@ import {
 } from '@/lib/framework/resparkable/services/sharing';
 import { logger } from '@/lib/logging';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const PROJECT_ID = 'clh0000000000000000000001';
 
 function linkRow(overrides: Record<string, unknown> = {}) {

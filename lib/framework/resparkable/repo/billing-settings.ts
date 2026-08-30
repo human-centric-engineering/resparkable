@@ -1,7 +1,7 @@
 /**
  * Billing-settings repo: the singleton `ResparkableBillingSettings` row.
  *
- * Same exception `repo/settings.ts` documents: no `OwnerScope`, because what
+ * Same exception `repo/settings.ts` documents: no `SpaceScope`, because what
  * this holds (credits-per-dollar, service charge, the default new-user grant)
  * is a deployment-wide policy, not user data. Writes are admin-only, enforced
  * at the route by `withAdminAuth`; this layer has no idea who is calling.

@@ -40,7 +40,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { EmbeddedType } from '@/lib/framework/resparkable/repo/embeddings';
 import { Prisma } from '@prisma/client';
 
@@ -96,7 +96,7 @@ export function daysBefore(now: Date, days: number): Date {
  *   makes every caller answer.
  */
 async function archiveAged(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ids: string[],
   entityType: string,
   embeddedAs: EmbeddedType | null,
@@ -111,13 +111,13 @@ async function archiveAged(
     ...(embeddedAs
       ? [
           prisma.resparkableEmbedding.deleteMany({
-            where: { ...ownerWhere(scope), entityType: embeddedAs, entityId: { in: ids } },
+            where: { ...spaceWhere(scope), entityType: embeddedAs, entityId: { in: ids } },
           }),
         ]
       : []),
     prisma.resparkableEvent.createMany({
       data: ids.map((id) => ({
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         kind: 'archived',
         entityType,
         entityId: id,
@@ -167,7 +167,7 @@ async function selectIds<T extends { id: string }>(
  * refines, instead of scanning every inbox thought the user has ever written.
  */
 export async function archiveAgedInboxThoughts(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -177,7 +177,7 @@ export async function archiveAgedInboxThoughts(
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableThought.findMany({
       where: {
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         archivedAt: null,
         status: 'inbox',
         createdAt: { lt: cutoff },
@@ -198,7 +198,7 @@ export async function archiveAgedInboxThoughts(
     'aged_out',
     (batch, at) =>
       prisma.resparkableThought.updateMany({
-        where: { ...ownerWhere(scope), id: { in: batch } },
+        where: { ...spaceWhere(scope), id: { in: batch } },
         // `indexedHash: null` so a restore re-embeds — the vectors are being
         // deleted in this same transaction, and the column is what queues the
         // backfill that puts them back.
@@ -212,7 +212,7 @@ export async function archiveAgedInboxThoughts(
 
 /** Completed tasks, measured from `completedAt`. Tasks carry no vectors. */
 export async function archiveAgedCompletedTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -222,7 +222,7 @@ export async function archiveAgedCompletedTasks(
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableTask.findMany({
       where: {
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         archivedAt: null,
         status: 'done',
         completedAt: { lt: cutoff },
@@ -242,7 +242,7 @@ export async function archiveAgedCompletedTasks(
     'aged_out',
     (batch, at) =>
       prisma.resparkableTask.updateMany({
-        where: { ...ownerWhere(scope), id: { in: batch } },
+        where: { ...spaceWhere(scope), id: { in: batch } },
         data: { archivedAt: at, archivedReason: 'aged_out' },
       }),
     now
@@ -266,7 +266,7 @@ export interface ProjectRetentionResult extends RetentionRuleResult {
  * something to reason about later, and so the two reasons never blur into "old".
  */
 export async function archiveAgedClosedProjects(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<ProjectRetentionResult> {
@@ -276,7 +276,7 @@ export async function archiveAgedClosedProjects(
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableProject.findMany({
       where: {
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         archivedAt: null,
         status: { in: ['done', 'abandoned'] },
         closedAt: { lt: cutoff },
@@ -295,7 +295,7 @@ export async function archiveAgedClosedProjects(
   // 32,767. The cascade would throw at roughly 6,500 tasks, in exactly the
   // first-pass-over-an-old-corpus case the batch cap exists for.
   const taskRows = await prisma.resparkableTask.findMany({
-    where: { ...ownerWhere(scope), archivedAt: null, projectId: { in: ids } },
+    where: { ...spaceWhere(scope), archivedAt: null, projectId: { in: ids } },
     select: { id: true },
     take: RETENTION_BATCH,
   });
@@ -333,7 +333,7 @@ export async function archiveAgedClosedProjects(
     'project_closed',
     (batch, at) =>
       prisma.resparkableTask.updateMany({
-        where: { ...ownerWhere(scope), id: { in: batch } },
+        where: { ...spaceWhere(scope), id: { in: batch } },
         data: { archivedAt: at, archivedReason: 'project_closed' },
       }),
     now
@@ -348,7 +348,7 @@ export async function archiveAgedClosedProjects(
       'aged_out',
       (batch, at) =>
         prisma.resparkableProject.updateMany({
-          where: { ...ownerWhere(scope), id: { in: batch } },
+          where: { ...spaceWhere(scope), id: { in: batch } },
           data: { archivedAt: at, archivedReason: 'aged_out', indexedHash: null },
         }),
       now
@@ -383,7 +383,7 @@ const HORIZON_PERIOD_DAYS: Record<string, number> = {
  * intent. Those goals surface in the stale digest instead, where a human decides.
  */
 export async function archiveAgedGoals(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
   const now = options.now ?? new Date();
@@ -391,7 +391,7 @@ export async function archiveAgedGoals(
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableGoal.findMany({
       where: {
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         archivedAt: null,
         status: { in: ['achieved', 'dropped'] },
         OR: Object.entries(HORIZON_PERIOD_DAYS).map(([horizon, days]) => ({
@@ -414,7 +414,7 @@ export async function archiveAgedGoals(
     'aged_out',
     (batch, at) =>
       prisma.resparkableGoal.updateMany({
-        where: { ...ownerWhere(scope), id: { in: batch } },
+        where: { ...spaceWhere(scope), id: { in: batch } },
         data: { archivedAt: at, archivedReason: 'aged_out', indexedHash: null },
       }),
     now
@@ -425,7 +425,7 @@ export async function archiveAgedGoals(
 
 /** Generated reviews, measured from `generatedAt`. Reviews carry no vectors. */
 export async function archiveAgedReviews(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -434,7 +434,7 @@ export async function archiveAgedReviews(
 
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableReview.findMany({
-      where: { ...ownerWhere(scope), archivedAt: null, generatedAt: { lt: cutoff } },
+      where: { ...spaceWhere(scope), archivedAt: null, generatedAt: { lt: cutoff } },
       select: { id: true },
       take: RETENTION_BATCH,
     })
@@ -450,7 +450,7 @@ export async function archiveAgedReviews(
     'aged_out',
     (batch, at) =>
       prisma.resparkableReview.updateMany({
-        where: { ...ownerWhere(scope), id: { in: batch } },
+        where: { ...spaceWhere(scope), id: { in: batch } },
         data: { archivedAt: at, archivedReason: 'aged_out' },
       }),
     now
@@ -476,7 +476,7 @@ export async function archiveAgedReviews(
  * regenerates a suggestion from the vectors if the pair still looks related.
  */
 export async function pruneStaleSuggestedLinks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -486,7 +486,7 @@ export async function pruneStaleSuggestedLinks(
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableLink.findMany({
       where: {
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         status: 'suggested',
         reviewedAt: null,
         createdAt: { lt: cutoff },
@@ -498,7 +498,7 @@ export async function pruneStaleSuggestedLinks(
 
   if (options.dryRun || ids.length === 0) return counted;
 
-  await prisma.resparkableLink.deleteMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  await prisma.resparkableLink.deleteMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
   return counted;
 }
 
@@ -509,7 +509,7 @@ export async function pruneStaleSuggestedLinks(
  * product offers (weekly, monthly, quarterly, annual) answerable from the log.
  */
 export async function pruneAgedEvents(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -518,7 +518,7 @@ export async function pruneAgedEvents(
 
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableEvent.findMany({
-      where: { ...ownerWhere(scope), createdAt: { lt: cutoff } },
+      where: { ...spaceWhere(scope), createdAt: { lt: cutoff } },
       select: { id: true },
       take: RETENTION_BATCH,
     })
@@ -526,7 +526,7 @@ export async function pruneAgedEvents(
 
   if (options.dryRun || ids.length === 0) return counted;
 
-  await prisma.resparkableEvent.deleteMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  await prisma.resparkableEvent.deleteMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
   return counted;
 }
 
@@ -541,7 +541,7 @@ export async function pruneAgedEvents(
  * about a Tuesday in March.
  */
 export async function prunePastPlanTimeBlocks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   windowDays: number,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
@@ -550,7 +550,7 @@ export async function prunePastPlanTimeBlocks(
 
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableTimeBlock.findMany({
-      where: { ...ownerWhere(scope), source: 'plan', endAt: { lt: cutoff } },
+      where: { ...spaceWhere(scope), source: 'plan', endAt: { lt: cutoff } },
       select: { id: true },
       take: RETENTION_BATCH,
     })
@@ -559,7 +559,7 @@ export async function prunePastPlanTimeBlocks(
   if (options.dryRun || ids.length === 0) return counted;
 
   await prisma.resparkableTimeBlock.deleteMany({
-    where: { ...ownerWhere(scope), id: { in: ids } },
+    where: { ...spaceWhere(scope), id: { in: ids } },
   });
   return counted;
 }
@@ -577,12 +577,12 @@ export async function prunePastPlanTimeBlocks(
  * runs last in the pass and cleans up after them in the same tick.
  */
 export async function pruneCardsForArchivedTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: RetentionRuleOptions = {}
 ): Promise<RetentionRuleResult> {
   const { ids, result: counted } = await selectIds(() =>
     prisma.resparkableBoardCard.findMany({
-      where: { ...ownerWhere(scope), task: { archivedAt: { not: null } } },
+      where: { ...spaceWhere(scope), task: { archivedAt: { not: null } } },
       select: { id: true },
       take: RETENTION_BATCH,
     })
@@ -591,7 +591,7 @@ export async function pruneCardsForArchivedTasks(
   if (options.dryRun || ids.length === 0) return counted;
 
   await prisma.resparkableBoardCard.deleteMany({
-    where: { ...ownerWhere(scope), id: { in: ids } },
+    where: { ...spaceWhere(scope), id: { in: ids } },
   });
   return counted;
 }

@@ -54,9 +54,18 @@ const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
  * session) and `FeatureFlag` (`createdBy` written by the admin route). Both are
  * in the manifest by hand. Scanning for the column name as well as the relation
  * is what stops a third.
+ *
+ * `ownerUserId` and `createdByUserId` were added by Resparkable's phase 45, and
+ * the reason they are here is a warning about this whole file. Before that
+ * phase, the tier's 24 models matched on `userId` and were accounted for
+ * below; the rename moved them to `spaceId`, they stopped matching, and this
+ * scan went vacuous for a fifth of the schema while every assertion still
+ * passed. The tier's own guard caught it because it asserts a minimum count of
+ * what it found; this one asserted a minimum over the WHOLE schema, which core
+ * alone satisfies. Hence the per-tier floor added below.
  */
 const USER_SCALAR_FIELD =
-  /^\s*(userId|createdBy|uploadedBy|ownerId|actorUserId|subjectUserId)\s+String/;
+  /^\s*(userId|createdBy|uploadedBy|ownerId|actorUserId|subjectUserId|ownerUserId|createdByUserId)\s+String/;
 
 /**
  * Models carrying a user-id scalar that the export handles OUTSIDE the manifest,
@@ -198,6 +207,20 @@ describe('subject-data source manifest', () => {
 
     it('finds a plausible number of User-linked models', () => {
       expect(userLinked.size).toBeGreaterThanOrEqual(25);
+    });
+
+    it('still sees the framework tier, which a whole-schema floor would not', () => {
+      // A count over the whole schema is satisfied by core on its own, so the
+      // fork tier can drop out of this scan entirely without failing anything.
+      // It did exactly that when phase 45 renamed `userId` to `spaceId`: 24
+      // models silently stopped matching and `HANDLED_OUTSIDE_MANIFEST` became
+      // two dozen dead entries guarding nothing. A floor per tier is what makes
+      // that visible.
+      // The tier's models carry no `@relation` to `User` (a fork must not add a
+      // field to a Sunrise-owned model), so they reach this scan through the
+      // scalar net rather than the FK one.
+      const framework = [...scalarLinked].filter((model) => model.startsWith('Resparkable'));
+      expect(framework.length).toBeGreaterThanOrEqual(20);
     });
 
     it('recognises both FK spellings', () => {

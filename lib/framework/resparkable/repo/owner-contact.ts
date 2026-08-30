@@ -34,11 +34,11 @@
  * exists: this is the tier's only Prisma access outside its own tables, and the
  * lint rule that keeps `prisma` unreachable elsewhere is worth more than the
  * tidiness of a file that only touches Resparkable models. It still takes an
- * `OwnerScope`, so it cannot be asked for anybody else's address.
+ * `SpaceScope`, so it cannot be asked for anybody else's address.
  */
 
 import { prisma } from '@/lib/db/client';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 export interface OwnerContact {
   email: string;
@@ -60,9 +60,9 @@ export interface OwnerContact {
  * whose user has been erased is exactly the case this guards, and the caller's
  * job is to skip quietly rather than to fail a workflow over it.
  */
-export async function findOwnerContact(scope: OwnerScope): Promise<OwnerContact | null> {
+export async function findOwnerContact(scope: SpaceScope): Promise<OwnerContact | null> {
   const user = await prisma.user.findUnique({
-    where: { id: scope.userId },
+    where: { id: scope.spaceId },
     select: { email: true, name: true, emailVerified: true },
   });
 

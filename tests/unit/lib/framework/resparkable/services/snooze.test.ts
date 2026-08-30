@@ -25,7 +25,7 @@ vi.mock('@/lib/framework/resparkable/services/space', () => ({ getResparkableSpa
 vi.mock('@/lib/framework/resparkable/priority/reprioritise', () => ({ rescoreTask: vi.fn() }));
 
 import { rescoreTask } from '@/lib/framework/resparkable/priority/reprioritise';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { updateProject } from '@/lib/framework/resparkable/repo/projects';
 import { updateTask } from '@/lib/framework/resparkable/repo/tasks';
 import { updateThought } from '@/lib/framework/resparkable/repo/thoughts';
@@ -45,7 +45,7 @@ import type {
 } from '@prisma/client';
 
 const AUCKLAND = 'Pacific/Auckland';
-const scope = ownerScope('user_x');
+const scope = spaceScope('user_x');
 
 /** Thursday 30 July 2026, 10:00 in Auckland — 22:00 on the 29th in UTC. */
 const NOW = new Date('2026-07-29T22:00:00.000Z');

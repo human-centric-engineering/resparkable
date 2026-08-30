@@ -16,7 +16,7 @@
  */
 
 import { listSuggestedLinksForSources } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { countThoughts, listThoughts } from '@/lib/framework/resparkable/repo/thoughts';
 import type { ResparkableThought } from '@prisma/client';
@@ -55,7 +55,7 @@ export interface InboxOptions {
 }
 
 export async function buildInbox(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: InboxOptions = {},
   now = new Date()
 ): Promise<InboxPayload> {

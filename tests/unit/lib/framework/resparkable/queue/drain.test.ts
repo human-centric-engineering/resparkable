@@ -40,6 +40,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 vi.mock('@/lib/framework/resparkable/repo/jobs', () => ({
   claimResparkableJobs: vi.fn(),
@@ -79,7 +80,7 @@ const NOTHING = {
 function job(overrides: Partial<Record<string, unknown>> = {}) {
   return {
     id: 'job_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
     kind: 'triage',
     dueAt: new Date('2026-06-15T03:15:00.000Z'),
     attempts: 0,
@@ -230,7 +231,7 @@ describe('the demand gate — the billing rule, not a budget lever', () => {
     await drainResparkableJobs({ now: NOW, maxJobs: 5 });
 
     expect(hasResparkableActivitySince).not.toHaveBeenCalled();
-    expect(runResparkableJob).toHaveBeenCalledWith('retention', { userId: 'user_a' }, NOW);
+    expect(runResparkableJob).toHaveBeenCalledWith('retention', spaceScope('user_a'), NOW);
   });
 
   it('never gates a first-ever run', async () => {
@@ -342,7 +343,7 @@ describe('failure handling', () => {
     vi.mocked(runResparkableJob)
       .mockRejectedValueOnce(new Error('boom'))
       .mockResolvedValue({ ...NOTHING, executionsQueued: 1 });
-    claimOnce([job(), job({ id: 'job_2', userId: 'user_b' })]);
+    claimOnce([job(), job({ id: 'job_2', spaceId: 'user_b' })]);
 
     const result = await drainResparkableJobs({ now: NOW, maxJobs: 5, concurrency: 2 });
 

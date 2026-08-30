@@ -33,7 +33,7 @@ import { findArea } from '@/lib/framework/resparkable/repo/areas';
 import { findEntity } from '@/lib/framework/resparkable/repo/entities';
 import { findGoal } from '@/lib/framework/resparkable/repo/goals';
 import { listLinksForEntity } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProject } from '@/lib/framework/resparkable/repo/projects';
 import { countTasks, findTask, listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import {
@@ -87,7 +87,7 @@ export interface ProjectViewPayload {
 }
 
 export async function buildProjectView(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ProjectViewPayload | null> {
   const project = await findProject(scope, id);
@@ -132,7 +132,7 @@ export interface EntityViewPayload {
 }
 
 export async function buildEntityView(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<EntityViewPayload | null> {
   const entity = await findEntity(scope, id);
@@ -156,7 +156,7 @@ export interface TaskViewPayload {
 }
 
 export async function buildTaskView(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<TaskViewPayload | null> {
   const task = await findTask(scope, id);
@@ -189,7 +189,7 @@ export async function buildTaskView(
  * a four-hop inference as "this serves X" would be asserting more than it knows.
  */
 async function resolveGoalTitle(
-  scope: OwnerScope,
+  scope: SpaceScope,
   project: ResparkableProject | null
 ): Promise<string | null> {
   if (!project) return null;
@@ -213,7 +213,7 @@ async function resolveGoalTitle(
 
 /** Hydrate a batch of links and reduce each to the end the page cares about. */
 async function toRelated(
-  scope: OwnerScope,
+  scope: SpaceScope,
   links: Awaited<ReturnType<typeof listLinksForEntity>>,
   selfType: string,
   selfId: string

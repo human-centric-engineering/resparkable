@@ -43,7 +43,7 @@ import { z } from 'zod';
 
 import { NotFoundError } from '@/lib/api/errors';
 import { createLink } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findThought, updateThought } from '@/lib/framework/resparkable/repo/thoughts';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import {
@@ -65,7 +65,7 @@ export interface PromoteResult {
  * repo cannot distinguish those and the route turns both into a 404 (§16.2).
  */
 export async function promoteThought(
-  scope: OwnerScope,
+  scope: SpaceScope,
   thoughtId: string,
   input: PromoteThoughtInput
 ): Promise<PromoteResult | null> {
@@ -123,7 +123,7 @@ export async function promoteThought(
 const createdRowSchema = z.object({ id: z.string().min(1) });
 
 async function createTarget(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: PromoteThoughtInput,
   title: string,
   content: string
@@ -132,7 +132,7 @@ async function createTarget(
 }
 
 async function createRow(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: PromoteThoughtInput,
   title: string,
   content: string

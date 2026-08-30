@@ -64,7 +64,7 @@ import {
   type ClaimedResparkableJob,
 } from '@/lib/framework/resparkable/repo/jobs';
 import { hasResparkableActivitySince } from '@/lib/framework/resparkable/repo/jobs';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { hasPositiveBalance } from '@/lib/framework/resparkable/services/billing';
 import { logger } from '@/lib/logging';
 
@@ -255,7 +255,7 @@ async function settleOne(
 
   const kind: ResparkableJobKind = job.kind;
   const spec = RESPARKABLE_JOB_SPECS[kind];
-  const scope = ownerScope(job.userId);
+  const scope = spaceScope(job.spaceId);
 
   // ── Gate 1: has anything changed? ─────────────────────────────────────────
   //
@@ -264,7 +264,7 @@ async function settleOne(
   // brand-new brain: it is empty and has no events, and gating it would mean
   // the first briefing never arrives.
   if (spec.demandGated && job.lastRunAt !== null) {
-    const changed = await hasResparkableActivitySince(job.userId, job.lastRunAt);
+    const changed = await hasResparkableActivitySince(job.spaceId, job.lastRunAt);
     if (!changed) {
       const dormantSince = job.dormantSince ?? now;
       await completeResparkableJob(
@@ -301,7 +301,7 @@ async function settleOne(
     logger.info('Resparkable job skipped — no credit balance', {
       jobId: job.id,
       kind,
-      userId: job.userId,
+      spaceId: job.spaceId,
     });
     await completeResparkableJob(
       job.id,
@@ -329,7 +329,7 @@ async function settleOne(
     logger.error('Resparkable job failed', {
       jobId: job.id,
       kind,
-      userId: job.userId,
+      spaceId: job.spaceId,
       attempts,
       exhausted,
       error: message,

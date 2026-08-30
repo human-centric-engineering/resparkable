@@ -24,9 +24,9 @@ vi.mock('@/lib/db/client', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { listTimeBlocks } from '@/lib/framework/resparkable/repo/time-blocks';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -102,7 +102,7 @@ describe('listTimeBlocks filters', () => {
     // Assert — every filter survives together, proving the spreads don't clobber each other
     const call = vi.mocked(prisma.resparkableTimeBlock.findMany).mock.calls[0]?.[0];
     expect(call?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       endAt: { gte: from },
       startAt: { lte: to },
       source: 'plan',

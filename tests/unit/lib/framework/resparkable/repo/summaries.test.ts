@@ -41,9 +41,9 @@ import {
   findSummaries,
   keywordSummaries,
 } from '@/lib/framework/resparkable/repo/summaries';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const UPDATED_AT = new Date('2026-01-01T00:00:00Z');
 
 beforeEach(() => {
@@ -64,7 +64,7 @@ describe('findSummaries: scoping and the empty-ids short circuit', () => {
     await findSummaries(SCOPE, 'project', ['p_1', 'p_2']);
 
     const call = vi.mocked(prisma.resparkableProject.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_a', id: { in: ['p_1', 'p_2'] } });
+    expect(call?.where).toMatchObject({ spaceId: 'user_a', id: { in: ['p_1', 'p_2'] } });
   });
 
   it('excludes archived rows by default', async () => {
@@ -283,7 +283,7 @@ describe('keywordSummaries: per-type search fields', () => {
 
     const searchCall = vi.mocked(prisma.resparkableThought.findMany).mock.calls[0]?.[0];
     expect(searchCall?.where).toMatchObject({
-      userId: 'user_a',
+      spaceId: 'user_a',
       content: { contains: 'Kestrel', mode: 'insensitive' },
     });
     expect(searchCall?.take).toBe(5);
@@ -412,7 +412,7 @@ describe('entityExists', () => {
 
     expect(exists).toBe(true);
     expect(client[delegateName].count).toHaveBeenCalledWith({
-      where: { userId: 'user_a', id: 'id_1' },
+      where: { spaceId: 'user_a', id: 'id_1' },
     });
   });
 

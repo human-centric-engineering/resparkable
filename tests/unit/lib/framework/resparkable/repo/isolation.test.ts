@@ -83,14 +83,14 @@ import * as events from '@/lib/framework/resparkable/repo/events';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
 import * as indexing from '@/lib/framework/resparkable/repo/indexing';
 import * as links from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import * as summaries from '@/lib/framework/resparkable/repo/summaries';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
 import * as thoughts from '@/lib/framework/resparkable/repo/thoughts';
 import * as timeBlocks from '@/lib/framework/resparkable/repo/time-blocks';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const OTHER = 'user_b';
 
 /**
@@ -258,7 +258,7 @@ const SCOPED_CALLS: Array<[string, () => Promise<unknown>]> = [
  * They are deliberately **not** in the sweep above: it inspects the object
  * handed to a Prisma delegate, and a tagged template has none. They get a
  * stronger, more specific assertion instead (see the raw-SQL block below) —
- * which matters, because raw SQL is precisely where a missing `WHERE "userId"`
+ * which matters, because raw SQL is precisely where a missing `WHERE "spaceId"`
  * would hide.
  */
 const RAW_SQL_CALLS: Array<[string, () => Promise<unknown>]> = [
@@ -333,13 +333,34 @@ describe('every repo call is owner-scoped', () => {
       // connection sweep writes tens at a time — would be a row belonging to
       // nobody, or worse, to whoever the database default resolved to.
       const scoped =
-        where?.userId === 'user_a' ||
+        where?.spaceId === 'user_a' ||
         (Array.isArray(data)
           ? data.length > 0 &&
-            data.every((row) => (row as Record<string, unknown> | undefined)?.userId === 'user_a')
-          : (data as Record<string, unknown> | undefined)?.userId === 'user_a');
+            data.every((row) => (row as Record<string, unknown> | undefined)?.spaceId === 'user_a')
+          : (data as Record<string, unknown> | undefined)?.spaceId === 'user_a');
 
       expect(scoped, `unscoped Prisma call: ${JSON.stringify(args)}`).toBe(true);
+    }
+  });
+
+  it.each(SCOPED_CALLS)('%s never filters on the ACTOR', async (_name, call) => {
+    // D5, restated by §23.2. `SpaceScope` carries `actorUserId` for attribution
+    // and role checks, and the moment it appears in a `where` a group space has
+    // a per-row ACL: a membership join on the hot path of roughly forty list
+    // endpoints, `priorityScore`'s single indexed ORDER BY defeated, and every
+    // one of those endpoints a potential leak (§23.4).
+    //
+    // Asserted structurally rather than by reading the code, and asserted NOW,
+    // while nothing has an actor to filter on. The mistake this prevents is not
+    // one somebody makes deliberately; it is one that arrives as a convenience
+    // in a phase that has group members to hand.
+    await call();
+
+    for (const args of recordedArgs()) {
+      const rendered = JSON.stringify(args.where ?? {});
+      expect(rendered, `a repo query filtered on the actor: ${rendered}`).not.toContain(
+        'actorUserId'
+      );
     }
   });
 });
@@ -348,7 +369,7 @@ describe('raw SQL binds userId as a parameter, never interpolates it', () => {
   /**
    * Two separate properties, and both matter.
    *
-   * **Scoped**: the statement filters on `"userId" = $n` and `scope.userId` is
+   * **Scoped**: the statement filters on `"spaceId" = $n` and `scope.spaceId` is
    * among the bound values. A vector search that forgets this returns whichever
    * rows are nearest across *every* user's brain — the exact leak §16.2 calls out
    * ("B's search never returns A's rows, including when A's row is the better
@@ -375,8 +396,11 @@ describe('raw SQL binds userId as a parameter, never interpolates it', () => {
       expect(Array.isArray(template), 'raw SQL must be a tagged template').toBe(true);
       const sql = (template as unknown as string[]).join('?');
 
-      expect(sql, 'raw SQL must filter on userId').toMatch(/"userId"\s*=/);
-      expect(values, 'scope.userId must be a bound parameter').toContain('user_a');
+      expect(sql, 'raw SQL must filter on spaceId').toMatch(/"spaceId"\s*=/);
+      // Same rule as the Prisma sweep above: the actor is attribution, never a
+      // filter. Raw SQL is where it would be easiest to slip one in unnoticed.
+      expect(sql, 'raw SQL must not filter on the actor').not.toContain('actorUserId');
+      expect(values, 'scope.spaceId must be a bound parameter').toContain('user_a');
       expect(sql, 'the user id must never be interpolated into the SQL text').not.toContain(
         'user_a'
       );
@@ -431,7 +455,7 @@ describe('archiving drops the vectors in the same transaction', () => {
       expect(vi.mocked(prisma.$transaction)).toHaveBeenCalledTimes(1);
 
       const deleteArgs = vi.mocked(prisma.resparkableEmbedding.deleteMany).mock.calls[0]?.[0];
-      expect(deleteArgs?.where).toMatchObject({ userId: 'user_a', entityType, entityId: 'id_1' });
+      expect(deleteArgs?.where).toMatchObject({ spaceId: 'user_a', entityType, entityId: 'id_1' });
     }
   );
 
@@ -440,7 +464,7 @@ describe('archiving drops the vectors in the same transaction', () => {
 
     const update = vi.mocked(prisma.resparkableProject.update).mock.calls[0]?.[0];
     expect(update?.data).toMatchObject({ indexedHash: null });
-    expect(update?.where).toMatchObject({ userId: 'user_a', id: 'id_1' });
+    expect(update?.where).toMatchObject({ spaceId: 'user_a', id: 'id_1' });
   });
 });
 
@@ -525,7 +549,7 @@ describe('hard deletes drop the vectors in the same transaction as the row', () 
       expect(vi.mocked(prisma.$transaction)).toHaveBeenCalledTimes(1);
 
       const deleteArgs = vi.mocked(prisma.resparkableEmbedding.deleteMany).mock.calls[0]?.[0];
-      expect(deleteArgs?.where).toMatchObject({ userId: 'user_a', entityType, entityId: 'id_1' });
+      expect(deleteArgs?.where).toMatchObject({ spaceId: 'user_a', entityType, entityId: 'id_1' });
     }
   );
 });
@@ -560,10 +584,10 @@ describe('the repo layer cannot be pointed at another user', () => {
     // The type system rejects this (`WithoutOwner` omits userId), but a JS
     // caller — a capability handler passing a parsed payload straight through —
     // has no type system. The scope must win at runtime too.
-    await tasks.createTask(SCOPE, { title: 'x', userId: OTHER } as never);
+    await tasks.createTask(SCOPE, { title: 'x', spaceId: OTHER } as never);
 
     const created = vi.mocked(prisma.resparkableTask.create).mock.calls[0]?.[0];
-    expect(created?.data).toMatchObject({ userId: 'user_a' });
+    expect(created?.data).toMatchObject({ spaceId: 'user_a' });
   });
 
   it('scopes an update by userId as well as id, so a foreign id matches nothing', async () => {
@@ -572,14 +596,14 @@ describe('the repo layer cannot be pointed at another user', () => {
     const call = vi.mocked(prisma.resparkableTask.update).mock.calls[0]?.[0];
     // Both halves matter: id alone would update another user's row, userId
     // alone would update all of this user's rows.
-    expect(call?.where).toEqual({ id: 'task_owned_by_b', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'task_owned_by_b', spaceId: 'user_a' });
   });
 
   it('scopes a delete by userId as well as id', async () => {
     await tasks.deleteTask(SCOPE, 'task_owned_by_b');
 
     const call = vi.mocked(prisma.resparkableTask.delete).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'task_owned_by_b', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'task_owned_by_b', spaceId: 'user_a' });
   });
 });
 
@@ -588,14 +612,14 @@ describe('archived rows are excluded unless asked for', () => {
     await tasks.listTasks(SCOPE);
 
     const call = vi.mocked(prisma.resparkableTask.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_a', archivedAt: null });
+    expect(call?.where).toMatchObject({ spaceId: 'user_a', archivedAt: null });
   });
 
   it('drops the filter only when includeArchived is set', async () => {
     await tasks.listTasks(SCOPE, {}, { includeArchived: true });
 
     const call = vi.mocked(prisma.resparkableTask.findMany).mock.calls[0]?.[0];
-    expect(call?.where).toMatchObject({ userId: 'user_a' });
+    expect(call?.where).toMatchObject({ spaceId: 'user_a' });
     expect(call?.where).not.toHaveProperty('archivedAt');
   });
 
@@ -603,6 +627,6 @@ describe('archived rows are excluded unless asked for', () => {
     await tasks.findTask(SCOPE, 'id_1');
 
     const call = vi.mocked(prisma.resparkableTask.findFirst).mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'id_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'id_1' });
   });
 });

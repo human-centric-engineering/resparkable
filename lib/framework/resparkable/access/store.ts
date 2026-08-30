@@ -4,7 +4,7 @@
  * ## Why this file may import Prisma when almost nothing else in the tier can
  *
  * The tier-wide ESLint rule keeps `@/lib/db/client` unreachable outside
- * `repo/**`, because a repo function takes an `OwnerScope` and therefore cannot
+ * `repo/**`, because a repo function takes an `SpaceScope` and therefore cannot
  * express a cross-user read. This directory is the deliberate second case (D5):
  * **shared queries opt in explicitly**, and a shared query is by definition one
  * that reads rows belonging to someone other than the caller. Routing it
@@ -13,7 +13,7 @@
  *
  * So the boundary is not "one layer touches the database". It is:
  *
- *   • `repo/**` — owner queries. Takes an `OwnerScope`. Cannot cross a user.
+ *   • `repo/**` — owner queries. Takes an `SpaceScope`. Cannot cross a user.
  *   • `access/**` — shared queries. Takes a viewer. Crosses a user only by
  *     following a grant or a link, and every function here is named for the
  *     grant or link it follows.
@@ -47,7 +47,7 @@ import { isShareActive } from '@/lib/utils/share-window';
 import { Prisma } from '@prisma/client';
 
 /** What every owner lookup selects: an id and the column the decision turns on. */
-const OWNER_SELECT = { id: true, userId: true } as const;
+const OWNER_SELECT = { id: true, spaceId: true } as const;
 
 /**
  * Owner ids for a batch of items of one type.
@@ -75,7 +75,7 @@ export async function findEntityOwners(
 
   const where = { id: { in: [...entityIds] } };
 
-  const rows = await (async (): Promise<Array<{ id: string; userId: string }>> => {
+  const rows = await (async (): Promise<Array<{ id: string; spaceId: string }>> => {
     switch (entityType) {
       case 'area':
         return prisma.resparkableArea.findMany({ where, select: OWNER_SELECT });
@@ -96,7 +96,7 @@ export async function findEntityOwners(
     }
   })();
 
-  return new Map(rows.map((row) => [row.id, row.userId]));
+  return new Map(rows.map((row) => [row.id, row.spaceId]));
 }
 
 /** Single form, for the common one-item route. */
@@ -130,7 +130,7 @@ function granteeClauses(viewer: ResparkableViewer): Prisma.ResparkableGrantWhere
 
 const GRANT_SELECT = {
   id: true,
-  userId: true,
+  spaceId: true,
   entityType: true,
   entityId: true,
   role: true,
@@ -145,7 +145,7 @@ const GRANT_SELECT = {
 function toLiveGrants(
   rows: Array<{
     id: string;
-    userId: string;
+    spaceId: string;
     entityType: string;
     entityId: string;
     role: string;
@@ -162,7 +162,7 @@ function toLiveGrants(
     .filter((row) => isShareActive(row, now))
     .map((row) => ({
       id: row.id,
-      ownerId: row.userId,
+      ownerId: row.spaceId,
       entityType: row.entityType as ResparkableShareableType,
       entityId: row.entityId,
       // Anything that is not `commenter` reads as `viewer`. Widening a role by
@@ -261,7 +261,7 @@ export async function findLiveShareLinkByTokenHash(
     where: { tokenHash },
     select: {
       id: true,
-      userId: true,
+      spaceId: true,
       entityType: true,
       entityId: true,
       includeChildren: true,
@@ -277,7 +277,7 @@ export async function findLiveShareLinkByTokenHash(
 
   return {
     id: row.id,
-    ownerId: row.userId,
+    ownerId: row.spaceId,
     entityType: row.entityType,
     entityId: row.entityId,
     includeChildren: row.includeChildren,
@@ -310,7 +310,7 @@ export async function findTaskProjects(
     // rows too. An archived task is therefore rendered by nothing, and a
     // cascade that still granted it would hand out exactly what this file's
     // header calls the unsafe direction: access to a row the board never showed.
-    where: { userId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
+    where: { spaceId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
     select: { id: true, projectId: true, status: true },
   });
 
@@ -334,7 +334,7 @@ export async function findGoalParents(
     // reached them would grant access to something no shared surface displays.
     // An archived goal shared DIRECTLY still resolves: that is the owner's own
     // gesture, and it is settled before the cascade runs.
-    where: { userId: ownerId, id: { in: [...goalIds] }, archivedAt: null },
+    where: { spaceId: ownerId, id: { in: [...goalIds] }, archivedAt: null },
     select: { id: true, parentGoalId: true },
   });
 
@@ -366,7 +366,7 @@ export async function findTaskFacts(
     // rows too. An archived task is therefore rendered by nothing, and a
     // cascade that still granted it would hand out exactly what this file's
     // header calls the unsafe direction: access to a row the board never showed.
-    where: { userId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
+    where: { spaceId: ownerId, id: { in: [...taskIds] }, archivedAt: null },
     select: { id: true, projectId: true, status: true },
   });
 
@@ -391,7 +391,7 @@ export async function findBoardsPinningTasks(
 
   const rows = await prisma.resparkableBoardCard.findMany({
     where: {
-      userId: ownerId,
+      spaceId: ownerId,
       taskId: { in: [...taskIds] },
       board: { membership: 'explicit' },
     },
@@ -424,7 +424,7 @@ export interface FilterBoard {
  */
 export async function findFilterBoards(ownerId: string): Promise<FilterBoard[]> {
   return prisma.resparkableBoard.findMany({
-    where: { userId: ownerId, membership: 'filter' },
+    where: { spaceId: ownerId, membership: 'filter' },
     select: { id: true, filter: true, columns: true },
   });
 }

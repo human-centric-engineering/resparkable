@@ -16,7 +16,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { writeReview } from '@/lib/framework/resparkable/services/reviews';
 import {
   createReviewSchema,
@@ -67,7 +67,7 @@ export class ResparkableWriteReviewCapability extends ResparkableCapability<
 
   protected async run(
     args: CreateReviewInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<ReviewData>> {
     try {
       const review = await writeReview(scope, args);

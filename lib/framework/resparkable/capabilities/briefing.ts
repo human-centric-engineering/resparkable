@@ -22,7 +22,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   buildBriefingInputs,
   getStoredBriefing,
@@ -80,7 +80,7 @@ export class ResparkableGetBriefingCapability extends ResparkableCapability<
 
   protected async run(
     _args: GetBriefingArgs,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<BriefingView>> {
     const stored = await getStoredBriefing(scope);
 
@@ -127,7 +127,7 @@ export class ResparkableGetBriefingInputsCapability extends ResparkableCapabilit
 
   protected async run(
     args: BriefingInputsArgs,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<BriefingInputs>> {
     return this.success(await buildBriefingInputs(scope, args));
   }

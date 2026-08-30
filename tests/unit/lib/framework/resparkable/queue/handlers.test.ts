@@ -44,9 +44,9 @@ import { reindexPending } from '@/lib/framework/resparkable/embedding/indexer';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-06-15T03:15:00.000Z');
 
 beforeEach(() => {

@@ -35,7 +35,7 @@ vi.mock('@/lib/framework/resparkable/repo/embeddings', () => ({ countChunks: vi.
 vi.mock('@/lib/framework/resparkable/search/connections', () => ({ findConnections: vi.fn() }));
 
 import { countChunks } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findSummaries, type EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
 import { findConnections } from '@/lib/framework/resparkable/search/connections';
 import { findNeighbours, hydrateNeighbours } from '@/lib/framework/resparkable/services/neighbours';
@@ -48,7 +48,7 @@ const mockedSummaries = vi.mocked(findSummaries);
 const mockedChunks = vi.mocked(countChunks);
 const mockedConnections = vi.mocked(findConnections);
 
-const scope = ownerScope('user_a');
+const scope = spaceScope('user_a');
 
 function summary(
   id: string,

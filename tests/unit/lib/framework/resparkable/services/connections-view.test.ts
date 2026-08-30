@@ -35,13 +35,13 @@ vi.mock('@/lib/framework/resparkable/services/link-hydration', () => ({ hydrateL
 import { buildConnections } from '@/lib/framework/resparkable/services/connections-view';
 import { countLinks, listLinks } from '@/lib/framework/resparkable/repo/links';
 import { hydrateLinks } from '@/lib/framework/resparkable/services/link-hydration';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedList = vi.mocked(listLinks);
 const mockedCount = vi.mocked(countLinks);
 const mockedHydrate = vi.mocked(hydrateLinks);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const ROW = {
   id: 'link_1',

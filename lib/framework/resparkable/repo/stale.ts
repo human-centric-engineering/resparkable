@@ -23,10 +23,10 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss } from '@/lib/framework/resparkable/repo/shared';
 import type { STILL_LIVE_TYPES } from '@/lib/framework/resparkable/validations';
 
@@ -49,13 +49,13 @@ export interface StaleRow {
  * busiest project looks dead is how a digest gets ignored permanently.
  */
 export async function findDormantProjects(
-  scope: OwnerScope,
+  scope: SpaceScope,
   cutoff: Date,
   limit = STALE_SECTION_LIMIT
 ): Promise<StaleRow[]> {
   const rows = await prisma.resparkableProject.findMany({
     where: {
-      ...liveOwnerWhere(scope),
+      ...liveSpaceWhere(scope),
       status: 'active',
       OR: [{ lastActivityAt: null }, { lastActivityAt: { lt: cutoff } }],
       // No task completed inside the window. `none` is a correlated NOT EXISTS,
@@ -89,14 +89,14 @@ export async function findDormantProjects(
  * is that it outlives every project under it.
  */
 export async function findGoalsPastTarget(
-  scope: OwnerScope,
+  scope: SpaceScope,
   now: Date,
   cutoff: Date,
   limit = STALE_SECTION_LIMIT
 ): Promise<StaleRow[]> {
   const rows = await prisma.resparkableGoal.findMany({
     where: {
-      ...liveOwnerWhere(scope),
+      ...liveSpaceWhere(scope),
       status: 'active',
       targetDate: { lt: now },
       OR: [{ lastActivityAt: null }, { lastActivityAt: { lt: cutoff } }],
@@ -123,13 +123,13 @@ export async function findGoalsPastTarget(
  * end of the edge, and a link is a signal whichever end it is.
  */
 export async function findDormantEntities(
-  scope: OwnerScope,
+  scope: SpaceScope,
   cutoff: Date,
   limit = STALE_SECTION_LIMIT
 ): Promise<StaleRow[]> {
   const candidates = await prisma.resparkableEntity.findMany({
     where: {
-      ...liveOwnerWhere(scope),
+      ...liveSpaceWhere(scope),
       status: 'active',
       OR: [{ lastActivityAt: null }, { lastActivityAt: { lt: cutoff } }],
     },
@@ -150,7 +150,7 @@ export async function findDormantEntities(
   const ids = candidates.map((row) => row.id);
   const linked = await prisma.resparkableLink.findMany({
     where: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       createdAt: { gte: cutoff },
       OR: [
         { sourceType: 'entity', sourceId: { in: ids } },
@@ -190,12 +190,12 @@ export type StillLiveType = (typeof STILL_LIVE_TYPES)[number];
  * with no second "dismissed until" column to keep in step with the first.
  */
 export async function markStillLive(
-  scope: OwnerScope,
+  scope: SpaceScope,
   type: StillLiveType,
   id: string,
   now: Date
 ): Promise<boolean> {
-  const where = { id, ...ownerWhere(scope) };
+  const where = { id, ...spaceWhere(scope) };
   const data = { lastActivityAt: now };
   // `select` on every branch, so the three model types unify to one shape. The
   // caller wants "did this row exist and was it mine"; returning three different

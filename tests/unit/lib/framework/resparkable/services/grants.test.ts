@@ -55,15 +55,16 @@ import {
   toGrantSummary,
   updateGrant,
 } from '@/lib/framework/resparkable/services/grants';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const OWNER = ownerScope('user_a');
+const OWNER = spaceScope('user_a');
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 
 function grantRow(overrides: Record<string, unknown> = {}) {
   return {
     id: 'grant_1',
-    userId: 'user_a',
+    spaceId: 'user_a',
+    createdByUserId: null,
     entityType: 'project',
     entityId: 'p_1',
     granteeUserId: null,

@@ -27,7 +27,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { linkEntities } from '@/lib/framework/resparkable/services/links';
 import { findNeighbours } from '@/lib/framework/resparkable/services/neighbours';
 import {
@@ -85,7 +85,7 @@ export class ResparkableLinkEntitiesCapability extends ResparkableCapability<
 
   protected async run(
     args: CreateLinkInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<LinkData>> {
     const link = await linkEntities(scope, args);
     if (!link) {
@@ -160,7 +160,7 @@ export class ResparkableFindConnectionsCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentFindConnectionsInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<ConnectionsData>> {
     const result = await findNeighbours(scope, {
       entityType: args.entityType,

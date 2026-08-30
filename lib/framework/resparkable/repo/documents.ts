@@ -17,11 +17,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -38,18 +38,18 @@ export type DocumentCreateData = WithoutOwner<Prisma.ResparkableDocumentUnchecke
 export type DocumentUpdateData = WithoutOwner<Prisma.ResparkableDocumentUncheckedUpdateInput>;
 
 function documentWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: DocumentFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableDocumentWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.status ? { status: filters.status } : {}),
   };
 }
 
 export async function listDocuments(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: DocumentFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableDocument[]> {
@@ -61,7 +61,7 @@ export async function listDocuments(
 }
 
 export async function countDocuments(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: DocumentFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
@@ -71,10 +71,10 @@ export async function countDocuments(
 }
 
 export async function findDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableDocument | null> {
-  return prisma.resparkableDocument.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableDocument.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -95,11 +95,11 @@ export async function findDocument(
  * which is absent from search.
  */
 export async function findDocumentByHash(
-  scope: OwnerScope,
+  scope: SpaceScope,
   fileHash: string
 ): Promise<ResparkableDocument | null> {
   return prisma.resparkableDocument.findFirst({
-    where: { ...liveOwnerWhere(scope), fileHash, status: 'ready' },
+    where: { ...liveSpaceWhere(scope), fileHash, status: 'ready' },
     orderBy: { createdAt: 'desc' },
   });
 }
@@ -118,30 +118,30 @@ export async function findDocumentByHash(
  * this dead row and re-drive it".
  */
 export async function findDocumentByHashIncludingFailed(
-  scope: OwnerScope,
+  scope: SpaceScope,
   fileHash: string
 ): Promise<ResparkableDocument | null> {
   return prisma.resparkableDocument.findFirst({
-    where: { ...ownerWhere(scope), fileHash },
+    where: { ...spaceWhere(scope), fileHash },
     orderBy: { createdAt: 'desc' },
   });
 }
 
 export async function createDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: DocumentCreateData
 ): Promise<ResparkableDocument> {
-  return prisma.resparkableDocument.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableDocument.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: DocumentUpdateData
 ): Promise<ResparkableDocument | null> {
   return nullOnMiss(() =>
     prisma.resparkableDocument.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -152,25 +152,25 @@ export async function updateDocument(
 }
 
 export async function archiveDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableDocument | null> {
   return archiveAndDropVectors(scope, 'document', id, () =>
     prisma.resparkableDocument.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
 export async function restoreDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableDocument | null> {
   return nullOnMiss(() =>
     prisma.resparkableDocument.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
@@ -184,11 +184,11 @@ export async function restoreDocument(
  * file the user believes is gone.
  */
 export async function deleteDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableDocument | null> {
   return deleteAndDropVectors(scope, 'document', id, () =>
-    prisma.resparkableDocument.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableDocument.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }
 

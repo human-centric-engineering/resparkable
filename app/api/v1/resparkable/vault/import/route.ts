@@ -34,7 +34,7 @@ import { ValidationError } from '@/lib/api/errors';
 import { enforceContentLengthCap } from '@/lib/api/multipart-guard';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { vaultImportSchema } from '@/lib/framework/resparkable/validations';
 import { VaultExportError } from '@/lib/framework/resparkable/vault/export';
 import { importVaultArchive } from '@/lib/framework/resparkable/vault/import';
@@ -51,7 +51,7 @@ const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   // BEFORE formData() — see the header note.
   const tooLarge = enforceContentLengthCap(request, {

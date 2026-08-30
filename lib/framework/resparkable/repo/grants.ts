@@ -2,7 +2,7 @@
  * Grant repo — the OWNER's side of a named share.
  *
  * Issuing, listing, amending and revoking a grant are all things a person does
- * to their own brain, so they take an `OwnerScope` and live here. Reading the
+ * to their own brain, so they take an `SpaceScope` and live here. Reading the
  * grant table **by grantee** is a shared query — it is the one read that
  * crosses a user — and lives in `access/store.ts`. That split is D5, and it is
  * why nothing in this file takes a viewer.
@@ -30,7 +30,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableGrant } from '@prisma/client';
@@ -84,7 +84,7 @@ export interface GrantFilters {
  * this cannot be called to write into another person's brain.
  */
 export async function upsertGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: GrantCreateData
 ): Promise<ResparkableGrant> {
   const shared = {
@@ -102,7 +102,7 @@ export async function upsertGrant(
       },
     },
     create: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       entityType: data.entityType,
       entityId: data.entityId,
       granteeEmail: data.granteeEmail,
@@ -132,11 +132,11 @@ export async function upsertGrant(
  * conversation shares, beats two that can drift.
  */
 export async function listOwnGrants(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: GrantFilters = {},
   now: Date = new Date()
 ): Promise<ResparkableGrant[]> {
-  const where: Prisma.ResparkableGrantWhereInput = { ...ownerWhere(scope) };
+  const where: Prisma.ResparkableGrantWhereInput = { ...spaceWhere(scope) };
   if (filters.entityType) where.entityType = filters.entityType;
   if (filters.entityId) where.entityId = filters.entityId;
 
@@ -157,10 +157,10 @@ export async function listOwnGrants(
  * then has to remember to check. Not-found and not-yours are the same answer.
  */
 export async function findOwnGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableGrant | null> {
-  return prisma.resparkableGrant.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableGrant.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -171,12 +171,12 @@ export async function findOwnGrant(
  * throw. Returns whether anything moved, which the route turns into a 404.
  */
 export async function updateGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: GrantUpdateData
 ): Promise<boolean> {
   const result = await prisma.resparkableGrant.updateMany({
-    where: { ...ownerWhere(scope), id },
+    where: { ...spaceWhere(scope), id },
     data,
   });
   return result.count > 0;
@@ -198,12 +198,12 @@ export async function updateGrant(
  * did access stop?" every time somebody pressed the button again.
  */
 export async function revokeGrant(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   now: Date = new Date()
 ): Promise<boolean> {
   const result = await prisma.resparkableGrant.updateMany({
-    where: { ...ownerWhere(scope), id, revokedAt: null },
+    where: { ...spaceWhere(scope), id, revokedAt: null },
     data: { revokedAt: now },
   });
   return result.count > 0;
@@ -221,7 +221,7 @@ export async function revokeGrant(
  * absolute is worth more than the tidiness of a file that only touches
  * Resparkable models.
  *
- * It takes no `OwnerScope` because it reads no brain rows. `owner-contact.ts`
+ * It takes no `SpaceScope` because it reads no brain rows. `owner-contact.ts`
  * resolves an account id to an address; this resolves an address to an account
  * id. Neither can reach an item, a task or a note, and this one is deliberately
  * narrowed to a single column so it cannot quietly grow into an account-detail
@@ -257,13 +257,13 @@ export async function findAccountIdForEmail(email: string): Promise<string | nul
  * `@unique` on `inviteTokenHash` already forces at the database.
  */
 export async function stampInviteToken(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   tokenHash: string,
   now: Date = new Date()
 ): Promise<boolean> {
   const result = await prisma.resparkableGrant.updateMany({
-    where: { ...ownerWhere(scope), id, revokedAt: null },
+    where: { ...spaceWhere(scope), id, revokedAt: null },
     data: { inviteTokenHash: tokenHash, inviteSentAt: now },
   });
   return result.count > 0;
@@ -306,7 +306,7 @@ export async function findGrantByInviteTokenHash(
  * was re-granted keeps their original acceptance, because that is when the
  * relationship began — re-sharing is an amendment, not a new introduction.
  *
- * No `OwnerScope`, for the same reason as the lookup above: the accepting party
+ * No `SpaceScope`, for the same reason as the lookup above: the accepting party
  * is not the owner. The `where` carries the grant's own id, which the caller got
  * by matching a token digest *and* an address.
  */

@@ -13,11 +13,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -37,12 +37,12 @@ export type ProjectCreateData = WithoutOwner<Prisma.ResparkableProjectUncheckedC
 export type ProjectUpdateData = WithoutOwner<Prisma.ResparkableProjectUncheckedUpdateInput>;
 
 function projectWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ProjectFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableProjectWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...(filters.status ? { status: filters.status } : {}),
     ...(filters.areaId ? { areaId: filters.areaId } : {}),
     ...(filters.hideSnoozed
@@ -52,7 +52,7 @@ function projectWhere(
 }
 
 export async function listProjects(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ProjectFilters = {},
   options: ListOptions = {}
 ): Promise<ResparkableProject[]> {
@@ -64,7 +64,7 @@ export async function listProjects(
 }
 
 export async function countProjects(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: ProjectFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
@@ -72,10 +72,10 @@ export async function countProjects(
 }
 
 export async function findProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableProject | null> {
-  return prisma.resparkableProject.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableProject.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -86,37 +86,37 @@ export async function findProject(
  * where a reprioritise pass would otherwise issue a query per row.
  */
 export async function findProjectsByIds(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ids: string[]
 ): Promise<ResparkableProject[]> {
   if (ids.length === 0) return [];
 
-  return prisma.resparkableProject.findMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  return prisma.resparkableProject.findMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
 }
 
 /** Slug lookup is still owner-scoped — slugs are unique per user, not globally. */
 export async function findProjectBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableProject | null> {
-  return prisma.resparkableProject.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableProject.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
 export async function createProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: ProjectCreateData
 ): Promise<ResparkableProject> {
-  return prisma.resparkableProject.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableProject.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: ProjectUpdateData
 ): Promise<ResparkableProject | null> {
   return nullOnMiss(() =>
     prisma.resparkableProject.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -127,7 +127,7 @@ export async function updateProject(
 }
 
 export async function archiveProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableProject | null> {
@@ -137,32 +137,32 @@ export async function archiveProject(
   // nulled so a restore re-embeds it.
   return archiveAndDropVectors(scope, 'project', id, () =>
     prisma.resparkableProject.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
 export async function restoreProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableProject | null> {
   return nullOnMiss(() =>
     prisma.resparkableProject.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
 }
 
 export async function deleteProject(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string
 ): Promise<ResparkableProject | null> {
   // Vectors go in the SAME transaction: nothing cascades to the polymorphic
   // embedding table, and an orphan chunk makes the sweep propose links to a row
   // that no longer exists.
   return deleteAndDropVectors(scope, 'project', id, () =>
-    prisma.resparkableProject.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableProject.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

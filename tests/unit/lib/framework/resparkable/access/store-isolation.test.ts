@@ -8,7 +8,7 @@
  *
  * `access/**` is the second of the two layers allowed to touch Prisma (D5), and
  * it is the one that reads across users on purpose. That makes it the place a
- * missing predicate does the most damage — the repo layer's `OwnerScope` cannot
+ * missing predicate does the most damage — the repo layer's `SpaceScope` cannot
  * express a cross-user read at all, and this layer's whole job is to express
  * exactly one, following a grant or a link and nothing else.
  *
@@ -176,7 +176,7 @@ describe('owner lookups', () => {
 
     // Fetching the row to compare one column would put a user's entire note
     // body on the wire for an authorisation check.
-    expect(args.select).toEqual({ id: true, userId: true });
+    expect(args.select).toEqual({ id: true, spaceId: true });
     expect(args.where).toEqual({ id: { in: ['p_1', 'p_2'] } });
   });
 
@@ -203,18 +203,18 @@ describe('owner lookups', () => {
 describe('cascade reads are bounded by the owner', () => {
   it('every one of them filters on userId', async () => {
     await findTaskFacts(OWNER, ['t_1']);
-    expect(lastWhere('resparkableTask')).toMatchObject({ userId: OWNER });
+    expect(lastWhere('resparkableTask')).toMatchObject({ spaceId: OWNER });
 
     await findGoalParents(OWNER, ['g_1']);
-    expect(lastWhere('resparkableGoal')).toMatchObject({ userId: OWNER });
+    expect(lastWhere('resparkableGoal')).toMatchObject({ spaceId: OWNER });
 
     await findBoardsPinningTasks(OWNER, ['t_1']);
-    expect(lastWhere('resparkableBoardCard')).toMatchObject({ userId: OWNER });
+    expect(lastWhere('resparkableBoardCard')).toMatchObject({ spaceId: OWNER });
 
     await findFilterBoards(OWNER);
     // A cascade only ever runs inside one brain. Without this, a task in one
     // person's brain could be joined to a board in another's.
-    expect(lastWhere('resparkableBoard')).toEqual({ userId: OWNER, membership: 'filter' });
+    expect(lastWhere('resparkableBoard')).toEqual({ spaceId: OWNER, membership: 'filter' });
   });
 
   it('reads only filter-backed boards, since explicit ones are covered by their cards', async () => {
@@ -251,7 +251,7 @@ describe('share links are looked up by digest', () => {
     // once existed.
     const base = {
       id: 'link_1',
-      userId: OWNER,
+      spaceId: OWNER,
       entityType: 'project',
       entityId: 'p_1',
       includeChildren: false,
@@ -285,7 +285,7 @@ describe('share links are looked up by digest', () => {
     // must not be handed a `thought` to serve publicly because an old row says so.
     prismaMock.resparkableShareLink.findUnique.mockResolvedValue({
       id: 'link_1',
-      userId: OWNER,
+      spaceId: OWNER,
       entityType: 'thought',
       entityId: 't_1',
       includeChildren: false,
@@ -300,7 +300,7 @@ describe('share links are looked up by digest', () => {
   it('resolves an active link to its LiveShareLink shape', async () => {
     prismaMock.resparkableShareLink.findUnique.mockResolvedValue({
       id: 'link_1',
-      userId: OWNER,
+      spaceId: OWNER,
       entityType: 'project',
       entityId: 'p_1',
       includeChildren: true,
@@ -357,7 +357,7 @@ describe('findEntityOwners: the never arm', () => {
 
 describe('findEntityOwner (singular)', () => {
   it('returns the owner id for a known item', async () => {
-    prismaMock.resparkableProject.findMany.mockResolvedValue([{ id: 'p_1', userId: 'user_a' }]);
+    prismaMock.resparkableProject.findMany.mockResolvedValue([{ id: 'p_1', spaceId: 'user_a' }]);
     await expect(findEntityOwner('project', 'p_1')).resolves.toBe('user_a');
   });
 
@@ -375,7 +375,7 @@ describe('toLiveGrants: the row-shaping every grant read shares', () => {
     prismaMock.resparkableGrant.findMany.mockResolvedValue([
       {
         id: 'g_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'thought',
         entityId: 't_1',
         role: 'viewer',
@@ -395,7 +395,7 @@ describe('toLiveGrants: the row-shaping every grant read shares', () => {
     prismaMock.resparkableGrant.findMany.mockResolvedValue([
       {
         id: 'g_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'project',
         entityId: 'p_1',
         role: 'viewer',
@@ -415,7 +415,7 @@ describe('toLiveGrants: the row-shaping every grant read shares', () => {
     prismaMock.resparkableGrant.findMany.mockResolvedValue([
       {
         id: 'g_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'project',
         entityId: 'p_1',
         role: 'editor',
@@ -434,7 +434,7 @@ describe('toLiveGrants: the row-shaping every grant read shares', () => {
     prismaMock.resparkableGrant.findMany.mockResolvedValue([
       {
         id: 'g_1',
-        userId: 'user_a',
+        spaceId: 'user_a',
         entityType: 'project',
         entityId: 'p_1',
         role: 'commenter',
@@ -520,7 +520,7 @@ describe('cascade lookups: what they actually return, not just what they filter 
       await findTaskFacts(OWNER, ['t_1']);
 
       expect(lastWhere('resparkableTask')).toMatchObject({
-        userId: OWNER,
+        spaceId: OWNER,
         archivedAt: null,
       });
     });
@@ -529,7 +529,7 @@ describe('cascade lookups: what they actually return, not just what they filter 
       await findGoalParents(OWNER, ['g_1']);
 
       expect(lastWhere('resparkableGoal')).toMatchObject({
-        userId: OWNER,
+        spaceId: OWNER,
         archivedAt: null,
       });
     });
@@ -543,7 +543,7 @@ describe('cascade lookups: what they actually return, not just what they filter 
       await findBoardsPinningTasks(OWNER, ['t_1']);
 
       expect(lastWhere('resparkableBoardCard')).toMatchObject({
-        userId: OWNER,
+        spaceId: OWNER,
         board: { membership: 'explicit' },
       });
     });

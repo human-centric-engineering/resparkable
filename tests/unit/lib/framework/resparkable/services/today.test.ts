@@ -33,7 +33,7 @@ vi.mock('@/lib/framework/resparkable/services/space', () => ({ getResparkableSet
 import { findAreasByIds } from '@/lib/framework/resparkable/repo/areas';
 import { listGoals } from '@/lib/framework/resparkable/repo/goals';
 import { countUnreviewedLinks, listUnreviewedLinks } from '@/lib/framework/resparkable/repo/links';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { countTasks, listTasks } from '@/lib/framework/resparkable/repo/tasks';
@@ -53,7 +53,7 @@ import type {
   ResparkableTask,
 } from '@prisma/client';
 
-const scope = ownerScope('user_x');
+const scope = spaceScope('user_x');
 const NOW = new Date('2026-07-29T12:00:00.000Z');
 
 function fakeTask(overrides: Partial<ResparkableTask> = {}): ResparkableTask {

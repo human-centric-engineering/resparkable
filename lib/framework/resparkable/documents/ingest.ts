@@ -35,7 +35,7 @@ import {
   findDocumentByHashIncludingFailed,
   updateDocument,
 } from '@/lib/framework/resparkable/repo/documents';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { findResparkableSettings } from '@/lib/framework/resparkable/repo/settings';
 import {
@@ -138,7 +138,7 @@ export class DocumentIngestError extends Error {
  * either time out or hold the connection open for a minute for no benefit.
  */
 export async function ingestDocument(
-  scope: OwnerScope,
+  scope: SpaceScope,
   input: IngestDocumentInput,
   policy?: IngestPolicy
 ): Promise<IngestDocumentResult> {
@@ -348,7 +348,7 @@ function assertTextShape(text: string): void {
  * setting. Config drifts; this is the check that sees it.
  */
 async function retainOriginal(
-  scope: OwnerScope,
+  scope: SpaceScope,
   fileHash: string,
   input: IngestDocumentInput
 ): Promise<string | null> {
@@ -374,7 +374,7 @@ async function retainOriginal(
   // and the provider's own key validation is the only thing between them and a
   // path traversal. The extension is preserved because the parser needs it if the
   // file is ever re-parsed.
-  const key = `framework-resparkable/${scope.userId}/${fileHash}${extname(input.fileName).toLowerCase()}`;
+  const key = `framework-resparkable/${scope.spaceId}/${fileHash}${extname(input.fileName).toLowerCase()}`;
 
   try {
     const result = await storage.upload(input.buffer, {

@@ -14,11 +14,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -31,56 +31,56 @@ export type AreaCreateData = WithoutOwner<Prisma.ResparkableAreaUncheckedCreateI
 export type AreaUpdateData = WithoutOwner<Prisma.ResparkableAreaUncheckedUpdateInput>;
 
 export async function listAreas(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: ListOptions = {}
 ): Promise<ResparkableArea[]> {
   return prisma.resparkableArea.findMany({
-    where: liveOwnerWhere(scope, options.includeArchived),
+    where: liveSpaceWhere(scope, options.includeArchived),
     orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
     ...pageArgs(options),
   });
 }
 
 export async function countAreas(
-  scope: OwnerScope,
+  scope: SpaceScope,
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
-  return prisma.resparkableArea.count({ where: liveOwnerWhere(scope, includeArchived) });
+  return prisma.resparkableArea.count({ where: liveSpaceWhere(scope, includeArchived) });
 }
 
-export async function findArea(scope: OwnerScope, id: string): Promise<ResparkableArea | null> {
-  return prisma.resparkableArea.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findArea(scope: SpaceScope, id: string): Promise<ResparkableArea | null> {
+  return prisma.resparkableArea.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /** Batched lookup for the scorer's project → area walk. See `findProjectsByIds`. */
-export async function findAreasByIds(scope: OwnerScope, ids: string[]): Promise<ResparkableArea[]> {
+export async function findAreasByIds(scope: SpaceScope, ids: string[]): Promise<ResparkableArea[]> {
   if (ids.length === 0) return [];
 
-  return prisma.resparkableArea.findMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  return prisma.resparkableArea.findMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
 }
 
 export async function findAreaBySlug(
-  scope: OwnerScope,
+  scope: SpaceScope,
   slug: string
 ): Promise<ResparkableArea | null> {
-  return prisma.resparkableArea.findFirst({ where: { ...ownerWhere(scope), slug } });
+  return prisma.resparkableArea.findFirst({ where: { ...spaceWhere(scope), slug } });
 }
 
 export async function createArea(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: AreaCreateData
 ): Promise<ResparkableArea> {
-  return prisma.resparkableArea.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableArea.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateArea(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: AreaUpdateData
 ): Promise<ResparkableArea | null> {
   return nullOnMiss(() =>
     prisma.resparkableArea.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
@@ -91,32 +91,32 @@ export async function updateArea(
 }
 
 export async function archiveArea(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableArea | null> {
   return archiveAndDropVectors(scope, 'area', id, () =>
     prisma.resparkableArea.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason, indexedHash: null },
     })
   );
 }
 
-export async function restoreArea(scope: OwnerScope, id: string): Promise<ResparkableArea | null> {
+export async function restoreArea(scope: SpaceScope, id: string): Promise<ResparkableArea | null> {
   return nullOnMiss(() =>
     prisma.resparkableArea.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null, indexedHash: null },
     })
   );
 }
 
-export async function deleteArea(scope: OwnerScope, id: string): Promise<ResparkableArea | null> {
+export async function deleteArea(scope: SpaceScope, id: string): Promise<ResparkableArea | null> {
   // Vectors go in the SAME transaction: nothing cascades to the polymorphic
   // embedding table, and an orphan chunk makes the sweep propose links to a row
   // that no longer exists.
   return deleteAndDropVectors(scope, 'area', id, () =>
-    prisma.resparkableArea.delete({ where: { id, ...ownerWhere(scope) } })
+    prisma.resparkableArea.delete({ where: { id, ...spaceWhere(scope) } })
   );
 }

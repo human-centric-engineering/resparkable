@@ -56,7 +56,7 @@ import {
   listOwnShareLinks,
   type PublicShareLinkSummary,
 } from '@/lib/framework/resparkable/services/sharing';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findSharedItems } from '@/lib/framework/resparkable/repo/shared-view';
 import {
   isResparkableShareableType,
@@ -100,7 +100,7 @@ export interface MySharesFilters {
  * be below the fold.
  */
 export async function listMyShares(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: MySharesFilters = {},
   now: Date = new Date()
 ): Promise<MyShareItem[]> {

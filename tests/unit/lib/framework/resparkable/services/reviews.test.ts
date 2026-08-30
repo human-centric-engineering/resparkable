@@ -50,7 +50,7 @@ import {
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { ValidationError } from '@/lib/api/errors';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableReview } from '@prisma/client';
 
 const mockedCreate = vi.mocked(createReview);
@@ -61,7 +61,7 @@ const mockedArchive = vi.mocked(archiveReview);
 const mockedEvent = vi.mocked(recordResparkableEvent);
 const mockedSpace = vi.mocked(ensureResparkableSpace);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const REVIEW = { id: 'review_1', horizon: 'weekly' } as ResparkableReview;
 

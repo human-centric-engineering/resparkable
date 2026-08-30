@@ -68,10 +68,10 @@ import {
   embeddingSensitivityUpdateArgs,
   hybridSearchRows,
 } from '@/lib/framework/resparkable/repo/embeddings';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { updateThought } from '@/lib/framework/resparkable/repo/thoughts';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 /** Flatten a tagged-template call into the SQL a reviewer would read. */
 function sqlOf(call: unknown[]): string {
@@ -147,7 +147,7 @@ describe('the vector CTE can express the filter', () => {
     });
 
     const sql = sqlOf(queryRaw.mock.calls[0]);
-    expect(sql).toContain('e."userId" = ');
+    expect(sql).toContain('e."spaceId" = ');
     expect(boundValues(queryRaw.mock.calls[0])).toContain('user_a');
   });
 });
@@ -160,7 +160,7 @@ describe('reclassifying a note reaches the chunks', () => {
     // chunks, so a marker on the first one alone would let paragraph two of a
     // sensitive note through.
     expect(args).toEqual({
-      where: { userId: 'user_a', entityType: 'thought', entityId: 't_1' },
+      where: { spaceId: 'user_a', entityType: 'thought', entityId: 't_1' },
       data: { sensitivity: 'sensitive' },
     });
   });

@@ -49,9 +49,9 @@ import {
   renumberChecklistItems,
   updateChecklistItem,
 } from '@/lib/framework/resparkable/repo/checklist';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const mockedFindMany = vi.mocked(prisma.resparkableChecklistItem.findMany);
 const mockedFindFirst = vi.mocked(prisma.resparkableChecklistItem.findFirst);
@@ -81,7 +81,7 @@ describe('listChecklist', () => {
 
     // Assert — the query the repo builds, not the mock's return value
     const call = mockedFindMany.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', taskId: 'task_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', taskId: 'task_1' });
     expect(call?.orderBy).toEqual({ position: 'asc' });
   });
 });
@@ -102,7 +102,7 @@ describe('listChecklistForTasks', () => {
 
     // Assert
     const call = mockedFindMany.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', taskId: { in: ['task_1', 'task_2'] } });
+    expect(call?.where).toEqual({ spaceId: 'user_a', taskId: { in: ['task_1', 'task_2'] } });
     expect(call?.orderBy).toEqual({ position: 'asc' });
   });
 });
@@ -114,7 +114,7 @@ describe('findChecklistItem', () => {
 
     // Assert
     const call = mockedFindFirst.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', id: 'item_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', id: 'item_1' });
   });
 });
 
@@ -135,7 +135,7 @@ describe('createChecklistItem', () => {
     expect(mockedCreate).not.toHaveBeenCalled();
     // The existence check is itself owner-scoped — not a bare id lookup.
     const taskCall = mockedFindTask.mock.calls[0]?.[0];
-    expect(taskCall?.where).toEqual({ userId: 'user_a', id: 'task_x' });
+    expect(taskCall?.where).toEqual({ spaceId: 'user_a', id: 'task_x' });
   });
 
   it('creates the item under the owner-scoped task once existence is confirmed', async () => {
@@ -145,7 +145,7 @@ describe('createChecklistItem', () => {
     // Assert — the create payload merges scope, taskId and the given data
     const call = mockedCreate.mock.calls[0]?.[0];
     expect(call?.data).toEqual({
-      userId: 'user_a',
+      spaceId: 'user_a',
       taskId: 'task_1',
       text: 'Buy milk',
       position: 1000,
@@ -160,14 +160,19 @@ describe('createChecklistItem', () => {
     // keys are omitted from the parameter type; passing a *variable* is what
     // gets them past the excess-property check, which is also exactly how the
     // bug would reach production.
-    const payload = { text: 'Buy milk', position: 1000, taskId: 'task_victim', userId: 'attacker' };
+    const payload = {
+      text: 'Buy milk',
+      position: 1000,
+      taskId: 'task_victim',
+      spaceId: 'attacker',
+    };
 
     // Act
     await createChecklistItem(SCOPE, 'task_1', payload);
 
     // Assert
     const call = mockedCreate.mock.calls[0]?.[0];
-    expect(call?.data).toMatchObject({ userId: 'user_a', taskId: 'task_1' });
+    expect(call?.data).toMatchObject({ spaceId: 'user_a', taskId: 'task_1' });
   });
 });
 
@@ -227,7 +232,7 @@ describe('updateChecklistItem', () => {
 
     // Assert
     const call = mockedUpdate.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'item_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'item_1', spaceId: 'user_a' });
   });
 
   it('resolves to null (not a throw) when the row is not the caller’s', async () => {
@@ -259,7 +264,7 @@ describe('deleteChecklistItem', () => {
 
     // Assert
     const call = mockedDelete.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ id: 'item_1', userId: 'user_a' });
+    expect(call?.where).toEqual({ id: 'item_1', spaceId: 'user_a' });
   });
 
   it('resolves to null when the row is not the caller’s', async () => {
@@ -294,7 +299,7 @@ describe('findLastChecklistPosition', () => {
     // Assert — the transformation (row -> its position field), not the raw row
     expect(result).toBe(4000);
     const call = mockedFindFirst.mock.calls[0]?.[0];
-    expect(call?.where).toEqual({ userId: 'user_a', taskId: 'task_1' });
+    expect(call?.where).toEqual({ spaceId: 'user_a', taskId: 'task_1' });
     expect(call?.orderBy).toEqual({ position: 'desc' });
   });
 
@@ -336,11 +341,11 @@ describe('renumberChecklistItems', () => {
     // calls — each one scoped to the owner and carrying the new position.
     expect(mockedUpdateMany).toHaveBeenCalledTimes(2);
     expect(mockedUpdateMany).toHaveBeenNthCalledWith(1, {
-      where: { id: 'item_1', userId: 'user_a' },
+      where: { id: 'item_1', spaceId: 'user_a' },
       data: { position: 1000 },
     });
     expect(mockedUpdateMany).toHaveBeenNthCalledWith(2, {
-      where: { id: 'item_2', userId: 'user_a' },
+      where: { id: 'item_2', spaceId: 'user_a' },
       data: { position: 2000 },
     });
   });

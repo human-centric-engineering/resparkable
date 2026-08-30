@@ -36,11 +36,11 @@ vi.mock('@/lib/framework/resparkable/repo/summaries', () => ({ findSummaries: vi
 
 import { hydrateLinks, otherEnd } from '@/lib/framework/resparkable/services/link-hydration';
 import { findSummaries, type EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedSummaries = vi.mocked(findSummaries);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 function link(overrides: Record<string, string> = {}) {
   return {

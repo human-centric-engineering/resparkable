@@ -24,7 +24,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findTasksForScoring,
   listTasks,
@@ -32,7 +32,7 @@ import {
   writeTaskScores,
 } from '@/lib/framework/resparkable/repo/tasks';
 
-const SCOPE = ownerScope('user_x');
+const SCOPE = spaceScope('user_x');
 
 const findMany = vi.mocked(prisma.resparkableTask.findMany);
 const update = vi.mocked(prisma.resparkableTask.update);
@@ -49,7 +49,7 @@ describe('listTasksForScoring', () => {
   it('is scoped and excludes archived rows', async () => {
     await listTasksForScoring(SCOPE);
 
-    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ userId: 'user_x', archivedAt: null });
+    expect(findMany.mock.calls[0]?.[0]?.where).toEqual({ spaceId: 'user_x', archivedAt: null });
   });
 
   it('does not paginate', async () => {
@@ -90,7 +90,7 @@ describe('findTasksForScoring', () => {
     await findTasksForScoring(SCOPE, ['task_1', 'task_2']);
 
     expect(findMany.mock.calls[0]?.[0]?.where).toMatchObject({
-      userId: 'user_x',
+      spaceId: 'user_x',
       id: { in: ['task_1', 'task_2'] },
     });
   });
@@ -108,7 +108,7 @@ describe('writeTaskScores', () => {
     await writeTaskScores(SCOPE, [{ id: 'task_1', priorityScore: 0.7, priorityFactors: {} }]);
 
     // Assert
-    expect(update.mock.calls[0]?.[0]?.where).toEqual({ id: 'task_1', userId: 'user_x' });
+    expect(update.mock.calls[0]?.[0]?.where).toEqual({ id: 'task_1', spaceId: 'user_x' });
   });
 
   it('writes both the score and its explanation', async () => {

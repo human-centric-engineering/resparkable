@@ -4,7 +4,7 @@
  *
  * ## Everything here starts with a resolution, and the scope comes from it
  *
- * The owner scope every call passes down is minted by `sharedOwnerScope` from a
+ * The owner scope every call passes down is minted by `sharedSpaceScope` from a
  * **positive** `ResparkableAccessResult`. That is what makes "may this person
  * write here?" a decision the access layer made, from a grant it read, rather
  * than an assumption this layer arrived at from a session id. There is no path
@@ -35,7 +35,7 @@
 import {
   isResparkableShareableType,
   resolveResparkableAccess,
-  sharedOwnerScope,
+  sharedSpaceScope,
   type ResparkableShareableType,
   type ResparkableViewer,
 } from '@/lib/framework/resparkable/access';
@@ -46,7 +46,7 @@ import {
   findCommentAuthors,
   listComments,
 } from '@/lib/framework/resparkable/repo/comments';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { logger } from '@/lib/logging';
 
 /** One comment, as anybody entitled to read the thread sees it. */
@@ -110,7 +110,7 @@ export async function listCommentsFor(
   // fields on purpose.
   if (access.redact.includes('comments')) return null;
 
-  const scope = sharedOwnerScope(access);
+  const scope = sharedSpaceScope(access, viewer.userId);
   return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
 }
 
@@ -145,7 +145,7 @@ export async function addComment(
   });
   if (!access.ok || !access.permissions.comment) return null;
 
-  const scope = sharedOwnerScope(access);
+  const scope = sharedSpaceScope(access, viewer.userId);
 
   await createComment(scope, {
     entityType,
@@ -195,7 +195,7 @@ export async function updateComment(
   });
   if (!access.ok || access.redact.includes('comments')) return null;
 
-  const scope = sharedOwnerScope(access);
+  const scope = sharedSpaceScope(access, viewer.userId);
   const edited = await editComment(
     scope,
     { entityType, entityId: ref.entityId },
@@ -238,7 +238,7 @@ export async function removeComment(
   });
   if (!access.ok || access.redact.includes('comments')) return null;
 
-  const scope = sharedOwnerScope(access);
+  const scope = sharedSpaceScope(access, viewer.userId);
   const isOwner = access.basis === 'owner';
 
   // The author filter is dropped only for the owner, and only here. Everywhere
@@ -283,7 +283,7 @@ function shareableTypeOf(ref: { entityType: string }): ResparkableShareableType 
  * everybody else the owner shared it with.
  */
 async function hydrate(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string,
   viewer: ResparkableViewer,

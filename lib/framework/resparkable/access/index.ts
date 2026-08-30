@@ -12,7 +12,7 @@
  */
 
 export {
-  grantOwnerScope,
+  grantSpaceScope,
   hashShareToken,
   resolveResparkableAccess,
   resolveResparkableAccessMany,
@@ -20,7 +20,7 @@ export {
   resolveResparkableShareLinkChild,
   resparkableVisibilityScope,
   shareLinkAccess,
-  sharedOwnerScope,
+  sharedSpaceScope,
 } from '@/lib/framework/resparkable/access/resolve';
 
 export {

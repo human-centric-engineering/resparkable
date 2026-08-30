@@ -45,12 +45,12 @@ vi.mock('@/lib/framework/resparkable/services/recent-wins', async (importOrigina
 import { buildBriefingFacts } from '@/lib/framework/resparkable/services/briefing-facts';
 import { buildSnapshot, type SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 import { getRecentWins, type RecentWins } from '@/lib/framework/resparkable/services/recent-wins';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedSnapshot = vi.mocked(buildSnapshot);
 const mockedWins = vi.mocked(getRecentWins);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-04T09:00:00.000Z');
 
 function snapshot(overrides: Partial<SnapshotPayload> = {}): SnapshotPayload {

@@ -1,7 +1,7 @@
 /**
  * Reads of the **core** orchestration agent rows Resparkable seeds.
  *
- * This is the one repo module whose functions do **not** take an `OwnerScope`,
+ * This is the one repo module whose functions do **not** take an `SpaceScope`,
  * and the exception needs stating rather than assuming. `AiAgent` is
  * instance-wide configuration — a model choice, a temperature, a set of
  * guardrails an operator edits in the admin UI. It is not user data, it has no

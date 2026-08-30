@@ -58,7 +58,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { findSpaceByInboxToken } from '@/lib/framework/resparkable/services/space';
@@ -177,13 +177,13 @@ export class ResparkableCaptureForTokenCapability extends BaseCapability<
       );
     }
 
-    const scope = ownerScope(space.userId);
+    const scope = spaceScope(space.spaceId);
     const contact = await findOwnerContact(scope);
 
     if (!contact?.emailVerified || contact.email.toLowerCase() !== parsed.from.toLowerCase()) {
       logger.warn('Resparkable inbound capture — sender did not match the account', {
         messageId: parsed.messageId,
-        userId: space.userId,
+        userId: space.spaceId,
       });
       return this.error(
         'The sender did not match the account’s verified email. The message was not captured.',
@@ -200,7 +200,7 @@ export class ResparkableCaptureForTokenCapability extends BaseCapability<
     });
 
     logger.info('Resparkable inbound capture', {
-      userId: space.userId,
+      userId: space.spaceId,
       deduped,
     });
 

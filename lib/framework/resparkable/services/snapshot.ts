@@ -25,7 +25,7 @@
 
 import { listAreas } from '@/lib/framework/resparkable/repo/areas';
 import { listGoals } from '@/lib/framework/resparkable/repo/goals';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listProjects } from '@/lib/framework/resparkable/repo/projects';
 import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
@@ -135,10 +135,10 @@ function iso(value: Date | null | undefined): string | null {
   return value ? value.toISOString() : null;
 }
 
-export async function buildSnapshot(scope: OwnerScope, now = new Date()): Promise<SnapshotPayload> {
+export async function buildSnapshot(scope: SpaceScope, now = new Date()): Promise<SnapshotPayload> {
   // Also the space bootstrap — an agent's first act on a brand-new brain can be
   // a read, and every other table FKs the space row.
-  const settings = await getResparkableSettings(scope.userId);
+  const settings = await getResparkableSettings(scope.spaceId);
   const { timezone } = settings;
 
   const wall = wallClockAt(now, timezone);

@@ -37,7 +37,7 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { agentNotifySchema, type AgentNotifyInput } from '@/lib/framework/resparkable/validations';
 import { sendEmail } from '@/lib/email/send';
@@ -134,7 +134,7 @@ export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArg
 
   protected async run(
     args: NotifyArgs,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<NotifyResult>> {
     const contact = await findOwnerContact(scope);
 
@@ -142,7 +142,7 @@ export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArg
       // An erased account whose schedule row outlived it. Not an error: the
       // workflow did its job, there is simply nobody left to tell.
       logger.info('Resparkable notification skipped — no owner', {
-        userId: scope.userId,
+        spaceId: scope.spaceId,
         notification: args.notification,
       });
       return this.success({ sent: false, reason: 'no_owner' });
@@ -161,7 +161,7 @@ export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArg
       // run that produced the thing being notified about. The briefing is
       // written and readable in the app either way.
       logger.warn('Resparkable notification failed to send', {
-        userId: scope.userId,
+        spaceId: scope.spaceId,
         notification: args.notification,
       });
       return this.success({ sent: false, reason: 'send_failed' });

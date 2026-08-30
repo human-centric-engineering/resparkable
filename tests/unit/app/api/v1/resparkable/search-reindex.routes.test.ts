@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 vi.mock('@/lib/auth/guards', () => ({
   withAuth:
@@ -97,7 +98,7 @@ describe('GET /resparkable/search', () => {
     await invoke(SEARCH_GET, req('http://x/api/v1/resparkable/search?q=roadmap'), SESSION_A);
 
     expect(vi.mocked(searchResparkable).mock.calls[0]?.[0]).toMatchObject({
-      scope: { userId: 'user_a' },
+      scope: { spaceId: 'user_a' },
       query: 'roadmap',
     });
   });
@@ -241,7 +242,7 @@ describe('POST /resparkable/reindex', () => {
     );
     const body = await response.json();
 
-    expect(enqueueFullReindex).toHaveBeenCalledWith({ userId: 'user_a' });
+    expect(enqueueFullReindex).toHaveBeenCalledWith(spaceScope('user_a'));
     expect(body.data.queued).toBe(842);
   });
 
@@ -252,7 +253,7 @@ describe('POST /resparkable/reindex', () => {
     // hands the type list straight to `reindexPending` as a third parameter, so
     // `reindexType` is never called by the route directly (`reindexPending`
     // calls it internally, which is covered in indexer.test.ts).
-    expect(reindexPending).toHaveBeenCalledWith({ userId: 'user_a' }, undefined, undefined);
+    expect(reindexPending).toHaveBeenCalledWith(spaceScope('user_a'), undefined, undefined);
     expect(reindexType).not.toHaveBeenCalled();
   });
 
@@ -263,7 +264,7 @@ describe('POST /resparkable/reindex', () => {
       SESSION_A
     );
 
-    expect(reindexPending).toHaveBeenCalledWith({ userId: 'user_a' }, 25, undefined);
+    expect(reindexPending).toHaveBeenCalledWith(spaceScope('user_a'), 25, undefined);
   });
 
   it('forwards an explicit types list to reindexPending as its third argument', async () => {
@@ -288,7 +289,7 @@ describe('POST /resparkable/reindex', () => {
     );
     const body = await response.json();
 
-    expect(reindexPending).toHaveBeenCalledWith({ userId: 'user_a' }, undefined, [
+    expect(reindexPending).toHaveBeenCalledWith(spaceScope('user_a'), undefined, [
       'project',
       'goal',
     ]);

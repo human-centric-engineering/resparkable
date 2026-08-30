@@ -19,7 +19,7 @@ vi.mock('@/lib/db/client', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const findUnique = vi.mocked(prisma.user.findUnique);
 
@@ -35,7 +35,7 @@ describe('findOwnerContact', () => {
       emailVerified: true,
     } as never);
 
-    await findOwnerContact(ownerScope('user_a'));
+    await findOwnerContact(spaceScope('user_a'));
 
     expect(findUnique).toHaveBeenCalledWith({
       where: { id: 'user_a' },
@@ -50,7 +50,7 @@ describe('findOwnerContact', () => {
       emailVerified: true,
     } as never);
 
-    await expect(findOwnerContact(ownerScope('user_a'))).resolves.toEqual({
+    await expect(findOwnerContact(spaceScope('user_a'))).resolves.toEqual({
       email: 'owner@example.com',
       name: 'Owner',
       emailVerified: true,
@@ -64,7 +64,7 @@ describe('findOwnerContact', () => {
       emailVerified: false,
     } as never);
 
-    await expect(findOwnerContact(ownerScope('user_a'))).resolves.toMatchObject({
+    await expect(findOwnerContact(spaceScope('user_a'))).resolves.toMatchObject({
       emailVerified: false,
     });
   });
@@ -76,13 +76,13 @@ describe('findOwnerContact', () => {
       emailVerified: true,
     } as never);
 
-    await expect(findOwnerContact(ownerScope('user_a'))).resolves.toMatchObject({ name: null });
+    await expect(findOwnerContact(spaceScope('user_a'))).resolves.toMatchObject({ name: null });
   });
 
   it('returns null when the account no longer exists — an erased-user schedule, not an error', async () => {
     findUnique.mockResolvedValue(null);
 
-    await expect(findOwnerContact(ownerScope('user_a'))).resolves.toBeNull();
+    await expect(findOwnerContact(spaceScope('user_a'))).resolves.toBeNull();
   });
 
   it('returns null when the row exists but has no email', async () => {
@@ -91,6 +91,6 @@ describe('findOwnerContact', () => {
     // rather than skip quietly.
     findUnique.mockResolvedValue({ email: '', name: 'Owner', emailVerified: true } as never);
 
-    await expect(findOwnerContact(ownerScope('user_a'))).resolves.toBeNull();
+    await expect(findOwnerContact(spaceScope('user_a'))).resolves.toBeNull();
   });
 });

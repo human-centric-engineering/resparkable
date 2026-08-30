@@ -22,7 +22,7 @@
 import { invalidateResparkableContext } from '@/lib/framework/resparkable/context/invalidate';
 import { findGoalsByIds } from '@/lib/framework/resparkable/repo/goals';
 import { findAcceptedGoalLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProjectsByIds } from '@/lib/framework/resparkable/repo/projects';
 import {
   findTasksForScoring,
@@ -73,14 +73,14 @@ export interface ReprioritiseResult {
  * `returnedFromSnooze` flag exists to make visible.
  */
 export async function reprioritiseTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: ReprioritiseOptions = {}
 ): Promise<ReprioritiseResult> {
   const now = options.now ?? new Date();
 
   // Tasks cannot exist without a space — the FK cascade guarantees it — so no
   // space means nothing to score, not an error.
-  const space = await getResparkableSpace(scope.userId);
+  const space = await getResparkableSpace(scope.spaceId);
   if (!space) return { scored: 0 };
 
   const tasks = options.taskIds
@@ -115,7 +115,7 @@ export async function reprioritiseTasks(
   // reorders the `TOP TASKS` section of the chat context block. A batch pass
   // triggered on its own (`resparkable_reprioritise`, the nightly workflow) would
   // otherwise leave the agent reciting yesterday's order for the rest of the TTL.
-  if (scored > 0) invalidateResparkableContext(scope.userId);
+  if (scored > 0) invalidateResparkableContext(scope.spaceId);
 
   logger.info('Resparkable reprioritise complete', { scored, scoped: Boolean(options.taskIds) });
 
@@ -129,7 +129,7 @@ export async function reprioritiseTasks(
  * `manualBoost` and then waiting for the nightly pass is a bug report (§10), so
  * every task mutation calls this for the row it touched.
  */
-export async function rescoreTask(scope: OwnerScope, taskId: string): Promise<void> {
+export async function rescoreTask(scope: SpaceScope, taskId: string): Promise<void> {
   await reprioritiseTasks(scope, { taskIds: [taskId] });
 }
 
@@ -141,7 +141,7 @@ interface ScoringContext {
 }
 
 async function loadScoringContext(
-  scope: OwnerScope,
+  scope: SpaceScope,
   tasks: TaskScoringRow[],
   timezone: string,
   now: Date

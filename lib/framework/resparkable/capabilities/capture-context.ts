@@ -30,7 +30,7 @@ import {
   resparkableCapabilitySpec,
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { linkEntities } from '@/lib/framework/resparkable/services/links';
 import {
@@ -76,7 +76,7 @@ export class ResparkableCaptureContextCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentCaptureContextInput,
-    scope: OwnerScope,
+    scope: SpaceScope,
     context: CapabilityContext
   ): Promise<CapabilityResult<CaptureContextData>> {
     const { thought, deduped } = await captureThought(scope, {

@@ -19,7 +19,7 @@ import { randomBytes } from 'node:crypto';
 
 import { applyLedgerEntry, ensureCreditAccount } from '@/lib/framework/resparkable/repo/billing';
 import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   createSpace,
   findSpaceByToken,
@@ -251,7 +251,7 @@ function isUniqueConstraintViolation(error: unknown): boolean {
  * ever holds traces back to one.
  */
 async function ensureNewUserCreditGrant(userId: string): Promise<void> {
-  const scope = ownerScope(userId);
+  const scope = spaceScope(userId);
   await ensureCreditAccount(scope, 0);
 
   const settings = resolveBillingSettings(await findResparkableBillingSettings());

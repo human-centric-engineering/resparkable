@@ -66,7 +66,7 @@ describe('resparkable_capture_context', () => {
     await call(capability, baseCtx());
 
     expect(mockedCapture).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-a' }),
+      expect.objectContaining({ spaceId: 'user-a' }),
       expect.objectContaining({ content: 'Something worth keeping', source: 'chat' })
     );
   });
@@ -81,7 +81,7 @@ describe('resparkable_capture_context', () => {
     const result = await call(capability, baseCtx({ entityType: 'area', entityId: AREA_ID }));
 
     expect(mockedLink).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user-a' }),
+      expect.objectContaining({ spaceId: 'user-a' }),
       expect.objectContaining({
         sourceType: 'thought',
         sourceId: THOUGHT_ID,

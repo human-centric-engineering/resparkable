@@ -25,13 +25,13 @@ import { getRouteLogger } from '@/lib/api/context';
 import { ValidationError } from '@/lib/api/errors';
 import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { vaultExportQuerySchema } from '@/lib/framework/resparkable/validations';
 import { buildVaultArchive, VaultExportError } from '@/lib/framework/resparkable/vault/export';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const query = validateQueryParams(new URL(request.url).searchParams, vaultExportQuerySchema);
 

@@ -1,7 +1,7 @@
 /**
  * Task repo — owner-scoped reads and writes over `framework_resparkable_task`.
  *
- * Every function takes an `OwnerScope` and every `where` spreads it, so there
+ * Every function takes an `SpaceScope` and every `where` spreads it, so there
  * is no expressible cross-user query here (D5). Ordering defaults to
  * `priorityScore desc`, which is one indexed `ORDER BY` with zero per-request
  * compute — the scorer writes the column, the list endpoint just reads it (D3).
@@ -9,11 +9,11 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  liveOwnerWhere,
-  ownerWhere,
-  type OwnerScope,
+  liveSpaceWhere,
+  spaceWhere,
+  type SpaceScope,
   type ArchiveVisibility,
-} from '@/lib/framework/resparkable/repo/owner-scope';
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -46,12 +46,12 @@ export type TaskCreateData = WithoutOwner<Prisma.ResparkableTaskUncheckedCreateI
 export type TaskUpdateData = WithoutOwner<Prisma.ResparkableTaskUncheckedUpdateInput>;
 
 function taskWhere(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TaskFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Prisma.ResparkableTaskWhereInput {
   return {
-    ...liveOwnerWhere(scope, includeArchived),
+    ...liveSpaceWhere(scope, includeArchived),
     ...statusWhere(filters),
     ...(filters.projectId ? { projectId: filters.projectId } : {}),
     ...(filters.dueBefore ? { dueAt: { lte: filters.dueBefore } } : {}),
@@ -82,7 +82,7 @@ function statusWhere(filters: TaskFilters): Prisma.ResparkableTaskWhereInput {
 }
 
 export async function listTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TaskFilters = {},
   options: ListOptions & { sort?: SortDirection } = {}
 ): Promise<ResparkableTask[]> {
@@ -94,7 +94,7 @@ export async function listTasks(
 }
 
 export async function countTasks(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filters: TaskFilters = {},
   includeArchived: ArchiveVisibility = false
 ): Promise<number> {
@@ -102,8 +102,8 @@ export async function countTasks(
 }
 
 /** Includes archived rows: an archived item stays readable at its own URL (§11). */
-export async function findTask(scope: OwnerScope, id: string): Promise<ResparkableTask | null> {
-  return prisma.resparkableTask.findFirst({ where: { ...ownerWhere(scope), id } });
+export async function findTask(scope: SpaceScope, id: string): Promise<ResparkableTask | null> {
+  return prisma.resparkableTask.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -114,10 +114,10 @@ export async function findTask(scope: OwnerScope, id: string): Promise<Resparkab
  * board the position in the join table is the order, and sorting here would impose a
  * second opinion on top of it.
  */
-export async function findTasksByIds(scope: OwnerScope, ids: string[]): Promise<ResparkableTask[]> {
+export async function findTasksByIds(scope: SpaceScope, ids: string[]): Promise<ResparkableTask[]> {
   if (ids.length === 0) return [];
 
-  return prisma.resparkableTask.findMany({ where: { ...ownerWhere(scope), id: { in: ids } } });
+  return prisma.resparkableTask.findMany({ where: { ...spaceWhere(scope), id: { in: ids } } });
 }
 
 /**
@@ -133,21 +133,21 @@ export async function findTasksByIds(scope: OwnerScope, ids: string[]): Promise<
  * task whose `deferUntil` passed last night gets a real score on the next pass
  * instead of keeping the zero it was left with.
  */
-export async function listTasksForScoring(scope: OwnerScope): Promise<TaskScoringRow[]> {
+export async function listTasksForScoring(scope: SpaceScope): Promise<TaskScoringRow[]> {
   return prisma.resparkableTask.findMany({
-    where: liveOwnerWhere(scope),
+    where: liveSpaceWhere(scope),
     select: TASK_SCORING_SELECT,
   });
 }
 
 export async function findTasksForScoring(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ids: string[]
 ): Promise<TaskScoringRow[]> {
   if (ids.length === 0) return [];
 
   return prisma.resparkableTask.findMany({
-    where: { ...liveOwnerWhere(scope), id: { in: ids } },
+    where: { ...liveSpaceWhere(scope), id: { in: ids } },
     select: TASK_SCORING_SELECT,
   });
 }
@@ -191,7 +191,7 @@ export interface TaskScoreWrite {
  * raw bulk `UPDATE`, not a smaller chunk size.
  */
 export async function writeTaskScores(
-  scope: OwnerScope,
+  scope: SpaceScope,
   updates: TaskScoreWrite[],
   chunkSize = 500
 ): Promise<number> {
@@ -205,7 +205,7 @@ export async function writeTaskScores(
         prisma.resparkableTask.update({
           // The scope is in the `where`, so a stale id from another user's batch
           // matches nothing rather than writing across the boundary (D5).
-          where: { id: update.id, ...ownerWhere(scope) },
+          where: { id: update.id, ...spaceWhere(scope) },
           data: {
             priorityScore: update.priorityScore,
             priorityFactors: update.priorityFactors,
@@ -221,19 +221,19 @@ export async function writeTaskScores(
 }
 
 export async function createTask(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: TaskCreateData
 ): Promise<ResparkableTask> {
-  return prisma.resparkableTask.create({ data: { ...data, ...ownerWhere(scope) } });
+  return prisma.resparkableTask.create({ data: { ...data, ...spaceWhere(scope) } });
 }
 
 export async function updateTask(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   data: TaskUpdateData
 ): Promise<ResparkableTask | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTask.update({ where: { id, ...ownerWhere(scope) }, data })
+    prisma.resparkableTask.update({ where: { id, ...spaceWhere(scope) }, data })
   );
 }
 
@@ -245,22 +245,22 @@ export async function updateTask(
  * the embedded types there is no vector row to drop here.
  */
 export async function archiveTask(
-  scope: OwnerScope,
+  scope: SpaceScope,
   id: string,
   reason = 'manual'
 ): Promise<ResparkableTask | null> {
   return nullOnMiss(() =>
     prisma.resparkableTask.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: new Date(), archivedReason: reason },
     })
   );
 }
 
-export async function restoreTask(scope: OwnerScope, id: string): Promise<ResparkableTask | null> {
+export async function restoreTask(scope: SpaceScope, id: string): Promise<ResparkableTask | null> {
   return nullOnMiss(() =>
     prisma.resparkableTask.update({
-      where: { id, ...ownerWhere(scope) },
+      where: { id, ...spaceWhere(scope) },
       data: { archivedAt: null, archivedReason: null },
     })
   );
@@ -271,6 +271,6 @@ export async function restoreTask(scope: OwnerScope, id: string): Promise<Respar
  * polymorphic `ResparkableLink` rows pointing at this task are swept separately
  * (there is no FK to cascade through, by design — D2).
  */
-export async function deleteTask(scope: OwnerScope, id: string): Promise<ResparkableTask | null> {
-  return nullOnMiss(() => prisma.resparkableTask.delete({ where: { id, ...ownerWhere(scope) } }));
+export async function deleteTask(scope: SpaceScope, id: string): Promise<ResparkableTask | null> {
+  return nullOnMiss(() => prisma.resparkableTask.delete({ where: { id, ...spaceWhere(scope) } }));
 }

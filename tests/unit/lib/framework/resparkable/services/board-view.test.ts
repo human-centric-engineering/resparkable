@@ -46,7 +46,7 @@ import { listChecklistForTasks } from '@/lib/framework/resparkable/repo/checklis
 import { findLatestStatusChanges } from '@/lib/framework/resparkable/repo/events';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
 import { findTasksByIds, listTasks } from '@/lib/framework/resparkable/repo/tasks';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const mockedFindBoard = vi.mocked(findBoard);
 const mockedListCards = vi.mocked(listBoardCards);
@@ -56,7 +56,7 @@ const mockedTags = vi.mocked(listTagsForTasks);
 const mockedChecklist = vi.mocked(listChecklistForTasks);
 const mockedStatusChanges = vi.mocked(findLatestStatusChanges);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-07-30T12:00:00.000Z');
 
 const COLUMNS = [

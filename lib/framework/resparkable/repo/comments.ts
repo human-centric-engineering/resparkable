@@ -9,9 +9,9 @@
  * $1` keeps meaning the same thing. That is the same choice `ResparkableGrant`
  * made, for the same reason (D1).
  *
- * So every function here takes an `OwnerScope` — including the write path, which
+ * So every function here takes an `SpaceScope` — including the write path, which
  * a grantee reaches. The scope is not minted from the writer's session; it comes
- * from a **positive access resolution** on the item (`sharedOwnerScope`), which
+ * from a **positive access resolution** on the item (`sharedSpaceScope`), which
  * is what makes "you may write here" a decision the access layer made rather
  * than one this layer assumed.
  *
@@ -29,7 +29,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { ownerWhere, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import type { ResparkableComment } from '@prisma/client';
@@ -45,12 +45,12 @@ export const COMMENT_LIMIT = 200;
  * rather than an oversight: those are queues, and this is a conversation.
  */
 export async function listComments(
-  scope: OwnerScope,
+  scope: SpaceScope,
   entityType: ResparkableShareableType,
   entityId: string
 ): Promise<ResparkableComment[]> {
   return prisma.resparkableComment.findMany({
-    where: { ...ownerWhere(scope), entityType, entityId },
+    where: { ...spaceWhere(scope), entityType, entityId },
     orderBy: { createdAt: 'asc' },
     take: COMMENT_LIMIT,
   });
@@ -64,7 +64,7 @@ export async function listComments(
  * call. The scope says whose brain this lands in; the author says who said it.
  */
 export async function createComment(
-  scope: OwnerScope,
+  scope: SpaceScope,
   data: {
     entityType: ResparkableShareableType;
     entityId: string;
@@ -74,7 +74,7 @@ export async function createComment(
 ): Promise<ResparkableComment> {
   return prisma.resparkableComment.create({
     data: {
-      ...ownerWhere(scope),
+      ...spaceWhere(scope),
       entityType: data.entityType,
       entityId: data.entityId,
       authorUserId: data.authorUserId,
@@ -95,7 +95,7 @@ export async function createComment(
  * them, and the owner can do that instead — see {@link deleteComment}.
  */
 export async function editComment(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ref: { entityType: ResparkableShareableType; entityId: string },
   id: string,
   authorUserId: string,
@@ -103,7 +103,7 @@ export async function editComment(
   now: Date = new Date()
 ): Promise<ResparkableComment | null> {
   const where = {
-    ...ownerWhere(scope),
+    ...spaceWhere(scope),
     id,
     authorUserId,
     // The thread the caller was authorised against, in the `where` too.
@@ -124,7 +124,7 @@ export async function editComment(
   });
   if (result.count === 0) return null;
 
-  return prisma.resparkableComment.findFirst({ where: { ...ownerWhere(scope), id } });
+  return prisma.resparkableComment.findFirst({ where: { ...spaceWhere(scope), id } });
 }
 
 /**
@@ -141,7 +141,7 @@ export async function editComment(
  * omitting it means the caller has already established owner authority.
  */
 export async function deleteComment(
-  scope: OwnerScope,
+  scope: SpaceScope,
   ref: { entityType: ResparkableShareableType; entityId: string },
   id: string,
   authorUserId?: string
@@ -150,7 +150,7 @@ export async function deleteComment(
     prisma.resparkableComment.delete({
       where: {
         id,
-        ...ownerWhere(scope),
+        ...spaceWhere(scope),
         // Same reason as {@link editComment}: access was resolved against the
         // item, so a comment on a different item was never in scope — even one
         // this owner owns.

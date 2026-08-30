@@ -47,7 +47,7 @@ scale property the system has: **search cost is a function of one user's
 corpus, not the corpus.** Adding the hundred-thousandth user does not slow
 down the first user's search.
 
-D5 and `OwnerScope` are what make that true and keep it true. Every query is
+D5 and `SpaceScope` are what make that true and keep it true. Every query is
 per-user with no cross-user join, enforced by a branded type plus an ESLint
 boundary. This is the foundation that would have been most expensive to
 retrofit and it is already in place.
@@ -225,7 +225,7 @@ Worth stating plainly, because it is most of the platform tier:
 - **Storage** has S3 and Vercel Blob providers, not only local disk.
 - **The scheduler's optimistic lock on `nextRunAt`** makes it multi-instance
   safe today.
-- **D5, `OwnerScope` and the ESLint boundary.** The property that makes
+- **D5, `SpaceScope` and the ESLint boundary.** The property that makes
   horizontal scale possible at all, in place before sharing exists.
 
 **Multi-tenancy does not apply.** `.context/architecture/multi-tenancy.md` is

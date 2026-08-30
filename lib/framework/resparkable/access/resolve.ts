@@ -28,7 +28,7 @@
  *     presented alongside a session buys nothing here, which is how "a public
  *     link grants no access to the authenticated route" (§16.4) stays true
  *     without twenty routes remembering a rule.
- *   • **It is not called by owner write paths.** Those take an `OwnerScope` and
+ *   • **It is not called by owner write paths.** Those take an `SpaceScope` and
  *     go through `repo/**`; adding a resolution step would mean a write path
  *     that *could* be told yes about someone else's row.
  *   • **It is not cached beyond a request.** Revocation must be immediate: a
@@ -67,7 +67,7 @@ import {
   type ResparkableViewer,
   type ResparkableVisibilityScope,
 } from '@/lib/framework/resparkable/access/types';
-import { ownerScope, type OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScopeFor, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { createHash } from 'crypto';
 
 export interface ResolveAccessInput {
@@ -390,10 +390,10 @@ export async function resparkableVisibilityScope(
 }
 
 /**
- * Mint an `OwnerScope` from a **positive** access result.
+ * Mint an `SpaceScope` from a **positive** access result.
  *
  * The fourth and last legitimate source of a scope, alongside the session, the
- * capability context and a scheduled run's scope key (`repo/owner-scope.ts`
+ * capability context and a scheduled run's scope key (`repo/space-scope.ts`
  * enumerates the other three). It is the one that reads a stranger's request
  * and still produces an owner identity, so it is worth being explicit about
  * what makes it safe:
@@ -406,21 +406,42 @@ export async function resparkableVisibilityScope(
  *     rather than returning null and letting a caller forget to check.
  *
  * What the scope then buys is deliberately narrow: `repo/shared-view.ts`'s
- * allowlisted projection. It is an owner scope, so it *could* read anything of
- * the owner's — which is exactly why the projection is an allowlist and why
- * `rg 'sharedOwnerScope\('` should stay short enough to read.
+ * allowlisted projection. It is scoped to the owner's whole space, so it
+ * *could* read anything of theirs, which is exactly why the projection is an
+ * allowlist and why
+ * `rg 'sharedSpaceScope\('` should stay short enough to read.
  */
-export function sharedOwnerScope(result: ResparkableAccessResult): OwnerScope {
+export function sharedSpaceScope(
+  result: ResparkableAccessResult,
+  /**
+   * Who is reading. `null` for an anonymous public-link reader, which is the
+   * one caller (`buildSharePayload`) that has no session to name.
+   *
+   * Attribution only. It is never a query filter, here or anywhere in
+   * `repo/**`, and `repo/isolation.test.ts` asserts that by enumeration.
+   */
+  actorUserId: string | null
+): SpaceScope {
   if (!result.ok || !result.ownerId) {
-    throw new Error('sharedOwnerScope: refused — access was not granted');
+    throw new Error('sharedSpaceScope: refused — access was not granted');
   }
-  return ownerScope(result.ownerId);
+  // `viewer`, never `owner`, and this is the half of §23.2's role invariant the
+  // section states wrongly: it says a personal space's scope is always `owner`.
+  // Since Release 2 this layer has minted scopes on other people's personal
+  // spaces, and a grantee holding the owner role would be exactly the confusion
+  // the role exists to prevent. What survives is the exclusion: `owner` never
+  // appears on a group space.
+  //
+  // Read permission is still decided by the resolver and narrowed by
+  // `repo/shared-view.ts`'s allowlist. The role adds nothing to that today, and
+  // records the truth for the phase that starts branching on it.
+  return spaceScopeFor({ spaceId: result.ownerId, actorUserId, role: 'viewer' });
 }
 
 /**
- * Mint an `OwnerScope` from a grant this viewer **holds**.
+ * Mint a `SpaceScope` from a grant this viewer **holds**.
  *
- * The bulk-path sibling of {@link sharedOwnerScope}, and it exists for one
+ * The bulk-path sibling of {@link sharedSpaceScope}, and it exists for one
  * surface: `/shared-with-me` resolves a viewer's whole grant set in one query
  * via {@link resparkableVisibilityScope}, then has to read the granted items —
  * which means it needs a scope per owner without re-resolving each item and
@@ -438,11 +459,11 @@ export function sharedOwnerScope(result: ResparkableAccessResult): OwnerScope {
  *     one is handed the evidence the decision would be made from.
  *
  * What the scope buys is the same narrow thing: `repo/shared-view.ts`'s
- * allowlisted projection. Keep `rg 'grantOwnerScope\('` as short as
- * `rg 'sharedOwnerScope\('`.
+ * allowlisted projection. Keep `rg 'grantSpaceScope\('` as short as
+ * `rg 'sharedSpaceScope\('`.
  */
-export function grantOwnerScope(grant: LiveGrant): OwnerScope {
-  return ownerScope(grant.ownerId);
+export function grantSpaceScope(grant: LiveGrant, actorUserId: string | null): SpaceScope {
+  return spaceScopeFor({ spaceId: grant.ownerId, actorUserId, role: 'viewer' });
 }
 
 // ─── Public links ────────────────────────────────────────────────────────────

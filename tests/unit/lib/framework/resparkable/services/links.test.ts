@@ -38,7 +38,7 @@ import { createLink } from '@/lib/framework/resparkable/repo/links';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import { recordResparkableEvent } from '@/lib/framework/resparkable/services/events';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { CreateLinkInput } from '@/lib/framework/resparkable/validations';
 import type { ResparkableLink } from '@prisma/client';
 
@@ -47,7 +47,7 @@ const mockedExists = vi.mocked(entityExists);
 const mockedEvent = vi.mocked(recordResparkableEvent);
 const mockedSpace = vi.mocked(ensureResparkableSpace);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const INPUT: CreateLinkInput = {
   sourceType: 'project',

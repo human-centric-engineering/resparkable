@@ -1,5 +1,5 @@
 /**
- * Resparkable drift probes — the seven Postgres objects Prisma cannot model.
+ * Resparkable drift probes: the Postgres objects Prisma cannot model.
  *
  * **This is the highest-value regression guard in the build** (plan §2, §17
  * risk 1). `prisma migrate dev` computes desired state from the schema and
@@ -14,8 +14,18 @@
  * `npm run db:drift-check` (run in CI and by `/pre-pr`) fails the moment one
  * goes missing. Run it after EVERY `migrate dev`. Non-negotiable.
  *
- * Source of truth for all six: the Group B block at the foot of
- * `prisma/migrations/20260728222816_add_second_brain/migration.sql`.
+ * Source of truth: the Group B block at the foot of
+ * `prisma/migrations/20260728222816_add_second_brain/migration.sql`, plus the
+ * later migrations that added to it. The count has been wrong in three places
+ * since sharing landed (the schema header still said "six" while this file
+ * registered nine), so it is deliberately not restated as a number here: the
+ * list below is the inventory, and `.context/database/prisma-unmodelled-objects.md`
+ * is the cross-tier one.
+ *
+ * Phase 45 (§23.2) moved B1 onto `ownerUserId` and added B10 and B11. B11 covers
+ * 23 hand-written foreign keys with a single parameterised probe rather than 23
+ * near-identical registrations: at a whole tier's worth of columns the
+ * one-probe-per-object shape B1, B8 and B9 use stops being readable.
  */
 
 import { prisma } from '@/lib/db/client';
@@ -97,6 +107,145 @@ function columnHasType(tableName: string, columnName: string, udtName: string): 
 }
 
 /**
+ * Assert a constraint's definition contains ALL of several substrings.
+ *
+ * Core's `constraintExists` takes one substring, which is enough for a CHECK
+ * predicate and not enough for a hand-written foreign key: a key has both a
+ * column and an `ON DELETE` action, and each is silently catastrophic on its
+ * own. B1 named `framework_resparkable_space_userId_fkey` before phase 45 and
+ * names `..._ownerUserId_fkey` after it, but a name is not a definition, and a
+ * constraint of the right name on the wrong column is exactly what a
+ * regenerated migration produces.
+ *
+ * Local for the reason `columnHasType` is: one query, one caller. If a second
+ * fork needs it, it belongs beside its siblings in `lib/db/drift-probes.ts`.
+ */
+function constraintDefMatches(constraintName: string, ...required: string[]): Probe {
+  return async () => {
+    const rows = await prisma.$queryRaw<Array<{ def: string | null }>>`
+      SELECT pg_get_constraintdef(oid) AS def
+      FROM pg_constraint
+      WHERE conname = ${constraintName}
+    `;
+    const def = rows[0]?.def;
+    if (!def) return { ok: false, note: `constraint ${constraintName} is missing entirely` };
+    const missing = required.filter((needle) => !def.includes(needle));
+    if (missing.length > 0) {
+      return { ok: false, note: `definition missing ${missing.join(' and ')} — saw: ${def}` };
+    }
+    return { ok: true };
+  };
+}
+
+/**
+ * Assert an index's DEFINITION rather than merely its name.
+ *
+ * `indexExists` passes on any index of that name, and the object B10 guards is a
+ * **partial unique** index. A plain non-unique non-partial index called the same
+ * thing satisfies existence and enforces nothing, which is the identical silent
+ * failure `generatedColumnExists` was written to close one layer down: the
+ * object is present, nothing errors, and the invariant it was there to hold (at
+ * most one live default workspace per owner) quietly stops holding.
+ *
+ * Postgres normalises predicate text when it stores an index, so the expected
+ * strings here were read back off a real database rather than guessed from the
+ * migration's source: `WHERE "isDefault" AND "archivedAt" IS NULL` comes back as
+ * `WHERE ("isDefault" AND ("archivedAt" IS NULL))`.
+ */
+function indexDefMatches(indexName: string, ...required: string[]): Probe {
+  return async () => {
+    const rows = await prisma.$queryRaw<Array<{ indexdef: string | null }>>`
+      SELECT indexdef
+      FROM pg_indexes
+      WHERE indexname = ${indexName}
+        AND schemaname = current_schema()
+    `;
+    const def = rows[0]?.indexdef;
+    if (!def) return { ok: false, note: `index ${indexName} is missing entirely` };
+    const missing = required.filter((needle) => !def.includes(needle));
+    if (missing.length > 0) {
+      return { ok: false, note: `definition missing ${missing.join(' and ')} — saw: ${def}` };
+    }
+    return { ok: true };
+  };
+}
+
+/**
+ * Every satellite carrying §23.5's `createdByUserId`, and therefore a
+ * hand-written `ON DELETE SET NULL` foreign key to `"user"`.
+ *
+ * Written out rather than discovered from `information_schema`, because a probe
+ * that derives its own expectations from the database cannot fail: if phase 46
+ * adds a table and forgets the key, a derived list simply would not look for it.
+ * A table added later is either in this list or is not covered, and the list is
+ * the thing a reviewer reads.
+ */
+export const CREATED_BY_TABLES = [
+  'framework_resparkable_area',
+  'framework_resparkable_board',
+  'framework_resparkable_board_card',
+  'framework_resparkable_checklist_item',
+  'framework_resparkable_comment',
+  'framework_resparkable_credit_account',
+  'framework_resparkable_credit_ledger_entry',
+  'framework_resparkable_document',
+  'framework_resparkable_embedding',
+  'framework_resparkable_entity',
+  'framework_resparkable_event',
+  'framework_resparkable_goal',
+  'framework_resparkable_grant',
+  'framework_resparkable_job',
+  'framework_resparkable_link',
+  'framework_resparkable_project',
+  'framework_resparkable_review',
+  'framework_resparkable_share_link',
+  'framework_resparkable_tag',
+  'framework_resparkable_task',
+  'framework_resparkable_task_tag',
+  'framework_resparkable_thought',
+  'framework_resparkable_time_block',
+] as const;
+
+/**
+ * B11 in one query: every `createdByUserId` key exists and every one is SetNull.
+ *
+ * The action is the whole point, not a detail. `SetNull` is what makes an
+ * erasure remove a member's authorship and leave the group's content, because
+ * that content is the group's (§23.5). Recreated as `Cascade` — which is what a
+ * regenerated migration would reach for, since it is the action every other key
+ * in this tier uses — one departing member silently deletes a term's worth of
+ * shared material, and nothing anywhere errors.
+ *
+ * Reports the offenders by name. "One of 23 is wrong" is not an actionable
+ * failure message at 3am.
+ */
+const createdByKeysAreSetNull: Probe = async () => {
+  const rows = await prisma.$queryRaw<Array<{ table_name: string; def: string }>>`
+    SELECT t.relname AS table_name, pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = current_schema()
+       AND c.contype = 'f'
+       AND c.conname LIKE 'framework_resparkable_%_createdByUserId_fkey'
+  `;
+  const byTable = new Map(rows.map((row) => [row.table_name, row.def]));
+
+  const missing = CREATED_BY_TABLES.filter((table) => !byTable.has(table));
+  const wrongAction = CREATED_BY_TABLES.filter(
+    (table) => byTable.has(table) && !byTable.get(table)?.includes('ON DELETE SET NULL')
+  );
+
+  if (missing.length > 0 || wrongAction.length > 0) {
+    const parts: string[] = [];
+    if (missing.length > 0) parts.push(`missing on ${missing.join(', ')}`);
+    if (wrongAction.length > 0) parts.push(`not ON DELETE SET NULL on ${wrongAction.join(', ')}`);
+    return { ok: false, note: parts.join('; ') };
+  }
+  return { ok: true };
+};
+
+/**
  * `generatedColumnExists` was a local copy here until Resparkable shipped it in
  * response to ask #10 (resparkable#481) — core's own A1 probe had the same blind
  * spot the copy was written to close, and now uses this too.
@@ -117,15 +266,45 @@ function columnHasType(tableName: string, columnName: string, udtName: string): 
  * double registration means the host wired this up twice and should know.
  */
 export function registerResparkableDriftProbes(): void {
-  // B1 — the GDPR cascade. Asserts the ON DELETE action, not just existence:
-  // a migration recreating this as ON DELETE RESTRICT would break user erasure
-  // while every test still passed, and erasure failures surface as a
-  // regulatory problem rather than a stack trace.
+  // B1 — the GDPR cascade, moved to `ownerUserId` by phase 45 (§23.2).
+  //
+  // Asserts the COLUMN and the ON DELETE action, not just existence. Both halves
+  // are silently catastrophic on their own: recreated as ON DELETE RESTRICT it
+  // breaks user erasure while every test still passes, and erasure failures
+  // surface as a regulatory problem rather than a stack trace; recreated on the
+  // old column it would put the cascade back on the space key, at which point
+  // deleting one member's account takes a whole group's workspace with it.
+  //
+  // The second is the one phase 45 introduced and the reason the probe now
+  // matches on the definition rather than the name. A group space is safe
+  // BECAUSE it has `ownerUserId` NULL and is therefore unreachable from `user`;
+  // that safety is invisible in the schema and lives entirely here.
   registerAppDriftProbe({
-    name: 'B1 framework_resparkable_space_userId_fkey (hand-written FK → user, GDPR cascade)',
+    name: 'B1 framework_resparkable_space_ownerUserId_fkey (hand-written FK → user, GDPR cascade)',
     kind: 'FK constraint',
     table: 'framework_resparkable_space',
-    probe: constraintExists('framework_resparkable_space_userId_fkey', 'ON DELETE CASCADE'),
+    probe: constraintDefMatches(
+      'framework_resparkable_space_ownerUserId_fkey',
+      'FOREIGN KEY ("ownerUserId")',
+      'ON DELETE CASCADE'
+    ),
+  });
+
+  // B1b — the old key must be GONE.
+  //
+  // A half-applied phase-45 migration leaves both, and both is worse than
+  // either: the cascade fires from two columns, so a group space that later
+  // acquires an `ownerUserId` through some convenience is destroyed by an
+  // unrelated account closure. Cheap to assert, and it is the only thing that
+  // distinguishes "the migration ran" from "the migration ran to completion".
+  registerAppDriftProbe({
+    name: 'B1b framework_resparkable_space_userId_fkey (MUST NOT EXIST — superseded by B1)',
+    kind: 'FK constraint',
+    table: 'framework_resparkable_space',
+    probe: absent(
+      constraintExists('framework_resparkable_space_userId_fkey'),
+      'the pre-phase-45 cascade FK is still present: the key migration is half applied'
+    ),
   });
 
   // B2 — the pgvector column itself, asserted by TYPE rather than by presence.
@@ -252,5 +431,67 @@ export function registerResparkableDriftProbes(): void {
     kind: 'FK constraint',
     table: 'framework_resparkable_comment',
     probe: constraintExists('framework_resparkable_comment_authorUserId_fkey', 'ON DELETE CASCADE'),
+  });
+
+  // B10 — at most one live default workspace per owner (§24.1).
+  //
+  // Partial unique indexes are not expressible in Prisma, so this is raw SQL and
+  // `migrate dev` will offer to drop it like every other object in this file.
+  // What it enforces is a rule §24.2 states as absolute: a user may change their
+  // default workspace and may not have none, and may certainly not have two.
+  // Dropped, the service keeps working and a concurrent create can leave an
+  // account with two defaults, after which "the app opens on your default" and
+  // "unnamed capture lands in your default" quietly disagree about which one.
+  //
+  // Landed by phase 45 rather than by Release 10, even though nothing creates a
+  // second workspace yet, because the migration that would add it is the
+  // migration over 21 tables and it happens once.
+  registerAppDriftProbe({
+    name: 'B10 idx_framework_resparkable_space_one_default_per_owner (partial UNIQUE)',
+    kind: 'partial unique index',
+    table: 'framework_resparkable_space',
+    probe: indexDefMatches(
+      'idx_framework_resparkable_space_one_default_per_owner',
+      'CREATE UNIQUE INDEX',
+      '"ownerUserId"',
+      'WHERE ("isDefault" AND ("archivedAt" IS NULL))'
+    ),
+  });
+
+  // B11 — §23.5's authorship keys, all 23 of them, in one probe.
+  //
+  // One registration rather than 23 because the failure mode is uniform and the
+  // check output has to stay readable: at 23 near-identical lines a human stops
+  // reading the list, which is the state a drift check exists to avoid.
+  registerAppDriftProbe({
+    name: 'B11 framework_resparkable_*_createdByUserId_fkey (23 hand-written FKs → user, SetNull)',
+    kind: 'FK constraints',
+    table: 'framework_resparkable_* (23 satellites)',
+    probe: createdByKeysAreSetNull,
+  });
+
+  // B12 — the ownership invariant, and the only reason B1's guarantee is real.
+  //
+  // B1 asserts the cascade exists. This asserts there is nothing the cascade
+  // cannot reach: a `personal` space always has an owner, a `group` space never
+  // does. Both halves are Art. 17 problems in opposite directions. A personal
+  // space with a NULL owner is a brain no erasure can remove and nothing errors;
+  // a group space that acquires one is a shared workspace destroyed when a
+  // single member closes their account.
+  //
+  // A NOT NULL cannot express it, because the column has to be nullable for
+  // group spaces. That is exactly why it needs a constraint rather than a
+  // convention: phase 45 produced two writers that forgot within an hour of the
+  // column existing, and both produced unerasable rows in silence.
+  registerAppDriftProbe({
+    name: 'B12 framework_resparkable_space_owner_kind_coherent (CHECK: personal has an owner, group has none)',
+    kind: 'CHECK constraint',
+    table: 'framework_resparkable_space',
+    probe: constraintDefMatches(
+      'framework_resparkable_space_owner_kind_coherent',
+      'ownerUserId',
+      'personal',
+      'group'
+    ),
   });
 }

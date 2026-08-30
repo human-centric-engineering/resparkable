@@ -5,9 +5,9 @@
  * deliberate: this function is the thing an HTTP route, a capability and (phase
  * 7) a workflow step all call, so it is the single place where "did we scope this
  * query?" gets answered. There is no `searchAll`, no `searchUnscoped`, and no
- * overload that takes a `userId` string — an `OwnerScope` is mintable only from a
+ * overload that takes a `userId` string — an `SpaceScope` is mintable only from a
  * verified session id, so a route param or an LLM tool argument cannot become one
- * (see `repo/owner-scope.ts`).
+ * (see `repo/space-scope.ts`).
  *
  * ## Three passes, because one corpus has three shapes
  *
@@ -33,7 +33,7 @@ import {
   searchTaskKeywords,
   type EmbeddedType,
 } from '@/lib/framework/resparkable/repo/embeddings';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findSummaries,
   keywordSummaries,
@@ -56,7 +56,7 @@ const DEFAULT_MAX_DISTANCE = 0.8;
 const DEFAULT_LIMIT = 20;
 
 export interface SearchResparkableInput {
-  scope: OwnerScope;
+  scope: SpaceScope;
   query: string;
   /** Defaults to everything. */
   entityTypes?: readonly SearchableType[];
@@ -260,7 +260,7 @@ function groupIdsByType(
 
 /** One `findMany` per type, keyed for O(1) lookup while ranking. */
 async function hydrate(
-  scope: OwnerScope,
+  scope: SpaceScope,
   byType: Map<EmbeddedType, string[]>,
   includeArchived: boolean,
   excludeSensitive: boolean

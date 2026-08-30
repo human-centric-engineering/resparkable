@@ -47,7 +47,7 @@ import {
 } from '@/lib/framework/resparkable/repo/boards';
 import { listChecklistForTasks } from '@/lib/framework/resparkable/repo/checklist';
 import { findLatestStatusChanges } from '@/lib/framework/resparkable/repo/events';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findProject } from '@/lib/framework/resparkable/repo/projects';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
 import { findTasksByIds, listTasks } from '@/lib/framework/resparkable/repo/tasks';
@@ -155,7 +155,7 @@ export function describeBoardFilter(
 }
 
 export async function buildBoardView(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string,
   now = new Date()
 ): Promise<BoardViewPayload | null> {
@@ -259,7 +259,7 @@ export async function buildBoardView(
  * into an error.
  */
 async function resolveFilterProjectName(
-  scope: OwnerScope,
+  scope: SpaceScope,
   filter: unknown
 ): Promise<string | null> {
   const parsed = boardFilterSchema.safeParse(filter ?? {});
@@ -270,7 +270,7 @@ async function resolveFilterProjectName(
 
 /** Curated membership: the join table decides which cards, and in what order. */
 async function loadExplicitCards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string
 ): Promise<{
   tasks: ResparkableTask[];
@@ -301,7 +301,7 @@ async function loadExplicitCards(
 
 /** Live query: whatever matches now, in score order. */
 async function loadFilteredCards(
-  scope: OwnerScope,
+  scope: SpaceScope,
   board: ResparkableBoard,
   columnSpecs: Array<{ status: string }>
 ): Promise<{
@@ -378,7 +378,7 @@ function resolveInColumnSince(
  * longer describes it, which would throw their arrangement away.
  */
 export async function snapshotBoard(
-  scope: OwnerScope,
+  scope: SpaceScope,
   boardId: string,
   now = new Date()
 ): Promise<BoardViewPayload | null> {

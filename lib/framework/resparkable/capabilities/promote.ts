@@ -29,7 +29,7 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { NotFoundError } from '@/lib/api/errors';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { promoteThought } from '@/lib/framework/resparkable/services/promote';
 import {
   agentPromoteThoughtSchema,
@@ -75,7 +75,7 @@ export class ResparkablePromoteThoughtCapability extends ResparkableCapability<
 
   protected async run(
     args: AgentPromoteThoughtInput,
-    scope: OwnerScope
+    scope: SpaceScope
   ): Promise<CapabilityResult<PromoteData>> {
     const { thoughtId, ...input } = args;
 

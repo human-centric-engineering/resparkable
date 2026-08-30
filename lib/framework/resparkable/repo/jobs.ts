@@ -23,7 +23,7 @@
  *
  * ## Why the claim is unscoped
  *
- * `claimResparkableJobs` takes no `OwnerScope`, because its whole job is to
+ * `claimResparkableJobs` takes no `SpaceScope`, because its whole job is to
  * *choose* one. It is the same deliberate exception `listSpacesDueSweep` used
  * to be, and it is safe for the same reason: it returns an owner id, a kind and
  * a timezone, and no brain content whatsoever. Each id is minted into its own
@@ -42,7 +42,7 @@ import { Prisma } from '@prisma/client';
 /** One claimed job, with the owner's zone so the caller needs no second read. */
 export interface ClaimedResparkableJob {
   id: string;
-  userId: string;
+  spaceId: string;
   kind: string;
   dueAt: Date;
   attempts: number;
@@ -80,7 +80,7 @@ export async function claimResparkableJobs(
         "leaseExpiresAt" = ${leaseExpiresAt},
         "updatedAt" = ${now}
     FROM "framework_resparkable_space" s
-    WHERE j."userId" = s."userId"
+    WHERE j."spaceId" = s."spaceId"
       AND j."id" IN (
         SELECT "id" FROM "framework_resparkable_job"
         WHERE "dueAt" <= ${now}
@@ -89,7 +89,7 @@ export async function claimResparkableJobs(
         LIMIT ${batchSize}
         FOR UPDATE SKIP LOCKED
       )
-    RETURNING j."id", j."userId", j."kind", j."dueAt", j."attempts",
+    RETURNING j."id", j."spaceId", j."kind", j."dueAt", j."attempts",
               j."lastRunAt", j."dormantSince", s."timezone"
   `;
 }
@@ -224,9 +224,9 @@ export async function enqueueResparkableJobs(
   );
 
   return prisma.$executeRaw`
-    INSERT INTO "framework_resparkable_job" ("id", "userId", "kind", "dueAt", "updatedAt")
+    INSERT INTO "framework_resparkable_job" ("id", "spaceId", "kind", "dueAt", "updatedAt")
     VALUES ${Prisma.join(values)}
-    ON CONFLICT ("userId", "kind") DO NOTHING
+    ON CONFLICT ("spaceId", "kind") DO NOTHING
   `;
 }
 
@@ -252,7 +252,7 @@ export async function clearResparkableJobDormancy(
   return prisma.$queryRaw<Array<{ kind: string; dueAt: Date }>>`
     UPDATE "framework_resparkable_job"
     SET "dormantSince" = NULL, "updatedAt" = ${now}
-    WHERE "userId" = ${userId} AND "dormantSince" IS NOT NULL
+    WHERE "spaceId" = ${userId} AND "dormantSince" IS NOT NULL
     RETURNING "kind", "dueAt"
   `;
 }
@@ -282,7 +282,7 @@ export async function pullResparkableJobsForward(
     UPDATE "framework_resparkable_job"
     SET "dueAt" = LEAST("dueAt", CASE "kind" ${Prisma.join(cases, ' ')} END),
         "updatedAt" = ${now}
-    WHERE "userId" = ${userId} AND "kind" IN (${Prisma.join(kinds)})
+    WHERE "spaceId" = ${userId} AND "kind" IN (${Prisma.join(kinds)})
   `;
 }
 
@@ -299,7 +299,7 @@ export async function pullResparkableJobsForward(
  * **Counted, not merely probed for existence**, and that is the difference
  * between a net and a formality. `kind` is a plain string precisely so the
  * vocabulary can grow by code change plus a backfill — but a brain that already
- * has seven of eight rows satisfies a `NOT EXISTS (… j."userId" = s."userId")`
+ * has seven of eight rows satisfies a `NOT EXISTS (… j."spaceId" = s."spaceId")`
  * and is invisible to it, so every existing user would silently never get the
  * new kind. Comparing the count against what this build expects catches both
  * the brand-new brain and the one a deploy left a kind short.
@@ -311,12 +311,12 @@ export async function pullResparkableJobsForward(
 export async function listSpacesWithoutJobs(
   limit: number,
   expectedKinds: number = RESPARKABLE_JOB_KINDS.length
-): Promise<Array<{ userId: string; timezone: string }>> {
-  return prisma.$queryRaw<Array<{ userId: string; timezone: string }>>`
-    SELECT s."userId", s."timezone"
+): Promise<Array<{ spaceId: string; timezone: string }>> {
+  return prisma.$queryRaw<Array<{ spaceId: string; timezone: string }>>`
+    SELECT s."spaceId", s."timezone"
     FROM "framework_resparkable_space" s
-    LEFT JOIN "framework_resparkable_job" j ON j."userId" = s."userId"
-    GROUP BY s."userId", s."timezone", s."createdAt"
+    LEFT JOIN "framework_resparkable_job" j ON j."spaceId" = s."spaceId"
+    GROUP BY s."spaceId", s."timezone", s."createdAt"
     HAVING count(j."id") < ${expectedKinds}
     ORDER BY s."createdAt" ASC
     LIMIT ${limit}
@@ -355,7 +355,7 @@ export async function hasResparkableActivitySince(userId: string, since: Date): 
   const rows = await prisma.$queryRaw<Array<{ present: boolean }>>`
     SELECT EXISTS (
       SELECT 1 FROM "framework_resparkable_event"
-      WHERE "userId" = ${userId}
+      WHERE "spaceId" = ${userId}
         AND "source" = 'user'
         AND "createdAt" > ${since}
     ) AS present

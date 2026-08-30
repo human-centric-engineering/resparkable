@@ -9,7 +9,7 @@
  *
  * **A brain query is either an owner query or a shared query, and there is no
  * third kind (D5).** `repo/**` answers the first: every function takes an
- * `OwnerScope`, spreads it into the `where`, and cannot express a cross-user
+ * `SpaceScope`, spreads it into the `where`, and cannot express a cross-user
  * read. This directory answers the second, and an ESLint boundary
  * (`lib/framework/eslint.config.mjs`) forbids `repo/**` from importing it — so
  * the separation is structural rather than a naming convention.

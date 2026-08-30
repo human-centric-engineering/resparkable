@@ -62,7 +62,7 @@ import { getProvider } from '@/lib/orchestration/llm/provider-manager';
 import { runStructuredCompletion } from '@/lib/orchestration/llm/structured-completion';
 import { logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { NotFoundError } from '@/lib/api/errors';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type { EntitySummary } from '@/lib/framework/resparkable/repo/summaries';
 
 const mockedExists = vi.mocked(entityExists);
@@ -75,7 +75,7 @@ const mockedProvider = vi.mocked(getProvider);
 const mockedCompletion = vi.mocked(runStructuredCompletion);
 const mockedCost = vi.mocked(logCost);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 
 const SEED: EntitySummary = {
   id: 'project_1',

@@ -42,7 +42,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findSharedChildIds,
   findSharedItem,
@@ -54,7 +54,7 @@ import {
   type ResparkableShareableType,
 } from '@/lib/framework/resparkable/access/types';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 
 const delegates = prisma as unknown as Record<string, { findMany: ReturnType<typeof vi.fn> }>;
 
@@ -142,7 +142,7 @@ describe('the projection is an allowlist', () => {
   it('scopes every projection to the owner', async () => {
     for (const entityType of RESPARKABLE_SHAREABLE_TYPES) {
       await findSharedItems(SCOPE, entityType, ['x_1'], false);
-      expect(lastWhere(DELEGATE_FOR[entityType])).toMatchObject({ userId: 'user_a' });
+      expect(lastWhere(DELEGATE_FOR[entityType])).toMatchObject({ spaceId: 'user_a' });
     }
   });
 
@@ -272,7 +272,7 @@ describe('children', () => {
     expect(args.take).toBe(SHARED_CHILD_LIMIT + 1);
     // Archived children are not listed: the parent is shared, the retired work
     // beneath it is not part of what was handed over.
-    expect(args.where).toMatchObject({ userId: 'user_a', projectId: 'p_1', archivedAt: null });
+    expect(args.where).toMatchObject({ spaceId: 'user_a', projectId: 'p_1', archivedAt: null });
   });
 
   it('reaches a goal’s child goals', async () => {

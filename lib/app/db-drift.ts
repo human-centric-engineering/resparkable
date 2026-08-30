@@ -44,8 +44,12 @@
 import { registerResparkableDriftProbes } from '@/lib/framework/resparkable/db-drift';
 
 export function registerAppDriftProbes(): void {
-  // Resparkable's six unmodellable objects (the hand-written GDPR-cascade FK, the
-  // HNSW index, two GENERATED tsvector columns and their GIN indexes). One line
-  // per the install guide — the probes themselves live in the framework tier.
+  // Resparkable's unmodellable objects: the hand-written GDPR-cascade FK, the
+  // halfvec column, two GENERATED tsvector columns and a GIN index over one of
+  // them, three erasure cascades to `user`, a partial unique index, and two
+  // objects asserted ABSENT. One line per the install guide; the probes
+  // themselves live in the framework tier and are the inventory. The count used
+  // to be written here as "six" and was wrong for months, so it is not written
+  // here any more.
   registerResparkableDriftProbes();
 }

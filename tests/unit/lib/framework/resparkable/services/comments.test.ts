@@ -212,7 +212,7 @@ describe('addComment', () => {
     await addComment(GRANTEE, REF, 'Looks right to me', NOW);
 
     expect(createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       expect.objectContaining({ authorUserId: 'user_b', body: 'Looks right to me' })
     );
   });
@@ -283,7 +283,7 @@ describe('updateComment', () => {
     await updateComment(GRANTEE, REF, 'c_1', 'Changed my mind', NOW);
 
     expect(editComment).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       // The thread the caller was authorised against travels into the query,
       // so an edit cannot land on a comment sitting on some other item.
       { entityType: 'project', entityId: 'p_1' },
@@ -316,7 +316,7 @@ describe('removeComment', () => {
     await removeComment(GRANTEE, REF, 'c_1', NOW);
 
     expect(deleteComment).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       { entityType: 'project', entityId: 'p_1' },
       'c_1',
       'user_b'
@@ -334,7 +334,7 @@ describe('removeComment', () => {
     // else's words standing in your notes with no way to remove them is what
     // makes people stop sharing.
     expect(deleteComment).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user_a' }),
+      expect.objectContaining({ spaceId: 'user_a' }),
       { entityType: 'project', entityId: 'p_1' },
       'c_1',
       undefined

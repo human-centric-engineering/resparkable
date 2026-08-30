@@ -18,7 +18,7 @@
  *
  * ## Reads go through the repo layer, so isolation is not restated here
  *
- * Every read below takes the caller's `OwnerScope`. There is no `userId` in this
+ * Every read below takes the caller's `SpaceScope`. There is no `userId` in this
  * file and no Prisma import — the framework-tier ESLint boundary forbids one —
  * so "an export that includes somebody else's notes" is not an expressible bug.
  *
@@ -32,7 +32,7 @@ import { listDocuments } from '@/lib/framework/resparkable/repo/documents';
 import { listEntities } from '@/lib/framework/resparkable/repo/entities';
 import { listGoals } from '@/lib/framework/resparkable/repo/goals';
 import { listLinks } from '@/lib/framework/resparkable/repo/links';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listProjects } from '@/lib/framework/resparkable/repo/projects';
 import { listTagsForTasks } from '@/lib/framework/resparkable/repo/tags';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
@@ -150,7 +150,7 @@ function assertWithinCap<T>(rows: T[], type: VaultNoteType): T[] {
  * already-indexed `userId`, and a person is waiting on this.
  */
 export async function collectVaultNotes(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: { includeArchived?: boolean } = {}
 ): Promise<CollectedNote[]> {
   const includeArchived = options.includeArchived ?? false;
@@ -384,7 +384,7 @@ export function assembleVaultFiles(
 
 /** Read the brain and build every file in the vault. */
 export async function buildVaultExport(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: VaultExportOptions = {}
 ): Promise<VaultExportResult> {
   const includeArchived = options.includeArchived ?? false;
@@ -398,7 +398,7 @@ export async function buildVaultExport(
 
 /** The whole vault as a zip, plus a filename a browser will show sensibly. */
 export async function buildVaultArchive(
-  scope: OwnerScope,
+  scope: SpaceScope,
   options: VaultExportOptions = {}
 ): Promise<{
   bytes: Uint8Array;

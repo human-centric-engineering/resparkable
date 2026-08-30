@@ -81,7 +81,7 @@ describe('snooze routes pass their own entity type', () => {
 
     expect(response.status).toBe(200);
     expect(vi.mocked(snoozeItem).mock.calls[0]?.[1]).toBe(type);
-    expect(vi.mocked(snoozeItem).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(snoozeItem).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 });
 
@@ -95,6 +95,6 @@ describe('unsnooze routes pass their own entity type', () => {
 
     expect(response.status).toBe(200);
     expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[1]).toBe(type);
-    expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[0]).toMatchObject({ userId: 'user_a' });
+    expect(vi.mocked(unsnoozeItem).mock.calls[0]?.[0]).toMatchObject({ spaceId: 'user_a' });
   });
 });

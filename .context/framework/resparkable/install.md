@@ -657,11 +657,11 @@ Sunrise 0.8.0 added the seam ([#467]); Resparkable supplies the collector, the h
 wires it:
 
 ```ts
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { ownerScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { collectResparkableSubjectData } from '@/lib/framework/resparkable/repo/subject-export';
 
 export async function collectAppSubjectData(subject: AppSubjectQuery): Promise<AppSubjectData> {
-  return { resparkable: await collectResparkableSubjectData(ownerScope(subject.userId)) };
+  return { resparkable: await collectResparkableSubjectData(spaceScope(subject.userId)) };
 }
 ```
 
@@ -890,7 +890,7 @@ filing the thought twice.
 > [resparkable#542](https://github.com/human-centric-engineering/sunrise/issues/542).
 > Use `chat`, and know that the key on
 > your phone reaches every authenticated route as you, not just capture. Nothing
-> about capture is weakened — the key resolves to its owner and `OwnerScope`
+> about capture is weakened — the key resolves to its owner and `SpaceScope`
 > confines every write to that one brain — but give it an `expiresAt`, and
 > revoke it if the phone goes missing.
 

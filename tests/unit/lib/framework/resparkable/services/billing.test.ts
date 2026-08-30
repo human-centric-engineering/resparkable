@@ -33,14 +33,14 @@ vi.mock('@/lib/framework/resparkable/repo/billing-settings', () => ({
 }));
 
 import { InsufficientCreditsError } from '@/lib/api/errors';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   assertPositiveBalance,
   hasPositiveBalance,
   recordAgentSpend,
 } from '@/lib/framework/resparkable/services/billing';
 
-const scope = ownerScope('user_a');
+const scope = spaceScope('user_a');
 
 function billingSettings(overrides: Record<string, unknown> = {}) {
   return {

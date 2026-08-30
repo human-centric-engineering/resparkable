@@ -36,7 +36,7 @@
 
 import { prisma } from '@/lib/db/client';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { buildInbox } from '@/lib/framework/resparkable/services/inbox';
 import { taskResource, thoughtResource } from '@/lib/framework/resparkable/services/resources';
@@ -93,14 +93,14 @@ async function main(): Promise<void> {
     userA = await createUser('a');
     userB = await createUser('b');
 
-    const scopeA = ownerScope(userA);
-    const scopeB = ownerScope(userB);
+    const scopeA = spaceScope(userA);
+    const scopeB = spaceScope(userB);
 
     // ── 1. The FK violation phase 2 shipped ──────────────────────────────────
     console.log('\nSpace bootstrap — the phase-2 500 on a new user’s first write');
 
     check(
-      (await prisma.resparkableSpace.count({ where: { userId: userA } })) === 0,
+      (await prisma.resparkableSpace.count({ where: { spaceId: userA } })) === 0,
       'the new user starts with no space row at all'
     );
 
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     });
     check(!!firstTask, 'creating a task bootstraps the space instead of violating the FK');
     check(
-      (await prisma.resparkableSpace.count({ where: { userId: userA } })) === 1,
+      (await prisma.resparkableSpace.count({ where: { spaceId: userA } })) === 1,
       'exactly one space row was created'
     );
 

@@ -70,7 +70,7 @@ describe('loadResparkableContext', () => {
 
     await loadResparkableContext('user-b', { userId: 'user-a' });
 
-    expect(buildSnapshot).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-a' }));
+    expect(buildSnapshot).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user-a' }));
   });
 
   it("returns '' when the run has no owner, rather than anyone's context", async () => {

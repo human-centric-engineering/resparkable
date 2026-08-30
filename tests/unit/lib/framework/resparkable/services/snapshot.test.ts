@@ -39,7 +39,7 @@ import { findLatestReview } from '@/lib/framework/resparkable/repo/reviews';
 import { listTasks } from '@/lib/framework/resparkable/repo/tasks';
 import { buildCounts } from '@/lib/framework/resparkable/services/counts';
 import { getResparkableSettings } from '@/lib/framework/resparkable/services/space';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import type {
   ResparkableArea,
   ResparkableGoal,
@@ -55,7 +55,7 @@ const mockedTasks = vi.mocked(listTasks);
 const mockedCounts = vi.mocked(buildCounts);
 const mockedSettings = vi.mocked(getResparkableSettings);
 
-const SCOPE = { userId: 'user_a' } as OwnerScope;
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-07-30T12:00:00.000Z');
 
 function area(id: string): ResparkableArea {

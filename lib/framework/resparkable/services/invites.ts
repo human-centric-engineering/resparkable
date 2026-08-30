@@ -47,7 +47,7 @@ import {
   stampInviteToken,
 } from '@/lib/framework/resparkable/repo/grants';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import type { OwnerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { sendEmail } from '@/lib/email/send';
 import { env } from '@/lib/env';
@@ -94,7 +94,7 @@ export type InviteOutcome = 'sent' | 'send_failed' | 'no_grant' | 'no_sender';
  * revocation would be undone by a button somebody forgot to grey out.
  */
 export async function sendGrantInvite(
-  scope: OwnerScope,
+  scope: SpaceScope,
   grantId: string,
   now: Date = new Date()
 ): Promise<InviteOutcome> {

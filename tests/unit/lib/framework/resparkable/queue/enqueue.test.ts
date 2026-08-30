@@ -166,8 +166,8 @@ describe('backfillMissingResparkableJobs', () => {
     // replacement a brain that missed its enqueue would have no background work
     // for ever, and nothing anywhere would say so.
     vi.mocked(listSpacesWithoutJobs).mockResolvedValue([
-      { userId: 'user_a', timezone: 'UTC' },
-      { userId: 'user_b', timezone: 'Asia/Tokyo' },
+      { spaceId: 'user_a', timezone: 'UTC' },
+      { spaceId: 'user_b', timezone: 'Asia/Tokyo' },
     ]);
 
     expect(await backfillMissingResparkableJobs(5, NOW)).toBe(14);

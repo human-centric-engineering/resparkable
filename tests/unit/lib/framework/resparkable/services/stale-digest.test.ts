@@ -36,7 +36,7 @@ vi.mock('@/lib/framework/resparkable/repo/stale', () => ({
 }));
 vi.mock('@/lib/framework/resparkable/services/events', () => ({ recordResparkableEvent: vi.fn() }));
 
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { daysBefore } from '@/lib/framework/resparkable/repo/retention';
 import {
   findDormantEntities,
@@ -51,7 +51,7 @@ import {
   STALE_WINDOW_DAYS,
 } from '@/lib/framework/resparkable/services/stale-digest';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-05T09:00:00.000Z');
 
 beforeEach(() => {

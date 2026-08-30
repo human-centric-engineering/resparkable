@@ -37,7 +37,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 import { prisma } from '@/lib/db/client';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   findDormantEntities,
   findDormantProjects,
@@ -45,7 +45,7 @@ import {
   markStillLive,
 } from '@/lib/framework/resparkable/repo/stale';
 
-const SCOPE = ownerScope('user_a');
+const SCOPE = spaceScope('user_a');
 const NOW = new Date('2026-08-05T09:00:00.000Z');
 const CUTOFF = new Date('2026-05-07T09:00:00.000Z');
 
@@ -78,7 +78,7 @@ describe('findDormantProjects', () => {
     await findDormantProjects(SCOPE, CUTOFF);
 
     const where = whereOf(vi.mocked(prisma.resparkableProject.findMany));
-    expect(where).toMatchObject({ userId: 'user_a', archivedAt: null });
+    expect(where).toMatchObject({ spaceId: 'user_a', archivedAt: null });
   });
 
   it('returns the project name as the row title', async () => {
@@ -138,7 +138,7 @@ describe('findDormantEntities', () => {
     await findDormantEntities(SCOPE, CUTOFF);
 
     const where = whereOf(vi.mocked(prisma.resparkableLink.findMany));
-    expect(where.userId).toBe('user_a');
+    expect(where.spaceId).toBe('user_a');
     expect(where.createdAt).toEqual({ gte: CUTOFF });
   });
 });
@@ -151,7 +151,7 @@ describe('markStillLive', () => {
 
     expect(ok).toBe(true);
     expect(prisma.resparkableProject.update).toHaveBeenCalledWith({
-      where: { id: 'p1', userId: 'user_a' },
+      where: { id: 'p1', spaceId: 'user_a' },
       data: { lastActivityAt: NOW },
       select: { id: true },
     });

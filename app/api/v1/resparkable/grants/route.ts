@@ -30,13 +30,13 @@ import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { ownerScope } from '@/lib/framework/resparkable/repo/owner-scope';
+import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { issueGrant, listOwnGrants } from '@/lib/framework/resparkable/services/grants';
 import { createGrantSchema, grantListQuerySchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const query = validateQueryParams(new URL(request.url).searchParams, grantListQuerySchema);
 
@@ -49,7 +49,7 @@ export const GET = withAuth(async (request, session) => {
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = ownerScope(session.user.id);
+  const scope = spaceScope(session.user.id);
 
   const body = await validateRequestBody(request, createGrantSchema);
 

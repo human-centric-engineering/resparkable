@@ -87,7 +87,7 @@ describe('shape', () => {
     const spaceEdge = MODEL_GRAPH.ResparkableGoal.relations.find(
       (r) => r.toModel === 'ResparkableSpace'
     );
-    expect(spaceEdge?.toFields).toEqual(['userId']);
+    expect(spaceEdge?.toFields).toEqual(['spaceId']);
     expect(MODEL_GRAPH.ResparkableSpace.idFields).toEqual(['id']);
 
     const areaEdge = MODEL_GRAPH.ResparkableGoal.relations.find(

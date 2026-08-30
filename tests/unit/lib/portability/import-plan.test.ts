@@ -125,7 +125,7 @@ function modelPlan(plan: ImportPlan, model: string) {
 }
 
 /** A brain with one space row, which everything else hangs off. */
-const SPACE = { id: 'space-old', userId: SOURCE };
+const SPACE = { id: 'space-old', spaceId: SOURCE };
 
 describe('buildImportPlan', () => {
   describe('the owner column', () => {
@@ -139,7 +139,7 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableArea: [
-            { id: 'area-old', userId: SOURCE, slug: 'health', name: 'health', title: 'Health' },
+            { id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health', title: 'Health' },
           ],
         }),
         targetUserId: TARGET,
@@ -147,14 +147,14 @@ describe('buildImportPlan', () => {
       }).then(() => {
         const areaCall = lookup.calls.find((call) => call.model === 'ResparkableArea');
 
-        expect(areaCall?.columns).toEqual(['userId', 'slug']);
+        expect(areaCall?.columns).toEqual(['spaceId', 'slug']);
         expect(areaCall?.tuples).toEqual([[TARGET, 'health']]);
       });
     });
 
     it('lands on the importing account even when the bundle claims another owner', async () => {
       const lookup = new FakeLookup({
-        ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }],
+        ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }],
       });
 
       const plan = await buildImportPlan({
@@ -164,7 +164,7 @@ describe('buildImportPlan', () => {
           // importer's. The owner value is overwritten rather than consulted, so
           // this matches the importer's own area.
           ResparkableArea: [
-            { id: 'area-old', userId: 'somebody-else', slug: 'health', name: 'health' },
+            { id: 'area-old', spaceId: 'somebody-else', slug: 'health', name: 'health' },
           ],
         }),
         targetUserId: TARGET,
@@ -194,7 +194,7 @@ describe('buildImportPlan', () => {
       });
 
       expect(modelPlan(plan, 'ResparkableSpace').notWritten).toContainEqual(
-        expect.objectContaining({ column: 'userId' })
+        expect.objectContaining({ column: 'spaceId' })
       );
     });
   });
@@ -204,11 +204,11 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
         }),
         targetUserId: TARGET,
         lookup: new FakeLookup({
-          ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }],
         }),
       });
 
@@ -220,7 +220,7 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableArea: [{ id: 'area-old', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-old', spaceId: SOURCE, slug: 'health', name: 'health' }],
         }),
         targetUserId: TARGET,
         lookup: new FakeLookup(),
@@ -235,11 +235,11 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableTask: [{ id: 'task-old', userId: SOURCE, title: 'Ship it' }],
+          ResparkableTask: [{ id: 'task-old', spaceId: SOURCE, title: 'Ship it' }],
         }),
         targetUserId: TARGET,
         lookup: new FakeLookup({
-          ResparkableTask: [{ id: 'task-here', userId: TARGET, title: 'Ship it' }],
+          ResparkableTask: [{ id: 'task-here', spaceId: TARGET, title: 'Ship it' }],
         }),
       });
 
@@ -259,7 +259,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'A good week.',
@@ -272,7 +272,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-here',
-              userId: TARGET,
+              spaceId: TARGET,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'A good week.',
@@ -299,7 +299,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'monthly',
               title: 'September',
               body: 'Onwards.',
@@ -312,7 +312,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-here',
-              userId: TARGET,
+              spaceId: TARGET,
               horizon: 'monthly',
               title: 'September',
               body: 'Onwards.',
@@ -327,7 +327,7 @@ describe('buildImportPlan', () => {
 
     it('matches a goal on its slug, through the constraint rather than a guess', async () => {
       // Goals used to be the soft-key case in this file. They gained
-      // `@@unique([userId, slug])` because a guessed match is not something
+      // `@@unique([spaceId, slug])` because a guessed match is not something
       // `conflictMode: 'overwrite'` may write into — so this is now a `match`,
       // and nothing is listed for a human to veto.
       const plan = await buildImportPlan({
@@ -336,7 +336,7 @@ describe('buildImportPlan', () => {
           ResparkableGoal: [
             {
               id: 'goal-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'quarter',
               title: 'Ship the beta',
               slug: 'ship-the-beta',
@@ -348,7 +348,7 @@ describe('buildImportPlan', () => {
           ResparkableGoal: [
             {
               id: 'goal-here',
-              userId: TARGET,
+              spaceId: TARGET,
               horizon: 'quarter',
               title: 'Ship the beta, eventually',
               slug: 'ship-the-beta',
@@ -366,16 +366,16 @@ describe('buildImportPlan', () => {
       // Computed on the raw bundle row it would look for a board in the account
       // the bundle came from and match nothing.
       const lookup = new FakeLookup({
-        ResparkableBoard: [{ id: 'board-here', userId: TARGET, slug: 'work', name: 'work' }],
+        ResparkableBoard: [{ id: 'board-here', spaceId: TARGET, slug: 'work', name: 'work' }],
       });
 
       await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableTask: [{ id: 'task-old', userId: SOURCE, title: 'Ship it' }],
-          ResparkableBoard: [{ id: 'board-old', userId: SOURCE, slug: 'work', name: 'work' }],
+          ResparkableTask: [{ id: 'task-old', spaceId: SOURCE, title: 'Ship it' }],
+          ResparkableBoard: [{ id: 'board-old', spaceId: SOURCE, slug: 'work', name: 'work' }],
           ResparkableBoardCard: [
-            { id: 'card-old', userId: SOURCE, boardId: 'board-old', taskId: 'task-old' },
+            { id: 'card-old', spaceId: SOURCE, boardId: 'board-old', taskId: 'task-old' },
           ],
         }),
         targetUserId: TARGET,
@@ -401,7 +401,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-a',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'The first attempt.',
@@ -409,7 +409,7 @@ describe('buildImportPlan', () => {
             },
             {
               id: 'review-b',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'Regenerated later the same day.',
@@ -422,7 +422,7 @@ describe('buildImportPlan', () => {
           ResparkableReview: [
             {
               id: 'review-here',
-              userId: TARGET,
+              spaceId: TARGET,
               horizon: 'weekly',
               title: 'Week 39',
               body: 'Already here.',
@@ -451,7 +451,7 @@ describe('buildImportPlan', () => {
 
     it('refuses to bind when a column is empty', () => {
       // Postgres treats nulls as distinct under a unique constraint, and
-      // `[userId, externalId]` is declared knowing `externalId` is usually null.
+      // `[spaceId, externalId]` is declared knowing `externalId` is usually null.
       expect(mergeKeyOf(['user-1', null])).toBeNull();
       expect(mergeKeyOf(['user-1', undefined])).toBeNull();
       expect(mergeKeyOf(['user-1', ''])).toBeNull();
@@ -471,7 +471,7 @@ describe('buildImportPlan', () => {
           ResparkableProject: [
             {
               id: 'proj-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'rebuild',
               name: 'rebuild',
               areaId: 'area-missing',
@@ -492,10 +492,10 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableTask: [{ id: 'task-old', userId: SOURCE, title: 'Ship it' }],
+          ResparkableTask: [{ id: 'task-old', spaceId: SOURCE, title: 'Ship it' }],
           // No board table, and `boardId` may not be empty.
           ResparkableBoardCard: [
-            { id: 'card-old', userId: SOURCE, boardId: 'board-missing', taskId: 'task-old' },
+            { id: 'card-old', spaceId: SOURCE, boardId: 'board-missing', taskId: 'task-old' },
           ],
         }),
         targetUserId: TARGET,
@@ -520,7 +520,7 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           // No AiAgent table, so every conversation loses a reference it cannot
           // do without — and every message hangs off a conversation.
-          AiConversation: [{ id: 'conv-old', userId: SOURCE, agentId: 'agent-missing' }],
+          AiConversation: [{ id: 'conv-old', spaceId: SOURCE, agentId: 'agent-missing' }],
           AiMessage: [{ id: 'msg-old', conversationId: 'conv-old', role: 'user' }],
         }),
         targetUserId: TARGET,
@@ -537,11 +537,11 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableTask: [{ id: 'task-old', userId: SOURCE, title: 'Ship it' }],
+          ResparkableTask: [{ id: 'task-old', spaceId: SOURCE, title: 'Ship it' }],
           ResparkableLink: [
             {
               id: 'link-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               sourceType: 'task',
               sourceId: 'task-old',
               targetType: 'project',
@@ -568,7 +568,7 @@ describe('buildImportPlan', () => {
           ResparkableLink: [
             {
               id: 'link-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               sourceType: 'invention',
               sourceId: 'x1',
               targetType: 'task',
@@ -599,7 +599,7 @@ describe('buildImportPlan', () => {
           ResparkableBoard: [
             {
               id: 'board-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               membership: 'filter',
               filter: { projectId: 'proj-missing' },
@@ -625,12 +625,12 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableProject: [
-            { id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'rebuild' },
+            { id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'rebuild' },
           ],
           ResparkableBoard: [
             {
               id: 'board-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               filter: { projectId: 'proj-old' },
             },
@@ -650,10 +650,10 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableGoal: [
-            { id: 'goal-parent', userId: SOURCE, horizon: 'year', title: 'Get fit' },
+            { id: 'goal-parent', spaceId: SOURCE, horizon: 'year', title: 'Get fit' },
             {
               id: 'goal-child',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'quarter',
               title: 'Run 10k',
               parentGoalId: 'goal-parent',
@@ -675,7 +675,7 @@ describe('buildImportPlan', () => {
           ResparkableGoal: [
             {
               id: 'goal-child',
-              userId: SOURCE,
+              spaceId: SOURCE,
               horizon: 'quarter',
               title: 'Run 10k',
               parentGoalId: 'goal-gone',
@@ -698,12 +698,12 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableProject: [
-            { id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'rebuild' },
+            { id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'rebuild' },
           ],
           ResparkableBoard: [
             {
               id: 'board-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               // `filter.projectId` is declared. `columns[].projectId` is not, and
               // this is how we find out.
@@ -732,12 +732,12 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableProject: [
-            { id: 'proj-old', userId: SOURCE, slug: 'rebuild', name: 'rebuild' },
+            { id: 'proj-old', spaceId: SOURCE, slug: 'rebuild', name: 'rebuild' },
           ],
           ResparkableBoard: [
             {
               id: 'board-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               name: 'work',
               filter: { projectId: 'proj-old' },
@@ -758,7 +758,7 @@ describe('buildImportPlan', () => {
           ResparkableBoard: [
             {
               id: 'board-old',
-              userId: SOURCE,
+              spaceId: SOURCE,
               slug: 'work',
               columns: [{ name: 'Doing', status: 'in-progress' }],
             },
@@ -777,7 +777,7 @@ describe('buildImportPlan', () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
-          ResparkableEvent: [{ id: 'ev-old', userId: SOURCE, kind: 'task.created' }],
+          ResparkableEvent: [{ id: 'ev-old', spaceId: SOURCE, kind: 'task.created' }],
         }),
         targetUserId: TARGET,
         lookup: new FakeLookup(),
@@ -890,14 +890,14 @@ describe('buildImportPlan', () => {
         bundle: bundleOf({
           ResparkableSpace: [SPACE],
           ResparkableArea: [
-            { id: 'a1', userId: SOURCE, slug: 'health', name: 'health' },
-            { id: 'a2', userId: SOURCE, slug: 'work', name: 'work' },
+            { id: 'a1', spaceId: SOURCE, slug: 'health', name: 'health' },
+            { id: 'a2', spaceId: SOURCE, slug: 'work', name: 'work' },
           ],
-          ResparkableTask: [{ id: 't1', userId: SOURCE, title: 'Ship it' }],
+          ResparkableTask: [{ id: 't1', spaceId: SOURCE, title: 'Ship it' }],
         }),
         targetUserId: TARGET,
         lookup: new FakeLookup({
-          ResparkableArea: [{ id: 'area-here', userId: TARGET, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'area-here', spaceId: TARGET, slug: 'health', name: 'health' }],
         }),
       });
 
@@ -907,7 +907,7 @@ describe('buildImportPlan', () => {
     it('reports the order it would write in', async () => {
       const plan = await buildImportPlan({
         bundle: bundleOf({
-          ResparkableArea: [{ id: 'a1', userId: SOURCE, slug: 'health', name: 'health' }],
+          ResparkableArea: [{ id: 'a1', spaceId: SOURCE, slug: 'health', name: 'health' }],
           ResparkableSpace: [SPACE],
         }),
         targetUserId: TARGET,
@@ -923,7 +923,7 @@ describe('buildImportPlan', () => {
       const overCap = PLAN_CAPS.detail + 25;
       const cards = Array.from({ length: overCap }, (_, i) => ({
         id: `card-${i}`,
-        userId: SOURCE,
+        spaceId: SOURCE,
         boardId: 'board-missing',
         taskId: 'task-missing',
       }));
@@ -942,7 +942,7 @@ describe('buildImportPlan', () => {
     it('groups repeated unresolved references into one line per column', async () => {
       const cards = Array.from({ length: 5 }, (_, i) => ({
         id: `card-${i}`,
-        userId: SOURCE,
+        spaceId: SOURCE,
         boardId: 'board-missing',
         taskId: 'task-missing',
       }));

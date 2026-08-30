@@ -16,12 +16,12 @@ That is decision D5, and after phase 10 it is two directories rather than one ru
 
 | Layer                                 | Answers        | Takes        | Can it cross a user?                |
 | ------------------------------------- | -------------- | ------------ | ----------------------------------- |
-| `lib/framework/resparkable/repo/**`   | owner queries  | `OwnerScope` | **No** — not expressible            |
+| `lib/framework/resparkable/repo/**`   | owner queries  | `SpaceScope` | **No** — not expressible            |
 | `lib/framework/resparkable/access/**` | shared queries | a viewer     | Only by following a grant or a link |
 
 Everything else in the tier — services, routes, capabilities, workflows — goes through one of the two and cannot reach Prisma at all. Three things hold that up, in decreasing order of strength:
 
-1. **`OwnerScope` is a branded type.** A route param, a request body field or an LLM tool argument does not satisfy it. `rg 'ownerScope\('` is the complete list of trust boundaries in the brain.
+1. **`SpaceScope` is a branded type.** A route param, a request body field or an LLM tool argument does not satisfy it. `rg 'ownerScope\('` is the complete list of trust boundaries in the brain.
 2. **ESLint.** `lib/framework/eslint.config.mjs` bans `@/lib/db/client` everywhere in the tier except those two directories, and separately bans `repo/**` from importing `access/**` — so the two cannot collapse back into one layer that does both. Run as behaviour, not read as config: `tests/unit/lib/framework/resparkable/access/eslint-d5-boundary.test.ts` pulls the real rule entries out of the shipped file and lints fixtures through them.
 3. **Naming.** Every function in `access/store.ts` is named for the grant or link it follows.
 
@@ -43,7 +43,7 @@ Two orthogonal facts, deliberately not merged.
 
 ### Two things about these tables that are easy to get wrong
 
-**`userId` is the owner, not the grantee.** That is what preserves D1: the row cascades from `ResparkableSpace` like every other table in the tier, and `WHERE userId = $1` means the same thing here as everywhere else. Reading this table _by grantee_ is the one thing `repo/**` must never do.
+**`spaceId` is the owner, not the grantee.** That is what preserves D1: the row cascades from `ResparkableSpace` like every other table in the tier, and `WHERE spaceId = $1` means the same thing here as everywhere else. Reading this table _by grantee_ is the one thing `repo/**` must never do.
 
 **The grantee needs its own foreign key, and it is hand-written.** Nothing cascades to a grant row when the **grantee** is erased, because `userId` is the owner. `ON DELETE SET NULL` would be worse than no constraint at all: it leaves a live grant addressed by `granteeEmail` — retained personal data belonging to an erased person, on a row they cannot reach. So `framework_resparkable_grant_granteeUserId_fkey` is `ON DELETE CASCADE`, written by hand in the migration because `User` lives in a Sunrise-owned file, and guarded by **drift probe B8** (the sibling of B1, which guards the owner cascade).
 
@@ -57,7 +57,7 @@ Mint with `randomBytes(24).toString('base64url')` — 192 bits, and deliberately
 
 ### The comment table repeats the grant's shape, including its trap
 
-`userId` on a comment is the **owner of the item it sits on**, not the person who wrote it — so the row cascades from `ResparkableSpace` and `WHERE userId = $1` keeps meaning what it means everywhere else. The author is `authorUserId`, and like `granteeUserId` it needs a hand-written `ON DELETE CASCADE` into `"user"` because nothing else reaches it. **Probe B9** guards that FK, the way B8 guards the grant's.
+`spaceId` on a comment is the **owner of the item it sits on**, not the person who wrote it — so the row cascades from `ResparkableSpace` and `WHERE spaceId = $1` keeps meaning what it means everywhere else. The author is `authorUserId`, and like `granteeUserId` it needs a hand-written `ON DELETE CASCADE` into `"user"` because nothing else reaches it. **Probe B9** guards that FK, the way B8 guards the grant's.
 
 `SET NULL` would be worse here than on a grant. There it leaves a live grant addressed by an erased person's email; here it leaves **free text an erased person wrote** — often about themselves — standing on somebody else's row under an author nobody can name.
 
@@ -71,7 +71,7 @@ Mint with `randomBytes(24).toString('base64url')` — 192 bits, and deliberately
 resolveResparkableAccess({ viewer, entityType, entityId, need }); // one item
 resolveResparkableAccessMany({ viewer, refs, need }); // a list
 resparkableVisibilityScope(viewer); // "what is shared with me"
-grantOwnerScope(grant); // a scope from a grant the viewer holds
+grantSpaceScope(grant); // a scope from a grant the viewer holds
 
 resolveResparkableShareLink(token); // the public reader
 shareLinkAccess(link);
@@ -118,6 +118,15 @@ The batched form is not an optimisation, it is a requirement. `task` is the high
 | `link-cascade`  | ✅    | ❌       | ❌                  | only if `includeTaskDetail` |
 
 \* `role: 'commenter'` only.
+
+> **The `Comments` column above is about WRITING.** It tracks
+> `permissions.comment`, and it is right: a cascaded item cannot be commented on
+> even with a commenter grant on its parent. It does not say who may **read** the
+> thread, and the two differ: `redactionsFor()` opens the `comments` field for
+> `grant` and `grant-cascade` alike, so a cascaded grantee reads a thread this
+> table marks ❌. Only a public link is cut off from it. A read column belongs
+> here, and Release 9 phase 58 is when it has to be written, because a group UI
+> has to answer "who can see the discussion" out loud.
 
 Nobody but the owner ever sees `priorityScore`, `manualBoostReason`, the event history, or the parent an item hangs off.
 
@@ -221,7 +230,7 @@ Granting is not the hard half of sharing. Being able to take it back is, and a s
 
 So the list is keyed on the **share**, not on the entity. An inventory ordered by entity has nowhere to put a share whose entity you cannot navigate to, which is exactly the row somebody came for. `GET /api/v1/resparkable/shares` → `services/my-shares.ts` → `components/resparkable/share/my-shares-view.tsx`.
 
-**It is an owner query and does not touch the access layer.** The resemblance to `/shared-with-me` is superficial and worth naming so nobody unifies them: that one reads _other people's_ rows through a grant, this one reads the owner's own rows and the grants they issued. Every read here is `WHERE userId = $1`, no viewer or basis is involved, and `access/*` is neither imported nor needed.
+**It is an owner query and does not touch the access layer.** The resemblance to `/shared-with-me` is superficial and worth naming so nobody unifies them: that one reads _other people's_ rows through a grant, this one reads the owner's own rows and the grants they issued. Every read here is `WHERE spaceId = $1`, no viewer or basis is involved, and `access/*` is neither imported nor needed.
 
 **Eight queries, whatever the row count.** Two list queries, then at most one per shareable type to resolve titles. Deliberately not one per share: that is the N+1 `CLAUDE.md` forbids on list endpoints, and it is the shape this takes by accident if titles are fetched where they are rendered. `findSharedItems` does the resolving, reused rather than reimplemented, so it stays an allowlist and its six-way `switch` fails the build when a seventh shareable type arrives.
 
@@ -388,7 +397,7 @@ Keyed on IP because there is nothing else to key on — which means a shared off
 
 They do **not** appear in the viewer's own lists or search. Three reasons, in weight order:
 
-1. It preserves `WHERE userId = $1` as an unconditional invariant on every list, search and embedding query in the tier.
+1. It preserves `WHERE spaceId = $1` as an unconditional invariant on every list, search and embedding query in the tier.
 2. A second brain's lists are a **planning** surface. Someone else's project sitting in "my projects" corrupts prioritisation and your own sense of what you have committed to.
 3. Mixing them in would make ~40 list endpoints potential leaks, rather than the ~6 that have to be got right.
 
@@ -404,11 +413,11 @@ They do **not** appear in the viewer's own lists or search. Three reasons, in we
 
 It stops at `SHARED_SEARCH_SCAN_LIMIT` (1000 refs) and reports that it did. A cap that truncates silently reads as "this is everything".
 
-### Getting an `OwnerScope` from a grant you hold
+### Getting an `SpaceScope` from a grant you hold
 
-`/shared-with-me` resolves a viewer's whole grant set in one query and then has to read the granted items — which means a scope per owner, without re-resolving each item and throwing the answer away. `grantOwnerScope(grant)` is that, and it is the fifth legitimate source of a scope alongside `sharedOwnerScope`. It is safe for the same reasons: **the id comes off a database row, never off the request**, and a `LiveGrant` is only ever produced by `access/store.ts` from a row that survived `isShareActive` and a grantee match on the viewer's own session id or address. Holding the grant _is_ the resolution.
+`/shared-with-me` resolves a viewer's whole grant set in one query and then has to read the granted items — which means a scope per owner, without re-resolving each item and throwing the answer away. `grantSpaceScope(grant)` is that, and it is the fifth legitimate source of a scope alongside `sharedSpaceScope`. It is safe for the same reasons: **the id comes off a database row, never off the request**, and a `LiveGrant` is only ever produced by `access/store.ts` from a row that survived `isShareActive` and a grantee match on the viewer's own session id or address. Holding the grant _is_ the resolution.
 
-Keep `rg 'grantOwnerScope\('` as short as `rg 'sharedOwnerScope\('`.
+Keep `rg 'grantSpaceScope\('` as short as `rg 'sharedSpaceScope\('`.
 
 **Shared-in items are excluded from everything of the owner's** — embeddings, context, prioritisation, background workflows. No exceptions. The subtle failure is a naive union of cascaded tasks, which both corrupts "what should I do now" and leaks another person's deadlines into an LLM prompt.
 

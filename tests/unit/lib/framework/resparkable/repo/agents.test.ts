@@ -1,7 +1,7 @@
 /**
  * Unit Tests: `lib/framework/resparkable/repo/agents.ts` (phase 6a).
  *
- * The one repo module whose function takes no `OwnerScope`, which is exactly why
+ * The one repo module whose function takes no `SpaceScope`, which is exactly why
  * it needs a test that says so deliberately rather than leaving the next reader
  * to wonder whether the scope was forgotten. `AiAgent` is instance-wide
  * configuration — a model choice an operator makes in the admin UI. It has no
