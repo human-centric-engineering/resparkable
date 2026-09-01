@@ -100,6 +100,30 @@ export const RESPARKABLE_ROUTES = {
   invite: (token: string): string => `${BASE}/invite/${encodeURIComponent(token)}`,
 
   /**
+   * Accept a GROUP invitation (§23.3, phase 46).
+   *
+   * A separate path from `invite` above, and separate for the reason the two
+   * services are separate: a share invite binds an account to a grant that is
+   * already live for that address, while this one is the only thing between a
+   * stranger and a group's whole brain until it is accepted. One page serving
+   * both would have to branch on which kind of token it was handed, which means
+   * looking a token up in two tables to find out, which is an enumeration
+   * surface neither table wants.
+   *
+   * Under `/resparkable` and therefore behind the session gate, for the same
+   * reason: the token names the invitation and the session proves the address.
+   */
+  groupInvite: (token: string): string => `${BASE}/groups/invite/${encodeURIComponent(token)}`,
+
+  // The `/resparkable/groups` section itself is NOT declared here yet. Adding a
+  // static route to this object obliges the whole `ui.md` checklist in the same
+  // change (`nav-groups.ts`, `section-help.ts`, `tab-registry.ts`, a tab
+  // adapter, `payloads.ts`, `change-scope.ts`), and three coverage tests fail
+  // until every one of them is done. That wiring is phase 47's, with the
+  // surface it belongs to. The accept page above needs no such entry: it is a
+  // token page, not a section, exactly like `invite` before it.
+
+  /**
    * Archived items, and what has gone quiet (§11, phase 8).
    *
    * **Deliberately not in the main nav.** §11 is explicit that the archived list

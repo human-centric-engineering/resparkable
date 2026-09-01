@@ -1993,3 +1993,109 @@ export const acceptInviteSchema = z
   .strict();
 
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Groups (Release 9, phase 46)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The three roles a group has.
+ *
+ * `owner` is deliberately absent, and its absence is the schema's contribution
+ * to §23.2: a group space has no owner, because the owner role means "the sole
+ * human who owns this space" and the whole point of a group workspace is that
+ * nobody is. The B12 CHECK enforces it at the space row and
+ * `services/membership.ts` refuses it at the scope; this refuses it at the
+ * boundary, so the value cannot be written in the first place.
+ */
+export const RESPARKABLE_GROUP_ROLES = ['admin', 'member', 'viewer'] as const;
+
+export const groupRoleSchema = z.enum(RESPARKABLE_GROUP_ROLES);
+
+/**
+ * Create a group.
+ *
+ * No `slug` and no `spaceId`. The slug is minted from the name and resolved
+ * against a global unique, so accepting one from the request would mean a 409 on
+ * a collision between strangers; the space is minted by the service, and a
+ * caller-supplied space id on a create route is the shape of every "I own this
+ * now" bug.
+ */
+export const createGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    description: z.string().trim().max(2000).nullable().optional(),
+  })
+  .strict();
+
+export type CreateGroupInput = z.infer<typeof createGroupSchema>;
+
+/**
+ * Amend a group.
+ *
+ * `slug` is absent for the reason `granteeEmail` is absent from
+ * `updateGrantSchema`: re-slugging is not an edit, it is a change of address,
+ * and every link anybody has saved would break with nothing in the row's history
+ * saying so. `spaceId` is absent because a group does not change workspace, and
+ * "one group, one space" is a service rule with no route behind it (§23.14 q6).
+ */
+export const updateGroupSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().max(2000).nullable().optional(),
+    /**
+     * Nothing enforces this until phase 57. The ceiling is here so a value that
+     * would be nonsense when it IS enforced cannot be written in the meantime.
+     */
+    maxMembers: z.number().int().min(1).max(500).optional(),
+  })
+  .strict();
+
+export type UpdateGroupInput = z.infer<typeof updateGroupSchema>;
+
+/** Change one member's role. The last-admin rules are the service's, not this. */
+export const updateGroupMemberSchema = z.object({ role: groupRoleSchema }).strict();
+
+export type UpdateGroupMemberInput = z.infer<typeof updateGroupMemberSchema>;
+
+/**
+ * Invite somebody to a group.
+ *
+ * **`role` cannot be `admin`.** Administration is granted deliberately, to
+ * somebody already in the group, by an admin who can see who they are: it is not
+ * something an email address acquires on acceptance. §23.11 says the same about
+ * a join link's role and for the same reason, and refusing it here means the
+ * rule holds on both routes rather than on the one somebody remembered.
+ *
+ * Reuses `grantExpirySchema` outright: 30 days by default at the boundary, 365
+ * at most, and `never` only as an explicit choice. A second expiry vocabulary
+ * for the same kind of decision is how two share surfaces end up disagreeing
+ * about what "expired" means.
+ */
+export const createGroupInviteSchema = z
+  .object({
+    email: granteeEmailSchema,
+    role: z.enum(['member', 'viewer']).default('member'),
+    expiry: grantExpirySchema,
+  })
+  .strict();
+
+export type CreateGroupInviteInput = z.infer<typeof createGroupInviteSchema>;
+
+/**
+ * Accept a group invite.
+ *
+ * Same token shape as `acceptInviteSchema`, and a deliberately separate schema
+ * because the two tokens mean opposite things. A share invite binds an account
+ * to a grant **that is already live for that address**; this one is the only
+ * thing standing between a stranger and a group's whole brain until it is
+ * accepted. Sharing a schema would invite sharing a code path, and the second of
+ * those is where the difference gets lost.
+ */
+export const acceptGroupInviteSchema = z
+  .object({
+    token: z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not an invite token'),
+  })
+  .strict();
+
+export type AcceptGroupInviteInput = z.infer<typeof acceptGroupInviteSchema>;

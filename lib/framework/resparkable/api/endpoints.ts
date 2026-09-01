@@ -197,6 +197,22 @@ export const RESPARKABLE_API = {
    */
   ACCEPT_INVITE: '/api/v1/resparkable/invites/accept',
 
+  /** Groups (§23.3, phase 46). */
+  GROUPS: '/api/v1/resparkable/groups',
+  group: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}`,
+  groupMembers: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/members`,
+  groupMember: (groupId: string, userId: string): string =>
+    `/api/v1/resparkable/groups/${groupId}/members/${userId}`,
+  groupInvites: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/invites`,
+  groupInvite: (groupId: string, inviteId: string): string =>
+    `/api/v1/resparkable/groups/${groupId}/invites/${inviteId}`,
+  /**
+   * Accepting is NOT under a group id: the caller does not know which group the
+   * token names, and requiring it would mean a route that can say "wrong group"
+   * for a valid token, which is an enumeration surface.
+   */
+  ACCEPT_GROUP_INVITE: '/api/v1/resparkable/groups/invites/accept',
+
   /**
    * Comments — the only write path in the tier a non-owner can reach, and the
    * only thing `role: 'commenter'` means.

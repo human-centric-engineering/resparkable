@@ -34,8 +34,24 @@ release process.
   from its space, not the reverse**, so deleting a group is a single `DELETE` of
   the space row that the existing D1 cascade follows through all 23 satellites.
 
-  Nothing is reachable from the product yet: no routes, no UI, and no service
-  creates a group. Phases 47 and 48 land those. See
+  Phase 46's API surface, on top of that: `GET`/`POST /api/v1/resparkable/groups`,
+  `GET`/`PATCH`/`DELETE /groups/[id]`, `GET /groups/[id]/members`,
+  `PATCH`/`DELETE /groups/[id]/members/[userId]`, `GET`/`POST /groups/[id]/invites`,
+  `DELETE /groups/[id]/invites/[inviteId]` and `POST /groups/invites/accept`, plus
+  a new `resolveGroupSpaceScope()` seam in
+  `lib/framework/resparkable/services/membership.ts` and a `repo/groups.ts` beside
+  it. Group invitations join the existing `resparkable-invite` tier (20/day).
+
+  **`services/membership.ts` is the only place membership may be read on a
+  request path**, and a fork adding a group surface should call it rather than
+  querying the tables. The moment a membership read reaches a list query, a group
+  space has the per-row ACL §23.4 forbids: a join on the hot path of roughly forty
+  endpoints, and every one of them a potential leak.
+
+  Still no group UI beyond the invitation-accept page: the space switcher, the
+  six capture paths and the `/resparkable/groups` section are phase 47's, and
+  erasure succession, the typed delete confirmation and the Art. 15 predicate are
+  phase 48's. See
   [`phase-46-plan.md`](./.context/framework/resparkable/phase-46-plan.md).
 
 - **The Prisma field catches up with the column: `spaceId` everywhere.** The

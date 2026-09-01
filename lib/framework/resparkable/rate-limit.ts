@@ -8,7 +8,7 @@
  * one import and one call. When Resparkable adds a fifth expensive route, hosts get
  * it on upgrade without editing anything.
  *
- * ## Why these ten routes need their own caps at all
+ * ## Why these eleven routes need their own caps at all
  *
  * `/api/v1/**` already inherits 100/min keyed on the session user from
  * `proxy.ts`, and CLAUDE.md is explicit that handlers must not call section
@@ -36,6 +36,8 @@
  *     almost nothing and lands in somebody else's inbox. Its cap is about not
  *     being a spam cannon with the deployment's domain attached, which is why
  *     it is the only daily one.
+ *   - **`/groups/[id]/invites`** is the same odd one out, one release later
+ *     (§23.3), and shares its tier.
  *
  * None of these is a per-second interaction — a person searches a few times a
  * minute and reindexes once a week — so the caps are comfortably above real use
@@ -248,6 +250,23 @@ export function registerResparkableRateLimits(): void {
   // section's 100/min, and only the one verb that sends mail needs a daily cap.
   registerRateLimitRule({
     match: /^\/api\/v1\/resparkable\/grants\/[^/]+\/invite$/,
+    tier: 'resparkable-invite',
+    key: 'session-user',
+  });
+
+  // Group invitations, on the same daily tier and for the same reason: the send
+  // costs this deployment almost nothing and lands in somebody else's inbox.
+  //
+  // Matched on the `/invites` suffix rather than on a `/groups` prefix, exactly
+  // as the rule above is. Creating a group, amending one, listing members and
+  // changing roles are ordinary authenticated writes that belong on the
+  // section's 100/min; only the verb that sends mail needs a daily cap. Note
+  // that `GET /groups/[id]/invites` lands on this tier too, which is a slightly
+  // wider net than needed and is deliberate: narrowing it by method would mean a
+  // second rule for one read that an admin makes a handful of times a day
+  // anyway, and 20/day is far above that.
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/groups\/[^/]+\/invites$/,
     tier: 'resparkable-invite',
     key: 'session-user',
   });
