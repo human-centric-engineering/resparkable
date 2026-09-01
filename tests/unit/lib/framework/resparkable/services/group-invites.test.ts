@@ -50,6 +50,8 @@ import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   acceptGroupInvite,
   issueGroupInvite,
+  listInvitesForAdmin,
+  revokeGroupInvite,
 } from '@/lib/framework/resparkable/services/group-invites';
 import { resolveGroupMembership } from '@/lib/framework/resparkable/services/membership';
 
@@ -113,6 +115,8 @@ beforeEach(() => {
   });
   vi.mocked(sendEmail).mockResolvedValue({ success: true } as never);
   vi.mocked(repo.upsertInvite).mockResolvedValue(invite());
+  vi.mocked(repo.revokeInvite).mockResolvedValue({ count: 1 });
+  vi.mocked(repo.listGroupInvites).mockResolvedValue([]);
 });
 
 describe('issueGroupInvite', () => {
@@ -285,6 +289,104 @@ describe('acceptGroupInvite', () => {
     );
 
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('revokeGroupInvite', () => {
+  it('is admin only', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: { group: group(), role: 'member' },
+      scope: spaceScopeFor({ spaceId: SPACE, actorUserId: 'user_a', role: 'member' }),
+    } as never);
+
+    expect(await revokeGroupInvite('user_a', 'grp_1', 'inv_1', NOW)).toEqual({
+      ok: false,
+      reason: 'not_an_admin',
+    });
+    expect(repo.revokeInvite).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stranger without saying the group exists', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(null);
+
+    expect(await revokeGroupInvite('user_stranger', 'grp_1', 'inv_1', NOW)).toEqual({
+      ok: false,
+      reason: 'not_a_member',
+    });
+  });
+
+  it('scopes the write to the group, so one group cannot revoke another’s invite', async () => {
+    asAdmin();
+
+    await revokeGroupInvite('user_a', 'grp_1', 'inv_1', NOW);
+
+    // The group id is passed through to the write rather than trusted from the
+    // invite row. Without it, an admin of one group holding another group's
+    // invite id could withdraw it.
+    expect(repo.revokeInvite).toHaveBeenCalledWith('grp_1', 'inv_1', NOW);
+  });
+
+  it('answers ok on a second revoke rather than 404ing', async () => {
+    asAdmin();
+    // `revokeInvite` matches on `revokedAt: null`, so a repeat moves nothing.
+    vi.mocked(repo.revokeInvite).mockResolvedValue({ count: 0 });
+
+    // Deliberately unlike revoking a GRANT, which is not idempotent. A grant can
+    // be re-issued, so a silent second success there would be indistinguishable
+    // from revoking one somebody re-made in between. An invitation to one
+    // address is a single row, so there is no such ambiguity.
+    expect(await revokeGroupInvite('user_a', 'grp_1', 'inv_1', NOW)).toEqual({ ok: true });
+  });
+});
+
+describe('listInvitesForAdmin', () => {
+  it('is admin only', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: { group: group(), role: 'viewer' },
+      scope: spaceScopeFor({ spaceId: SPACE, actorUserId: 'user_a', role: 'viewer' }),
+    } as never);
+
+    expect(await listInvitesForAdmin('user_a', 'grp_1')).toEqual({
+      ok: false,
+      reason: 'not_an_admin',
+    });
+    expect(repo.listGroupInvites).not.toHaveBeenCalled();
+  });
+
+  it('never returns the token digest', async () => {
+    asAdmin();
+    vi.mocked(repo.listGroupInvites).mockResolvedValue([invite()] as never);
+
+    const result = await listInvitesForAdmin('user_a', 'grp_1');
+
+    // An allowlisted projection rather than the row. There is no screen that
+    // needs the digest of a live credential, and a row spread would ship it the
+    // day somebody adds a field.
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.invites[0]).not.toHaveProperty('inviteTokenHash');
+      expect(result.invites[0]).not.toHaveProperty('groupId');
+      // The address IS returned, deliberately and unlike the member list: an
+      // admin who cannot see it cannot tell what they invited or withdraw it.
+      expect(result.invites[0]).toMatchObject({ id: 'inv_1', email: 'b@example.com' });
+    }
+  });
+
+  it('returns spent and withdrawn invitations, so an admin sees the whole picture', async () => {
+    asAdmin();
+    vi.mocked(repo.listGroupInvites).mockResolvedValue([
+      invite({ id: 'inv_spent', acceptedAt: NOW }),
+      invite({ id: 'inv_gone', revokedAt: NOW }),
+    ] as never);
+
+    const result = await listInvitesForAdmin('user_a', 'grp_1');
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.invites.map((row) => row.id)).toEqual(['inv_spent', 'inv_gone']);
+      expect(result.invites[0].acceptedAt).toEqual(NOW);
+      expect(result.invites[1].revokedAt).toEqual(NOW);
+    }
   });
 });
 

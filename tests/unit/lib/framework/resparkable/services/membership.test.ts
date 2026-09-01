@@ -305,6 +305,46 @@ describe('the last-admin rules', () => {
   });
 });
 
+describe('pending rows do not trap anybody', () => {
+  it('lets a sole joined admin leave even with a request-to-join beside them', async () => {
+    vi.mocked(repo.findMembership)
+      .mockResolvedValueOnce(membership({ role: 'admin' }))
+      .mockResolvedValueOnce(membership({ role: 'admin' }));
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ role: 'admin' }),
+      membership({ userId: 'user_pending', joinedAt: null }),
+    ] as never);
+
+    const result = await removeMember('user_a', 'grp_1', 'user_a');
+
+    // `countAdmins` excludes pending rows and this count used to include them,
+    // so the sole admin failed the "last member out" short-circuit, fell through
+    // to the last-admin rule, and could never leave their own group. Somebody
+    // asking to come in must not be the reason somebody else is trapped.
+    expect(result).toEqual({ ok: true, value: { groupDeleted: true } });
+    expect(repo.deleteGroupSpace).toHaveBeenCalledWith(SPACE);
+  });
+
+  it('still refuses when the second member has actually joined', async () => {
+    vi.mocked(repo.findMembership)
+      .mockResolvedValueOnce(membership({ role: 'admin' }))
+      .mockResolvedValueOnce(membership({ role: 'admin' }));
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ role: 'admin' }),
+      membership({ userId: 'user_b' }),
+    ] as never);
+    vi.mocked(repo.countAdmins).mockResolvedValue(1);
+
+    // The guard on the fix: the filter must not turn the last-admin rule off for
+    // a group that genuinely has somebody else in it.
+    expect(await removeMember('user_a', 'grp_1', 'user_a')).toEqual({
+      ok: false,
+      reason: 'last_admin',
+    });
+    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
+  });
+});
+
 describe('the last member out', () => {
   it('deletes the space rather than leaving an unreachable group', async () => {
     vi.mocked(repo.findMembership)

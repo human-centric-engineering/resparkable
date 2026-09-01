@@ -31,8 +31,40 @@ describe('URL builders', () => {
       RESPARKABLE_API.documentDownload('doc_1'),
       '/api/v1/resparkable/documents/doc_1/download',
     ],
+    // Groups (phase 46). Two nested ids on the last three, which is where a
+    // builder most easily puts the segments in the wrong order and produces a
+    // 404 nothing type-checks.
+    ['group', RESPARKABLE_API.group('grp_1'), '/api/v1/resparkable/groups/grp_1'],
+    [
+      'groupMembers',
+      RESPARKABLE_API.groupMembers('grp_1'),
+      '/api/v1/resparkable/groups/grp_1/members',
+    ],
+    [
+      'groupMember',
+      RESPARKABLE_API.groupMember('grp_1', 'user_b'),
+      '/api/v1/resparkable/groups/grp_1/members/user_b',
+    ],
+    [
+      'groupInvites',
+      RESPARKABLE_API.groupInvites('grp_1'),
+      '/api/v1/resparkable/groups/grp_1/invites',
+    ],
+    [
+      'groupInvite',
+      RESPARKABLE_API.groupInvite('grp_1', 'inv_1'),
+      '/api/v1/resparkable/groups/grp_1/invites/inv_1',
+    ],
   ])('%s builds the path its route file is mounted at', (_name, actual, expected) => {
     expect(actual).toBe(expected);
+  });
+
+  it('mounts the group-invite accept path outside any group id', () => {
+    // Deliberate, and worth pinning: the caller does not know which group the
+    // token names. A path carrying a group id would mean an endpoint that can
+    // answer "wrong group" for a valid token, which is an enumeration surface.
+    expect(RESPARKABLE_API.ACCEPT_GROUP_INVITE).toBe('/api/v1/resparkable/groups/invites/accept');
+    expect(RESPARKABLE_API.ACCEPT_GROUP_INVITE).not.toMatch(/groups\/[^/]+\/invites\/accept/);
   });
 
   it('interpolates the id rather than appending it', () => {

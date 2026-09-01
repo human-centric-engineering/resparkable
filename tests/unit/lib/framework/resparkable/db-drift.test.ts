@@ -115,6 +115,34 @@ function withCreatedByKeys(rows: Array<{ table_name: string; def: string }>): vo
   queryRaw.mockImplementation(() => Promise.resolve(rows));
 }
 
+/**
+ * Answer B13's query, which reads the two group tables' keys into `"user"`.
+ *
+ * Keyed by constraint name rather than by table, because both group tables
+ * carry an `invitedByUserId` and a table-keyed fake could not tell them apart.
+ */
+function withGroupUserKeys(rows: Array<{ conname: string; def: string }>): void {
+  queryRaw.mockImplementation(() => Promise.resolve(rows));
+}
+
+/** All three of B13's keys, answered as correctly configured. */
+function allGroupUserKeysHealthy(): Array<{ conname: string; def: string }> {
+  return [
+    {
+      conname: 'framework_resparkable_group_member_userId_fkey',
+      def: 'FOREIGN KEY ("userId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE CASCADE',
+    },
+    {
+      conname: 'framework_resparkable_group_member_invitedByUserId_fkey',
+      def: 'FOREIGN KEY ("invitedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+    },
+    {
+      conname: 'framework_resparkable_group_invite_invitedByUserId_fkey',
+      def: 'FOREIGN KEY ("invitedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+    },
+  ];
+}
+
 /** Every satellite B11 expects a key on, answered as correctly configured. */
 function allCreatedByKeysHealthy(): Array<{ table_name: string; def: string }> {
   return CREATED_BY_TABLES.map((table_name) => ({
@@ -389,6 +417,82 @@ describe('B12 — the ownership invariant', () => {
   it('fails when the constraint is missing entirely', async () => {
     withExistingObjects([]);
     await expect(probe('B12').probe()).resolves.toMatchObject({ ok: false });
+  });
+});
+
+describe('B13 — the group tables\u2019 three keys into "user"', () => {
+  it('passes when all three keys carry the action they need', async () => {
+    withGroupUserKeys(allGroupUserKeysHealthy());
+    await expect(probe('B13').probe()).resolves.toMatchObject({ ok: true });
+  });
+
+  it('fails when the membership key is SetNull instead of Cascade', async () => {
+    // The direction that matters most, and the mirror image of B1. B1 keeps a
+    // PERSONAL space reachable by erasure; this keeps a MEMBERSHIP reachable by
+    // it, while the group space it points at deliberately is not (B12). Under
+    // SetNull an erased account leaves rows granting access to a user id that
+    // no longer resolves, and nothing errors.
+    const rows = allGroupUserKeysHealthy();
+    const victim = rows.find((r) => r.conname === 'framework_resparkable_group_member_userId_fkey');
+    if (!victim) throw new Error('fixture no longer covers the membership key');
+    victim.def =
+      'FOREIGN KEY ("userId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL';
+    withGroupUserKeys(rows);
+
+    const result = await probe('B13').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('framework_resparkable_group_member_userId_fkey');
+  });
+
+  it('fails when an inviter key is Cascade instead of SetNull', async () => {
+    // The opposite mistake, and it is data loss rather than a stale grant: under
+    // Cascade, one person closing their account deletes every membership and
+    // invitation they ever issued, taking other people out of groups they are
+    // still working in.
+    const rows = allGroupUserKeysHealthy();
+    const victim = rows.find(
+      (r) => r.conname === 'framework_resparkable_group_invite_invitedByUserId_fkey'
+    );
+    if (!victim) throw new Error('fixture no longer covers the invite inviter key');
+    victim.def =
+      'FOREIGN KEY ("invitedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE CASCADE';
+    withGroupUserKeys(rows);
+
+    const result = await probe('B13').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('framework_resparkable_group_invite_invitedByUserId_fkey');
+  });
+
+  it('fails, and names it, when a key is missing entirely', async () => {
+    withGroupUserKeys(
+      allGroupUserKeysHealthy().filter(
+        (r) => r.conname !== 'framework_resparkable_group_member_userId_fkey'
+      )
+    );
+
+    const result = await probe('B13').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('missing');
+    expect(result.note).toContain('framework_resparkable_group_member_userId_fkey');
+  });
+
+  it('reports both a missing key and a wrong action in one answer', async () => {
+    // The check output has to stay readable at three near-identical lines, which
+    // is why this is one probe rather than three registrations. Reporting only
+    // the first fault would send somebody round the loop twice.
+    const rows = allGroupUserKeysHealthy().filter(
+      (r) => r.conname !== 'framework_resparkable_group_invite_invitedByUserId_fkey'
+    );
+    const victim = rows.find((r) => r.conname === 'framework_resparkable_group_member_userId_fkey');
+    if (!victim) throw new Error('fixture no longer covers the membership key');
+    victim.def =
+      'FOREIGN KEY ("userId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL';
+    withGroupUserKeys(rows);
+
+    const result = await probe('B13').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('missing');
+    expect(result.note).toContain('wrong action');
   });
 });
 
