@@ -96,6 +96,19 @@ const OTHER = 'user_b';
 /**
  * Every exported repo call that touches a scoped table, with the arguments it
  * needs. Add a repo function → add a line here, or the sweep won't see it.
+ *
+ * **Two repo files are deliberately absent, and neither is an oversight.**
+ * `repo/space.ts` and `repo/groups.ts` are where a scope COMES FROM, so their
+ * functions take a verified user id rather than a `SpaceScope` and there is no
+ * scope for this sweep to assert on. They are the only two exceptions to the D5
+ * signature rule, both say so in their own headers, and both are short enough to
+ * audit at a glance. Anything else missing from this table is a bug.
+ *
+ * `repo/groups.ts` is the one to watch. It is the only file in the tier that
+ * puts an actor's user id in a `where`, which is exactly what the second sweep
+ * below forbids everywhere else, and the difference is that it reads the
+ * membership relation rather than brain content. The moment it reads a task, a
+ * group space has the per-row ACL §23.4 forbids.
  */
 const SCOPED_CALLS: Array<[string, () => Promise<unknown>]> = [
   ['tasks.listTasks', () => tasks.listTasks(SCOPE)],
