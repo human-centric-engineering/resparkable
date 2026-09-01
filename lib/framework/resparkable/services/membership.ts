@@ -320,7 +320,13 @@ export async function removeMember(
   const target = await findMembership(targetUserId, groupId);
   if (!target) return { ok: false, reason: 'no_such_member' };
 
-  const members = await listGroupMembers(groupId);
+  // Joined members only, matching `countAdmins`, which excludes pending rows on
+  // purpose. Counting them here and not there was an inconsistency with a real
+  // consequence: a sole admin sitting beside one request-to-join failed the
+  // "last member out" short-circuit, fell through to the last-admin rule, and
+  // could never leave their own group. A pending row is somebody asking to come
+  // in, and it cannot be the reason somebody else is trapped.
+  const members = (await listGroupMembers(groupId)).filter((member) => member.joinedAt !== null);
   const lastMember = members.length <= 1;
 
   if (!lastMember && target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
@@ -380,8 +386,20 @@ export async function deleteGroup(
  * members. The caller deletes the group in that case, for `removeMember`'s
  * reason: a memberless group space is unreachable by anything.
  *
- * Phase 48 wires this into the erasure hook. It is here from the start so the
- * rule and its tests exist before the hook that depends on them.
+ * ## Not wired yet, and what that means today
+ *
+ * **Phase 48 wires this into the erasure hook. Until then it has no callers**,
+ * so erasing a group's only admin currently leaves that group adminless: nobody
+ * can invite, change a role, or delete it. That is deferred scope rather than a
+ * defect, and it is stated here because a reviewer finding an exported,
+ * unit-tested function with no call sites should be able to tell those apart.
+ *
+ * **It takes no actor and performs no authorization**, deliberately: erasure
+ * cannot be refused, so there is no principal to check. That makes it unsafe to
+ * call from anywhere else. It promotes an arbitrary member to admin from a bare
+ * group id, and the only caller it may ever have is the erasure hook.
+ *
+ * @internal Erasure-hook use only. Never call this from a request path.
  */
 export async function transferAdminAfterErasure(
   groupId: string,

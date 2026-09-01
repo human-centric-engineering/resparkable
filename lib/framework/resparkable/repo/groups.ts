@@ -301,9 +301,19 @@ export async function listGroupInvites(groupId: string): Promise<ResparkableGrou
  * An upsert, for the reason `upsertGrant` is one: re-inviting somebody is
  * amending the invitation, not adding a second beside it, and
  * `@@unique([groupId, email])` makes the alternative a 409 the UI would have to
- * explain. Re-issuing mints a fresh token and clears `revokedAt`, which is what
- * "invite them again" means; it never clears `acceptedAt`, because an accepted
- * invitation is spent and a spent one must not become live again.
+ * explain.
+ *
+ * **Re-issuing clears `acceptedAt` as well as `revokedAt`**, and the first
+ * version of this deliberately did not, on the reasoning that a spent invitation
+ * must not become live again. That reasoning was right about the invitation and
+ * wrong about the row: the row is the deployment's single record of "this
+ * address, this group", so leaving `acceptedAt` set meant somebody who had
+ * joined, left, and been invited back could never accept, and the failure
+ * surfaced as an unexplained "this invitation is not available".
+ *
+ * The invariant it was protecting is held by the token instead, and held better:
+ * the update overwrites `inviteTokenHash`, so the previously spent token now
+ * resolves to no row at all. An old link cannot be replayed; a new one works.
  */
 export async function upsertInvite(data: {
   groupId: string;
@@ -317,7 +327,9 @@ export async function upsertInvite(data: {
   return prisma.resparkableGroupInvite.upsert({
     where: { groupId_email: { groupId, email } },
     create: { groupId, email, ...rest },
-    update: { ...rest, revokedAt: null },
+    // `rest` carries the fresh `inviteTokenHash`, which is what makes clearing
+    // both timestamps safe. See the docblock.
+    update: { ...rest, revokedAt: null, acceptedAt: null },
   });
 }
 
@@ -363,6 +375,21 @@ export async function revokeInvite(
   });
 }
 
+/** What acceptance did, so the caller does not have to infer it from clocks. */
+export interface AcceptOutcome {
+  member: ResparkableGroupMember;
+  /**
+   * False when the person was already a joined member of this group.
+   *
+   * Reported rather than derived. The first version of this compared the row's
+   * `createdAt` against a timestamp taken in the application, which works only
+   * as long as the database clock trails the application's by less than the
+   * request takes: under the opposite skew somebody who had just joined was told
+   * they were already a member.
+   */
+  joinedNow: boolean;
+}
+
 /**
  * Accept an invitation: mark it spent and create the membership, atomically.
  *
@@ -375,12 +402,32 @@ export async function revokeInvite(
  * unknown token rather than as a race, for the reason every failure on this path
  * gives one answer: anything distinguishable turns the accept page into an
  * oracle about which invitations once existed.
+ *
+ * ## The three states of the membership row, and why this is not an upsert
+ *
+ * An upsert has two branches and there are three cases, which is exactly how the
+ * third one got lost:
+ *
+ *   • **No row.** Create it, joined now.
+ *   • **A joined row.** Somebody already in, on a second invitation. Nothing
+ *     moves, because accepting a stale link must not change a role: an admin
+ *     would be quietly demoted to whatever the invitation said.
+ *   • **A PENDING row** (`joinedAt: null`), which is §23.11's request-to-join
+ *     waiting on an admin. `update: {}` left it pending, so the invitation was
+ *     marked spent, the caller was told they had joined, and the person still
+ *     resolved to no scope at all with no second invitation issuable. Admitting
+ *     them is the whole point of an invitation, so `joinedAt` is stamped.
+ *
+ * Phase 46 creates no pending rows, so today only the first two arise. Phase 57
+ * creates them, and the design note for this branch said the resolver should be
+ * written so that phase adds a predicate rather than a branch. The same applies
+ * here: it is a bug now and an exploitable one later.
  */
 export async function acceptInviteAndJoin(
   invite: { id: string; groupId: string; role: string; invitedByUserId: string | null },
   userId: string,
   now: Date
-): Promise<ResparkableGroupMember | null> {
+): Promise<AcceptOutcome | null> {
   return prisma.$transaction(async (tx) => {
     const spent = await tx.resparkableGroupInvite.updateMany({
       where: { id: invite.id, acceptedAt: null, revokedAt: null },
@@ -388,19 +435,39 @@ export async function acceptInviteAndJoin(
     });
     if (spent.count === 0) return null;
 
-    return tx.resparkableGroupMember.upsert({
+    const existing = await tx.resparkableGroupMember.findUnique({
       where: { groupId_userId: { groupId: invite.groupId, userId } },
-      create: {
-        groupId: invite.groupId,
-        userId,
-        role: invite.role,
-        invitedByUserId: invite.invitedByUserId,
-        joinedAt: now,
-      },
-      // Already in, on a second invitation. Nothing moves: see `upsertMember`
-      // for why accepting a stale invitation must not change a role.
-      update: {},
     });
+
+    if (!existing) {
+      return {
+        member: await tx.resparkableGroupMember.create({
+          data: {
+            groupId: invite.groupId,
+            userId,
+            role: invite.role,
+            invitedByUserId: invite.invitedByUserId,
+            joinedAt: now,
+          },
+        }),
+        joinedNow: true,
+      };
+    }
+
+    if (existing.joinedAt === null) {
+      // Pending, and this invitation is what admits them. `role` still does not
+      // move: the pending row carries whatever role the request-to-join was
+      // filed under, and an invitation is not the place to change it.
+      return {
+        member: await tx.resparkableGroupMember.update({
+          where: { groupId_userId: { groupId: invite.groupId, userId } },
+          data: { joinedAt: now },
+        }),
+        joinedNow: true,
+      };
+    }
+
+    return { member: existing, joinedNow: false };
   });
 }
 

@@ -85,8 +85,18 @@ function resolveExpiry(expiry: CreateGroupInviteInput['expiry'], now: Date): Dat
   return new Date(now.getTime() + expiry.days * 24 * 60 * 60 * 1000);
 }
 
-/** Why an invitation was not issued. Every one is a refusal the UI can explain. */
-export type InviteRefusal = MembershipRefusal | 'already_a_member';
+/**
+ * Why an invitation was not issued. Every one is a refusal the UI can explain.
+ *
+ * This carried an `'already_a_member'` member that nothing ever returned. It was
+ * not harmless: the route's `refuse()` maps everything that is not
+ * `not_a_member` to a 403, so the day somebody implemented it, re-inviting an
+ * existing member would have answered "only an admin can invite people" to an
+ * admin. Re-inviting somebody already in is currently allowed and lands them on
+ * "you are already in this group" when they accept, which is a truthful answer;
+ * making it a refusal instead is a product decision, not a type.
+ */
+export type InviteRefusal = MembershipRefusal;
 
 export type IssueInviteResult =
   { ok: true; inviteId: string; sent: boolean } | { ok: false; reason: InviteRefusal };
@@ -273,7 +283,7 @@ export async function acceptGroupInvite(
     return { ok: false, reason: 'wrong_account', expectedEmail: maskEmail(invite.email) };
   }
 
-  const member = await acceptInviteAndJoin(
+  const outcome = await acceptInviteAndJoin(
     {
       id: invite.id,
       groupId: invite.groupId,
@@ -285,7 +295,7 @@ export async function acceptGroupInvite(
   );
   // Lost the compare-and-set: revoked, or spent by a parallel request between
   // the lookup and the write. Same answer as an unknown token.
-  if (!member) return { ok: false, reason: 'unknown' };
+  if (!outcome) return { ok: false, reason: 'unknown' };
 
   logger.info('Resparkable group invite accepted', { groupId: invite.groupId });
 
@@ -294,9 +304,11 @@ export async function acceptGroupInvite(
     groupId: invite.groupId,
     groupName: invite.group.name,
     spaceId: invite.group.spaceId,
-    // True when the row was already there: a second invitation to somebody
-    // already in. The page says "you are already in this group" rather than
-    // pretending something happened.
-    alreadyMember: member.joinedAt !== null && member.createdAt < now,
+    // Reported by the write rather than inferred from timestamps. This compared
+    // the row's `createdAt` against an application-side `now`, which is only
+    // correct while the database clock trails the application's by less than the
+    // request takes; under the opposite skew somebody who had just joined was
+    // told they were already a member.
+    alreadyMember: !outcome.joinedNow,
   };
 }
