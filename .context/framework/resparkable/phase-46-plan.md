@@ -95,13 +95,14 @@ keep the columns it gives them.
 relationship rather than the brain". That is right about D1 and needs stating
 precisely, because the group row does have a foreign key to a space.
 
-| Edge                                              | Action    | What it means                                        |
-| ------------------------------------------------- | --------- | ---------------------------------------------------- |
-| `ResparkableGroup.spaceId` → space                | `Cascade` | Deleting the space removes the group row             |
-| `ResparkableGroupMember.groupId` → group          | `Cascade` | Deleting the group removes its memberships           |
-| `ResparkableGroupMember.userId` → `User`          | `Cascade` | Hand-written, probe B13. Erasure removes memberships |
-| `ResparkableGroupInvite.groupId` → group          | `Cascade` | Deleting the group removes its outstanding invites   |
-| `ResparkableGroupInvite.invitedByUserId` → `User` | `SetNull` | Hand-written, folded into B13's parameterised sweep  |
+| Edge                                              | Action    | What it means                                           |
+| ------------------------------------------------- | --------- | ------------------------------------------------------- |
+| `ResparkableGroup.spaceId` → space                | `Cascade` | Deleting the space removes the group row                |
+| `ResparkableGroupMember.groupId` → group          | `Cascade` | Deleting the group removes its memberships              |
+| `ResparkableGroupMember.userId` → `User`          | `Cascade` | Hand-written, probe B13. Erasure removes memberships    |
+| `ResparkableGroupMember.invitedByUserId` → `User` | `SetNull` | Hand-written, B13. The inviter leaving keeps the member |
+| `ResparkableGroupInvite.groupId` → group          | `Cascade` | Deleting the group removes its outstanding invites      |
+| `ResparkableGroupInvite.invitedByUserId` → `User` | `SetNull` | Hand-written, folded into B13's parameterised sweep     |
 
 "Outside D1" means the three tables are **not scoped satellites**: they carry no
 partition key, `spaceWhere()` never touches them, they have no
@@ -257,11 +258,17 @@ three fail the build until they are listed.
 
 ### Decision 9: one new drift probe, parameterised like B11
 
-**B13** covers the two hand-written `User` foreign keys these tables need:
-`ResparkableGroupMember.userId` (`Cascade`) and
-`ResparkableGroupInvite.invitedByUserId` (`SetNull`). One probe over a table of
-`(table, column, action)` rather than two registrations, following B11's
+**B13** covers the three hand-written `User` foreign keys these tables need:
+`ResparkableGroupMember.userId` (`Cascade`), and `invitedByUserId` on both the
+member and the invite (`SetNull`). One probe over a table of
+`(table, constraint, action)` rather than three registrations, following B11's
 precedent and for its stated reason: the check output has to stay readable.
+
+The two actions are the design rather than a detail. A member's row **is** their
+membership, so erasure takes it. An inviter's name on somebody else's invitation
+is attribution, so it nulls out and the invitation stands: an inviter closing
+their account must not silently withdraw an invitation the invitee is about to
+accept.
 
 Both are hand-written for the reason B1, B8, B9 and B11 are: `User` lives in a
 Sunrise-owned schema file and Resparkable must not add a relation field to it.
@@ -450,13 +457,17 @@ list endpoint, by scope resolution and not by filtering.
 
 ## Commit order
 
-| #   | Commit                                                                                                                               | Why it is green                                             |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
-| 1   | This design doc                                                                                                                      | text only                                                   |
-| 2   | Schema: three models, the migration, B13, the model graph regenerated                                                                | additive; `db:drift-check` green, no existing table touched |
-| 3   | `repo/groups.ts` and `services/membership.ts`: resolution, last-admin rules, create/leave/delete                                     | pure TS behind no route                                     |
-| 4   | The five route files, validations, the invite flow, the rate-limit rule                                                              | new surfaces, nothing existing changes                      |
-| 5   | Privacy: the cross-subject collector, the tier guard's third category, the core test's fork block, `transfer/policy.ts` dispositions | three guards go red without it and green with it            |
-| 6   | Phase 47: switcher, per-space tab state, the six capture paths, context and capability space-keying, section wiring                  | the largest diff, and the one with no schema in it          |
-| 7   | Phase 48: erasure hook and succession, deletion confirmation and notification, the Art. 15 predicate and its `scopeNote`             | closes tests 13b to 13e                                     |
-| 8   | Docs: `plan.md` §15 rows 46 to 48, `install.md`, `sharing.md`'s sibling section, `CHANGELOG.md`                                      | text only                                                   |
+Three guards go red the moment the schema lands and green only when the manifest,
+the tier's own coverage test and `transfer/policy.ts` all name the new tables. So
+they ship **in** the schema commit rather than three commits later: a commit that
+leaves the suite red is a commit nobody can bisect through.
+
+| #   | Commit                                                                                                                       | Why it is green                                                                    |
+| --- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1   | This design doc                                                                                                              | text only                                                                          |
+| 2   | Schema: three models, the migration, B13, the model graph, and the privacy and transfer registrations that go red without it | additive; `db:drift-check` green, the whole suite green, no existing table touched |
+| 3   | `repo/groups.ts` and `services/membership.ts`: resolution, last-admin rules, create/leave/delete                             | pure TS behind no route                                                            |
+| 4   | The five route files, validations, the invite flow, the rate-limit rule                                                      | new surfaces, nothing existing changes                                             |
+| 5   | Phase 47: switcher, per-space tab state, the six capture paths, context and capability space-keying, section wiring          | the largest diff, and the one with no schema in it                                 |
+| 6   | Phase 48: erasure hook and succession, deletion confirmation and notification, the Art. 15 predicate and its `scopeNote`     | closes tests 13b to 13e                                                            |
+| 7   | Docs: `plan.md` §15 rows 46 to 48, `install.md`, `sharing.md`'s sibling section, `CHANGELOG.md`                              | text only                                                                          |

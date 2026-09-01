@@ -35,8 +35,9 @@
 // B1 (the GDPR-cascade FK, on `ownerUserId` since phase 45), B1b and B3 and B7
 // (objects that must NOT exist), B2 (the halfvec column), B4/B6 (GENERATED
 // tsvector columns), B5 (the GIN index over B4), B8/B9 (grantee and comment
-// author cascades), B10 (the one-default-per-owner partial unique) and B11
-// (23 `createdByUserId` keys in one probe).
+// author cascades), B10 (the one-default-per-owner partial unique), B11
+// (23 `createdByUserId` keys in one probe) and B13 (the group tables' three
+// keys into `User`, phase 46).
 //
 // Two of them guard live code rather than a future restructuring, and are worth
 // naming: B4/B6, the GENERATED tsvector columns, are never populated if
@@ -195,6 +196,15 @@ model ResparkableSpace {
   /// ago" and does not force every kind onto one shared rotation. Keeping both
   /// would have left two answers to "when was this brain last worked on".
   jobs ResparkableJob[]
+
+  /// Phase 46: the group that owns this space, if one does.
+  ///
+  /// A list rather than an optional single, because `spaceId` is deliberately
+  /// not unique on `ResparkableGroup` (§24.1) and Prisma types the
+  /// back-relation off that. "One group, one space" is a service rule, so every
+  /// personal space has an empty list here and every group space has exactly
+  /// one entry.
+  groups ResparkableGroup[]
 
   @@index([ownerUserId])
   @@map("framework_resparkable_space")
@@ -1831,4 +1841,187 @@ model ResparkableComment {
   /// The erasure read, and the author's own "what have I written?" export.
   @@index([authorUserId])
   @@map("framework_resparkable_comment")
+}
+
+/// A group: a principal that owns a workspace, the way a person does (§23).
+///
+/// **This is the one thing in the plan that owns rows without being a person.**
+/// §23.1 separates it from the two other multi-person features deliberately: a
+/// grant lets somebody read one item, a circle is an audience a facet is cast
+/// to, and neither owns anything. A group owns the whole brain, and every
+/// consequence below follows from that.
+///
+/// The group and its space are two rows because they answer two questions. The
+/// space is the partition key every satellite hangs off (D1); the group is who
+/// may mint a scope on it. Merging them would put membership on the hot path of
+/// every list query, which is the per-row ACL §23.4 exists to forbid.
+///
+/// **Not a scoped satellite.** It carries no `createdByUserId`, `spaceWhere()`
+/// never touches it, and no function in `repo/**` reads it with a `SpaceScope`.
+/// It does hang off its space with `onDelete: Cascade`, and the direction is the
+/// point: deleting the space removes the group, never the reverse, so deleting a
+/// group is a single `DELETE` of the space row that the existing D1 cascade then
+/// follows through all 23 satellites. See
+/// `.context/framework/resparkable/phase-46-plan.md` decision 2.
+model ResparkableGroup {
+  id String @id @default(cuid())
+
+  name        String  @db.VarChar(120)
+  /// URL segment. Globally unique, because a group is addressable by name and
+  /// two groups called "Study Group B" in one deployment would make a link
+  /// ambiguous. Minted from `name` by `services/slug.ts`.
+  slug        String  @unique @db.VarChar(64)
+  description String? @db.Text
+
+  /// The workspace this group owns, keyed on `ResparkableSpace.spaceId`.
+  ///
+  /// **Deliberately NOT `@unique`**, for the same reason `ownerUserId` is not
+  /// (§24.1): the constraint that forbids a second workspace is the one that
+  /// would need the migration over 23 tables to remove. "One group, one space"
+  /// is a service rule in `services/membership.ts` until §23.14 q6 is answered,
+  /// and there is no route by which a group acquires a second one.
+  spaceId String
+
+  /// The member cap (§23.11). **Nothing enforces it in phase 46**: the column
+  /// lands here because adding it later means a second migration on this table
+  /// for one integer, and phase 57 is what reads it when there is a join link
+  /// to cap.
+  maxMembers Int @default(50)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  space   ResparkableSpace         @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
+  members ResparkableGroupMember[]
+  invites ResparkableGroupInvite[]
+
+  /// "Which group owns this space?", the read every scope resolution makes.
+  @@index([spaceId])
+  @@map("framework_resparkable_group")
+}
+
+/// One person's membership of one group, and the only thing a group scope is
+/// minted from (§23.3).
+///
+/// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+/// `framework_resparkable_group_member_userId_fkey` (→ `"user"("id")`
+/// ON DELETE **Cascade**) is hand-written in the migration, for the reason B1,
+/// B8, B9 and B11 are: `User` lives in a Sunrise-owned schema file and
+/// Resparkable must not add a relation field there. Probe B13 asserts its
+/// existence AND its ON DELETE action.
+///
+/// Cascade rather than SetNull, and the asymmetry with `createdByUserId` is
+/// deliberate: **losing your account removes your memberships, not the groups**
+/// (§23.3). A membership with a null member is a row that grants access to
+/// nobody and cannot be cleaned up, and the content that person wrote stays,
+/// because that content is the group's.
+model ResparkableGroupMember {
+  id      String @id @default(cuid())
+  groupId String
+
+  /// The member. See the drift warning above: hand-written FK, ON DELETE Cascade.
+  userId String
+
+  /// admin | member | viewer. Three of `SpaceRole`'s four values; `owner` never
+  /// appears on a group space (§23.2), which is what keeps the personal cascade
+  /// away from a shared workspace.
+  ///
+  /// Admin can invite, remove, change roles, configure the space and delete the
+  /// group; member reads and writes brain content; viewer reads, and spends
+  /// nothing when the budget lands in phase 50.
+  role String @default("member") @db.VarChar(16)
+
+  /// Who invited them. Nullable and `SetNull` on erasure (covered by B13): the
+  /// inviter closing their account must not remove somebody else's membership.
+  invitedByUserId String?
+
+  /// **Null means pending approval, not "joined at an unknown time"** (§23.11).
+  /// A pending row resolves to no scope at all, which is what phase 57's
+  /// request-to-join flow writes. In phase 46 every row is written with a value,
+  /// because the only route in is accepting an invite.
+  joinedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group ResparkableGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// One membership per person per group. Re-inviting somebody who is already in
+  /// is an update, not a second row: two live memberships with different roles
+  /// would make "what can Priya do here" a question with two answers.
+  @@unique([groupId, userId])
+  /// The scope resolution read: "which groups is this actor in?", which the
+  /// switcher and every group request path make.
+  @@index([userId])
+  @@map("framework_resparkable_group_member")
+}
+
+/// An invitation to join a group, addressed to an email address.
+///
+/// ## Why this is a table and a grant invite is a column
+///
+/// §23.3 specifies two tables and this is a third. The reason is a semantic
+/// difference from §13 that only appears when you try to fold it in.
+///
+/// A **grant** is live the moment it is written: `granteeClauses` matches on the
+/// lower-cased address, so the invitee can already read the item, and the token
+/// only binds an account to a relationship that works. All three fields belong
+/// on one row because they describe one live thing.
+///
+/// A **group invite grants nothing until accepted**, because membership is write
+/// access to an entire brain rather than read access to one project. Folding it
+/// into `ResparkableGroupMember` would need `userId` to be nullable, which
+/// silently voids `@@unique([groupId, userId])`: NULLs do not collide in a
+/// Postgres unique index, so one address could be invited five times and the
+/// database would not object.
+///
+/// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+/// `framework_resparkable_group_invite_invitedByUserId_fkey` (→ `"user"("id")`
+/// ON DELETE **SetNull**) is hand-written. Probe B13 covers it alongside the
+/// membership key.
+model ResparkableGroupInvite {
+  id      String @id @default(cuid())
+  groupId String
+
+  /// Lower-cased at the boundary, matching `ResparkableGrant.granteeEmail`. The
+  /// address the invite was issued to, which is what makes it addressable and
+  /// revocable before anybody accepts.
+  email String @db.VarChar(320)
+
+  /// The role the invitee gets on acceptance. Never `admin` from a route that
+  /// is not an admin's, and never `owner` at all.
+  role String @default("member") @db.VarChar(16)
+
+  /// Who sent it. See the drift warning above: hand-written FK, ON DELETE SetNull.
+  invitedByUserId String?
+
+  /// sha256 of the invite token, minted as `randomBytes(24).toString('base64url')`:
+  /// 192 bits, and deliberately not a cuid, which is timestamp-prefixed and
+  /// monotonic, precisely the wrong shape for a value whose defence is
+  /// unguessability.
+  ///
+  /// Unlike a grant invite, **this token IS the only thing standing between a
+  /// stranger and a group's whole brain until it is accepted**. Accepting still
+  /// requires being signed in as the address the invite names, so a forwarded
+  /// email is useless, and the digest is what keeps a database dump from being
+  /// a set of live credentials.
+  inviteTokenHash String @unique
+
+  /// Defaults to 30 days at the boundary, max 365, the same window
+  /// `grantExpirySchema` enforces. Read through `isShareActive`.
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  acceptedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group ResparkableGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// One outstanding invite per address per group, for the reason the membership
+  /// unique exists: two live invites with different roles have two answers.
+  @@unique([groupId, email])
+  /// The invitee's read: "what am I invited to?", by address.
+  @@index([email])
+  @@map("framework_resparkable_group_invite")
 }

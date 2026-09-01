@@ -296,6 +296,11 @@ export const RESPARKABLE_EXCLUDED_MODELS: ResparkableExcludedModel[] = [
     reason:
       'Numeric vectors and the text chunks they were built from, derived from thoughts, tasks, notes, documents and reviews that are already exported in full above. They carry no information those sections do not, and the vector columns are `Unsupported` in Prisma so they cannot be serialised anyway. Core excludes `AiMessageEmbedding` on identical grounds.',
   },
+  {
+    model: 'ResparkableGroup',
+    reason:
+      'A group’s name, slug, description and member cap. It carries a `spaceId`, which is why this scan asks about it, but it is not the space’s content: it is the principal that owns the space, and it belongs to every member rather than to any one of them. The subject’s own relationship to it IS exported, by name and role, through the cross-subject collector in `access/subject-export.ts`, which is where a table keyed on a person rather than on a space is answered. Exporting the row itself would put a shared object in one member’s bundle and say nothing about them that the membership record does not.',
+  },
 ];
 
 /** Every section name in the bundle, for the completeness guard and the docs. */

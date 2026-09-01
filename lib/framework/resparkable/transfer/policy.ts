@@ -745,6 +745,45 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'there is no user id on it — so importing it would overwrite another ' +
         'operator’s policy with this one’s.',
     },
+    {
+      model: 'ResparkableGroup',
+      owner: 'framework:resparkable',
+      reason:
+        'A group and the workspace it owns. §23.6 is explicit: a group space ' +
+        'is NOT transferable with an account, because taking your account ' +
+        'elsewhere does not take a shared workspace with you. It is not yours ' +
+        'to move: the other members are still working in it, and their content ' +
+        'would travel with it. The group space is unreachable from this policy ' +
+        'anyway, by construction rather than by this entry: every brain table ' +
+        'is rewritten through `ownerColumn: spaceId`, and an export is built ' +
+        'from the departing account’s OWN space key, which no group row ' +
+        'points at. This entry is here so the omission reads as a decision.',
+    },
+    {
+      model: 'ResparkableGroupMember',
+      owner: 'framework:resparkable',
+      reason:
+        'Somebody’s membership of a group on THIS installation. It is a ' +
+        'fact about a relationship between a person and other people, not a ' +
+        'possession, and it is meaningless on the far side: the group it names ' +
+        'does not exist there, and importing the row would be an assertion ' +
+        'about other people’s group that nothing on the receiving ' +
+        'installation can check. The subject’s memberships are still ' +
+        'EXPORTED, through `access/subject-export.ts`, because Art. 15 asks ' +
+        'what is held about them; export and transfer are different questions ' +
+        'and this is a table where the answers differ.',
+    },
+    {
+      model: 'ResparkableGroupInvite',
+      owner: 'framework:resparkable',
+      reason:
+        'An outstanding invitation to a group on this installation, addressed ' +
+        'by email and carrying a token digest. Not transferable for the ' +
+        'membership row’s reason and one more: the digest is a live ' +
+        'credential for a group the far side has never heard of, and an import ' +
+        'that re-created it would mint an invitation nobody sent. Exported ' +
+        'through the same cross-subject collector, minus the digest.',
+    },
   ],
 
   crossBoundaryEdges: [

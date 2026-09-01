@@ -36,6 +36,29 @@
  *
  * **Not the invite digest.** It is the digest of a credential and it tells the
  * subject nothing `acceptedAt` beside it does not.
+ *
+ * ## Phase 46 added a third question, and it is the same shape
+ *
+ * **Which groups is this person in, and what have they been invited to?**
+ * `ResparkableGroupMember` and `ResparkableGroupInvite` carry no space key at
+ * all, so the owner-scoped manifest cannot reach them by construction, exactly
+ * as it could not reach a grant addressed to the subject. They are keyed on a
+ * user id and a lower-cased address, which is the pair this file already
+ * matches on.
+ *
+ * The release plan put these in `lib/privacy/export-sources.ts` instead. That
+ * file is core-owned, and every Resparkable table is listed in its guard's
+ * `HANDLED_OUTSIDE_MANIFEST` under sunrise#533 precisely because this tier
+ * exports through the `lib/app/data-export.ts` seam and carries its own
+ * completeness guard. Moving two rows into the core manifest would reverse that
+ * arrangement for two tables and leave the other 24 where they are.
+ *
+ * What the subject gets, and what they do not: the groups they belong to, by
+ * name, with their role and when they joined; invitations addressed to them,
+ * accepted or not; and invitations they sent, by group and date. **Not the
+ * group's content.** That is the group's, it sits behind a live membership, and
+ * the same reasoning applies as for a grant: an export bundle is a file that
+ * gets emailed around.
  */
 
 import { prisma } from '@/lib/db/client';
@@ -70,12 +93,73 @@ export interface AuthoredCommentRecord {
   createdAt: Date;
 }
 
+/** One group the subject belongs to. */
+export interface GroupMembershipRecord {
+  groupId: string;
+  /**
+   * The group's name, and deliberately not its space id.
+   *
+   * The name is the only way the record means anything to the person reading
+   * it: "you are an admin of Study Group B" is checkable, "you are an admin of
+   * cm3x9…" is not. The space key is the partition key of other people's
+   * content and belongs nowhere near an export bundle.
+   */
+  groupName: string;
+  role: string;
+  /** Null while a request to join is still pending approval (§23.11). */
+  joinedAt: Date | null;
+  invitedAt: Date;
+}
+
+/** One invitation, either addressed to the subject or sent by them. */
+export interface GroupInviteRecord {
+  groupId: string;
+  groupName: string;
+  /**
+   * `received` when the invite is addressed to the subject, `sent` when they
+   * issued it. Both are the subject's personal data and they are different
+   * facts about them, so collapsing them into one list would answer neither
+   * question honestly.
+   */
+  direction: 'received' | 'sent';
+  role: string;
+  invitedAt: Date;
+  acceptedAt: Date | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+}
+
 export interface ResparkableCrossSubjectData {
   /** Grants addressed to this person, by anybody. */
   sharedWithMe: SharedWithMeRecord[];
   /** Comments this person wrote, wherever they wrote them. */
   commentsIWrote: AuthoredCommentRecord[];
+  /** Groups this person belongs to, pending memberships included. */
+  groupMemberships: GroupMembershipRecord[];
+  /** Group invitations addressed to them, and ones they sent. */
+  groupInvites: GroupInviteRecord[];
 }
+
+/**
+ * The tier's models whose subject data is answered HERE rather than by the
+ * owner-scoped manifest, because they carry no space key.
+ *
+ * Read by `tests/unit/lib/framework/resparkable/privacy/subject-export.test.ts`,
+ * which scans the schema for models holding a user id and NO `spaceId`. Those
+ * are exactly the tables `repo/subject-export.ts` cannot reach, and before this
+ * set existed they were the tier guard's blind spot: it scanned for `spaceId`,
+ * so a table keyed on a person alone was invisible to it and would have been
+ * omitted from an export in silence.
+ *
+ * `ResparkableGrant` and `ResparkableComment` are NOT here, even though this
+ * file reads both. They carry a `spaceId` (the owner's), so the owner-scoped
+ * manifest already claims them and the guard already sees them; what this file
+ * adds for those two is the other direction, not the only coverage.
+ */
+export const RESPARKABLE_CROSS_SUBJECT_MODELS = [
+  'ResparkableGroupMember',
+  'ResparkableGroupInvite',
+] as const;
 
 /**
  * Everything about this subject that lives on somebody else's rows.
@@ -102,10 +186,12 @@ export async function collectResparkableCrossSubjectData(
   // every grant in the installation, which is the one failure mode here worth
   // spending a branch on.
   if (clauses.length === 0 || !viewer.userId) {
-    return { sharedWithMe: [], commentsIWrote: [] };
+    return { sharedWithMe: [], commentsIWrote: [], groupMemberships: [], groupInvites: [] };
   }
+  const actorUserId = viewer.userId;
+  const address = viewer.email?.toLowerCase() ?? null;
 
-  const [grants, comments] = await Promise.all([
+  const [grants, comments, memberships, invites] = await Promise.all([
     prisma.resparkableGrant.findMany({
       where: { OR: clauses },
       select: {
@@ -132,6 +218,42 @@ export async function collectResparkableCrossSubjectData(
       },
       orderBy: { createdAt: 'asc' },
     }),
+    // Pending memberships included. A request to join that is still waiting on
+    // an admin is a fact about this person that they may well want to see, and
+    // filtering it out here would make the export disagree with the product.
+    prisma.resparkableGroupMember.findMany({
+      where: { userId: actorUserId },
+      select: {
+        groupId: true,
+        role: true,
+        joinedAt: true,
+        createdAt: true,
+        group: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
+    // Both directions in one read. Revoked and expired invitations are kept,
+    // for the reason the grant query keeps withdrawn shares: this is a record of
+    // what was done with the subject's personal data, and "you were invited to
+    // that group in March and it was withdrawn in April" is exactly what a
+    // subject-access request is for.
+    prisma.resparkableGroupInvite.findMany({
+      where: {
+        OR: [...(address ? [{ email: address }] : []), { invitedByUserId: actorUserId }],
+      },
+      select: {
+        groupId: true,
+        email: true,
+        role: true,
+        invitedByUserId: true,
+        createdAt: true,
+        acceptedAt: true,
+        expiresAt: true,
+        revokedAt: true,
+        group: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
   ]);
 
   return {
@@ -152,5 +274,25 @@ export async function collectResparkableCrossSubjectData(
       revokedAt: grant.revokedAt,
     })),
     commentsIWrote: comments,
+    groupMemberships: memberships.map((member) => ({
+      groupId: member.groupId,
+      groupName: member.group.name,
+      role: member.role,
+      joinedAt: member.joinedAt,
+      invitedAt: member.createdAt,
+    })),
+    // An invite the subject sent to their own address would otherwise appear
+    // twice. `received` wins, because "somebody invited me" is the fact the
+    // subject is more likely to be asking about.
+    groupInvites: invites.map((invite) => ({
+      groupId: invite.groupId,
+      groupName: invite.group.name,
+      direction: address !== null && invite.email === address ? 'received' : 'sent',
+      role: invite.role,
+      invitedAt: invite.createdAt,
+      acceptedAt: invite.acceptedAt,
+      expiresAt: invite.expiresAt,
+      revokedAt: invite.revokedAt,
+    })),
   };
 }

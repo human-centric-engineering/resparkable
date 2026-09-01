@@ -16,6 +16,8 @@
  *
  * Test Coverage:
  * - Every model carrying a `spaceId` is exported or excluded with a reason
+ * - Every model carrying a user id and NO `spaceId` is claimed by the
+ *   cross-subject collector (phase 46: the blind spot below)
  * - The manifest names only models that actually exist (catches a rename)
  * - No model is both exported and excluded
  * - Exclusion reasons are substantive, not a shrug
@@ -24,6 +26,18 @@
  *
  * The runtime half — that every query is owner-scoped and the inbox token is
  * omitted — is in `subject-export-behaviour.test.ts`.
+ *
+ * ## The blind spot phase 46 closed
+ *
+ * This guard scanned for `spaceId` alone, which was complete for exactly as long
+ * as every table in the tier hung off a space. `ResparkableGroupMember` and
+ * `ResparkableGroupInvite` do not: they are keyed on a person and an address,
+ * which is why `repo/subject-export.ts` cannot reach them and why
+ * `access/subject-export.ts` answers for them instead. Under the old scan they
+ * were invisible, so forgetting them would have shipped a short answer to a data
+ * subject with every check in this file still green. That is the same failure
+ * the guard exists to prevent, one category over, and the fix is a second scan
+ * rather than a longer list.
  *
  * @see lib/framework/resparkable/repo/subject-export.ts
  * @see lib/app/data-export.ts
@@ -38,6 +52,7 @@ import {
   RESPARKABLE_EXCLUDED_MODELS,
   RESPARKABLE_EXPORT_SECTIONS,
 } from '@/lib/framework/resparkable/repo/subject-export';
+import { RESPARKABLE_CROSS_SUBJECT_MODELS } from '@/lib/framework/resparkable/access/subject-export';
 
 const SCHEMA_PATH = path.join(process.cwd(), 'prisma/schema/framework-resparkable.prisma');
 
@@ -47,6 +62,14 @@ const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
 // caught this: the regex went blind, `scoped` emptied, and every check in the
 // file passed while protecting nothing. That is the whole reason it is there.
 const SPACE_SCALAR_FIELD = /^\s*spaceId\s+String/;
+
+/**
+ * A plain column naming a PERSON. Broader than the space scan on purpose: a
+ * table keyed on a person and not on a space is invisible to the space scan, and
+ * that is precisely the category that has to be claimed by somebody.
+ */
+const USER_SCALAR_FIELD =
+  /^\s*(userId|invitedByUserId|authorUserId|granteeUserId|createdByUserId|ownerUserId)\s+String/;
 
 /** Models in the tier's schema that carry a `spaceId`, read from the file itself. */
 function scanScopedModels(): Set<string> {
@@ -70,6 +93,34 @@ function scanScopedModels(): Set<string> {
   return scoped;
 }
 
+/**
+ * Models carrying a user id but NO space key: the tables the owner-scoped
+ * manifest cannot express, which `access/subject-export.ts` answers instead.
+ */
+function scanPersonKeyedModels(): Set<string> {
+  const source = readFileSync(SCHEMA_PATH, 'utf8');
+  const withUser = new Set<string>();
+  const withSpace = new Set<string>();
+  let current: string | null = null;
+
+  for (const line of source.split('\n')) {
+    const opened = MODEL_OPEN.exec(line);
+    if (opened) {
+      current = opened[1]!;
+      continue;
+    }
+    if (line.startsWith('}')) {
+      current = null;
+      continue;
+    }
+    if (!current) continue;
+    if (USER_SCALAR_FIELD.test(line)) withUser.add(current);
+    if (SPACE_SCALAR_FIELD.test(line)) withSpace.add(current);
+  }
+
+  return new Set([...withUser].filter((model) => !withSpace.has(model)));
+}
+
 /** Every model name in the tier's schema, for rename/typo detection. */
 function scanAllModels(): Set<string> {
   const source = readFileSync(SCHEMA_PATH, 'utf8');
@@ -82,7 +133,9 @@ function scanAllModels(): Set<string> {
 }
 
 const scoped = scanScopedModels();
+const personKeyed = scanPersonKeyedModels();
 const allModels = scanAllModels();
+const crossSubject = new Set<string>(RESPARKABLE_CROSS_SUBJECT_MODELS);
 const exported = new Set(Object.keys(RESPARKABLE_SUBJECT_SOURCES));
 const excluded = new Set(RESPARKABLE_EXCLUDED_MODELS.map((entry) => entry.model));
 
@@ -93,6 +146,18 @@ describe('the schema scan itself', () => {
     expect(scoped.size).toBeGreaterThanOrEqual(15);
     expect(scoped.has('ResparkableThought')).toBe(true);
     expect(scoped.has('ResparkableTask')).toBe(true);
+  });
+
+  it('finds the person-keyed tables it is meant to find', () => {
+    // Guard on the guard, the same one the space scan carries and for the reason
+    // phase 45 discovered: a regex that stops matching leaves every check below
+    // passing while protecting nothing.
+    expect(personKeyed.size).toBeGreaterThanOrEqual(2);
+    expect(personKeyed.has('ResparkableGroupMember')).toBe(true);
+    expect(personKeyed.has('ResparkableGroupInvite')).toBe(true);
+    // A scoped satellite must NOT land in this set, or the two scans overlap and
+    // both checks below become meaningless.
+    expect(personKeyed.has('ResparkableTask')).toBe(false);
   });
 
   it('does not treat the operator singleton as scoped', () => {
@@ -117,6 +182,33 @@ describe('coverage', () => {
             `manifest, or exclude it with a written reason. ` +
             `See lib/framework/resparkable/repo/subject-export.ts.`
     ).toEqual([]);
+  });
+
+  it('claims every table keyed on a person rather than on a space', () => {
+    // The phase-46 blind spot. A table with a user id and no `spaceId` cannot be
+    // reached by `repo/subject-export.ts` at all, so it has to be claimed by the
+    // cross-subject collector or the export omits it in silence.
+    const unclaimed = [...personKeyed].filter((model) => !crossSubject.has(model));
+
+    expect(
+      unclaimed.sort(),
+      unclaimed.length === 0
+        ? ''
+        : `These Resparkable tables are keyed on a person and NOT on a space, so ` +
+            `the owner-scoped manifest cannot reach them, and they are not claimed ` +
+            `by RESPARKABLE_CROSS_SUBJECT_MODELS either: ${unclaimed.join(', ')}. ` +
+            `A subject-access export silently omits them. Add each to ` +
+            `lib/framework/resparkable/access/subject-export.ts and collect it there.`
+    ).toEqual([]);
+  });
+
+  it('does not claim a table the owner-scoped manifest already covers', () => {
+    // The inverse mistake, and it is not cosmetic: a model in both sets would be
+    // exported twice, and the second copy would arrive through a collector that
+    // does not apply the owner scope. `ResparkableGrant` is the live temptation,
+    // because `access/subject-export.ts` genuinely reads it.
+    const doubled = [...crossSubject].filter((model) => scoped.has(model));
+    expect(doubled.sort()).toEqual([]);
   });
 
   it('names only models that exist', () => {
@@ -145,13 +237,30 @@ describe('exclusions', () => {
     expect(unexplained).toEqual([]);
   });
 
-  it('excludes the derived-vector table and nothing else', () => {
+  it('excludes three tables, each for a reason a reader can check', () => {
     // Kept tight on purpose: the moment "excluded" becomes a habit, the export
-    // starts shrinking without anyone deciding that it should.
-    // Both entries are derived state — vectors computed from exported text,
-    // and worker scheduling computed from an exported timezone and an exported
-    // event log. Neither is a table somebody chose not to think about.
-    expect([...excluded].sort()).toEqual(['ResparkableEmbedding', 'ResparkableJob']);
+    // starts shrinking without anyone deciding that it should. So the list is
+    // pinned, and growing it means editing this line and saying why.
+    //
+    // The first two are derived state: vectors computed from exported text, and
+    // worker scheduling computed from an exported timezone and an exported event
+    // log. Neither is a table somebody chose not to think about.
+    //
+    // `ResparkableGroup` (phase 46) is a different kind of entry and the one
+    // worth reading carefully. It is not derived and it is not empty. It is
+    // excluded from the SPACE-SCOPED manifest because a subject's export runs
+    // under `spaceScope(subject.userId)`, their personal space, which no group
+    // ever points at — so this source could only ever return an empty section
+    // while reading as a complete answer. The subject's actual relationship to
+    // the group IS exported, by name and role, through the cross-subject
+    // collector, and the test above asserts that collector claims the tables it
+    // has to. Nothing is withheld here; it is answered somewhere the manifest
+    // can reach.
+    expect([...excluded].sort()).toEqual([
+      'ResparkableEmbedding',
+      'ResparkableGroup',
+      'ResparkableJob',
+    ]);
   });
 });
 

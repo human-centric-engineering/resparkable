@@ -18,6 +18,26 @@ release process.
 
 ### Added
 
+- **Groups: a principal that owns a workspace (Release 9, phase 46).** Three new
+  Prisma models, `ResparkableGroup`, `ResparkableGroupMember` and
+  `ResparkableGroupInvite`, plus a new drift probe **B13** covering the three
+  hand-written foreign keys they carry into `User`. Additive: no existing table
+  is altered and no row is rewritten, because phase 45 already did the
+  structural work.
+
+  Two things a fork should know before extending this. **A group invite is its
+  own table**, where `plan.md` §23.3 specifies two: a `ResparkableGrant` is live
+  for its address before anybody accepts it, while a group invite must grant
+  nothing until accepted, and folding it into the membership row would need a
+  nullable `userId`, which silently voids `@@unique([groupId, userId])` because
+  NULLs do not collide in a Postgres unique index. And **the group row cascades
+  from its space, not the reverse**, so deleting a group is a single `DELETE` of
+  the space row that the existing D1 cascade follows through all 23 satellites.
+
+  Nothing is reachable from the product yet: no routes, no UI, and no service
+  creates a group. Phases 47 and 48 land those. See
+  [`phase-46-plan.md`](./.context/framework/resparkable/phase-46-plan.md).
+
 - **The Prisma field catches up with the column: `spaceId` everywhere.** The
   transitional `@map("spaceId")` is gone, so `ResparkableSpace.spaceId` and the
   same field on all 23 satellites are named the same thing in the schema, the

@@ -26,6 +26,13 @@
  * 23 hand-written foreign keys with a single parameterised probe rather than 23
  * near-identical registrations: at a whole tier's worth of columns the
  * one-probe-per-object shape B1, B8 and B9 use stops being readable.
+ *
+ * Phase 46 (§23.3) added B13, the group tables' three keys into `User`, on the
+ * same parameterised shape. Note what B13 and B12 do together: B12 keeps a group
+ * space OUT of the erasure cascade, and B13 keeps a membership IN it. Erasing a
+ * member removes their memberships and leaves the shared workspace standing,
+ * which is §23.6's whole requirement, and neither half is visible in the Prisma
+ * schema.
  */
 
 import { prisma } from '@/lib/db/client';
@@ -240,6 +247,74 @@ const createdByKeysAreSetNull: Probe = async () => {
     const parts: string[] = [];
     if (missing.length > 0) parts.push(`missing on ${missing.join(', ')}`);
     if (wrongAction.length > 0) parts.push(`not ON DELETE SET NULL on ${wrongAction.join(', ')}`);
+    return { ok: false, note: parts.join('; ') };
+  }
+  return { ok: true };
+};
+
+/**
+ * B13's inventory: the three hand-written `User` keys the group tables carry.
+ *
+ * Parameterised like B11 rather than registered three times, for B11's stated
+ * reason: the check output has to stay readable, and three near-identical lines
+ * is already the shape a human stops reading.
+ *
+ * **The actions differ, and the difference is the design** (§23.3, §23.5). A
+ * member's row IS their membership, so erasing them removes it: losing your
+ * account removes your memberships, not the groups. An inviter's name on
+ * somebody else's invitation is attribution, so it nulls out and the invitation
+ * stands, because an inviter closing their account must not silently withdraw an
+ * invitation the invitee is about to accept.
+ *
+ * Getting either backwards is silent. `SetNull` on the membership leaves rows
+ * granting access to a user id that no longer resolves; `Cascade` on an
+ * inviter's column deletes other people's memberships and invitations when one
+ * person leaves, which is a data-loss complaint with no recovery path.
+ */
+const GROUP_USER_KEYS = [
+  {
+    table: 'framework_resparkable_group_member',
+    constraint: 'framework_resparkable_group_member_userId_fkey',
+    action: 'ON DELETE CASCADE',
+  },
+  {
+    table: 'framework_resparkable_group_member',
+    constraint: 'framework_resparkable_group_member_invitedByUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+  {
+    table: 'framework_resparkable_group_invite',
+    constraint: 'framework_resparkable_group_invite_invitedByUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+] as const;
+
+/** B13 in one query: all three keys exist, each with the action it needs. */
+const groupUserKeysHaveTheirActions: Probe = async () => {
+  const rows = await prisma.$queryRaw<Array<{ conname: string; def: string }>>`
+    SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = current_schema()
+       AND c.contype = 'f'
+       AND t.relname IN ('framework_resparkable_group_member', 'framework_resparkable_group_invite')
+  `;
+  const byName = new Map(rows.map((row) => [row.conname, row.def]));
+
+  const missing = GROUP_USER_KEYS.filter((key) => !byName.has(key.constraint));
+  const wrongAction = GROUP_USER_KEYS.filter(
+    (key) => byName.has(key.constraint) && !byName.get(key.constraint)?.includes(key.action)
+  );
+
+  if (missing.length > 0 || wrongAction.length > 0) {
+    const parts: string[] = [];
+    if (missing.length > 0) parts.push(`missing: ${missing.map((k) => k.constraint).join(', ')}`);
+    if (wrongAction.length > 0) {
+      parts.push(
+        `wrong action: ${wrongAction.map((k) => `${k.constraint} is not ${k.action}`).join('; ')}`
+      );
+    }
     return { ok: false, note: parts.join('; ') };
   }
   return { ok: true };
@@ -493,5 +568,22 @@ export function registerResparkableDriftProbes(): void {
       'personal',
       'group'
     ),
+  });
+
+  // B13: the group tables' three keys into `User` (phase 46).
+  //
+  // The membership key is the one that matters most, and it is the mirror image
+  // of B1. B1 keeps a PERSONAL space reachable by erasure; this keeps a
+  // MEMBERSHIP reachable by it, while the group space it points at deliberately
+  // is not (B12). Both halves of §23.6 are foreign keys, and neither is visible
+  // in the Prisma schema, because `User` is Sunrise-owned and this tier may not
+  // add a relation field to it.
+  //
+  // See GROUP_USER_KEYS for why one of the three cascades and two null out.
+  registerAppDriftProbe({
+    name: 'B13 framework_resparkable_group_*_fkey (3 hand-written FKs → user, Cascade + SetNull)',
+    kind: 'FK constraints',
+    table: 'framework_resparkable_group_member, framework_resparkable_group_invite',
+    probe: groupUserKeysHaveTheirActions,
   });
 }
