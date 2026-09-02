@@ -87,15 +87,16 @@ export interface MemoryUsage {
 export interface HealthCheckResponse {
   /** Overall health status */
   status: 'ok' | 'error';
-  /** Application version from package.json (the fork's app version) */
-  version: string;
   /**
-   * Resparkable platform version this checkout corresponds to. Distinct from
-   * `version` because in a fork the two are owned by different parties:
-   * `version` is the fork's app version; `resparkable` is the upstream platform
-   * version. Sourced from `lib/resparkable-version.ts`. See `VERSIONING.md`.
+   * Application version from package.json (the fork's app version).
+   *
+   * The Resparkable platform version is **not** part of this response — it names
+   * the upstream release, and therefore the published issues, for every
+   * Resparkable-derived deployment rather than just this one, and `/api/health` is
+   * unauthenticated. Read it from `GET /api/v1/admin/stats` (`system.resparkableVersion`)
+   * or import `RESPARKABLE_VERSION` server-side. See `VERSIONING.md` (#531).
    */
-  resparkable: string;
+  version: string;
   /** Process uptime in seconds */
   uptime: number;
   /** Timestamp of the health check */

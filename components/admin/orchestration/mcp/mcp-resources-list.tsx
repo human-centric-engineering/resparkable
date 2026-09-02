@@ -403,9 +403,12 @@ export function McpResourcesList({ initialResources }: McpResourcesListProps) {
               <Label htmlFor="res-uri">
                 URI
                 <FieldHelp title="Resource URI">
-                  The URI that MCP clients use to access this resource. Must use the{' '}
-                  <code className="text-xs">resparkable://</code> scheme (e.g.{' '}
-                  <code className="text-xs">resparkable://knowledge/search</code>).
+                  The URI that MCP clients use to access this resource. Must use the scheme
+                  registered for the chosen type — <code className="text-xs">resparkable://</code>{' '}
+                  for the built-in types (e.g.{' '}
+                  <code className="text-xs">resparkable://knowledge/search</code>), or whatever
+                  scheme this app registered in{' '}
+                  <code className="text-xs">lib/app/mcp-resources.ts</code>.
                 </FieldHelp>
               </Label>
               <Input

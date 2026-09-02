@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: what `BoardView` shares, and the handoff from card to dialog.
  *

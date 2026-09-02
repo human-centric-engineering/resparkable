@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: Resparkable misc server-component pages
  *

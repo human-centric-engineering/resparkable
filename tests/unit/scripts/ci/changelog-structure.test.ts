@@ -164,7 +164,7 @@ Quoting the release instructions:
     // Naming the fence is half the job. The heading lists are truncated, so
     // every cross-heading rule below is reasoning about a file nobody finished
     // reading — and would here add a confident, wrong "no release headings
-    // found, but SUNRISE_VERSION is 0.2.0" on top.
+    // found, but RESPARKABLE_VERSION is 0.2.0" on top.
     const source = `## [Unreleased]
 
 \`\`\`
@@ -406,7 +406,7 @@ describe('checkChangelogStructure', () => {
     });
 
     // These mangle the OLDER heading so the topmost release still agrees with
-    // SUNRISE_VERSION and the assertion isolates the rule under test.
+    // RESPARKABLE_VERSION and the assertion isolates the rule under test.
     it('rejects a release heading with no date', () => {
       const source = VALID.replace('## [0.1.0] — 2026-06-24', '## [0.1.0]');
 
@@ -566,7 +566,7 @@ describe('checkChangelogStructure', () => {
     });
   });
 
-  describe('SUNRISE_VERSION agreement', () => {
+  describe('RESPARKABLE_VERSION agreement', () => {
     it('rejects a bump with no entry', () => {
       expect(check(VALID, '0.3.0')).toEqual([
         expect.stringContaining('Topmost release is 0.2.0 but `RESPARKABLE_VERSION`'),
@@ -784,7 +784,7 @@ describe('checkReleaseHistoryPreserved', () => {
 `;
 
     it('is invisible to the four rules #550 proposed', () => {
-      // Uniqueness, descending order, dates, and SUNRISE_VERSION agreement all
+      // Uniqueness, descending order, dates, and RESPARKABLE_VERSION agreement all
       // hold on the shipped file. Verified against the real commit, not just
       // this fixture. That is why the history rule exists.
       const parsed = parseChangelog(shipped);

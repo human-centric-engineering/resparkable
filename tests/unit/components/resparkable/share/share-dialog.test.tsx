@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `ShareDialog` — the owner's side of both kinds of sharing.
  *

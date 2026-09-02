@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Reset Password Page Tests
  *
@@ -22,6 +24,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import ResetPasswordPage, { metadata } from '@/app/(auth)/reset-password/page';
+
+// `BRAND.name`, not the product name spelled out: tests/setup.ts pins the
+// brand seam to null for the whole suite, so what these surfaces render is the
+// unconfigured default. The fork's own brand is asserted through every surface
+// in tests/unit/brand-fork-surfaces.test.tsx.
+import { BRAND } from '@/lib/brand';
 
 // Mock the ResetPasswordForm component
 vi.mock('@/components/forms/reset-password-form', () => ({
@@ -59,7 +67,7 @@ describe('ResetPasswordPage', () => {
     });
 
     it('should have correct page description', () => {
-      expect(metadata.description).toBe('Reset your Resparkable account password');
+      expect(metadata.description).toBe(`Reset your ${BRAND.name} account password`);
     });
   });
 

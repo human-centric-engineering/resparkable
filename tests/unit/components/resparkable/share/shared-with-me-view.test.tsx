@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `SharedWithMeView` — the grantee's list of what others handed them.
  *

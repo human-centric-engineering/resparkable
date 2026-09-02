@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Skeleton Component Tests
  *

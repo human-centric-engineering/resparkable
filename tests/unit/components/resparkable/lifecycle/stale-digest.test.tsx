@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Component Tests: the stale digest surface.
  *

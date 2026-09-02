@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: Resparkable dynamic-route ([id]/[slug]) server-component pages
  *

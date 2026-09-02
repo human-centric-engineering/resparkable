@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `/s/[token]`, the public reader page (Release 2, phase 11).
  *

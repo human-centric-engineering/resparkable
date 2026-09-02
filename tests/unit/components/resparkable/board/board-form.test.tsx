@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * BoardForm Component Tests
  *

@@ -29,8 +29,16 @@ export interface SystemStats {
   system: {
     /** Node.js version */
     nodeVersion: string;
-    /** Application version from package.json */
+    /** Application version from package.json (the fork's app version) */
     appVersion: string;
+    /**
+     * Sunrise platform version this checkout corresponds to
+     * (`lib/resparkable-version.ts`). Distinct from `appVersion`, which a fork owns
+     * and bumps on its own cadence. Served only from admin-authenticated routes
+     * — see `app/api/health/route.ts` for why it is not on the public health
+     * payload.
+     */
+    resparkableVersion: string;
     /** Current environment (development/production) */
     environment: string;
     /** Server uptime in seconds */

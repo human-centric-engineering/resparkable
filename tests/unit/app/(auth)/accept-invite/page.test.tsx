@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Accept Invitation Page Tests
  *
@@ -22,6 +24,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import AcceptInvitePage from '@/app/(auth)/accept-invite/page';
+
+// `BRAND.name`, not the product name spelled out: tests/setup.ts pins the
+// brand seam to null for the whole suite, so what these surfaces render is the
+// unconfigured default. The fork's own brand is asserted through every surface
+// in tests/unit/brand-fork-surfaces.test.tsx.
+import { BRAND } from '@/lib/brand';
 
 // Mock next/navigation
 vi.mock('next/navigation', async () => {
@@ -230,7 +238,7 @@ describe('AcceptInvitePage', () => {
       const { metadata } = await import('@/app/(auth)/accept-invite/page');
 
       // Assert: Metadata description is correct
-      expect(metadata.description).toBe('Accept your invitation to join Resparkable');
+      expect(metadata.description).toBe(`Accept your invitation to join ${BRAND.name}`);
     });
   });
 

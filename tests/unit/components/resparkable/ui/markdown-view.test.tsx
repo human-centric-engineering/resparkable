@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * MarkdownView Component Tests — a security surface, not decoration.
  *

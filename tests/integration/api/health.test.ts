@@ -6,6 +6,8 @@
  * - Services structure with status indicators
  * - Optional memory usage reporting
  * - Database connectivity checks
+ * - The exact top-level key set: the endpoint is unauthenticated, so every
+ *   field it returns is a disclosure decision (#531)
  *
  * @see app/api/health/route.ts
  */
@@ -13,7 +15,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET } from '@/app/api/health/route';
-import { RESPARKABLE_VERSION } from '@/lib/resparkable-version';
 
 /**
  * Mock dependencies
@@ -77,7 +78,6 @@ async function parseResponse<T>(response: Response): Promise<T> {
 interface HealthResponse {
   status: 'ok' | 'error';
   version: string;
-  resparkable: string;
   uptime: number;
   timestamp: string;
   services: {
@@ -148,13 +148,18 @@ describe('GET /api/health', () => {
       expect(typeof body.version).toBe('string');
     });
 
-    it('should include resparkable platform version field equal to RESPARKABLE_VERSION', async () => {
-      // The `resparkable` field is part of the public health-response contract
-      // (see VERSIONING.md). It must always equal the RESPARKABLE_VERSION
-      // constant — that's how operators and the eventual Hub discover which
-      // Resparkable a deployment is on. Asserting equality with the imported
-      // constant catches both a missing field AND a hand-edited route that
-      // hard-codes the wrong literal.
+    it('must not disclose the Resparkable platform version', async () => {
+      // The inverse of what this file used to assert. This endpoint is
+      // unauthenticated, so `resparkable` named the exact platform release — and
+      // therefore the exact published issues to try — for every deployment that
+      // runs Resparkable, to anyone who asked. #531 moved it behind
+      // `withAdminAuth` on `GET /api/v1/admin/stats`.
+      //
+      // Asserted on the KEY, not the value: upstream, `package.json.version`
+      // and `RESPARKABLE_VERSION` are the same string (both track the release), so
+      // a "the value must not appear" assertion would fail on the legitimate
+      // `version` field here and only pass in a fork. The exact-key-set test
+      // below is what catches a rename.
       vi.mocked(getDatabaseHealth).mockResolvedValue({
         connected: true,
         latency: 5,
@@ -166,7 +171,7 @@ describe('GET /api/health', () => {
       // Pin the status as part of the contract — body-only assertions let
       // a 500 regression slip through (anti-pattern #7).
       expect(response.status).toBe(200);
-      expect(body.resparkable).toBe(RESPARKABLE_VERSION);
+      expect(body).not.toHaveProperty('resparkable');
     });
 
     it('should include uptime field as number', async () => {
@@ -204,6 +209,10 @@ describe('GET /api/health', () => {
 
     it('should not include memory by default', async () => {
       // Arrange
+      // Pinned empty for the same reason as the key-set test below: `beforeEach`
+      // restores the real `process.env`, so "by default" would otherwise mean
+      // "whatever this developer's shell exports".
+      vi.stubEnv('HEALTH_INCLUDE_MEMORY', '');
       vi.mocked(getDatabaseHealth).mockResolvedValue({
         connected: true,
         latency: 5,
@@ -345,10 +354,11 @@ describe('GET /api/health', () => {
       expect(body.services.database.connected).toBe(false);
       expect(body.services.database.status).toBe('outage');
       expect(body.error).toBe('Database connection timeout');
-      // The resparkable field must survive the catch branch — diagnostics that
-      // need to know which Resparkable the failing deployment is on are exactly
-      // the case where the field matters most.
-      expect(body.resparkable).toBe(RESPARKABLE_VERSION);
+      // The catch branch builds its payload through the same helper, so it
+      // must not reintroduce the platform version either. Two branches, one
+      // `buildHealthPayload` — but that is the thing under test, not an
+      // assumption this test gets to make.
+      expect(body).not.toHaveProperty('resparkable');
       expect(mockLoggerWithContext.error).toHaveBeenCalledWith('Health check failed', dbError);
     });
 
@@ -392,17 +402,33 @@ describe('GET /api/health', () => {
         latency: 10,
       });
 
+      vi.stubEnv('HEALTH_INCLUDE_MEMORY', '');
+
       // Act
       const response = await GET(createMockRequest());
       const body = await parseResponse<HealthResponse>(response);
 
-      // Assert
-      expect(body).toHaveProperty('status');
-      expect(body).toHaveProperty('version');
-      expect(body).toHaveProperty('resparkable');
-      expect(body).toHaveProperty('uptime');
-      expect(body).toHaveProperty('timestamp');
-      expect(body).toHaveProperty('services');
+      // Assert — the EXACT top-level key set, not a list of `toHaveProperty`
+      // calls. Everything this endpoint returns is returned to an anonymous
+      // caller, so a field added here is a disclosure decision. A set equality
+      // fails when a field appears as well as when one goes missing; the
+      // `toHaveProperty` form this replaced could only ever catch the latter,
+      // which is how the platform version sat here unquestioned (#531).
+      //
+      // `memory` is absent because HEALTH_INCLUDE_MEMORY is pinned empty just
+      // above — NOT because it happens to be unset in this shell. `beforeEach`
+      // calls `vi.unstubAllEnvs()`, which RESTORES the real `process.env`
+      // rather than clearing it, so without the stub this gate fails on any
+      // machine that exports the variable. Two docs now cite this assertion as
+      // the disclosure gate; it must fail only for the reason they give.
+      // `error` only appears on the error branch.
+      expect(Object.keys(body).sort()).toEqual([
+        'services',
+        'status',
+        'timestamp',
+        'uptime',
+        'version',
+      ]);
       expect(body.services).toHaveProperty('database');
       expect(body.services.database).toHaveProperty('status');
       expect(body.services.database).toHaveProperty('connected');
