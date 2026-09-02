@@ -26,12 +26,30 @@
  * Deleting the row to make the test pass ships a short answer to a data
  * subject. See `.context/privacy/data-export.md`.
  *
+ * ---------------------------------------------------------------------------
+ * FORK NOTE — you satisfy this from your own code, and it still checks you
+ * ---------------------------------------------------------------------------
+ * Every schema file in `prisma/schema/` that is not one of Sunrise's own — the
+ * list is `CORE_SCHEMA_FILES` below — is yours, whatever you named it. Models
+ * in one are held to a stricter rule than core holds itself: **every** model
+ * must be declared through `registerAppSubjectSources()` — as a source or as an
+ * exclusion with a reason — from `lib/app/data-export.ts` or your framework
+ * tier's own init. Nothing here needs editing, and nothing is skipped (#533).
+ *
+ * Full accounting rather than core's user-id heuristic because core reads its
+ * own column vocabulary and cannot read yours: a table keyed `authorId` or
+ * `respondentId` is invisible to that scan, and the tables it cannot see are
+ * exactly the ones nobody remembers. The alternative fix — exempting the fork
+ * namespaces from the scan — would have traded a noisy false positive for a
+ * silent false negative, which for an Art. 15 guard is the wrong direction.
+ *
  * @see lib/privacy/export-sources.ts
+ * @see lib/privacy/subject-source-registry.ts
  */
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 // The manifest imports the Prisma client at module scope. Its delegates are
 // only touched inside `fetch` closures, which this file never calls — the stub
@@ -39,6 +57,12 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/lib/db/client', () => ({ prisma: {} }));
 
 const { SUBJECT_DATA_SOURCES, EXCLUDED_SOURCES } = await import('@/lib/privacy/export-sources');
+const {
+  getAppSubjectSources,
+  getAppExcludedSubjectSources,
+  getAccountedAppModels,
+  __resetAppSubjectSourceRegistryForTests,
+} = await import('@/lib/privacy/subject-source-registry');
 
 const SCHEMA_DIR = path.join(process.cwd(), 'prisma', 'schema');
 
@@ -55,17 +79,51 @@ const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
  * in the manifest by hand. Scanning for the column name as well as the relation
  * is what stops a third.
  *
- * `ownerUserId` and `createdByUserId` were added by Resparkable's phase 45, and
- * the reason they are here is a warning about this whole file. Before that
- * phase, the tier's 24 models matched on `userId` and were accounted for
- * below; the rename moved them to `spaceId`, they stopped matching, and this
- * scan went vacuous for a fifth of the schema while every assertion still
- * passed. The tier's own guard caught it because it asserts a minimum count of
- * what it found; this one asserted a minimum over the WHOLE schema, which core
- * alone satisfies. Hence the per-tier floor added below.
+ * It is a list of *core's* column names, which is precisely why it is not the
+ * rule applied to fork-owned files — see the FORK NOTE above.
  */
 const USER_SCALAR_FIELD =
   /^\s*(userId|createdBy|uploadedBy|ownerId|actorUserId|subjectUserId|ownerUserId|createdByUserId)\s+String/;
+
+/**
+ * Sunrise's own schema files. **Everything else in `prisma/schema/` belongs to a
+ * fork tier**, whatever it is named.
+ *
+ * Stated as an allowlist rather than a pattern for the fork-reserved names,
+ * because core knows its own files exactly and cannot know what a fork will
+ * call theirs. Matching only `app.prisma` and `framework-*.prisma` left a fork
+ * that splits its domain across `app-billing.prisma` — normal enough that core
+ * itself has eleven of these — classified as core-owned, held to core's column
+ * heuristic, and unable to satisfy the result from fork-owned code. That is
+ * #533 again, one filename away.
+ *
+ * Adding a core schema file means adding it here. The failure is loud and the
+ * message says so: until it is listed, its models are treated as a fork tier's
+ * and the accounting rule asks someone to declare them.
+ */
+const CORE_SCHEMA_FILES = new Set([
+  'auth.prisma',
+  'base.prisma',
+  'mcp.prisma',
+  'orchestration-agents.prisma',
+  'orchestration-conversations.prisma',
+  'orchestration-evaluation.prisma',
+  'orchestration-knowledge.prisma',
+  'orchestration-ops.prisma',
+  'orchestration-providers.prisma',
+  'orchestration-workflows.prisma',
+  // Sunrise's own app-domain models (ContactSubmission, FeatureFlag,
+  // AuthBootstrap) live here, NOT in the fork-reserved app.prisma.
+  'platform.prisma',
+]);
+
+/**
+ * Whether a schema file belongs to a fork tier. Models here are accounted for
+ * through the registry, not the core manifest.
+ */
+function isForkOwnedSchemaFile(file: string): boolean {
+  return !CORE_SCHEMA_FILES.has(file);
+}
 
 /**
  * Models carrying a user-id scalar that the export handles OUTSIDE the manifest,
@@ -77,86 +135,38 @@ const HANDLED_OUTSIDE_MANIFEST = new Map([
     'DataErasureReceipt',
     'Fetched directly by exportUserData() and returned as the bundle’s `erasureReceipts` section, so it is exported — just not through a manifest source.',
   ],
-  // ── FORK (Resparkable) ────────────────────────────────────────────────────────
-  //
-  // This scan reads every file in `prisma/schema/`, which includes the
-  // framework tier's own `framework-resparkable.prisma`. Those tables ARE exported
-  // — through `lib/app/data-export.ts`, the seam resparkable#467 added for exactly
-  // this — but `declared` is built from `SUBJECT_DATA_SOURCES` alone, so the
-  // guard cannot see the app seam and demands that a fork's tables be listed in
-  // a Resparkable-owned file instead.
-  //
-  // That makes this the one core test a fork cannot satisfy from fork-owned
-  // code: doing the right thing (filling the seam, writing its own completeness
-  // guard — `tests/unit/lib/framework/resparkable/privacy/subject-export.test.ts`)
-  // still leaves it red. Local patch to a Resparkable-owned test, same family as
-  // resparkable#480 and resparkable#525. Filed as resparkable#533; ask #30 in
-  // `.context/framework/resparkable/sunrise-asks.md`. Remove this block when it
-  // lands.
-  ...(
-    [
-      'ResparkableSpace',
-      'ResparkableArea',
-      'ResparkableGoal',
-      'ResparkableProject',
-      'ResparkableTask',
-      'ResparkableThought',
-      'ResparkableLink',
-      'ResparkableEmbedding',
-      'ResparkableBoard',
-      'ResparkableBoardCard',
-      'ResparkableTag',
-      'ResparkableTaskTag',
-      'ResparkableChecklistItem',
-      'ResparkableEntity',
-      'ResparkableDocument',
-      'ResparkableTimeBlock',
-      'ResparkableReview',
-      'ResparkableEvent',
-      'ResparkableCreditAccount',
-      'ResparkableCreditLedgerEntry',
-      'ResparkableJob',
-      'ResparkableGrant',
-      'ResparkableComment',
-      'ResparkableShareLink',
-      // Phase 46 (§23.3). The tier's only two tables keyed on a person rather
-      // than on a space, so they are answered by `access/subject-export.ts`
-      // rather than by the space-scoped manifest; the tier's own guard has a
-      // dedicated check for exactly that category. Invisible to this scan for
-      // the same sunrise#533 reason as the 24 above. `ResparkableGroup` is
-      // absent deliberately: it holds no user-id column at all, so this scan
-      // never asks about it, and listing it would be an accounting note about
-      // nothing.
-      'ResparkableGroupMember',
-      'ResparkableGroupInvite',
-    ] as const
-  ).map(
-    (model) =>
-      [
-        model,
-        'Framework-tier (Resparkable) table, exported through the lib/app/data-export.ts seam and covered by the tier’s own completeness guard. Invisible to this scan because `declared` reads only SUBJECT_DATA_SOURCES — see sunrise#533.',
-      ] as const
-  ),
 ]);
 
-interface SchemaScan {
-  /** Models that declare at least one FK to `User`. */
-  userLinked: Set<string>;
-  /** Models holding a user-id scalar with NO `@relation` — invisible to the FK scan. */
-  scalarLinked: Set<string>;
-  /** Every model name in the schema, for typo/rename detection. */
-  allModels: Set<string>;
+interface SchemaFile {
+  name: string;
+  contents: string;
 }
 
-function scanSchema(): SchemaScan {
+interface SchemaScan {
+  /** Core-owned models that declare at least one FK to `User`. */
+  userLinked: Set<string>;
+  /** Core-owned models holding a user-id scalar with NO `@relation` — invisible to the FK scan. */
+  scalarLinked: Set<string>;
+  /** Every model name in the schema, core and fork, for typo/rename detection. */
+  allModels: Set<string>;
+  /** Every model declared in a fork-reserved schema file. */
+  forkModels: Set<string>;
+}
+
+/**
+ * Parse `.prisma` sources. Takes its input rather than reading the directory so
+ * the fork-accounting rule below can be exercised against a synthetic tier — in
+ * vanilla Sunrise there are no fork models, and a rule with nothing to check
+ * passes while protecting nothing.
+ */
+function scanSchemaFiles(files: SchemaFile[]): SchemaScan {
   const userLinked = new Set<string>();
   const scalarLinked = new Set<string>();
   const allModels = new Set<string>();
-
-  const files = readdirSync(SCHEMA_DIR).filter((file) => file.endsWith('.prisma'));
+  const forkModels = new Set<string>();
 
   for (const file of files) {
-    const contents = readFileSync(path.join(SCHEMA_DIR, file), 'utf8');
+    const isFork = isForkOwnedSchemaFile(file.name);
     let currentModel: string | null = null;
     let modelHasRelation = false;
     let modelScalars: string[] = [];
@@ -164,7 +174,7 @@ function scanSchema(): SchemaScan {
     const closeModel = (): void => {
       // A user-id column backed by a real `@relation` is already covered by the
       // FK scan; only the relation-less ones need the second net.
-      if (currentModel && !modelHasRelation && modelScalars.length > 0) {
+      if (currentModel && !isFork && !modelHasRelation && modelScalars.length > 0) {
         scalarLinked.add(currentModel);
       }
       currentModel = null;
@@ -172,12 +182,13 @@ function scanSchema(): SchemaScan {
       modelScalars = [];
     };
 
-    for (const line of contents.split('\n')) {
+    for (const line of file.contents.split('\n')) {
       const open = MODEL_OPEN.exec(line);
       if (open) {
         closeModel();
         currentModel = open[1];
         allModels.add(currentModel);
+        if (isFork) forkModels.add(currentModel);
         continue;
       }
       if (line.startsWith('}')) {
@@ -189,7 +200,7 @@ function scanSchema(): SchemaScan {
       // type is the other model — they never match the User-typed pattern, so
       // User is excluded naturally rather than by special case.
       if (USER_RELATION_FIELD.test(line)) {
-        userLinked.add(currentModel);
+        if (!isFork) userLinked.add(currentModel);
         modelHasRelation = true;
       }
       const scalar = USER_SCALAR_FIELD.exec(line);
@@ -199,12 +210,33 @@ function scanSchema(): SchemaScan {
     closeModel();
   }
 
-  return { userLinked, scalarLinked, allModels };
+  return { userLinked, scalarLinked, allModels, forkModels };
+}
+
+function readSchemaFiles(): SchemaFile[] {
+  return readdirSync(SCHEMA_DIR)
+    .filter((file) => file.endsWith('.prisma'))
+    .map((name) => ({ name, contents: readFileSync(path.join(SCHEMA_DIR, name), 'utf8') }));
+}
+
+/**
+ * Fork-owned models no tier has decided about. The whole fork rule, in one
+ * function, so the real schema and the synthetic tier below run identical code.
+ */
+function unaccountedForkModels(scan: SchemaScan, accounted: Set<string>): string[] {
+  return [...scan.forkModels].filter((model) => !accounted.has(model)).sort();
 }
 
 describe('subject-data source manifest', () => {
-  const { userLinked, scalarLinked, allModels } = scanSchema();
+  const { userLinked, scalarLinked, allModels, forkModels } = scanSchemaFiles(readSchemaFiles());
   const declared = new Set(SUBJECT_DATA_SOURCES.map((source) => source.model));
+
+  beforeAll(() => {
+    // Drive the REAL seam: reset so the lazy init runs against
+    // `lib/app/data-export.ts` as shipped rather than whatever another suite
+    // left behind.
+    __resetAppSubjectSourceRegistryForTests();
+  });
 
   describe('the scan itself', () => {
     // A regex that quietly stops matching would make every assertion below
@@ -226,10 +258,14 @@ describe('subject-data source manifest', () => {
       // models silently stopped matching and `HANDLED_OUTSIDE_MANIFEST` became
       // two dozen dead entries guarding nothing. A floor per tier is what makes
       // that visible.
-      // The tier's models carry no `@relation` to `User` (a fork must not add a
-      // field to a Sunrise-owned model), so they reach this scan through the
-      // scalar net rather than the FK one.
-      const framework = [...scalarLinked].filter((model) => model.startsWith('Resparkable'));
+      // Read from `forkModels`, not `scalarLinked`. Sunrise 0.10.0 classifies
+      // every non-core schema file as a fork tier's and lifts its models out of
+      // the core column heuristic entirely — which is the right rule, and it
+      // also means the scalar net this row used to count through is empty for
+      // the tier by construction now. `forkModels` is where the tier lands, so
+      // that is where the floor belongs; the property being guarded is
+      // unchanged.
+      const framework = [...forkModels].filter((model) => model.startsWith('Resparkable'));
       expect(framework.length).toBeGreaterThanOrEqual(20);
     });
 
@@ -237,6 +273,57 @@ describe('subject-data source manifest', () => {
       // `userId` (Cascade, personal data) and `createdBy` (SetNull, retained).
       expect(userLinked.has('Session')).toBe(true);
       expect(userLinked.has('AiAgent')).toBe(true);
+    });
+
+    it('knows which schema files belong to a fork tier', () => {
+      expect(isForkOwnedSchemaFile('app.prisma')).toBe(true);
+      expect(isForkOwnedSchemaFile('framework-tasks.prisma')).toBe(true);
+      // The reason this is an allowlist and not a pattern: a fork splitting its
+      // domain across files is normal, and core cannot enumerate their names.
+      expect(isForkOwnedSchemaFile('app-billing.prisma')).toBe(true);
+      expect(isForkOwnedSchemaFile('obsiddy.prisma')).toBe(true);
+      // Sunrise's own app-domain models live here, and stay core's problem.
+      expect(isForkOwnedSchemaFile('platform.prisma')).toBe(false);
+      expect(isForkOwnedSchemaFile('orchestration-agents.prisma')).toBe(false);
+    });
+
+    it('lists every core schema file that is actually on disk', () => {
+      // Drift guard, direction one: a rename or a removal leaves a name here
+      // matching nothing, and the file it used to cover would be silently
+      // reclassified as a fork tier's.
+      const onDisk = new Set(readSchemaFiles().map((file) => file.name));
+      const stale = [...CORE_SCHEMA_FILES].filter((name) => !onDisk.has(name)).sort();
+
+      expect(stale, 'CORE_SCHEMA_FILES names a file that no longer exists').toEqual([]);
+    });
+
+    it('lists whichever file every core-manifest model actually lives in', () => {
+      // Drift guard, direction two — the one that matters more, because nothing
+      // else catches it. A NEW core schema file nobody adds to
+      // `CORE_SCHEMA_FILES` is treated as a fork tier's, which lifts its models
+      // out of core's strict rule. This finds it the moment core's own manifest
+      // names a model living there.
+      const coreManifestModels = new Set([
+        ...SUBJECT_DATA_SOURCES.map((source) => source.model),
+        ...EXCLUDED_SOURCES.map((source) => source.model),
+      ]);
+      const inCoreFiles = new Set(
+        readSchemaFiles()
+          .filter((file) => CORE_SCHEMA_FILES.has(file.name))
+          .flatMap((file) => [...file.contents.matchAll(/^model\s+(\w+)\s*\{/gm)])
+          .map((match) => match[1])
+      );
+      const elsewhere = [...coreManifestModels].filter((model) => !inCoreFiles.has(model)).sort();
+
+      expect(
+        elsewhere,
+        elsewhere.length === 0
+          ? ''
+          : `Core's manifest names models that are not in any file listed in ` +
+              `CORE_SCHEMA_FILES: ${elsewhere.join(', ')}. If you added a core schema ` +
+              `file, add its name to CORE_SCHEMA_FILES — until you do it is treated as ` +
+              `a fork tier's, and its User-linked models drop out of the strict rule.`
+      ).toEqual([]);
     });
   });
 
@@ -307,6 +394,156 @@ describe('subject-data source manifest', () => {
       // still needs a human deciding what a new table holds.
       expect(scalarLinked.has('FeatureFlag')).toBe(true);
       expect(scalarLinked.has('DataErasureReceipt')).toBe(true);
+    });
+  });
+
+  describe('fork-owned schema files', () => {
+    it('accounts for every model in a fork-owned schema file', () => {
+      // Core's `SUBJECT_DATA_SOURCES` counts as accounting — a framework tier
+      // moving rows out of it and into the registry is doing the right thing,
+      // and failing them twice while they do it is noise, not protection.
+      //
+      // `EXCLUDED_SOURCES` deliberately does NOT. It used to, and that opened a
+      // hole in the other direction: a NEW core schema file that nobody adds to
+      // `CORE_SCHEMA_FILES` is classified fork-owned, which lifts its models out
+      // of `userLinked` and so out of the strict core rule — where an exclusion
+      // is never an escape from a `User` relation. Accepting an exclusion here
+      // as well would let a User-linked CORE table be written off with one
+      // `EXCLUDED_SOURCES` row and a forgotten filename, and vanish from every
+      // Art. 15 export with the suite green.
+      const accounted = new Set([...getAccountedAppModels(), ...declared]);
+      const scan = { userLinked, scalarLinked, allModels, forkModels };
+      const missing = unaccountedForkModels(scan, accounted);
+
+      expect(
+        missing,
+        missing.length === 0
+          ? ''
+          : `These models live in a fork-owned schema file and no tier has said ` +
+              `what a data subject receives from them: ${missing.join(', ')}. Declare ` +
+              `each through registerAppSubjectSources() — as a \`source\` if it holds ` +
+              `data about a person, or in \`excluded\` with a reason if it does not. ` +
+              `Core cannot read your column vocabulary, so it asks for every model ` +
+              `rather than guessing which hold a user id. ` +
+              `See lib/app/data-export.ts and .context/privacy/data-export.md. ` +
+              `(Sunrise maintainers: if you just added a CORE schema file, add its ` +
+              `name to CORE_SCHEMA_FILES in this file instead.)`
+      ).toEqual([]);
+    });
+  });
+
+  /**
+   * The fork rule, exercised against a synthetic tier.
+   *
+   * Vanilla Sunrise has zero fork models, so the assertions above pass
+   * vacuously — a broken predicate would look exactly as healthy as a working
+   * one. These cases run the same `scanSchemaFiles` + `unaccountedForkModels`
+   * pair over fixture sources, which is the only place the rule is observed
+   * doing anything at all upstream.
+   */
+  describe('the fork rule, against a synthetic tier', () => {
+    const FIXTURE: SchemaFile[] = [
+      {
+        name: 'framework-tasks.prisma',
+        contents: [
+          'model FrameworkTask {',
+          '  id        String @id @default(cuid())',
+          // Deliberately NOT one of core's column names: this is the shape the
+          // user-id heuristic cannot see, and the reason the rule is total.
+          '  authorId  String',
+          '  title     String',
+          '}',
+          '',
+          'model FrameworkTaskTag {',
+          '  taskId String',
+          '  tagId  String',
+          '}',
+        ].join('\n'),
+      },
+      {
+        name: 'app.prisma',
+        contents: ['model AppInvoice {', '  id     String @id', '  userId String', '}'].join('\n'),
+      },
+    ];
+
+    const scan = scanSchemaFiles(FIXTURE);
+
+    it('sees the fork models and keeps them out of the core nets', () => {
+      expect([...scan.forkModels].sort()).toEqual([
+        'AppInvoice',
+        'FrameworkTask',
+        'FrameworkTaskTag',
+      ]);
+      // `AppInvoice.userId` matches core's scalar pattern, but a fork model must
+      // never land in a core net — that is the failure a fork cannot satisfy.
+      expect(scan.scalarLinked.size).toBe(0);
+      expect(scan.userLinked.size).toBe(0);
+    });
+
+    it('flags every model when no tier has declared', () => {
+      expect(unaccountedForkModels(scan, new Set())).toEqual([
+        'AppInvoice',
+        'FrameworkTask',
+        'FrameworkTaskTag',
+      ]);
+    });
+
+    it('flags a table whose user column core’s heuristic cannot see', () => {
+      // Everything accounted for EXCEPT the `authorId` table — the case that
+      // makes full accounting worth its noise.
+      const accounted = new Set(['AppInvoice', 'FrameworkTaskTag']);
+      expect(unaccountedForkModels(scan, accounted)).toEqual(['FrameworkTask']);
+    });
+
+    it('passes once both tiers have declared, sources and exclusions alike', () => {
+      const accounted = new Set(['AppInvoice', 'FrameworkTask', 'FrameworkTaskTag']);
+      expect(unaccountedForkModels(scan, accounted)).toEqual([]);
+    });
+  });
+
+  /**
+   * Deliberately NOT asserted here: that the registry is empty in vanilla
+   * Sunrise, and that `app.prisma` declares no models.
+   *
+   * Both are true, and both are already pinned — the first by the
+   * `lib/app/data-export.ts` row in `defaults.test.ts`, the second by
+   * `reserved-fork-tiers.test.ts`. Restating them would cost a fork a second
+   * and third core-file edit to do the supported thing while buying no
+   * protection at all, which is the defect this file was changed to fix.
+   */
+  describe('app-tier declarations', () => {
+    it('names only models that exist', () => {
+      const unknown = [...getAppSubjectSources(), ...getAppExcludedSubjectSources()]
+        .map((source) => source.model)
+        .filter((model) => !allModels.has(model))
+        .sort();
+
+      expect(
+        unknown,
+        unknown.length === 0
+          ? ''
+          : `registerAppSubjectSources() names models that are not in any .prisma ` +
+              `file: ${unknown.join(', ')}. A declaration for a model that does not ` +
+              `exist accounts for nothing and hides a rename.`
+      ).toEqual([]);
+    });
+
+    it('never claims a model core already exports', () => {
+      // Checked here rather than at registration: the registry stays free of the
+      // core manifest so `lib/app/**` can import it without dragging Prisma into
+      // the extension surface. A collision would have two manifests describing
+      // one table, and the subject receiving whichever ran last.
+      const coreOwned = new Set([
+        ...declared,
+        ...EXCLUDED_SOURCES.map((source) => source.model),
+        ...HANDLED_OUTSIDE_MANIFEST.keys(),
+      ]);
+      const claimed = [...getAppSubjectSources(), ...getAppExcludedSubjectSources()]
+        .map((source) => source.model)
+        .filter((model) => coreOwned.has(model))
+        .sort();
+
+      expect(claimed).toEqual([]);
     });
   });
 

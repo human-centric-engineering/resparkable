@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: what `BoardView`'s `onDragEnd` actually writes.
  *

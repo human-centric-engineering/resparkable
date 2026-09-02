@@ -37,7 +37,7 @@
  * @see lib/app/ · CUSTOMIZATION.md §4
  */
 
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
@@ -54,13 +54,22 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 // other one does. A third collector added to the seam needs a third line here,
 // and will announce itself as a connection error rather than an assertion
 // failure — which is what happened when the access-layer collector landed.
-vi.mock('@/lib/framework/resparkable/repo/subject-export', () => ({
-  collectResparkableSubjectData: vi.fn().mockResolvedValue({}),
+//
+// A distinct sentinel section per collector, rather than a realistic shape:
+// the row below asserts the seam spreads BOTH at the top level, and two
+// distinguishable keys are what make a dropped collector visible. The tier's
+// real sections are its own guard's subject.
+//
+// `RESPARKABLE_SUBJECT_SOURCES` and `RESPARKABLE_EXCLUDED_MODELS` are passed
+// through from the real module: `initAppSubjectSources()` derives the tier's
+// declarations from them, and mocking them away would leave the declaration
+// half of that row asserting nothing.
+vi.mock('@/lib/framework/resparkable/repo/subject-export', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/subject-export')>()),
+  collectResparkableSubjectData: vi.fn().mockResolvedValue({ ownSection: [] }),
 }));
 vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
-  collectResparkableCrossSubjectData: vi
-    .fn()
-    .mockResolvedValue({ sharedWithMe: [], commentsIWrote: [] }),
+  collectResparkableCrossSubjectData: vi.fn().mockResolvedValue({ crossSection: [] }),
 }));
 
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
@@ -84,6 +93,9 @@ import { appAgentFields } from '@/lib/app/agent-fields';
 import { appProtectedRoutes } from '@/lib/app/protected-routes';
 import { appDisallowedPaths } from '@/lib/app/robots';
 import { appEnvSchema } from '@/lib/app/env';
+import { footerCopyright } from '@/lib/app/footer';
+import { APP_API_KEY_SCOPES } from '@/lib/app/api-key-scopes';
+import { listValidApiKeyScopes, CORE_API_KEY_SCOPES } from '@/lib/auth/api-key-scopes';
 import appEslintConfig from '@/lib/app/eslint.config.mjs';
 import { initLeafApp } from '@/lib/app/leaf-bootstrap';
 import { appFrameSrc } from '@/lib/app/csp';
@@ -93,9 +105,29 @@ import { RESPARKABLE_NAV_ITEM } from '@/lib/framework/resparkable/protected-nav'
 import { initAppUserCreatedHooks } from '@/lib/app/user-created';
 import { collectAppSubjectData } from '@/lib/app/data-export';
 import { appTransferPolicies } from '@/lib/app/data-transfer';
+import { occupiedTiers } from '@/lib/app/reserved-tiers';
+import {
+  getAppSubjectSources,
+  getAppExcludedSubjectSources,
+  __resetAppSubjectSourceRegistryForTests,
+} from '@/lib/privacy/subject-source-registry';
 import { getAppJobs, __resetAppJobsForTests } from '@/lib/orchestration/maintenance/app-jobs';
 import { getEffectiveRateLimitPolicy, RATE_LIMIT_POLICY } from '@/lib/security/rate-limit-policy';
 import { getRegisteredNavSections, __resetNavRegistryForTests } from '@/lib/admin-nav/registry';
+import {
+  listAppMcpResourceTypes,
+  listAllowedMcpResourceUriSchemes,
+  __resetAppMcpResourcesForTests,
+} from '@/lib/orchestration/mcp/resource-registry';
+import {
+  listGraders,
+  __resetGraderRegistryForTests,
+} from '@/lib/orchestration/evaluations/graders/registry';
+import {
+  ACCOUNT_SURFACES,
+  getRegisteredAccountSections,
+  __resetAccountSectionRegistryForTests,
+} from '@/lib/account-sections/registry';
 
 /**
  * One row per `lib/app/*` seam.
@@ -116,6 +148,9 @@ interface SeamDefault {
  * Seam files deliberately absent from the table below, with the reason. The
  * drift guard at the bottom of this file allows exactly these two.
  */
+/** This file's own repo-relative path — the one place importActual is allowed. */
+const THIS_FILE = path.join('tests', 'unit', 'lib', 'app', 'defaults.test.ts');
+
 const UNASSERTED_SEAMS = new Set([
   // Asserted behaviourally instead — see tests/unit/lib/db/drift-probes.test.ts.
   'lib/app/db-drift.ts',
@@ -306,32 +341,69 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     },
   },
   {
+    seam: 'lib/app/footer.ts',
+    risk: 'a stray value would rewrite — or silently remove — the attribution line on every install, on both the public and authenticated footers',
+    assert: () => expect(footerCopyright).toBeNull(),
+  },
+  {
     seam: 'lib/app/emails.ts',
     risk: 'a stray override would swap an auth email for every install',
     assert: () => expect(emailOverrides).toEqual({}),
   },
   {
     seam: 'lib/app/data-export.ts',
-    risk: 'a stray collector would leak app rows into every install’s subject-access export',
-    // FORK (Resparkable): Sunrise asserts this returns `{}` — no app tables at all.
-    // Resparkable fills the seam, because a brain is nothing but personal data and
-    // an empty Art. 15 export would answer nothing. Pinned rather than deleted,
-    // per the SEAM_DEFAULTS convention resparkable#480 established.
+    risk: 'a stray collector would leak app rows into every install’s subject-access export, and a stray declaration would pre-account for a table nobody decided about',
+    // FORK (Resparkable): Sunrise asserts both halves ship empty — no app
+    // tables at all. Resparkable fills the seam, because a brain is nothing but
+    // personal data and an empty Art. 15 export would answer nothing. Pinned
+    // rather than deleted, per the SEAM_DEFAULTS convention resparkable#480
+    // established.
     //
-    // The original intent is preserved and is what makes this still worth
-    // asserting: the bundle must carry EXACTLY one key, `resparkable`. A second
-    // collector appearing here — a host project's own tables spread in beside
-    // the tier's, or a section name colliding — is the leak the row guards
-    // against, and it still fails. What the tier puts inside that key is
-    // covered by its own manifest guard,
+    // What the row still guards after re-pinning is the property that made it
+    // worth asserting: the two halves agree. Every section the tier DECLARES is
+    // a section the collector DELIVERS, which is exactly what
+    // `exportUserData()` throws `DeclaredAppSourceMissingError` over — a bundle
+    // short by a section reads exactly like a complete answer, and neither the
+    // subject nor the operator can tell. A collector or a declaration added
+    // without the other fails here rather than in production.
+    //
+    // The collectors are stubbed (see the mocks at the top), so this asserts the
+    // seam's SHAPE. What the tier puts in each section is covered by its own
+    // manifest guard,
     // tests/unit/lib/framework/resparkable/privacy/subject-export.test.ts.
     assert: async () => {
+      __resetAppSubjectSourceRegistryForTests();
+      const declared = getAppSubjectSources();
+      const excluded = getAppExcludedSubjectSources();
+
+      // The tier declares; it does not ship empty. A drop to zero means the
+      // seam stopped registering, which would silence the fork-accounting rule
+      // in export-sources.test.ts for every model at once.
+      expect(declared.length).toBeGreaterThan(0);
+      expect(excluded.length).toBeGreaterThan(0);
+
+      // Every model in the tier's schema is accounted for exactly once, as a
+      // source or an exclusion — never both, never neither.
+      const declaredModels = declared.map((source) => source.model);
+      const excludedModels = excluded.map((entry) => entry.model);
+      expect(declaredModels.filter((model) => excludedModels.includes(model))).toEqual([]);
+
+      // Sections are unique, because a collision would have one source's rows
+      // overwrite another's inside the bundle.
+      const sections = declared.map((source) => source.section);
+      expect(new Set(sections).size).toBe(sections.length);
+
+      // Both collectors are stubbed with a sentinel section each, so what this
+      // asserts is the seam's own contribution: it spreads BOTH sides at the
+      // top level and wraps neither. A wrapper key would make every declared
+      // section undeliverable, and a dropped collector would silently halve the
+      // answer. That the tier queries the right rows is its own guard's job.
       const bundle = await collectAppSubjectData({
         userId: 'user-1',
         email: 'user@example.com',
       });
 
-      expect(Object.keys(bundle)).toEqual(['resparkable']);
+      expect(Object.keys(bundle)).toEqual(['ownSection', 'crossSection']);
     },
   },
   {
@@ -468,6 +540,85 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     },
   },
   {
+    seam: 'lib/app/mcp-resources.ts',
+    risk: 'a stray handler would expose app data over MCP to every install\u2019s connected clients',
+    assert: () => {
+      __resetAppMcpResourcesForTests();
+      // Both readers trigger the lazy init, so this exercises the REAL seam.
+      expect(listAppMcpResourceTypes()).toEqual([]);
+      // FORK (Resparkable): the core scheme constant is `resparkable`, not
+      // `sunrise` — `CORE_URI_SCHEME` in lib/orchestration/mcp/resource-registry.ts.
+      // The row's intent is unchanged: core's own scheme, and nothing else.
+      expect(listAllowedMcpResourceUriSchemes()).toEqual(['resparkable']);
+    },
+  },
+  {
+    seam: 'lib/app/evaluations.ts',
+    risk: 'a stray grader would appear in every install\u2019s metric picker \u2014 and, on a slug core already uses, would silently rescore every run',
+    assert: () => {
+      // The registry module is driven directly, so core's barrel has not
+      // side-effect-registered anything: whatever listGraders() returns here
+      // came from the seam. The read triggers the lazy init, so this exercises
+      // the REAL file.
+      __resetGraderRegistryForTests();
+      expect(listGraders()).toEqual([]);
+    },
+  },
+  {
+    seam: 'lib/app/account-sections.ts',
+    risk: 'a stray section would appear on every install\u2019s /profile and /settings',
+    assert: () => {
+      __resetAccountSectionRegistryForTests();
+      // The read triggers the lazy init, so this exercises the REAL seam.
+      for (const surface of ACCOUNT_SURFACES) {
+        expect(getRegisteredAccountSections(surface)).toEqual([]);
+      }
+    },
+  },
+  {
+    seam: 'lib/app/api-key-scopes.ts',
+    risk: 'a stray scope would be mintable on every install \u2014 and a name colliding with a core scope would change what an existing key satisfies',
+    assert: () => {
+      expect(APP_API_KEY_SCOPES).toEqual([]);
+      // …and the union it feeds is exactly core, by value not just by length.
+      expect(listValidApiKeyScopes()).toEqual([...CORE_API_KEY_SCOPES]);
+    },
+  },
+  {
+    seam: 'lib/app/reserved-tiers.ts',
+    risk: 'a stray entry would switch OFF the guard that keeps a reserved tier empty — and it is upstream, where core is the only thing that could put a file there, that the guard is the promise rather than a formality',
+    // FORK (Resparkable): Sunrise asserts `[]` — it occupies none of them, which
+    // is the whole promise. Resparkable IS the framework-layer tier, so it
+    // occupies exactly the two `/framework` entries and no others. Pinned to the
+    // value rather than deleted, per the SEAM_DEFAULTS convention
+    // resparkable#480 established: the row still fails if a leaf tier is
+    // switched off here, which is the guard a host project installing
+    // Resparkable is relying on.
+    assert: () =>
+      expect([...occupiedTiers].sort()).toEqual(['.context/framework', 'lib/framework']),
+  },
+  {
+    seam: 'lib/app/brand.ts',
+    risk: 'a stray value would rebrand every install — page titles, both footers’ copyright line, the root meta description and every transactional email — and the legal-entity field is a legal-attribution surface, not a cosmetic one',
+    // `importActual`, NOT a plain import: tests/setup.ts pins this seam to null
+    // for the whole suite so that no core test reads a fork's brand. Importing
+    // it normally here would therefore assert the MOCK ships null, which is true
+    // by construction and would keep passing in a fork that had filled the real
+    // file — turning the one row that tells a fork to pin its value into a row
+    // that can never fail.
+    // FORK (Resparkable): Sunrise asserts all three ship null. Resparkable sets
+    // the product name here — that is where the brand moved in 0.11.0, out of
+    // the removed NEXT_PUBLIC_APP_NAME. Pinned rather than deleted: the two
+    // fields still null are legal-attribution and meta-description surfaces, and
+    // this row is what makes filling one a decision rather than a drift.
+    assert: async () => {
+      const seam = await vi.importActual<typeof import('@/lib/app/brand')>('@/lib/app/brand');
+      expect(seam.appBrandName).toBe('Resparkable');
+      expect(seam.appBrandLegalName).toBeNull();
+      expect(seam.appBrandDescription).toBeNull();
+    },
+  },
+  {
     seam: 'lib/app/csp.ts',
     risk: 'a stray origin would widen the iframe policy on every install',
     // These values are spliced straight into a response header, so an
@@ -478,11 +629,71 @@ const SEAM_DEFAULTS: SeamDefault[] = [
 
 afterEach(() => {
   __resetNavRegistryForTests();
+  __resetAccountSectionRegistryForTests();
 });
 
 describe('lib/app/ seams ship empty', () => {
   it.each(SEAM_DEFAULTS)('$seam registers nothing by default', async ({ assert }) => {
     await assert();
+  });
+
+  it('nothing but this file escapes the suite-wide brand-seam pin', () => {
+    // tests/setup.ts mocks `@/lib/app/brand` to null for EVERY test file, so
+    // that no core test can read a fork's brand and fail for a reason the fork
+    // cannot fix (#660/#661). That guarantee holds across all ~1095 test files
+    // by construction, but only while nothing escapes the mock.
+    //
+    // `vi.importActual` is legitimate here and nowhere else: it is what makes
+    // the brand row above assert the REAL scaffold rather than the mock, which
+    // is what keeps "seams ship empty" able to fail in a fork.
+    //
+    // `vi.doUnmock` is never right. It REMOVES the pin instead of restoring it,
+    // so every later case in that file sees the real seam. That is not
+    // hypothetical: it shipped twice during this change — once in this suite's
+    // own brand tests (13 cases failed against a filled seam) and once in
+    // layout-metadata, where it was invisible only because every remaining case
+    // happened to re-stub first. To go back to the null default mid-file,
+    // re-`doMock` it; do not unmock it.
+    //
+    // Matched by REGEX over vitest's whole unmocking surface, not by two string
+    // literals. The literal version missed `vi.unmock` — a third escape route —
+    // and was also defeated by double quotes or a line-wrapped call. That is the
+    // enumerating-guard failure mode this repo keeps meeting: it fails one
+    // instance per round. vitest exposes exactly `unmock` and `doUnmock` for
+    // removing a mock, so anchoring on `(?:do)?unmock` is exhaustive over the API
+    // rather than over the spellings someone happened to think of.
+    const seamPath = String.raw`['"\`]@/lib/app/brand['"\`]`;
+    const unmockRe = new RegExp(String.raw`\bvi\s*\.\s*(?:do)?[Uu]nmock\s*\(\s*` + seamPath);
+    const actualRe = new RegExp(String.raw`importActual[\s\S]{0,80}?` + seamPath);
+
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.tsx?$/.test(entry.name)) continue;
+        const src = readFileSync(full, 'utf8');
+        const rel = path.relative(process.cwd(), full);
+        if (unmockRe.test(src)) {
+          offenders.push(`${rel}: unmocks the pin instead of restoring it`);
+        }
+        if (actualRe.test(src) && rel !== THIS_FILE) {
+          offenders.push(`${rel}: reads the real seam past the pin`);
+        }
+      }
+    };
+    walk(path.join(process.cwd(), 'tests'));
+
+    expect(
+      offenders,
+      'These test files escape the brand-seam pin in tests/setup.ts. A fork that ' +
+        'fills lib/app/brand.ts would see its own brand here and fail a core test ' +
+        'it cannot fix — the exact class #660 is about. Re-doMock the null values ' +
+        'instead of unmocking, and leave importActual to this file.'
+    ).toEqual([]);
   });
 
   it('has a row for every seam file in lib/app/', () => {

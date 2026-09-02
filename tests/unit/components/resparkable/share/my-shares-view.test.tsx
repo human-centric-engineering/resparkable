@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `MySharesView` — the list that makes every share closable.
  *

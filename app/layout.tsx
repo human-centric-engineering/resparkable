@@ -59,10 +59,17 @@ const fontSans = Archivo({
   display: 'swap',
 });
 
+// Root metadata, driven entirely by the BRAND seam (#519). The `template`
+// gives every page that sets only a plain string title consistent branding;
+// a route group declaring its own `title.template` still wins, so there is no
+// double-branding. Previously this hardcoded "- Next.js Starter" and the
+// starter blurb, which every fork inherited on any un-templated page.
 export const metadata: Metadata = {
-  title: `${BRAND.name} - Next.js Starter`,
-  description:
-    'A production-ready Next.js starter template designed for rapid application development',
+  title: {
+    default: BRAND.name,
+    template: `%s - ${BRAND.name}`,
+  },
+  description: BRAND.description,
 };
 
 export default async function RootLayout({

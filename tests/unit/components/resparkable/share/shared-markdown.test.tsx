@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `SharedMarkdown`, the renderer on the one page with no session.
  *

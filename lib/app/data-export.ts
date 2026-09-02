@@ -30,25 +30,33 @@
  * collector yields a bundle that looks complete and is not, and neither the
  * subject nor the operator can tell. A static import cannot be missed.
  *
- * **Keep it complete.** The core guard test (`export-sources.test.ts`) diffs
- * `prisma/schema/*.prisma` against the core manifest so a new core table can't
- * quietly narrow the export. Your tables need the same protection, and core
- * cannot write it for you — the pattern worth copying is a constant listing the
- * tables you export plus a test that greps your own schema file for
- * `@@map("app_…")` and asserts each mapped table appears in it. Then adding a
- * table without extending the export fails your build instead of shipping a
- * short answer to a data subject.
+ * **Keep it complete — and core now checks that you did.** Declare your tables
+ * in `initAppSubjectSources()` below. The core guard test
+ * (`export-sources.test.ts`) diffs `prisma/schema/*.prisma` against the core
+ * manifest so a new core table can't quietly narrow the export, and it holds
+ * your tier's schema file to the same rule against your declarations: **every**
+ * model in a schema file that is not one of Sunrise's own — `app.prisma`,
+ * `framework-*.prisma`, or any other name you choose — must be declared as a
+ * source or excluded with a reason, or the suite fails naming it.
  *
- * A table holding no personal data (lookup tables, org config with no person in
- * it) is fine to leave out — but say so in a comment where you list them, so
- * the omission reads as a decision rather than an oversight.
+ * Full accounting, rather than the user-id heuristic core applies to itself,
+ * because core reads its own column vocabulary and cannot read yours: a table
+ * keyed `authorId` or `respondentId` is invisible to that scan, and the tables
+ * it cannot see are exactly the ones nobody remembers. A lookup or join table
+ * holding no personal data is an `excluded` row with a one-line reason — which
+ * is the note a DPO wants anyway, and it costs you a line once per table.
  *
  * Full guide: .context/privacy/data-export.md · CUSTOMIZATION.md §4
  */
 
+import { registerAppSubjectSources } from '@/lib/privacy/subject-source-registry';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
-import { collectResparkableSubjectData } from '@/lib/framework/resparkable/repo/subject-export';
+import {
+  collectResparkableSubjectData,
+  RESPARKABLE_SUBJECT_SOURCES,
+  RESPARKABLE_EXCLUDED_MODELS,
+} from '@/lib/framework/resparkable/repo/subject-export';
 
 /** Identity of the subject being exported. */
 export interface AppSubjectQuery {
@@ -65,14 +73,85 @@ export interface AppSubjectQuery {
 export type AppSubjectData = Record<string, unknown>;
 
 /**
+ * Declare the tier's tables to core's subject-source registry.
+ *
+ * Derived from `RESPARKABLE_SUBJECT_SOURCES` and `RESPARKABLE_EXCLUDED_MODELS`
+ * rather than re-typed, for the same reason `lib/app/capabilities.ts` makes one
+ * call instead of pasting a list: the tier owns its manifest, so a later
+ * Resparkable release can add a table without every host project editing this
+ * file. A hand-copied list here would be a second manifest to keep in step, and
+ * the failure mode of the two drifting apart is a bundle that reads complete
+ * and is not.
+ *
+ * `tier: 'framework'` because Resparkable sits between Sunrise and its own leaf
+ * forks. That leaves the `'app'` slot free for a host project's own tables.
+ *
+ * Four models are declared here rather than derived, because they are not in
+ * the owner-scoped manifest:
+ *
+ * - `ResparkableGroupMember` / `ResparkableGroupInvite` are keyed on a person
+ *   and an address rather than on a space, so they are answered by
+ *   `access/subject-export.ts` and named in `RESPARKABLE_CROSS_SUBJECT_MODELS`.
+ * - `ResparkableSettings` / `ResparkableBillingSettings` are deployment
+ *   configuration keyed by slug, holding no column that names a person. The
+ *   owner-scoped guard never asks about them because it scans for `spaceId`;
+ *   core asks about every model in a fork-owned schema file, which is the
+ *   stricter and better rule.
+ */
+export function initAppSubjectSources(): void {
+  registerAppSubjectSources({
+    tier: 'framework',
+    sources: [
+      ...Object.entries(RESPARKABLE_SUBJECT_SOURCES).map(([model, source]) => ({
+        model,
+        section: source.section,
+        disposition: 'export' as const,
+        description: source.holds,
+      })),
+      {
+        model: 'ResparkableGroupMember',
+        section: 'groupMemberships',
+        disposition: 'export' as const,
+        description:
+          'Groups the subject belongs to, the role they hold in each, and when they joined.',
+      },
+      {
+        model: 'ResparkableGroupInvite',
+        section: 'groupInvites',
+        disposition: 'export' as const,
+        description:
+          'Invitations to a group addressed to the subject, including ones never accepted.',
+      },
+    ],
+    excluded: [
+      ...RESPARKABLE_EXCLUDED_MODELS.map((entry) => ({
+        model: entry.model,
+        reason: entry.reason,
+      })),
+      {
+        model: 'ResparkableSettings',
+        reason:
+          'Deployment-wide configuration keyed by slug (feature toggles and defaults for the whole install). It holds no column naming a person, so there is nothing in it that is about the subject.',
+      },
+      {
+        model: 'ResparkableBillingSettings',
+        reason:
+          'Deployment-wide billing configuration keyed by slug (credit prices and grant sizes). It holds no column naming a person; the subject\u2019s own balance and ledger are exported as the billingAccount and billingLedger sections.',
+      },
+    ],
+  });
+}
+
+/**
  * Collect this app's data about one subject.
  *
- * FORK NOTE (Resparkable): returns the whole brain, nested under one `resparkable` key
- * rather than spread, so a host project's own app sections can never collide
- * with a section name the tier adds later. Resparkable owns its manifest — a later
- * Resparkable release can add a table without every host project editing this file,
- * which is the same reason `lib/app/capabilities.ts` makes one call rather than
- * pasting a list.
+ * FORK NOTE (Resparkable): returns the whole brain, one section per table,
+ * spread at the top level of the bundle's `app` object. Resparkable owns its
+ * manifest — a later Resparkable release can add a table without every host
+ * project editing this file, which is the same reason
+ * `lib/app/capabilities.ts` makes one call rather than pasting a list, and why
+ * `initAppSubjectSources()` above derives its declarations from that manifest
+ * instead of restating it.
  *
  * Static import on purpose, like the other `lib/app/*` seams here: this runs
  * inside `exportUserData()` on a request a person is waiting on, and this repo
@@ -104,5 +183,17 @@ export async function collectAppSubjectData(subject: AppSubjectQuery): Promise<A
     collectResparkableCrossSubjectData({ userId: subject.userId, email: subject.email }),
   ]);
 
-  return { resparkable: { ...own, ...crossSubject } };
+  // Flat, not nested under a `resparkable` key as it was before the 0.11.2
+  // merge. Core now validates that every section registered through
+  // `registerAppSubjectSources()` is delivered as a top-level key of the
+  // bundle's `app` object, and throws `DeclaredAppSourceMissingError` when one
+  // is not — so a nested wrapper would make every declaration undeliverable.
+  //
+  // The nesting existed to stop a host project's own app sections colliding
+  // with one the tier adds later. That reason is now core's: the registry
+  // rejects a second model claiming a section already taken, naming both, and
+  // it does so at declaration time rather than by silently overwriting a key.
+  // A wrapper on top of that would buy nothing and cost the per-section leak
+  // check in `scripts/smoke/export.ts`, which reads `bundle.app[section]`.
+  return { ...own, ...crossSubject };
 }

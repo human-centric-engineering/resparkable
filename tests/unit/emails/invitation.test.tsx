@@ -1,6 +1,12 @@
+// @vitest-environment happy-dom
+
 import { describe, it, expect } from 'vitest';
 import { render } from '@react-email/render';
+import { BRAND } from '@/lib/brand';
 import InvitationEmail from '@/emails/invitation';
+
+// `BRAND.name`, not a literal — see the note in welcome.test.tsx: the brand seam
+// is pinned to its unconfigured default for the whole suite.
 
 describe('InvitationEmail', () => {
   const defaultProps = {
@@ -24,7 +30,7 @@ describe('InvitationEmail', () => {
   it('should include preview text', async () => {
     const html = await render(<InvitationEmail {...defaultProps} />);
 
-    expect(html).toContain('You&#x27;ve been invited to join Resparkable');
+    expect(html).toContain(`You&#x27;ve been invited to join ${BRAND.name}`);
   });
 
   it('should have proper HTML structure', async () => {
@@ -119,7 +125,7 @@ describe('InvitationEmail', () => {
   it('should mention app name', async () => {
     const html = await render(<InvitationEmail {...defaultProps} />);
 
-    expect(html).toContain('Resparkable');
+    expect(html).toContain(BRAND.name);
   });
 
   it('should include contact information in footer', async () => {

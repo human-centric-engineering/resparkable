@@ -5,6 +5,15 @@
  * (see `tests/unit/lib/framework/resparkable/api/endpoints.test.ts` for the sibling
  * pattern). Two things earn this file its place:
  *
+ * FORK NOTE — point 2 below reads `lib/app/protected-routes.ts` for real, not
+ * through a mock, and that is the point of it: the invariant is that this
+ * module's `BASE` is actually in the seam a fork owns, so a mock would assert
+ * the invariant against a fixture instead of against the deployment. A fork
+ * appending its own prefixes changes nothing here — the case asks that `BASE`
+ * is present, not that it is alone. A fork that REMOVES Resparkable's prefix
+ * fails this, which is correct: every mounted page under it would render to a
+ * signed-out visitor.
+ *
  * 1. The four builder functions (`project`, `entity`, `graphFocus`, `board`,
  *    `searchFor`) interpolate untrusted ids/queries into a URL — a
  *    concatenation bug or a missing `encodeURIComponent` fails silently as a

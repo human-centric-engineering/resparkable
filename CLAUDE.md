@@ -72,7 +72,9 @@ npm run db:reset               # Drop, re-migrate, re-seed from scratch
 npm run db:studio              # Open Prisma Studio
 
 # Testing
-npm run test                   # Run tests
+npm run test:changed           # Tests this branch affects + whole-tree guards (fast; what /pre-pr runs)
+npm run test:changed:coverage  # ...and gate coverage per changed file (≥80% each)
+npm run test                   # Full suite — for a merge from main, a release cut, or the whole picture
 npm run test:watch             # Watch mode
 npm run smoke:chat             # Smoke: streaming chat handler vs real dev DB
 
@@ -144,6 +146,7 @@ import { FormError } from './form-error'; // ❌ no exception for siblings
 | Logging               | `logger.info()`, `logger.error()`                                    | `lib/logging/index.ts`                  |
 | Local storage         | `useLocalStorage()`                                                  | `lib/hooks/use-local-storage.ts`        |
 | Wizard state          | `useWizard()`                                                        | `lib/hooks/use-wizard.ts`               |
+| Unmount-safe timer    | `useTimeout()`                                                       | `lib/hooks/use-timeout.ts`              |
 | ETag / 304            | `computeETag()`, `checkConditional()`                                | `lib/api/etag.ts`                       |
 
 ## Skills
@@ -270,12 +273,13 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 
 > **Two namespace tiers are reserved for downstream forks — Resparkable core must
 > never create files or tables under either.** `/app` is the **leaf-fork** tier
-> (`.context/app/`, `lib/app/**` fork-owned scaffold, and
+> (`.context/app/`, `lib/app/**` fork-owned scaffold, `components/app/**`, and
 > `prisma/schema/app.prisma` — which ships empty; the platform's own app-domain
 > models live in `prisma/schema/platform.prisma`). `/framework` is the
 > **framework-layer** tier for forks that sit _between_ Resparkable and their own
-> leaf forks (e.g. Daybreak): `lib/framework/`, `.context/framework/`,
-> `prisma/schema/framework-*.prisma`, and the `framework_` table prefix. Keeping
+> leaf forks (e.g. Daybreak): `lib/framework/`, `components/framework/`,
+> `.context/framework/`, `prisma/schema/framework-*.prisma`, and the
+> `framework_` table prefix. Keeping
 > both empty upstream is what lets a fork's files there merge cleanly. Resparkable
 > platform docs go under a named domain folder (below); the app boot seam is
 > `lib/app/bootstrap.ts` (empty `initApp()`). See
@@ -284,6 +288,8 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 | Domain                   | Path                                                      | Key Content                                                                                                                                                                                                       |
 | ------------------------ | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Architecture             | `.context/architecture/`                                  | System design, deployment                                                                                                                                                                                         |
+| Checks & Gates           | `.context/architecture/checks.md`                         | Every automated gate: what runs where, what each one catches, and the local command for it                                                                                                                        |
+| Fork Init Seams          | `.context/architecture/fork-init-seams.md`                | The `initApp*()` contract: which seams isolate a throw, which latch, and what a failing one costs                                                                                                                 |
 | CI Pipeline              | `.context/architecture/ci.md`                             | GitHub Actions pipeline; public/private-fork adaptation, `CI_TEST_SCOPE` knob, GHAS-skip, sharding, the two forker gotchas                                                                                        |
 | Multi-Tenancy            | `.context/architecture/multi-tenancy.md`                  | Opt-in RLS retrofit playbook; single-tenant by default, `TENANCY_MODE` seam, fork-tier map, upstream-sync checklist                                                                                               |
 | Multi-Tenancy Research   | `.context/architecture/multi-tenancy-research.md`         | Gap analysis: five isolation planes, control/commercial planes, ownership matrix, fork merge surface, provisions for forks                                                                                        |
@@ -387,6 +393,12 @@ All commands default to branch diff mode but accept file/folder paths. The test-
 
 - Run `npm run type-check` for errors
 - Run `npx prisma generate` after schema changes
+
+**Lint dies with ENOENT before reading any source file:**
+
+- Stale paths in the ESLint cache (see the `coverage/**` note in `eslint.config.mjs`)
+- Run `npm run clean:cache` — the toolchain caches are `.eslintcache` and
+  `.prettiercache` at the repo root, so `rm -rf .next` no longer clears them (#677)
 
 **Auth not working:**
 

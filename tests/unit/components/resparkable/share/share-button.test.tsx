@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `ShareButton` — the control that opens `ShareDialog`.
  *

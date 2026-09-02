@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Signup Page Tests
  *
@@ -24,6 +26,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import SignupPage, { metadata } from '@/app/(auth)/signup/page';
+
+// `BRAND.name`, not the product name spelled out: tests/setup.ts pins the
+// brand seam to null for the whole suite, so what these surfaces render is the
+// unconfigured default. The fork's own brand is asserted through every surface
+// in tests/unit/brand-fork-surfaces.test.tsx.
+import { BRAND } from '@/lib/brand';
 
 // Mock next/navigation (required by SignupForm component)
 vi.mock('next/navigation', async () => {
@@ -66,7 +74,7 @@ describe('SignupPage', () => {
     });
 
     it('should have correct description', () => {
-      expect(metadata.description).toBe('Create a new Resparkable account');
+      expect(metadata.description).toBe(`Create a new ${BRAND.name} account`);
     });
   });
 

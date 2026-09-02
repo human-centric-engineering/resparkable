@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `CommentThread` — the one thing a grantee can write.
  *

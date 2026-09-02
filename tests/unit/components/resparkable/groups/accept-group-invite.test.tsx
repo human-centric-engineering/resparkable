@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `AcceptGroupInvite`, the page a group-invitation email lands on.
  *

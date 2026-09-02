@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * SparkGlyph / SparkIcon / SparkRule (components/brand/spark-glyph.tsx)
  *

@@ -15,6 +15,17 @@
  *   framework tier registers and nothing of its own (vanilla Resparkable ships it
  *   empty; this fork fills it — see the FORK NOTE on that test).
  *
+ * ---------------------------------------------------------------------------
+ * FORK NOTE — one case here asserts your seam is EMPTY
+ * ---------------------------------------------------------------------------
+ * `the shipped lib/app/db-drift.ts scaffold registers nothing` reads the real
+ * seam, so registering your first probe is expected to fail it. Pin your own
+ * probe names rather than deleting the case: what it protects is that a probe
+ * committed to core by accident applies to every install, and that protection
+ * is worth keeping once you have probes of your own to assert instead.
+ *
+ * Everything else in this file drives the registry directly and is unaffected.
+ *
  * @see lib/db/drift-probes.ts
  * @see lib/app/db-drift.ts
  */

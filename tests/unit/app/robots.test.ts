@@ -8,6 +8,15 @@
  * something has already fetched it, and neither removes a URL that is already
  * indexed. All three are required; this covers the one that lives here.
  *
+ * FORK NOTE — this file reads `lib/app/robots.ts` for real, not through a mock,
+ * so what it measures is whatever that seam currently exports. Resparkable
+ * fills it, so the cases below are written against the tier's real exclusions
+ * rather than against an empty list. A leaf fork appending its own routes
+ * should extend the expectations here rather than delete them: the property
+ * worth keeping is that every excluded path is present AND that nothing else
+ * quietly joined them, since an over-broad `Disallow` de-indexes a marketing
+ * page nobody notices for months.
+ *
  * The seam matters as much as the entry. A fork adding a route that must not be
  * crawled should append to `lib/app/robots.ts`, not edit this file — the same
  * model as `appProtectedRoutes` in `proxy.ts`, and for the same reason: a fork

@@ -5,6 +5,15 @@
  * every later phase hangs off, and the portability guarantees that wiring is
  * supposed to preserve. Those are what this file locks in:
  *
+ * FORK NOTE — this file reads `lib/app/bootstrap.ts` for real, not through a
+ * mock, because the thing under test IS the boot chain and mocking the seam
+ * would leave it asserting against its own stub. A leaf fork installing
+ * Resparkable inherits that chain: `initApp()` boots the tier, the tier calls
+ * `initLeafApp()`, and a leaf fork that fills `lib/app/leaf-bootstrap.ts`
+ * should pin its own hook here rather than removing the delegation case. The
+ * order is the contract — Sunrise, then Resparkable, then the leaf — and a
+ * fork whose init runs before the tier's has a half-booted tier underneath it.
+ *
  *   1. `initApp()` boots the tier, and the tier delegates to the leaf hook —
  *      the chain Sunrise → Resparkable → leaf fork, in that order.
  *   2. The boot import stays **dynamic**. A static `@/lib/framework/...`

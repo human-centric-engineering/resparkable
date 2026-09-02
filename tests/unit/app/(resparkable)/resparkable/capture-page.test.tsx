@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `/resparkable/capture` — the share-target landing page.
  *

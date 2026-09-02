@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * CreditAccountsTable Component Tests
  *

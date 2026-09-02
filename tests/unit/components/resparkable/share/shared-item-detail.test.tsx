@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `SharedItemDetail` — one item somebody shared with you, opened.
  *

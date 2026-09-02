@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Login Page Tests
  *
@@ -20,6 +22,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import LoginPage, { metadata } from '@/app/(auth)/login/page';
 import { isInviteOnly } from '@/lib/auth/signup-mode';
+
+// `BRAND.name`, not the product name spelled out: tests/setup.ts pins the
+// brand seam to null for the whole suite, so what these surfaces render is the
+// unconfigured default. The fork's own brand is asserted through every surface
+// in tests/unit/brand-fork-surfaces.test.tsx.
+import { BRAND } from '@/lib/brand';
 
 /**
  * Mock the LoginForm component
@@ -67,7 +75,7 @@ describe('LoginPage', () => {
 
     it('should have correct description', () => {
       // Assert: Description is set correctly
-      expect(metadata.description).toBe('Sign in to your Resparkable account');
+      expect(metadata.description).toBe(`Sign in to your ${BRAND.name} account`);
     });
   });
 

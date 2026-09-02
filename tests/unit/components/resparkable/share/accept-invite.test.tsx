@@ -1,3 +1,5 @@
+// @vitest-environment happy-dom
+
 /**
  * Unit Tests: `AcceptInvite` — the page an invite email lands on.
  *
