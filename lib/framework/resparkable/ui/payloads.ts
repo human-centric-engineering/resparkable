@@ -870,6 +870,31 @@ export const acceptInviteResponseSchema = z.object({
 
 export type AcceptInviteResponse = z.infer<typeof acceptInviteResponseSchema>;
 
+/**
+ * What `POST /groups/invites/accept` answers.
+ *
+ * Tagged by `joined` for the reason the share equivalent is tagged by
+ * `accepted`: the page reads the tag first and nothing else matters until it
+ * has. `expectedEmail` arrives **masked** and there is no unmasked form of it
+ * anywhere, so a stranger holding a forwarded email learns nothing writable-to.
+ *
+ * `spaceId` is here because joining a group is the one moment the client learns
+ * which space it may now open. It grants nothing on its own: every request
+ * re-resolves membership through `services/membership.ts`.
+ */
+export const acceptGroupInviteResponseSchema = z.object({
+  joined: z.boolean(),
+  groupId: z.string().optional(),
+  groupName: z.string().optional(),
+  spaceId: z.string().optional(),
+  /** True when the row was already there: a second invitation to somebody in. */
+  alreadyMember: z.boolean().optional(),
+  reason: z.string().optional(),
+  expectedEmail: z.string().optional(),
+});
+
+export type AcceptGroupInviteResponse = z.infer<typeof acceptGroupInviteResponseSchema>;
+
 /** One comment on a shared item. Author names only — never addresses. */
 export const commentSchema = z.object({
   id: z.string(),

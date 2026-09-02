@@ -119,6 +119,16 @@ const HANDLED_OUTSIDE_MANIFEST = new Map([
       'ResparkableGrant',
       'ResparkableComment',
       'ResparkableShareLink',
+      // Phase 46 (§23.3). The tier's only two tables keyed on a person rather
+      // than on a space, so they are answered by `access/subject-export.ts`
+      // rather than by the space-scoped manifest; the tier's own guard has a
+      // dedicated check for exactly that category. Invisible to this scan for
+      // the same sunrise#533 reason as the 24 above. `ResparkableGroup` is
+      // absent deliberately: it holds no user-id column at all, so this scan
+      // never asks about it, and listing it would be an accounting note about
+      // nothing.
+      'ResparkableGroupMember',
+      'ResparkableGroupInvite',
     ] as const
   ).map(
     (model) =>

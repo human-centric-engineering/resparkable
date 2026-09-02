@@ -136,8 +136,9 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // `/transcribe/image` one photo to a vision model; `/vault`
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
-    // connection open for a tool loop; `/grants/[id]/invite` sends mail to
-    // somebody else; and the two public share-reader rules, which are the
+    // connection open for a tool loop; `/grants/[id]/invite` and
+    // `/groups/[id]/invites` send mail to somebody else; and the two public
+    // share-reader rules, which are the
     // exception to everything else in this list — see below).
     // Asserting the exact set keeps the original intent: a stray rule still
     // fails, and so does one that escapes the namespace.
@@ -168,6 +169,10 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         // creating, amending and revoking a grant stay on the section's
         // 100/min — only the verb that sends mail is capped at 20/day.
         String(/^\/api\/v1\/resparkable\/grants\/[^/]+\/invite$/),
+        // The group invite (phase 46), on the same daily tier and anchored the
+        // same way: on the `/invites` suffix, so creating a group, listing
+        // members and changing roles stay on the section's 100/min.
+        String(/^\/api\/v1\/resparkable\/groups\/[^/]+\/invites$/),
         String(/^\/api\/v1\/resparkable\/search(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),

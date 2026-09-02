@@ -18,6 +18,42 @@ release process.
 
 ### Added
 
+- **Groups: a principal that owns a workspace (Release 9, phase 46).** Three new
+  Prisma models, `ResparkableGroup`, `ResparkableGroupMember` and
+  `ResparkableGroupInvite`, plus a new drift probe **B13** covering the three
+  hand-written foreign keys they carry into `User`. Additive: no existing table
+  is altered and no row is rewritten, because phase 45 already did the
+  structural work.
+
+  Two things a fork should know before extending this. **A group invite is its
+  own table**, where `plan.md` §23.3 specifies two: a `ResparkableGrant` is live
+  for its address before anybody accepts it, while a group invite must grant
+  nothing until accepted, and folding it into the membership row would need a
+  nullable `userId`, which silently voids `@@unique([groupId, userId])` because
+  NULLs do not collide in a Postgres unique index. And **the group row cascades
+  from its space, not the reverse**, so deleting a group is a single `DELETE` of
+  the space row that the existing D1 cascade follows through all 23 satellites.
+
+  Phase 46's API surface, on top of that: `GET`/`POST /api/v1/resparkable/groups`,
+  `GET`/`PATCH`/`DELETE /groups/[id]`, `GET /groups/[id]/members`,
+  `PATCH`/`DELETE /groups/[id]/members/[userId]`, `GET`/`POST /groups/[id]/invites`,
+  `DELETE /groups/[id]/invites/[inviteId]` and `POST /groups/invites/accept`, plus
+  a new `resolveGroupSpaceScope()` seam in
+  `lib/framework/resparkable/services/membership.ts` and a `repo/groups.ts` beside
+  it. Group invitations join the existing `resparkable-invite` tier (20/day).
+
+  **`services/membership.ts` is the only place membership may be read on a
+  request path**, and a fork adding a group surface should call it rather than
+  querying the tables. The moment a membership read reaches a list query, a group
+  space has the per-row ACL §23.4 forbids: a join on the hot path of roughly forty
+  endpoints, and every one of them a potential leak.
+
+  Still no group UI beyond the invitation-accept page: the space switcher, the
+  six capture paths and the `/resparkable/groups` section are phase 47's, and
+  erasure succession, the typed delete confirmation and the Art. 15 predicate are
+  phase 48's. See
+  [`phase-46-plan.md`](./.context/framework/resparkable/phase-46-plan.md).
+
 - **The Prisma field catches up with the column: `spaceId` everywhere.** The
   transitional `@map("spaceId")` is gone, so `ResparkableSpace.spaceId` and the
   same field on all 23 satellites are named the same thing in the schema, the
