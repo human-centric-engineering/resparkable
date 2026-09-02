@@ -498,7 +498,8 @@ describe('runChunk', () => {
 
     // FORK (Resparkable): the value is `resolveHeapMb`'s, not `DEFAULT_HEAP_MB`
     // flat — it is floored at Node's own default heap limit, which exceeds
-    // 6144MB on a 16GB machine. See the note in the `withHeapCap` case below.
+    // 6144MB on a 16GB machine. See the note in the `withHeapCap` case below,
+    // and sunrise#702.
     // What this row is actually for is unchanged: the cap reaches the CHILD's
     // env rather than the coordinator's.
     const expectedMb = Math.max(
@@ -560,7 +561,8 @@ describe('withHeapCap', () => {
     // 6336MB, above `DEFAULT_HEAP_MB` (6144), so `applied <= DEFAULT_HEAP_MB`
     // fails there. It passes on upstream CI because an 8GB Linux runner's
     // default is ~4GB — the assertion encodes one box's answer, which is the
-    // thing its own comment above says it is avoiding. Filed as a Sunrise ask.
+    // thing its own comment above says it is avoiding. Filed as sunrise#702;
+    // revert to upstream's version when it lands.
     //
     // Two invariants, both load-bearing: never above what the machine can back,
     // and never above the larger of what was asked for and what Node would have
