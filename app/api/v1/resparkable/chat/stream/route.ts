@@ -59,7 +59,6 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { RESPARKABLE_CHAT_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   assertPositiveBalance,
   recordAgentSpend,
@@ -86,7 +85,7 @@ export const POST = withAuth(async (request, session) => {
   // every scoped table has an FK to the space row. Idempotent and race-safe.
   await ensureResparkableSpace(session.user.id);
 
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   // Refused before any provider call: see services/billing.ts. Throws
   // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
   await assertPositiveBalance(scope);
@@ -130,7 +129,7 @@ export const POST = withAuth(async (request, session) => {
  */
 async function* tapChatSpend(
   events: AsyncIterable<ChatEvent>,
-  scope: ReturnType<typeof spaceScope>
+  scope: SpaceScope
 ): AsyncGenerator<ChatEvent> {
   let conversationId: string | undefined;
 
@@ -145,7 +144,7 @@ async function* tapChatSpend(
         });
       } catch (error) {
         logger.error('Resparkable chat spend could not be recorded', error, {
-          userId: scope.spaceId,
+          spaceId: scope.spaceId,
           conversationId,
         });
       }
@@ -153,3 +152,5 @@ async function* tapChatSpend(
     yield event;
   }
 }
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';

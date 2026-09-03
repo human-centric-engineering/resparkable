@@ -17,13 +17,12 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { promoteThought } from '@/lib/framework/resparkable/services/promote';
 import { promoteThoughtSchema } from '@/lib/framework/resparkable/validations';
 
 export const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, promoteThoughtSchema);
@@ -36,3 +35,4 @@ export const POST = withAuth<{ id: string }>(async (request, session, { params }
 
   return successResponse(result, undefined, { status: 201 });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

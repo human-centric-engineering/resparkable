@@ -16,12 +16,11 @@ import { getRouteLogger } from '@/lib/api/context';
 import { checkConditional, computeETag } from '@/lib/api/etag';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { buildCounts } from '@/lib/framework/resparkable/services/counts';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
 
   const counts = await buildCounts(scope);
 
@@ -36,3 +35,4 @@ export const GET = withAuth(async (request, session) => {
 
   return successResponse(counts, undefined, { headers: { ETag: etag } });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
