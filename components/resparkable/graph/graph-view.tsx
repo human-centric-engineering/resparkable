@@ -58,6 +58,7 @@ import {
 } from 'd3-force';
 
 import { GRAPH_NODE_COLOURS, isDisplayType } from '@/components/resparkable/ui/entity-chip';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { GraphPayloadWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -160,7 +161,7 @@ export function GraphView({ payload }: { payload: GraphPayloadWire }): React.Rea
     const id = rest.join(':');
     if (!type || !id) return;
     // Re-centre rather than expand: each step is its own bounded neighbourhood.
-    router.push(RESPARKABLE_ROUTES.graphFocus(type, id));
+    router.push(withActiveSpace(RESPARKABLE_ROUTES.graphFocus(type, id)));
   };
 
   return (

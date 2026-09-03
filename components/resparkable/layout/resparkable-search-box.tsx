@@ -34,6 +34,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Search } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { cn } from '@/lib/utils';
 
@@ -60,7 +61,7 @@ export function ResparkableSearchBox({
       onSubmit={(event) => {
         event.preventDefault();
         const query = value.trim();
-        if (query) router.push(RESPARKABLE_ROUTES.searchFor(query));
+        if (query) router.push(withActiveSpace(RESPARKABLE_ROUTES.searchFor(query)));
       }}
     >
       <label htmlFor="resparkable-search" className="sr-only">

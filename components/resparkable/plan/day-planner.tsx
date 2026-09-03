@@ -37,7 +37,7 @@ import { ClientDate } from '@/components/ui/client-date';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { resparkableApi } from '@/lib/framework/resparkable/api/client';
+import { resparkableApi, withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { AreaWire, ProjectWire, TimeBlockWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -90,7 +90,7 @@ export function DayPlanner({
       onDayChange(next);
       return;
     }
-    router.push(RESPARKABLE_ROUTES.planFor(next));
+    router.push(withActiveSpace(RESPARKABLE_ROUTES.planFor(next)));
   }
 
   return (

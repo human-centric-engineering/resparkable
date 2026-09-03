@@ -43,6 +43,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { AreaWire, ProjectWire } from '@/lib/framework/resparkable/ui/payloads';
 import { PROJECT_STATUSES } from '@/lib/framework/resparkable/validations';
@@ -85,7 +86,11 @@ export function ProjectsView({
     if (next === ALL) search.delete('status');
     else search.set('status', next);
     const query = search.toString();
-    router.push(query ? `${RESPARKABLE_ROUTES.PROJECTS}?${query}` : RESPARKABLE_ROUTES.PROJECTS);
+    router.push(
+      withActiveSpace(
+        query ? `${RESPARKABLE_ROUTES.PROJECTS}?${query}` : RESPARKABLE_ROUTES.PROJECTS
+      )
+    );
   }
 
   return (

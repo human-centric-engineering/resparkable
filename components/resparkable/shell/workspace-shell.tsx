@@ -111,6 +111,7 @@ import { PaneCollapseButton } from '@/components/resparkable/shell/pane-collapse
 import { RouteTabBridge } from '@/components/resparkable/shell/route-tab-bridge';
 import { MobilePaneSwitcher } from '@/components/resparkable/shell/mobile-pane-switcher';
 import { ResparkableAppHeader } from '@/components/resparkable/shell/app-header';
+import type { OpenableSpaceWire } from '@/lib/framework/resparkable/ui/payloads';
 import { ProtectedFooter } from '@/components/layouts/protected-footer';
 import { ActivityPane } from '@/components/resparkable/activity/activity-pane';
 import { SparkeyPane } from '@/components/resparkable/sparkey/sparkey-pane';
@@ -194,9 +195,15 @@ function CollapsibleSidePanel({
 
 export interface WorkspaceShellProps {
   children: React.ReactNode;
+  /**
+   * The workspaces this person can open, read by the layout. Passed through
+   * rather than fetched here: this component is `'use client'`, and a fetch in
+   * it would put a spinner in the header on every cold load.
+   */
+  spaces: OpenableSpaceWire[];
 }
 
-export function WorkspaceShell({ children }: WorkspaceShellProps): React.ReactElement {
+export function WorkspaceShell({ children, spaces }: WorkspaceShellProps): React.ReactElement {
   // `initialValue: true` — this shell's three-pane layout is the desktop
   // case, so the SSR/first-render guess (see `useMediaQuery`'s own header
   // comment) should land there, not on `MobilePaneSwitcher`'s full-width
@@ -242,7 +249,7 @@ export function WorkspaceShell({ children }: WorkspaceShellProps): React.ReactEl
           scroll: `flex-1 min-h-0` on the pane row means the footer's own
           height is simply subtracted from it, no calc() guess needed. */}
         <div className="flex h-dvh flex-col">
-          <ResparkableAppHeader onPresent={() => setPresenting(true)} />
+          <ResparkableAppHeader spaces={spaces} onPresent={() => setPresenting(true)} />
           <div className="min-h-0 flex-1">
             {/* Wraps both branches, not just the desktop one: `WorkspacePane`
               calls `useWorkspaceOverlay()` unconditionally, and

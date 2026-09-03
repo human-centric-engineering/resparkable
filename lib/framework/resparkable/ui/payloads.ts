@@ -914,3 +914,25 @@ export const commentSchema = z.object({
 export type CommentWire = z.infer<typeof commentSchema>;
 
 export const commentsSchema = z.array(commentSchema);
+
+// ─── Workspaces (phase 47) ───────────────────────────────────────────────────
+
+/**
+ * One row of the header switcher: `GET /resparkable/spaces`.
+ *
+ * `role` is a bare string rather than an enum, on this schema alone, because a
+ * role the client does not recognise must render as a workspace it can still
+ * open rather than blanking the switcher. What the role is *allowed* to do is
+ * decided server-side by `resolveActiveSpaceScope`, never by this label.
+ */
+export const openableSpaceSchema = z.object({
+  spaceId: z.string(),
+  name: z.string(),
+  kind: z.enum(['personal', 'group']),
+  role: z.string(),
+  groupId: z.string().nullable(),
+});
+
+export const openableSpacesSchema = z.array(openableSpaceSchema);
+
+export type OpenableSpaceWire = z.infer<typeof openableSpaceSchema>;

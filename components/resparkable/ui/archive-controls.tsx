@@ -44,7 +44,7 @@ import {
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
-import { resparkableApi } from '@/lib/framework/resparkable/api/client';
+import { resparkableApi, withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 
@@ -120,7 +120,7 @@ export function ArchiveControls({
       // acted in carries on displaying the deleted row. Announcing the change
       // instead lets this pane's own detail tab refetch and land on the "not
       // found" empty state it already implements, and touches nothing else.
-      if (redirectTo && !workspace) router.push(redirectTo);
+      if (redirectTo && !workspace) router.push(withActiveSpace(redirectTo));
       else refresh(change);
     }
   }

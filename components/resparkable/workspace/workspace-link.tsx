@@ -63,6 +63,7 @@ import * as React from 'react';
 import Link from 'next/link';
 
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
+import { useSpaceHref } from '@/lib/framework/resparkable/ui/use-active-space';
 import { resolveTabForHref } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
 
 export interface WorkspaceLinkProps extends Omit<
@@ -103,13 +104,24 @@ export function WorkspaceLink({
   const workspace = useOptionalWorkspace();
   const target = React.useMemo(() => (external ? null : resolveTabForHref(href)), [external, href]);
 
+  // The href carries the active workspace whichever way this link goes. When it
+  // degrades to real navigation, dropping the workspace would land the reader
+  // in their personal brain looking at a link they clicked inside somebody
+  // else's; when it opens a tab, the href is still what ⌘-click, "copy link
+  // address" and the status bar show, and those must not name a different
+  // workspace from the one the click would open. `useSpaceHref` rather than
+  // `withActiveSpace` because this value is rendered into markup: reading
+  // `window` here would produce one href on the server and another after
+  // hydration.
+  const spaceHref = useSpaceHref()(href);
+
   // `rest` is spread first, deliberately: `<Button asChild>` and friends wrap
   // this in a Radix `Slot`, which passes its own props down, and a `className`
   // or `onClick` arriving that way must not silently replace the handler this
   // component exists to install. Ours win.
   if (!workspace || !target) {
     return (
-      <Link {...rest} href={href} onClick={onNavigate}>
+      <Link {...rest} href={spaceHref} onClick={onNavigate}>
         {children}
       </Link>
     );
@@ -118,7 +130,7 @@ export function WorkspaceLink({
   return (
     <a
       {...rest}
-      href={href}
+      href={spaceHref}
       onClick={(event) => {
         if (browserWillHandle(event)) return;
         event.preventDefault();
