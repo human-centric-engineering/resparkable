@@ -5,7 +5,11 @@ import { InboxView } from '@/components/resparkable/inbox/inbox-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { inboxPayloadSchema, projectSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Inbox',
@@ -24,12 +28,21 @@ export const metadata: Metadata = {
  * The two run concurrently: neither depends on the other, and the page is as slow
  * as the slower one rather than their sum.
  */
-export default async function ResparkableInboxPage() {
+export default async function ResparkableInboxPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const [inbox, projects] = await Promise.all([
-    readResparkable(RESPARKABLE_API.INBOX, inboxPayloadSchema),
+    readResparkable(RESPARKABLE_API.INBOX, inboxPayloadSchema, space),
     // Active projects only, and enough of them to choose from. A brain with more
     // than 200 live projects has a different problem than this select box.
-    readResparkable(`${RESPARKABLE_API.PROJECTS}?status=active&limit=200`, z.array(projectSchema)),
+    readResparkable(
+      `${RESPARKABLE_API.PROJECTS}?status=active&limit=200`,
+      z.array(projectSchema),
+      space
+    ),
   ]);
 
   if (!inbox.ok) {

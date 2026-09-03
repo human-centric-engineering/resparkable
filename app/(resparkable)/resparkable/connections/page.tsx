@@ -4,7 +4,11 @@ import { ConnectionsView } from '@/components/resparkable/connections/connection
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { connectionRowsSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Connections',
@@ -21,10 +25,16 @@ export const metadata: Metadata = {
  * The total comes from `meta`, and it counts what the same filter matched rather than
  * every link that exists, so "12 waiting" cannot disagree with the list beneath it.
  */
-export default async function ResparkableConnectionsPage() {
+export default async function ResparkableConnectionsPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const result = await readResparkable(
     `${RESPARKABLE_API.CONNECTIONS}?limit=50`,
-    connectionRowsSchema
+    connectionRowsSchema,
+    space
   );
 
   if (!result.ok) {

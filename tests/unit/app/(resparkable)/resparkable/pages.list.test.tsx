@@ -132,7 +132,7 @@ describe('ResparkableInboxPage', () => {
     const { default: ResparkableInboxPage } =
       await import('@/app/(resparkable)/resparkable/inbox/page');
 
-    await ResparkableInboxPage();
+    await ResparkableInboxPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([
       RESPARKABLE_API.INBOX,
@@ -147,7 +147,7 @@ describe('ResparkableInboxPage', () => {
     const { default: ResparkableInboxPage } =
       await import('@/app/(resparkable)/resparkable/inbox/page');
 
-    render(await ResparkableInboxPage());
+    render(await ResparkableInboxPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('inbox down');
     expect(screen.queryByTestId('inbox-view')).not.toBeInTheDocument();
@@ -161,7 +161,7 @@ describe('ResparkableInboxPage', () => {
     const { default: ResparkableInboxPage } =
       await import('@/app/(resparkable)/resparkable/inbox/page');
 
-    render(await ResparkableInboxPage());
+    render(await ResparkableInboxPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('inbox-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -181,7 +181,7 @@ describe('ResparkableInboxPage', () => {
     const { default: ResparkableInboxPage } =
       await import('@/app/(resparkable)/resparkable/inbox/page');
 
-    render(await ResparkableInboxPage());
+    render(await ResparkableInboxPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('inbox-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -274,7 +274,7 @@ describe('ResparkableGoalsPage', () => {
     const { default: ResparkableGoalsPage } =
       await import('@/app/(resparkable)/resparkable/goals/page');
 
-    await ResparkableGoalsPage();
+    await ResparkableGoalsPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([
       `${RESPARKABLE_API.GOALS}?limit=200`,
@@ -289,7 +289,7 @@ describe('ResparkableGoalsPage', () => {
     const { default: ResparkableGoalsPage } =
       await import('@/app/(resparkable)/resparkable/goals/page');
 
-    render(await ResparkableGoalsPage());
+    render(await ResparkableGoalsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('goals down');
   });
@@ -302,7 +302,7 @@ describe('ResparkableGoalsPage', () => {
     const { default: ResparkableGoalsPage } =
       await import('@/app/(resparkable)/resparkable/goals/page');
 
-    render(await ResparkableGoalsPage());
+    render(await ResparkableGoalsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('goals-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -322,7 +322,7 @@ describe('ResparkableGoalsPage', () => {
     const { default: ResparkableGoalsPage } =
       await import('@/app/(resparkable)/resparkable/goals/page');
 
-    render(await ResparkableGoalsPage());
+    render(await ResparkableGoalsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('goals-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -339,7 +339,7 @@ describe('ResparkableGoalsPage', () => {
     const { default: ResparkableGoalsPage } =
       await import('@/app/(resparkable)/resparkable/goals/page');
 
-    render(await ResparkableGoalsPage());
+    render(await ResparkableGoalsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('goals-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { pronoun: string };
@@ -355,7 +355,7 @@ describe('ResparkableAreasPage', () => {
     const { default: ResparkableAreasPage } =
       await import('@/app/(resparkable)/resparkable/areas/page');
 
-    await ResparkableAreasPage();
+    await ResparkableAreasPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([`${RESPARKABLE_API.AREAS}?limit=200`]);
   });
@@ -367,7 +367,7 @@ describe('ResparkableAreasPage', () => {
     const { default: ResparkableAreasPage } =
       await import('@/app/(resparkable)/resparkable/areas/page');
 
-    render(await ResparkableAreasPage());
+    render(await ResparkableAreasPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('areas down');
   });
@@ -378,7 +378,7 @@ describe('ResparkableAreasPage', () => {
     const { default: ResparkableAreasPage } =
       await import('@/app/(resparkable)/resparkable/areas/page');
 
-    render(await ResparkableAreasPage());
+    render(await ResparkableAreasPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('areas-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { areas: unknown[] };
@@ -391,7 +391,7 @@ describe('ResparkableAreasPage', () => {
     const { default: ResparkableAreasPage } =
       await import('@/app/(resparkable)/resparkable/areas/page');
 
-    render(await ResparkableAreasPage());
+    render(await ResparkableAreasPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('areas-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as { pronoun: string };
@@ -407,7 +407,7 @@ describe('ResparkableEntitiesPage', () => {
     const { default: ResparkableEntitiesPage } =
       await import('@/app/(resparkable)/resparkable/entities/page');
 
-    await ResparkableEntitiesPage();
+    await ResparkableEntitiesPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([`${RESPARKABLE_API.ENTITIES}?limit=200`]);
   });
@@ -417,7 +417,7 @@ describe('ResparkableEntitiesPage', () => {
     const { default: ResparkableEntitiesPage } =
       await import('@/app/(resparkable)/resparkable/entities/page');
 
-    render(await ResparkableEntitiesPage());
+    render(await ResparkableEntitiesPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('entities down');
   });
@@ -428,7 +428,7 @@ describe('ResparkableEntitiesPage', () => {
     const { default: ResparkableEntitiesPage } =
       await import('@/app/(resparkable)/resparkable/entities/page');
 
-    render(await ResparkableEntitiesPage());
+    render(await ResparkableEntitiesPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('entities-view');
     expect(view.getAttribute('data-props')).toBe(JSON.stringify({ entities }));
@@ -443,7 +443,7 @@ describe('ResparkableDocumentsPage', () => {
     const { default: ResparkableDocumentsPage } =
       await import('@/app/(resparkable)/resparkable/documents/page');
 
-    await ResparkableDocumentsPage();
+    await ResparkableDocumentsPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([`${RESPARKABLE_API.DOCUMENTS}?limit=100`]);
   });
@@ -453,7 +453,7 @@ describe('ResparkableDocumentsPage', () => {
     const { default: ResparkableDocumentsPage } =
       await import('@/app/(resparkable)/resparkable/documents/page');
 
-    render(await ResparkableDocumentsPage());
+    render(await ResparkableDocumentsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('documents down');
   });
@@ -464,7 +464,7 @@ describe('ResparkableDocumentsPage', () => {
     const { default: ResparkableDocumentsPage } =
       await import('@/app/(resparkable)/resparkable/documents/page');
 
-    render(await ResparkableDocumentsPage());
+    render(await ResparkableDocumentsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('documents-view');
     expect(view.getAttribute('data-props')).toBe(JSON.stringify({ documents }));
@@ -479,7 +479,7 @@ describe('ResparkableBoardsPage', () => {
     const { default: ResparkableBoardsPage } =
       await import('@/app/(resparkable)/resparkable/boards/page');
 
-    await ResparkableBoardsPage();
+    await ResparkableBoardsPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([
       `${RESPARKABLE_API.BOARDS}?limit=100`,
@@ -495,7 +495,7 @@ describe('ResparkableBoardsPage', () => {
     const { default: ResparkableBoardsPage } =
       await import('@/app/(resparkable)/resparkable/boards/page');
 
-    render(await ResparkableBoardsPage());
+    render(await ResparkableBoardsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('boards down');
     expect(screen.queryByTestId('boards-list')).not.toBeInTheDocument();
@@ -509,7 +509,7 @@ describe('ResparkableBoardsPage', () => {
     const { default: ResparkableBoardsPage } =
       await import('@/app/(resparkable)/resparkable/boards/page');
 
-    render(await ResparkableBoardsPage());
+    render(await ResparkableBoardsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('boards-list');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -534,7 +534,7 @@ describe('ResparkableBoardsPage', () => {
     const { default: ResparkableBoardsPage } =
       await import('@/app/(resparkable)/resparkable/boards/page');
 
-    render(await ResparkableBoardsPage());
+    render(await ResparkableBoardsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('boards-list');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {

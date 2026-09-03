@@ -22,6 +22,7 @@
 import * as React from 'react';
 
 import { parseChatStreamEvent } from '@/components/admin/orchestration/chat/chat-events';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { getUserFacingError } from '@/lib/orchestration/chat/error-messages';
 
@@ -80,7 +81,7 @@ export function useChatStream({
 
       void (async () => {
         try {
-          const response = await fetch(RESPARKABLE_API.CHAT_STREAM, {
+          const response = await fetch(withActiveSpace(RESPARKABLE_API.CHAT_STREAM), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

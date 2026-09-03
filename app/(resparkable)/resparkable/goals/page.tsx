@@ -5,7 +5,11 @@ import { GoalsView } from '@/components/resparkable/goals/goals-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { areaSchema, goalSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 import { getSparkeyPronoun } from '@/lib/resparkable/get-sparkey-pronoun';
 
 export const metadata: Metadata = {
@@ -21,10 +25,15 @@ export const metadata: Metadata = {
  * the content, and building it server-side would mean a recursive query to save
  * nothing.
  */
-export default async function ResparkableGoalsPage() {
+export default async function ResparkableGoalsPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const [goals, areas, pronoun] = await Promise.all([
-    readResparkable(`${RESPARKABLE_API.GOALS}?limit=200`, z.array(goalSchema)),
-    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema)),
+    readResparkable(`${RESPARKABLE_API.GOALS}?limit=200`, z.array(goalSchema), space),
+    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema), space),
     getSparkeyPronoun(),
   ]);
 

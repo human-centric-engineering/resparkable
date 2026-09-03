@@ -43,7 +43,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { SNOOZE_PRESETS } from '@/lib/framework/resparkable/validations';
 
@@ -91,7 +91,7 @@ export function SnoozeMenu({
 
   async function snooze(body: { preset: string } | { until: string }): Promise<void> {
     const ok = await run(() =>
-      apiClient.post(RESPARKABLE_API.snoozePath(collection, id), { body })
+      resparkableApi.post(RESPARKABLE_API.snoozePath(collection, id), { body })
     );
     if (ok) {
       setCustomOpen(false);
@@ -100,7 +100,7 @@ export function SnoozeMenu({
   }
 
   async function unsnooze(): Promise<void> {
-    const ok = await run(() => apiClient.post(RESPARKABLE_API.unsnoozePath(collection, id)));
+    const ok = await run(() => resparkableApi.post(RESPARKABLE_API.unsnoozePath(collection, id)));
     if (ok) onDone?.();
   }
 

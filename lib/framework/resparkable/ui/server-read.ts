@@ -32,7 +32,14 @@
 import { z } from 'zod';
 
 import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
+import { withSpace } from '@/lib/framework/resparkable/ui/active-space';
 import { logger } from '@/lib/logging';
+
+/**
+ * The shape Next hands a page for `?a=b`. Named here because every Resparkable
+ * page now declares it, in order to answer the third argument below.
+ */
+export type ResparkableSearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 /**
  * The success half of Resparkable's API envelope.
@@ -56,13 +63,34 @@ export type ReadResult<T> =
  * `status` is surfaced on failure so a page can tell "not found" from "the server
  * is unwell" — a detail page needs to render `notFound()` for the first and an
  * error card for the second.
+ *
+ * ## Why `space` is required rather than optional
+ *
+ * A server page cannot read the request URL: `searchParams` is a prop, and a
+ * layout does not even get that. So the active workspace has to be threaded
+ * from the page's props down to the fetch, by hand, at every one of these call
+ * sites, and the failure mode of forgetting is the worst one available. The
+ * page renders, the switcher says "Study Group B", and the content is the
+ * reader's own. No error, no empty state, no way to notice.
+ *
+ * Making the parameter **required** hands that check to the type checker: a new
+ * page does not compile until its author has answered "which workspace is this
+ * for", and `null` is a visible answer rather than an omission. It is the same
+ * trick `SUBJECT_DATA_SOURCES` plays with a manifest test and for the same
+ * reason: a rule enforced by a tool beats a rule written in a comment.
+ *
+ * @param space - From `readSpaceTarget(await searchParams)`. `null` means the
+ *   personal space, and is also the honest answer for the handful of surfaces
+ *   that are not reading a workspace at all (`/shared`, which is keyed on the
+ *   viewer rather than on a space until phase 49).
  */
 export async function readResparkable<T extends z.ZodTypeAny>(
   path: string,
-  schema: T
+  schema: T,
+  space: string | null
 ): Promise<ReadResult<z.infer<T>>> {
   try {
-    const response = await serverFetch(path);
+    const response = await serverFetch(withSpace(path, space));
 
     if (!response.ok) {
       // The error envelope's message is written by our own handlers and is safe

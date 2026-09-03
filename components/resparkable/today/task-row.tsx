@@ -41,7 +41,7 @@ import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/t
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ClientDate } from '@/components/ui/client-date';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { TodayTaskWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -69,7 +69,7 @@ export function TaskRow({ task, rank, returnedFromSnooze }: TaskRowProps): React
     setDone(next);
 
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, task.id), {
+      resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, task.id), {
         // Back to 'todo' rather than to whatever it was before: the previous
         // status isn't in this payload, and guessing 'doing' would silently
         // restart something the user had only just finished.

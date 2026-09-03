@@ -64,6 +64,7 @@ import {
 } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import {
@@ -172,7 +173,9 @@ function FilterBoardWarning({
     setFreezing(true);
     setError(null);
     try {
-      const response = await fetch(RESPARKABLE_API.boardSnapshot(entityId), { method: 'POST' });
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.boardSnapshot(entityId)), {
+        method: 'POST',
+      });
       if (!response.ok) {
         setError('Could not take a snapshot of this board.');
         return;
@@ -242,7 +245,7 @@ function PeoplePanel({
 
   const load = React.useCallback(async () => {
     const url = `${RESPARKABLE_API.GRANTS}?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
-    const parsed = await readList(url, grantsSchema);
+    const parsed = await readList(withActiveSpace(url), grantsSchema);
     if (parsed === null) setError('Could not load who this is shared with.');
     else setGrants(parsed);
   }, [entityType, entityId]);
@@ -261,7 +264,9 @@ function PeoplePanel({
    */
   const sendInvite = async (grantId: string): Promise<boolean> => {
     try {
-      const response = await fetch(RESPARKABLE_API.grantInvite(grantId), { method: 'POST' });
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.grantInvite(grantId)), {
+        method: 'POST',
+      });
       if (!response.ok) return false;
       const payload: unknown = await response.json();
       if (!isSuccess(payload)) return false;
@@ -279,7 +284,7 @@ function PeoplePanel({
     setNotice(null);
     const address = email;
     try {
-      const response = await fetch(RESPARKABLE_API.GRANTS, {
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.GRANTS), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -318,7 +323,7 @@ function PeoplePanel({
   };
 
   const revoke = async (id: string) => {
-    await fetch(RESPARKABLE_API.grant(id), { method: 'DELETE' });
+    await fetch(withActiveSpace(RESPARKABLE_API.grant(id)), { method: 'DELETE' });
     await load();
   };
 
@@ -471,7 +476,7 @@ function LinkPanel({
 
   const load = React.useCallback(async () => {
     const url = `${RESPARKABLE_API.SHARE_LINKS}?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
-    const parsed = await readList(url, shareLinksSchema);
+    const parsed = await readList(withActiveSpace(url), shareLinksSchema);
     if (parsed === null) setError('Could not load this item’s links.');
     else setLinks(parsed);
   }, [entityType, entityId]);
@@ -484,7 +489,7 @@ function LinkPanel({
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(RESPARKABLE_API.SHARE_LINKS, {
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.SHARE_LINKS), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entityType, entityId, includeChildren, includeTaskDetail }),
@@ -509,7 +514,7 @@ function LinkPanel({
   };
 
   const revoke = async (id: string) => {
-    await fetch(RESPARKABLE_API.shareLink(id), { method: 'DELETE' });
+    await fetch(withActiveSpace(RESPARKABLE_API.shareLink(id)), { method: 'DELETE' });
     setMinted(null);
     await load();
   };

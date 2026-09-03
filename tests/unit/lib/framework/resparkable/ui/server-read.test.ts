@@ -60,7 +60,7 @@ describe('readResparkable', () => {
         data: { id: 'abc', count: 3 },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({ ok: true, data: { id: 'abc', count: 3 } });
     });
@@ -73,7 +73,7 @@ describe('readResparkable', () => {
         meta: { total: 10 },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -90,7 +90,7 @@ describe('readResparkable', () => {
         data: { id: 'abc', count: 3 },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect('meta' in result).toBe(false);
     });
@@ -102,9 +102,41 @@ describe('readResparkable', () => {
         data: { id: 'abc', count: 3 },
       } as never);
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
+      // The personal space is the absence of a param, so the path a page asks
+      // for and the path this fetches are the same string. Every bookmark and
+      // emailed link that worked before phase 47 still resolves for that
+      // reason.
       expect(serverFetch).toHaveBeenCalledWith(PATH);
+    });
+
+    it('carries the active workspace onto the fetched path', async () => {
+      vi.mocked(serverFetch).mockResolvedValue(fakeResponse({ ok: true, status: 200 }));
+      vi.mocked(parseApiResponse).mockResolvedValue({
+        success: true,
+        data: { id: 'abc', count: 3 },
+      } as never);
+
+      await readResparkable(PATH, testSchema, 'spc_group_1');
+
+      // A server page cannot read its own URL, so the space travels as an
+      // argument from the page's props to here. This assertion is the only
+      // thing standing between "the switcher says Study Group B" and "the page
+      // is showing the reader's own brain".
+      expect(serverFetch).toHaveBeenCalledWith(`${PATH}?space=spc_group_1`);
+    });
+
+    it('appends the workspace to a path that already carries a query', async () => {
+      vi.mocked(serverFetch).mockResolvedValue(fakeResponse({ ok: true, status: 200 }));
+      vi.mocked(parseApiResponse).mockResolvedValue({
+        success: true,
+        data: { id: 'abc', count: 3 },
+      } as never);
+
+      await readResparkable(`${PATH}?status=active`, testSchema, 'spc_group_1');
+
+      expect(serverFetch).toHaveBeenCalledWith(`${PATH}?status=active&space=spc_group_1`);
     });
   });
 
@@ -120,7 +152,7 @@ describe('readResparkable', () => {
         })
       );
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({ ok: false, status: 404, message: 'Project not found' });
     });
@@ -134,7 +166,7 @@ describe('readResparkable', () => {
         })
       );
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
       expect(logger.warn).toHaveBeenCalledWith('Resparkable page read failed', {
         path: PATH,
@@ -151,7 +183,7 @@ describe('readResparkable', () => {
         })
       );
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({
         ok: false,
@@ -169,7 +201,7 @@ describe('readResparkable', () => {
         })
       );
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({
         ok: false,
@@ -187,7 +219,7 @@ describe('readResparkable', () => {
         })
       );
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
       expect(parseApiResponse).not.toHaveBeenCalled();
     });
@@ -203,7 +235,7 @@ describe('readResparkable', () => {
         error: { code: 'INTERNAL_ERROR', message: 'boom' },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({
         ok: false,
@@ -219,7 +251,7 @@ describe('readResparkable', () => {
         error: { code: 'INTERNAL_ERROR', message: 'boom' },
       } as never);
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
       expect(logger.error).toHaveBeenCalledWith('Resparkable page read: not a success envelope', {
         path: PATH,
@@ -237,7 +269,7 @@ describe('readResparkable', () => {
         data: { id: 'abc', count: 'not-a-number' },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({
         ok: false,
@@ -253,7 +285,7 @@ describe('readResparkable', () => {
         data: { id: 'abc', count: 'not-a-number' },
       } as never);
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
       expect(logger.error).toHaveBeenCalledWith(
         'Resparkable page read: payload did not match schema',
@@ -271,7 +303,7 @@ describe('readResparkable', () => {
         data: { id: 'abc' },
       } as never);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result.ok).toBe(false);
     });
@@ -284,7 +316,7 @@ describe('readResparkable', () => {
       const err = new Error('Network unreachable');
       vi.mocked(serverFetch).mockRejectedValue(err);
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result).toEqual({
         ok: false,
@@ -297,7 +329,7 @@ describe('readResparkable', () => {
       const err = new Error('Network unreachable');
       vi.mocked(serverFetch).mockRejectedValue(err);
 
-      await readResparkable(PATH, testSchema);
+      await readResparkable(PATH, testSchema, null);
 
       expect(logger.error).toHaveBeenCalledWith('Resparkable page read threw', err, { path: PATH });
     });
@@ -308,7 +340,7 @@ describe('readResparkable', () => {
         new Error('Invalid API response: body is not an object')
       );
 
-      const result = await readResparkable(PATH, testSchema);
+      const result = await readResparkable(PATH, testSchema, null);
 
       expect(result.ok).toBe(false);
       if (!result.ok) {
@@ -319,7 +351,7 @@ describe('readResparkable', () => {
     it('does not propagate the exception up to the caller', async () => {
       vi.mocked(serverFetch).mockRejectedValue(new Error('boom'));
 
-      await expect(readResparkable(PATH, testSchema)).resolves.toBeDefined();
+      await expect(readResparkable(PATH, testSchema, null)).resolves.toBeDefined();
     });
   });
 });

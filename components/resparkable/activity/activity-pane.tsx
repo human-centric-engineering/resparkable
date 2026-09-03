@@ -10,7 +10,7 @@
  * strip of its own.
  *
  * Fetches with `useTabFetch` (its name is a Phase 3 leftover — the hook
- * itself is generic, just `apiClient.get()` + Zod, and reusing it here beats
+ * itself is generic, just `resparkableApi.get()` + Zod, and reusing it here beats
  * writing a second copy of the same fetch-then-validate effect for a pane
  * that doesn't happen to be a tab) against the same `connectionRowsSchema`
  * `ConnectionsView` validates against.
@@ -52,7 +52,7 @@ import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
 import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { connectionRowsSchema } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -83,7 +83,7 @@ export function ActivityPane({
       return rest;
     });
 
-    void apiClient
+    void resparkableApi
       .patch(RESPARKABLE_API.linkById(id), { body: { status } })
       .then(() => notifyDataChange({ type: 'link', id }))
       .catch((error) => {

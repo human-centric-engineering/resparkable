@@ -44,7 +44,7 @@ import {
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 
@@ -92,7 +92,7 @@ export function ArchiveControls({
   const change = changed ? { type: changed, id } : undefined;
 
   async function archive(): Promise<void> {
-    const ok = await run(() => apiClient.delete(RESPARKABLE_API.itemPath(collection, id)));
+    const ok = await run(() => resparkableApi.delete(RESPARKABLE_API.itemPath(collection, id)));
     if (ok) {
       onDone?.();
       refresh(change);
@@ -100,7 +100,7 @@ export function ArchiveControls({
   }
 
   async function restore(): Promise<void> {
-    const ok = await run(() => apiClient.post(RESPARKABLE_API.restorePath(collection, id)));
+    const ok = await run(() => resparkableApi.post(RESPARKABLE_API.restorePath(collection, id)));
     if (ok) {
       onDone?.();
       refresh(change);
@@ -109,7 +109,7 @@ export function ArchiveControls({
 
   async function destroy(): Promise<void> {
     const ok = await run(() =>
-      apiClient.delete(`${RESPARKABLE_API.itemPath(collection, id)}?permanent=true`)
+      resparkableApi.delete(`${RESPARKABLE_API.itemPath(collection, id)}?permanent=true`)
     );
     if (ok) {
       onDone?.();

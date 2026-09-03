@@ -4,7 +4,11 @@ import { TodayView } from '@/components/resparkable/today/today-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { todayPayloadSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Today',
@@ -18,8 +22,13 @@ export const metadata: Metadata = {
  * joined, plus blocks, counts, goals at risk, suggestions and capacity. It is
  * ETag'd because this is the page people leave open.
  */
-export default async function ResparkableTodayPage() {
-  const result = await readResparkable(RESPARKABLE_API.TODAY, todayPayloadSchema);
+export default async function ResparkableTodayPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
+  const result = await readResparkable(RESPARKABLE_API.TODAY, todayPayloadSchema, space);
 
   if (!result.ok) {
     return <LoadError what="your day" message={result.message} />;
