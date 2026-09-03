@@ -318,6 +318,52 @@ Design detail is thinner here on purpose: it is UI over seams this branch has
 already built, and the decisions that matter are about defaults rather than
 structure.
 
+### Decision 11: the space is one search param, and absence is personal
+
+§24.2 says the active workspace is "held in the shell and in the URL, never in
+a cookie alone" and does not say what that looks like. This branch spells it
+`?space=<spaceId>`, on page URLs and API paths alike, with **absence meaning
+the personal space**.
+
+A path segment (`/resparkable/s/<slug>/today`) was the alternative and is
+rejected on cost: it restructures 27 page files and every route in
+`ui/routes.ts` to buy a prettier URL, and it makes every existing bookmark and
+emailed link a redirect. A search param leaves all of them resolving exactly as
+they do today, which is the same property phase 45 bought by keeping a personal
+space's key equal to its owner's user id.
+
+Absence has no second spelling. Not `?space=personal`, and not the owner's user
+id: the first is a magic value every reader would have to know about, and the
+second puts a user id in every URL, and therefore in every access log, referrer
+header and pasted link. `resolveActiveSpaceScope` still accepts the user id,
+because a switcher built the link and the personal space's key genuinely is
+that value, but nothing generates it.
+
+A repeated `?space=a&space=b` resolves to **nothing**, not to the first value.
+Two answers to "which brain" is not a question with a sensible default, and
+picking one is a coin toss whose losing side is a cross-space read attempt.
+Resolving to personal makes it fail as a 404 on the caller's own space.
+
+### Decision 12: ambient for reading, explicit for capture
+
+The switcher makes the space ambient, and ambient state is what mis-targets a
+capture. So the two directions get opposite defaults, and the rule is short
+enough to hold in the head: **a surface that displays a workspace reads the URL;
+a path that creates a row does not.**
+
+- `requestSpaceScope(request, session.user.id)` in `api/space-request.ts` is the
+  one line a read or an in-place mutation writes. It reads `?space=`, resolves
+  membership and throws `NotFoundError` on refusal.
+- Every capture path takes its target from an **explicit field** and defaults to
+  personal, and none of them calls `requestSpaceScope`. Test 13e asserts it per
+  path.
+
+The side effect is that the greppable trust boundary §23.4 leans on gets
+_shorter_. `rg 'spaceScope\(|spaceScopeFor\('` used to return fifty route
+files, each an unaudited mint; it now returns `services/membership.ts` plus the
+background and export paths that have no session to read. A list that fits on
+one screen is a list somebody will actually read.
+
 **The switcher is in the shell header** (§24.2), in
 `components/resparkable/shell/app-header.tsx`'s right cluster, because that is
 the one piece of chrome always on screen. The active space is **in the URL**, so
