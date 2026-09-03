@@ -115,13 +115,18 @@ export const RESPARKABLE_ROUTES = {
    */
   groupInvite: (token: string): string => `${BASE}/groups/invite/${encodeURIComponent(token)}`,
 
-  // The `/resparkable/groups` section itself is NOT declared here yet. Adding a
-  // static route to this object obliges the whole `ui.md` checklist in the same
-  // change (`nav-groups.ts`, `section-help.ts`, `tab-registry.ts`, a tab
-  // adapter, `payloads.ts`, `change-scope.ts`), and three coverage tests fail
-  // until every one of them is done. That wiring is phase 47's, with the
-  // surface it belongs to. The accept page above needs no such entry: it is a
-  // token page, not a section, exactly like `invite` before it.
+  /**
+   * Your groups: who is in them, who has been invited, and how to leave.
+   *
+   * **Not where you work in one.** Opening a group's brain is a workspace
+   * switch, which is the header switcher's job and puts `?space=` on whatever
+   * page you were already looking at. This section is the administrative half:
+   * a place you visit on purpose, occasionally, to change who has access. That
+   * is why it sits under Manage beside "Shared by me" and the vault rather
+   * than under Organise with the things you open every day.
+   */
+  GROUPS: `${BASE}/groups`,
+  group: (id: string): string => `${BASE}/groups/${id}`,
 
   /**
    * Archived items, and what has gone quiet (§11, phase 8).

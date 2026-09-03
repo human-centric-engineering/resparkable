@@ -58,7 +58,7 @@ describe('coverage', () => {
       const params =
         kind === 'sharedItem'
           ? { entityType: 'project', id: 'clx123' }
-          : kind === 'project' || kind === 'entity'
+          : kind === 'project' || kind === 'entity' || kind === 'group'
             ? { id: 'clx123' }
             : kind === 'board'
               ? { slug: 'my-board' }

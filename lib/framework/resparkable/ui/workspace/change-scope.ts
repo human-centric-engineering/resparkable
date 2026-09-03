@@ -164,6 +164,24 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   // to private, which no surface currently displays. `ShareDialog` has always
   // handled its own list locally for the same reason; this tab does the same.
   sharing: { collections: [] },
+  // Empty for the same reason `sharing` above is. Creating a group, inviting
+  // somebody or changing a role writes `ResparkableGroup`, `…GroupMember` and
+  // `…GroupInvite`, and none of the three is a `ResparkableChangeType`: every
+  // value in that union names a collection one of the brain's own lists
+  // renders, and no list renders a membership. These tabs handle their own
+  // lists locally, as `ShareDialog` has always done.
+  //
+  // The change that WOULD be broadcast, if anything were, is joining or
+  // leaving a group: that adds or removes a whole workspace. But it does not
+  // change any collection in the current one either. It changes the switcher,
+  // which is chrome above the pane tree and is re-read on the next server
+  // render rather than through this mechanism.
+  //
+  // `group` carries no `record` either, and cannot: `record.type` is a
+  // `ResparkableChangeType`, and a group is not one. That is the same fact
+  // stated by the type system rather than by this comment.
+  groups: { collections: [] },
+  group: { collections: [] },
   vault: { collections: [] },
   settings: { collections: ['space'] },
   archive: { collections: ['project', 'goal', 'task', 'thought', 'entity'] },

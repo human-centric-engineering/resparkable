@@ -936,3 +936,67 @@ export const openableSpaceSchema = z.object({
 export const openableSpacesSchema = z.array(openableSpaceSchema);
 
 export type OpenableSpaceWire = z.infer<typeof openableSpaceSchema>;
+
+// ─── Groups (phase 47) ───────────────────────────────────────────────────────
+
+/**
+ * One row of `GET /resparkable/groups`.
+ *
+ * `joinedAt` is nullable and rendered rather than filtered: null means a
+ * request to join still waiting on an admin (§23.11, phase 57), and somebody
+ * who asked to join should be able to see that they asked.
+ */
+export const groupListItemSchema = z.object({
+  groupId: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  description: z.string().nullable(),
+  spaceId: z.string(),
+  role: z.string(),
+  joinedAt: z.string().nullable(),
+});
+
+export const groupsListSchema = z.array(groupListItemSchema);
+
+/**
+ * `GET /resparkable/groups/[id]`.
+ *
+ * Members are user ids and roles, and deliberately no email addresses. Every
+ * member can see who else is in the group, which §23.4 makes unavoidable and
+ * correct; handing out everybody's address is a separate decision nobody made.
+ */
+export const groupMemberSchema = z.object({
+  userId: z.string(),
+  role: z.string(),
+  joinedAt: z.string().nullable(),
+});
+
+export const groupDetailSchema = z.object({
+  group: z.object({
+    groupId: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    description: z.string().nullable(),
+    spaceId: z.string(),
+    maxMembers: z.number(),
+  }),
+  yourRole: z.string(),
+  members: z.array(groupMemberSchema),
+});
+
+/** A pending invitation, from `GET /resparkable/groups/[id]/invites`. */
+export const groupInviteSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  role: z.string(),
+  invitedAt: z.string(),
+  expiresAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  acceptedAt: z.string().nullable(),
+});
+
+export const groupInvitesSchema = z.array(groupInviteSchema);
+
+export type GroupListItemWire = z.infer<typeof groupListItemSchema>;
+export type GroupDetailWire = z.infer<typeof groupDetailSchema>;
+export type GroupInviteWire = z.infer<typeof groupInviteSchema>;
