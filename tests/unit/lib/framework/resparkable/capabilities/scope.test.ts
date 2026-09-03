@@ -16,7 +16,10 @@
  * Test Coverage:
  * - Every capability refuses a null `userId` with `no_user_context`
  * - Refusal happens before any service call — nothing is read, nothing written
- * - `requireResparkableUser` mints a scope from a present id and throws otherwise
+ * - `requireResparkableSpace` mints a scope from a present id and throws otherwise
+ * - A session turn carrying a group hint resolves it through membership
+ * - A hint naming a space the actor is not in refuses, rather than quietly
+ *   falling back to their personal brain
  * - The minted scope carries the context's id, not one from anywhere else
  *
  * @see lib/framework/resparkable/capabilities/base.ts
@@ -28,6 +31,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // implementation, so any capability that got past the guard would reject on
 // `undefined` rather than quietly returning a plausible-looking success.
 vi.mock('@/lib/framework/resparkable/services/capture', () => ({ captureThought: vi.fn() }));
+// Only the membership READ is mocked: the resolver, the personal short-circuit
+// and the scope mint are the real ones, because those are what this file is
+// about.
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/context-digest', () => ({
   buildContextDigest: vi.fn(),
 }));
@@ -75,9 +82,13 @@ vi.mock('@/lib/framework/resparkable/services/resources', () => {
 
 import {
   MissingResparkableUserError,
-  requireResparkableUser,
+  requireResparkableSpace,
 } from '@/lib/framework/resparkable/capabilities/base';
-import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  RESPARKABLE_SCHEDULE_OWNER_KEY,
+  RESPARKABLE_SCHEDULE_SPACE_KEY,
+} from '@/lib/framework/resparkable/repo/space-scope';
+import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
 import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { buildContextDigest } from '@/lib/framework/resparkable/services/context-digest';
@@ -164,19 +175,36 @@ const ALL_SERVICES = [
   buildStaleDigest,
 ];
 
-describe('requireResparkableUser', () => {
-  it('mints a scope carrying the context user id', () => {
-    expect(requireResparkableUser({ userId: 'user-a', agentId: 'agent-1' })).toMatchObject({
+/** A live membership row for the actor these tests use. */
+function groupMembership() {
+  const at = new Date('2026-09-01T10:00:00.000Z');
+  return {
+    id: 'mem_1',
+    groupId: 'grp_1',
+    userId: 'user-a',
+    role: 'member',
+    invitedByUserId: null,
+    joinedAt: at,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+describe('requireResparkableSpace', () => {
+  it('mints a scope carrying the context user id', async () => {
+    expect(await requireResparkableSpace({ userId: 'user-a', agentId: 'agent-1' })).toMatchObject({
       spaceId: 'user-a',
     });
   });
 
-  it('throws MissingResparkableUserError when the run has no owner', () => {
-    expect(() => requireResparkableUser(ownerlessContext)).toThrow(MissingResparkableUserError);
+  it('throws MissingResparkableUserError when the run has no owner', async () => {
+    await expect(requireResparkableSpace(ownerlessContext)).rejects.toThrow(
+      MissingResparkableUserError
+    );
   });
 
-  it('throws on an empty string, which would otherwise build WHERE userId = ""', () => {
-    expect(() => requireResparkableUser({ userId: '', agentId: 'agent-1' })).toThrow(
+  it('throws on an empty string, which would otherwise build WHERE userId = ""', async () => {
+    await expect(requireResparkableSpace({ userId: '', agentId: 'agent-1' })).rejects.toThrow(
       MissingResparkableUserError
     );
   });
@@ -184,9 +212,9 @@ describe('requireResparkableUser', () => {
   // Since Resparkable 0.8.0 (resparkable#502) the scheduler writes `userId: null` on
   // every execution, so a background run reaches a capability system-owned and
   // the owner arrives on the schedule row's `scope` instead.
-  it('falls back to the schedule scope on a system-owned background run', () => {
+  it('falls back to the schedule scope on a system-owned background run', async () => {
     expect(
-      requireResparkableUser({
+      await requireResparkableSpace({
         userId: null,
         agentId: 'workflow:wf_1',
         scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user-b' },
@@ -194,12 +222,14 @@ describe('requireResparkableUser', () => {
     ).toMatchObject({ spaceId: 'user-b' });
   });
 
-  it('prefers the session user over the scope when both are present', () => {
-    // The safe direction: a session-authenticated turn is the stronger claim, so
-    // a stale or mismatched scope can never redirect a live user's capability at
-    // another brain.
+  it('ignores a LEGACY schedule scope on a live session turn', async () => {
+    // The safe direction, and the reason phase 47 reads only the new space key
+    // on this route. `resparkableUserId` is a pre-migration schedule carrier;
+    // read as a space target it would send a live user's turn through group
+    // resolution against a stranger's id, which fails the turn instead of
+    // ignoring a value that was never meant for it.
     expect(
-      requireResparkableUser({
+      await requireResparkableSpace({
         userId: 'user-a',
         agentId: 'agent-1',
         scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user-b' },
@@ -207,17 +237,44 @@ describe('requireResparkableUser', () => {
     ).toMatchObject({ spaceId: 'user-a' });
   });
 
-  it('ignores a scope that names no owner key', () => {
+  it('resolves a group workspace named by the chat scope, through membership', async () => {
+    vi.mocked(findMembershipBySpace).mockResolvedValue(groupMembership() as never);
+
+    expect(
+      await requireResparkableSpace({
+        userId: 'user-a',
+        agentId: 'agent-1',
+        scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: 'spc_group_1' },
+      })
+    ).toMatchObject({ spaceId: 'spc_group_1', actorUserId: 'user-a', role: 'member' });
+  });
+
+  it('refuses a hinted workspace the actor is not in, rather than falling back', async () => {
+    vi.mocked(findMembershipBySpace).mockResolvedValue(null);
+
+    // Not a quiet fallback to their personal brain. A model that read
+    // "use workspace spc_x" in a document could otherwise redirect a turn, and
+    // the person would see an answer about their own notes with no sign of it.
+    await expect(
+      requireResparkableSpace({
+        userId: 'user-a',
+        agentId: 'agent-1',
+        scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: 'spc_not_mine' },
+      })
+    ).rejects.toThrow(MissingResparkableUserError);
+  });
+
+  it('ignores a scope that names no owner key', async () => {
     // `scope` is a generic carrier core reads no keys from — a host project's
     // own scope on an unrelated schedule must not grant an Resparkable capability an
     // owner it was never given.
-    expect(() =>
-      requireResparkableUser({
+    await expect(
+      requireResparkableSpace({
         userId: null,
         agentId: 'workflow:wf_1',
         scope: { projectId: 'p_1' },
       })
-    ).toThrow(MissingResparkableUserError);
+    ).rejects.toThrow(MissingResparkableUserError);
   });
 });
 

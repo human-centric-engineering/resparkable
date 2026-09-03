@@ -17,7 +17,7 @@
  *      or a `scope` field, and `.strict()` makes an attempt to add one a
  *      validation error rather than a silent drop. (The schedule route read
  *      `execution.userId` until Resparkable 0.8.0 made scheduled runs system-owned;
- *      see {@link requireResparkableUser}.)
+ *      see {@link requireResparkableSpace}.)
  *
  * **What this file cannot do for you: `redactProvenance`.** Every Resparkable
  * capability sets `processesPii = true` (a brain is nothing *but* PII), and the
@@ -30,6 +30,7 @@
  */
 
 import {
+  RESPARKABLE_SCHEDULE_SPACE_KEY,
   readResparkableScheduleSpaceId,
   spaceScope,
   type SpaceScope,
@@ -39,12 +40,13 @@ import {
   type ProvenanceRedaction,
 } from '@/lib/orchestration/capabilities/base-capability';
 import { runAsSystemAuthored } from '@/lib/framework/resparkable/services/authorship';
+import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
 import type { CapabilityContext, CapabilityResult } from '@/lib/orchestration/capabilities/types';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
 import { redactedString } from '@/lib/security/redact';
 
 /**
- * Thrown by {@link requireResparkableUser}. Caught in {@link ResparkableCapability.execute}
+ * Thrown by {@link requireResparkableSpace}. Caught in {@link ResparkableCapability.execute}
  * and turned into a structured result — a capability that threw would surface to
  * the model as an unhandled dispatcher error rather than as something it can
  * explain to the user.
@@ -77,18 +79,89 @@ export class MissingResparkableUserError extends Error {
  * stale or mismatched scope on some future row cannot redirect a live user's
  * capability at another brain — the fallback only ever fills a gap.
  *
+ * ## What phase 47 changed, and what it deliberately did not
+ *
+ * The two routes used to produce the same kind of value by accident: a person's
+ * user id and their space key were the same string. From phase 46 they are not,
+ * and a capability invoked in a group workspace has to read that workspace or
+ * the agent layer answers questions about the wrong brain (§23.9). Sparkey is a
+ * permanent pane, so this cannot wait for a later phase: the moment a member
+ * opens a group space the agent layer is live.
+ *
+ * So route 1 gained a space, and it **resolves** rather than trusts it. The
+ * space arrives as `ChatRequest.scope`, which core routes through `hintScope`
+ * and names a hint because a consumer request body can set it. Membership
+ * decides, on every turn, and the actor is still the session's.
+ *
+ * What did NOT change: **no capability accepts a space as an argument.** Every
+ * `agent*Schema` is `.strict()` and none has such a field, for the same reason
+ * none has a user id — a workspace named by a model is a workspace named by
+ * whatever text the model has just read. `capabilities/scope.test.ts` sweeps
+ * every handler for it.
+ *
+ * The other half of §23.9 is accepted rather than solved: inside one group, a
+ * member's text can now reach another member's agent turn. That is a real
+ * prompt-injection surface and it is not closable, because a shared brain whose
+ * shared agent cannot read it is not a shared brain. §18.7's mitigation is the
+ * one that applies: the agents reading group content have no destructive
+ * capabilities bound, asserted at the seed level.
+ *
  * Exported so a capability that needs the scope before validating (none do
  * today) can reach it directly; the base class calls it for everything else.
  */
-export function requireResparkableUser(context: CapabilityContext): SpaceScope {
-  // TODO(release-10): after §24 this value is a SPACE id while `context.userId`
-  // is a USER id. They are the same string today, and phase 45 renamed the
-  // column but did not, and could not, make one workspace per person into
-  // several. When it does, the session branch has to resolve the actor's
-  // *default* workspace rather than assume it.
-  const userId = context.userId ?? readResparkableScheduleSpaceId(context.scope);
-  if (!userId) throw new MissingResparkableUserError();
-  return spaceScope(userId);
+export async function requireResparkableSpace(context: CapabilityContext): Promise<SpaceScope> {
+  // ── Route 1: a person is acting, through an agent ──────────────────────────
+  //
+  // The actor is verified (`context.userId` comes from the session, never from
+  // a model or a request body). The space is NOT: `ChatRequest.scope` reaches
+  // capabilities through `hintScope`, which core names a hint precisely because
+  // a consumer request body can set it. So it is resolved rather than trusted,
+  // and `resolveActiveSpaceScope` reads membership and returns nothing for a
+  // space this person is not in.
+  //
+  // That read is the price of a shared brain, and it is one indexed lookup on
+  // `@@unique([groupId, userId])`, skipped entirely when there is no hint —
+  // which is every turn for everybody in no group.
+  //
+  // **The new key only, and not `readResparkableScheduleSpaceId`.** That reader
+  // also accepts the legacy `resparkableUserId`, which is right for a
+  // pre-migration schedule row and wrong here: a stale schedule scope carrying
+  // somebody else's user id would then be read as a space target for a live
+  // turn, and the turn would fail rather than be ignored. The old code treated
+  // `scope` as a fallback for a missing owner only, and that precedence is
+  // preserved by reading a key the legacy carrier cannot spell.
+  if (context.userId) {
+    const hinted = context.scope?.[RESPARKABLE_SCHEDULE_SPACE_KEY];
+    const spaceTarget = typeof hinted === 'string' && hinted.length > 0 ? hinted : null;
+
+    const scope = await resolveActiveSpaceScope(context.userId, spaceTarget);
+    // A hint naming a space they are not in resolves to nothing, and this is
+    // the same refusal a missing owner gets rather than a quiet fallback to
+    // their personal brain. Falling back would mean a model that read
+    // "use workspace spc_x" in a document could silently redirect a turn, and
+    // the person would see an answer about their own notes with no sign it had
+    // been aimed elsewhere first.
+    if (!scope) throw new MissingResparkableUserError();
+    return scope;
+  }
+
+  // ── Route 2: nobody is watching ────────────────────────────────────────────
+  //
+  // A scheduled run arrives system-owned (`userId: null`, resparkable#502), and
+  // its space travels on `AiWorkflowSchedule.scope`, which is admin-written and
+  // stamped onto the execution. There is no actor to check membership against,
+  // so the carrier IS the authority here, exactly as it was before phase 47.
+  //
+  // The tightening this wants and does not yet have is a
+  // `context.scopeIsAuthoritative` check, which is the field core provides to
+  // tell a platform-written carrier from a consumer-supplied one. It is not
+  // added blind: getting it wrong silently stops every 04:30 run, and it needs
+  // a test proving the scheduler path sets the flag before it can be trusted to
+  // gate on it.
+  const carried = readResparkableScheduleSpaceId(context.scope);
+  if (carried) return spaceScope(carried);
+
+  throw new MissingResparkableUserError();
 }
 
 /**
@@ -244,7 +317,7 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
   async execute(args: TArgs, context: CapabilityContext): Promise<CapabilityResult<TData>> {
     let scope: SpaceScope;
     try {
-      scope = requireResparkableUser(context);
+      scope = await requireResparkableSpace(context);
     } catch (error) {
       if (!(error instanceof MissingResparkableUserError)) throw error;
       return this.error(

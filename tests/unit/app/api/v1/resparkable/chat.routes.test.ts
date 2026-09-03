@@ -37,6 +37,9 @@ vi.mock('@/lib/auth/guards', () => ({
 }));
 
 vi.mock('@/lib/orchestration/chat', () => ({ streamChat: vi.fn() }));
+// Only the membership read: the workspace resolution itself is the real one,
+// since which brain a chat turn is about is what these tests are for.
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/billing', () => ({
   assertPositiveBalance: vi.fn(),
@@ -54,8 +57,24 @@ import {
   assertPositiveBalance,
   recordAgentSpend,
 } from '@/lib/framework/resparkable/services/billing';
+import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { streamChat } from '@/lib/orchestration/chat';
+
+/** A live membership row for the actor these tests use. */
+function groupMembership() {
+  const at = new Date('2026-09-01T10:00:00.000Z');
+  return {
+    id: 'mem_1',
+    groupId: 'grp_1',
+    userId: 'user_a',
+    role: 'member',
+    invitedByUserId: null,
+    joinedAt: at,
+    createdAt: at,
+    updatedAt: at,
+  };
+}
 
 const SESSION_A = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
@@ -69,9 +88,9 @@ async function* noEvents(): AsyncGenerator<{ type: string }> {
   // Intentionally yields nothing.
 }
 
-function postReq(body: unknown) {
+function postReq(body: unknown, query = '') {
   return {
-    url: 'http://localhost:3000/api/v1/resparkable/chat/stream',
+    url: `http://localhost:3000/api/v1/resparkable/chat/stream${query}`,
     headers: new Headers({ 'content-type': 'application/json' }),
     json: () => Promise.resolve(body),
     signal: new AbortController().signal,
@@ -91,7 +110,7 @@ beforeEach(() => {
 });
 
 describe('POST /api/v1/resparkable/chat/stream', () => {
-  it('pins contextType and contextId server-side to the session user', async () => {
+  it('pins contextType and contextId server-side to the resolved workspace', async () => {
     await invoke(
       postReq({ message: 'what did I decide?', agentSlug: RESPARKABLE_AGENT_SLUGS.companion }),
       SESSION_A
@@ -101,9 +120,51 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
       expect.objectContaining({
         userId: 'user_a',
         contextType: RESPARKABLE_CONTEXT_TYPE,
+        // The personal space, whose key is the owner's user id. Same value it
+        // has always been for somebody in no group, and now for a different
+        // reason: it is the space the request resolved to, not the person.
         contextId: 'user_a',
       })
     );
+  });
+
+  it('follows the workspace in the URL into the context and the tools', async () => {
+    vi.mocked(findMembershipBySpace).mockResolvedValue(groupMembership() as never);
+
+    await invoke(
+      postReq(
+        { message: 'what did we decide?', agentSlug: RESPARKABLE_AGENT_SLUGS.companion },
+        '?space=spc_group_1'
+      ),
+      SESSION_A
+    );
+
+    // §23.9: agents and context follow the space, not the actor. `contextId`
+    // feeds the prompt's context block, `scope` feeds the capabilities, and a
+    // turn whose two halves disagreed would answer about one brain using tools
+    // pointed at another.
+    expect(streamChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user_a',
+        contextId: 'spc_group_1',
+        scope: { resparkableSpaceId: 'spc_group_1' },
+      })
+    );
+  });
+
+  it('404s a workspace the caller is not in, before any provider call', async () => {
+    vi.mocked(findMembershipBySpace).mockResolvedValue(null);
+
+    const response = await invoke(
+      postReq(
+        { message: 'what did we decide?', agentSlug: RESPARKABLE_AGENT_SLUGS.companion },
+        '?space=spc_not_mine'
+      ),
+      SESSION_A
+    );
+
+    expect(response.status).toBe(404);
+    expect(streamChat).not.toHaveBeenCalled();
   });
 
   /**
