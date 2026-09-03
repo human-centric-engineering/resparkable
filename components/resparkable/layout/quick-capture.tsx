@@ -48,6 +48,10 @@ import * as React from 'react';
 import { Send } from 'lucide-react';
 
 import { AttachButton, AttachmentCard } from '@/components/resparkable/layout/capture-attachment';
+import {
+  CaptureTarget,
+  defaultCaptureTarget,
+} from '@/components/resparkable/layout/capture-target';
 import { ImageCaptureButton } from '@/components/resparkable/layout/image-capture-button';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
@@ -98,6 +102,9 @@ export function QuickCapture({
   const [source, setSource] = React.useState<'voice' | 'image' | 'pwa' | undefined>(initialSource);
   /** Said in the status line under the box: transcription errors, "read 4,000 characters", etc. */
   const [note, setNote] = React.useState<{ text: string; tone: 'info' | 'error' } | null>(null);
+  // Personal on every mount, and reset to personal after every save. Never the
+  // workspace on screen: see `CaptureTarget`'s header.
+  const [target, setTarget] = React.useState<string | null>(defaultCaptureTarget());
   const [dragging, setDragging] = React.useState(false);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
@@ -122,15 +129,28 @@ export function QuickCapture({
     const content = value.trim();
     if (!content) return;
     const capturedSource = source;
+    const capturedTarget = target;
 
     // Cleared before the await — see the header note.
     setValue('');
     setSource(undefined);
     setNote(null);
+    // Back to personal after every save, not left on the last choice. A target
+    // that persists across captures IS the stickiness this control exists to
+    // prevent; it would just be sticky per box instead of per URL.
+    setTarget(defaultCaptureTarget());
 
     const ok = await run(() =>
-      apiClient.post(RESPARKABLE_API.THOUGHTS, {
-        body: { content, ...(capturedSource ? { source: capturedSource } : {}) },
+      // `/capture` rather than `/thoughts`: the front door takes an explicit
+      // target and reads no `?space=`, so nothing here can inherit the
+      // workspace on screen. `apiClient` and not `resparkableApi` for the same
+      // reason, and that is not an oversight to be tidied up later.
+      apiClient.post(RESPARKABLE_API.CAPTURE, {
+        body: {
+          content,
+          ...(capturedSource ? { source: capturedSource } : {}),
+          ...(capturedTarget ? { spaceId: capturedTarget } : {}),
+        },
       })
     );
 
@@ -145,6 +165,7 @@ export function QuickCapture({
       // unforgivable failure here.
       setValue(content);
       setSource(capturedSource);
+      setTarget(capturedTarget);
       inputRef.current?.focus();
     }
   }
@@ -272,6 +293,11 @@ export function QuickCapture({
           Capture
         </Button>
       </div>
+
+      {/* Below the buttons rather than beside them: it renders nothing for
+          somebody in no group, and a row that appears and disappears next to
+          the Capture button would move the button. */}
+      <CaptureTarget value={target} onChange={setTarget} content={value} />
 
       <SaveStatus
         state={state}

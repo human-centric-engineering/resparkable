@@ -111,6 +111,7 @@ import { PaneCollapseButton } from '@/components/resparkable/shell/pane-collapse
 import { RouteTabBridge } from '@/components/resparkable/shell/route-tab-bridge';
 import { MobilePaneSwitcher } from '@/components/resparkable/shell/mobile-pane-switcher';
 import { ResparkableAppHeader } from '@/components/resparkable/shell/app-header';
+import { SpacesProvider } from '@/components/resparkable/shell/spaces-context';
 import type { OpenableSpaceWire } from '@/lib/framework/resparkable/ui/payloads';
 import { ProtectedFooter } from '@/components/layouts/protected-footer';
 import { ActivityPane } from '@/components/resparkable/activity/activity-pane';
@@ -232,14 +233,15 @@ export function WorkspaceShell({ children, spaces }: WorkspaceShellProps): React
   }
 
   return (
-    <WorkspaceProvider>
-      {/* Above all three panes, not inside the pane tree: Sparkey and Activity
+    <SpacesProvider spaces={spaces}>
+      <WorkspaceProvider>
+        {/* Above all three panes, not inside the pane tree: Sparkey and Activity
           are the writers that most need it. Both sit outside every
           `TabRefreshBoundary`, so before this existed a Sparkey capture or an
           instruct turn had no way to reach an open tab at all — see
           `data-change-context.tsx`. */}
-      <DataChangeProvider>
-        {/* `/resparkable` sits in its own `(resparkable)` route group (see
+        <DataChangeProvider>
+          {/* `/resparkable` sits in its own `(resparkable)` route group (see
           `layout.tsx`'s own header comment) specifically so nothing above
           `<body>` — no Sunrise `AppHeader`, no padded `<main>` — adds height
           this shell would have to subtract out. `h-dvh` is exact, not a
@@ -248,73 +250,76 @@ export function WorkspaceShell({ children, spaces }: WorkspaceShellProps): React
           flex sibling of the pane area rather than page content below a
           scroll: `flex-1 min-h-0` on the pane row means the footer's own
           height is simply subtracted from it, no calc() guess needed. */}
-        <div className="flex h-dvh flex-col">
-          <ResparkableAppHeader spaces={spaces} onPresent={() => setPresenting(true)} />
-          <div className="min-h-0 flex-1">
-            {/* Wraps both branches, not just the desktop one: `WorkspacePane`
+          <div className="flex h-dvh flex-col">
+            <ResparkableAppHeader spaces={spaces} onPresent={() => setPresenting(true)} />
+            <div className="min-h-0 flex-1">
+              {/* Wraps both branches, not just the desktop one: `WorkspacePane`
               calls `useWorkspaceOverlay()` unconditionally, and
               `MobilePaneSwitcher` renders the same `RouteTabBridge`-wrapped
               pane tree desktop does — only `FloatingPanelsLayer` itself is
               desktop-only. */}
-            <WorkspaceOverlayProvider>
-              {!mounted ? (
-                <WorkspacePanesSkeleton />
-              ) : isDesktop ? (
-                <>
-                  <ResizablePanelGroup direction="horizontal">
-                    <CollapsibleSidePanel
-                      panelRef={sparkeyPanelRef}
-                      side="left"
-                      label="Sparkey"
-                      collapsed={sparkeyCollapsed}
-                      onCollapse={() => setSparkeyCollapsed(true)}
-                      onExpand={() => setSparkeyCollapsed(false)}
-                      onToggle={() =>
-                        sparkeyCollapsed ? expandSparkey() : sparkeyPanelRef.current?.collapse()
-                      }
-                    >
-                      <SparkeyPane collapsed={sparkeyCollapsed} onExpand={expandSparkey} />
-                    </CollapsibleSidePanel>
-                    <ResizablePanel defaultSize={56} minSize={30}>
-                      <RouteTabBridge>{children}</RouteTabBridge>
-                    </ResizablePanel>
-                    <CollapsibleSidePanel
-                      panelRef={activityPanelRef}
-                      side="right"
-                      label="Activity"
-                      collapsed={activityCollapsed}
-                      onCollapse={() => setActivityCollapsed(true)}
-                      onExpand={() => setActivityCollapsed(false)}
-                      onToggle={() =>
-                        activityCollapsed ? expandActivity() : activityPanelRef.current?.collapse()
-                      }
-                    >
-                      <ActivityPane collapsed={activityCollapsed} onExpand={expandActivity} />
-                    </CollapsibleSidePanel>
-                  </ResizablePanelGroup>
-                  <FloatingPanelsLayer />
-                </>
-              ) : (
-                <MobilePaneSwitcher
-                  workspaceContent={<RouteTabBridge>{children}</RouteTabBridge>}
-                />
-              )}
-            </WorkspaceOverlayProvider>
+              <WorkspaceOverlayProvider>
+                {!mounted ? (
+                  <WorkspacePanesSkeleton />
+                ) : isDesktop ? (
+                  <>
+                    <ResizablePanelGroup direction="horizontal">
+                      <CollapsibleSidePanel
+                        panelRef={sparkeyPanelRef}
+                        side="left"
+                        label="Sparkey"
+                        collapsed={sparkeyCollapsed}
+                        onCollapse={() => setSparkeyCollapsed(true)}
+                        onExpand={() => setSparkeyCollapsed(false)}
+                        onToggle={() =>
+                          sparkeyCollapsed ? expandSparkey() : sparkeyPanelRef.current?.collapse()
+                        }
+                      >
+                        <SparkeyPane collapsed={sparkeyCollapsed} onExpand={expandSparkey} />
+                      </CollapsibleSidePanel>
+                      <ResizablePanel defaultSize={56} minSize={30}>
+                        <RouteTabBridge>{children}</RouteTabBridge>
+                      </ResizablePanel>
+                      <CollapsibleSidePanel
+                        panelRef={activityPanelRef}
+                        side="right"
+                        label="Activity"
+                        collapsed={activityCollapsed}
+                        onCollapse={() => setActivityCollapsed(true)}
+                        onExpand={() => setActivityCollapsed(false)}
+                        onToggle={() =>
+                          activityCollapsed
+                            ? expandActivity()
+                            : activityPanelRef.current?.collapse()
+                        }
+                      >
+                        <ActivityPane collapsed={activityCollapsed} onExpand={expandActivity} />
+                      </CollapsibleSidePanel>
+                    </ResizablePanelGroup>
+                    <FloatingPanelsLayer />
+                  </>
+                ) : (
+                  <MobilePaneSwitcher
+                    workspaceContent={<RouteTabBridge>{children}</RouteTabBridge>}
+                  />
+                )}
+              </WorkspaceOverlayProvider>
+            </div>
+            <ProtectedFooter />
           </div>
-          <ProtectedFooter />
-        </div>
 
-        {/* Inside `DataChangeProvider` alongside the panes, even though Present
+          {/* Inside `DataChangeProvider` alongside the panes, even though Present
             mode writes nothing today: the provider is meant to be shell-wide,
             and leaving one surface outside it would make "is there a provider
             above me" a question a future writer has to check. */}
-        <Dialog open={presenting} onOpenChange={setPresenting}>
-          <DialogContent className="inset-0 top-0 left-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 p-0 sm:rounded-none">
-            <DialogTitle className="sr-only">Present</DialogTitle>
-            <PresentPane payload={null} />
-          </DialogContent>
-        </Dialog>
-      </DataChangeProvider>
-    </WorkspaceProvider>
+          <Dialog open={presenting} onOpenChange={setPresenting}>
+            <DialogContent className="inset-0 top-0 left-0 h-screen w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none border-0 p-0 sm:rounded-none">
+              <DialogTitle className="sr-only">Present</DialogTitle>
+              <PresentPane payload={null} />
+            </DialogContent>
+          </Dialog>
+        </DataChangeProvider>
+      </WorkspaceProvider>
+    </SpacesProvider>
   );
 }
