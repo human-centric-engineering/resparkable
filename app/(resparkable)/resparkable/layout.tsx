@@ -8,6 +8,20 @@ import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { openableSpacesSchema } from '@/lib/framework/resparkable/ui/payloads';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
+/**
+ * Nothing under `/resparkable` can be prerendered, and from phase 47 saying so
+ * costs a line and saves twenty-one build errors.
+ *
+ * Every route here is session-gated and reads cookies, so all of them were
+ * already `ƒ` in the build output. What changed is that this layout fetches
+ * again: Next probes each route for static rendering, that probe reaches the
+ * switcher's read, `cookies` makes it bail, and `readResparkable` catches the
+ * bail and logs it as a failed read. The page was correct either way; the log
+ * line was not, and twenty-one of them per build is how a real error stops
+ * being noticed.
+ */
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   title: {
     template: '%s · Resparkable',

@@ -423,6 +423,57 @@ an invite-a-person-with-a-role form; `my-shares-view.tsx` is the list-with-revok
 pattern with optimistic remove and rollback; `accept-invite.tsx` plus
 `invite/[token]/page.tsx` is the whole token to session to bind to redirect flow.
 
+### What phase 47 actually shipped, and where it departed
+
+Landed on `main` 2026-09-03. Six departures from the text above, all found by
+building it rather than by re-reading the plan.
+
+**1. Two of the six capture paths cannot write a thought.** `/transcribe` and
+`/transcribe/image` return text into the capture box; neither calls
+`captureThought` or creates anything. That is what makes them safe, and it is a
+better answer than a default would have been, so test 13e asserts the absence
+rather than inventing a default for them to have. §24.2's table lists them as
+entry points because they are entry points for a _person_; in this codebase they
+are not entry points for a _row_.
+
+**2. Quick capture and the Sparkey composer were posting to `/thoughts`.** The
+plan's table says `/capture` and always did; the UI had drifted, and the drift
+only became dangerous in this phase, because `/thoughts` is the ordinary CRUD
+create and now follows the ambient workspace. Both moved.
+
+**3. `resolveSpaceScope()` is three functions.** `resolveGroupSpaceScope` (phase
+46, by space id), `resolveGroupMembership` (phase 46, by group id) and
+`resolveActiveSpaceScope` (phase 47, the entry point that short-circuits the
+personal case). The plan's single name would have hidden the short-circuit,
+which is the thing that keeps a membership read off every request in the
+product.
+
+**4. The outbound-sharing routes follow the ambient workspace.** `grants`,
+`shares` and `share-links` were not mentioned in either plan for this phase.
+Leaving them personal would have made "share this project" 404 inside a group,
+because the item is in the group's space and the scope would not be. What phase
+49 still owns is unchanged: a grant whose _grantee_ is a group.
+
+**5. `vault/export` and `vault/import` stay personal, deliberately.** §24.5 has
+not settled what exporting a group workspace means, and both answers are
+data-protection decisions rather than routing ones: an archive of a shared brain
+is several people's content in one person's download, and an import into one
+writes somebody else's rows under the importer's name. The question stays
+visibly open in a comment rather than being answered by a one-line edit.
+
+**6. `requireResparkableSpace`'s background route still trusts its carrier.**
+The tightening it wants is a `context.scopeIsAuthoritative` check, which is the
+field core provides to tell a platform-written carrier from a consumer-supplied
+one. Adding it blind would silently stop every 04:30 run if the scheduler path
+turns out not to set the flag, so it needs a test proving that first. Named in
+the code rather than left as a gap to rediscover.
+
+One boundary worth stating because it will come up again: **a capture is aimed;
+everything else follows the room you are in.** A document upload from the
+capture box lands in the workspace on screen, like every other CRUD create,
+because a document is added _to_ a workspace. A thought is caught first and
+targeted second, which is why it is the one write path that ignores `?space=`.
+
 ---
 
 ## Phase 48: erasure, isolation, and the honest export
