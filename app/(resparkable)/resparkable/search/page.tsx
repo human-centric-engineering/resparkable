@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { searchHitsSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
@@ -39,6 +40,7 @@ export default async function ResparkableSearchPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const space = readSpaceTarget(params);
   const raw = params.q;
   const query = (Array.isArray(raw) ? raw[0] : raw)?.trim() ?? '';
   const includeArchived = params.includeArchived === 'true';
@@ -58,7 +60,8 @@ export default async function ResparkableSearchPage({
 
   const result = await readResparkable(
     `${RESPARKABLE_API.SEARCH}?${search.toString()}`,
-    searchHitsSchema
+    searchHitsSchema,
+    space
   );
 
   return (

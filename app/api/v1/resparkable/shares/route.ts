@@ -32,13 +32,12 @@ import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { listMyShares, summariseShares } from '@/lib/framework/resparkable/services/my-shares';
 import { mySharesQuerySchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
 
   const query = validateQueryParams(new URL(request.url).searchParams, mySharesQuerySchema);
 
@@ -51,3 +50,4 @@ export const GET = withAuth(async (request, session) => {
 
   return successResponse(items, totals);
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

@@ -5,6 +5,7 @@ import { ProjectsView } from '@/components/resparkable/projects/projects-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { areaSchema, projectSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 import { PROJECT_STATUSES } from '@/lib/framework/resparkable/validations';
 
@@ -29,6 +30,7 @@ export default async function ResparkableProjectsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const space = readSpaceTarget(params);
   const raw = Array.isArray(params.status) ? params.status[0] : params.status;
   // An unrecognised status is dropped rather than passed on — the API would 400,
   // and a hand-edited URL should degrade to "everything", not to an error page.
@@ -38,8 +40,12 @@ export default async function ResparkableProjectsPage({
   if (status) query.set('status', status);
 
   const [projects, areas] = await Promise.all([
-    readResparkable(`${RESPARKABLE_API.PROJECTS}?${query.toString()}`, z.array(projectSchema)),
-    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema)),
+    readResparkable(
+      `${RESPARKABLE_API.PROJECTS}?${query.toString()}`,
+      z.array(projectSchema),
+      space
+    ),
+    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema), space),
   ]);
 
   if (!projects.ok) {

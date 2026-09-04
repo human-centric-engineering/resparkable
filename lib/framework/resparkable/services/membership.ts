@@ -64,6 +64,7 @@ import {
   type GroupUpdateData,
 } from '@/lib/framework/resparkable/repo/groups';
 import {
+  spaceScope,
   spaceScopeFor,
   type SpaceRole,
   type SpaceScope,
@@ -99,6 +100,46 @@ function generateInboxToken(): string {
  */
 function generateGroupSpaceId(): string {
   return `spc_${randomBytes(16).toString('hex')}`;
+}
+
+/**
+ * Turn a request's space target into a scope. The entry point for every HTTP
+ * path in the tier, and the reason a route no longer mints its own.
+ *
+ * **Absence is the personal space, and so is the actor's own space id.** Two
+ * spellings of one answer, because the second is unavoidable: a personal
+ * space's key IS its owner's user id (phase 45 kept that identity), so a link
+ * built from the switcher while sitting in a personal space carries it. Both
+ * resolve through `spaceScope()`, which is the same scope the tier has minted
+ * since Release 1, so this function changes nothing for a user who is in no
+ * group.
+ *
+ * **Anything else is a group space, and membership decides.** A non-member, a
+ * pending member and a space that does not exist are one answer here: `null`,
+ * which the caller turns into a 404. That is `resolveGroupSpaceScope`'s
+ * contract and this function adds nothing to it.
+ *
+ * ## What this is not for
+ *
+ * Capture. Every capture path takes its target from an explicit field and
+ * defaults to personal, and none of them reads the ambient space off the URL,
+ * because "the last space was sticky" is precisely the failure §23.4 names
+ * (phase 47's own acceptance criterion, test 13e). Reading here is for a
+ * surface that is *displaying* a workspace, where the URL is the question the
+ * user asked.
+ *
+ * @param actorUserId - **Always** from the verified session.
+ * @param spaceTarget - From `readSpaceTarget()`, and untrusted. See
+ *   `ui/active-space.ts` for why a target and a scope are different words.
+ */
+export async function resolveActiveSpaceScope(
+  actorUserId: string,
+  spaceTarget: string | null
+): Promise<SpaceScope | null> {
+  if (!actorUserId) return null;
+  if (!spaceTarget || spaceTarget === actorUserId) return spaceScope(actorUserId);
+
+  return resolveGroupSpaceScope(actorUserId, spaceTarget);
 }
 
 /**

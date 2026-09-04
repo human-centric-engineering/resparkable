@@ -13,12 +13,11 @@ import { getRouteLogger } from '@/lib/api/context';
 import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { getResparkableReview } from '@/lib/framework/resparkable/services/reviews';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const review = await getResparkableReview(scope, id);
@@ -28,3 +27,4 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
 
   return successResponse(review);
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

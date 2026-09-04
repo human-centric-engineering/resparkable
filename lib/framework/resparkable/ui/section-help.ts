@@ -353,6 +353,38 @@ export const RESPARKABLE_SECTION_HELP: readonly SectionHelpEntry[] = [
   },
 
   {
+    href: RESPARKABLE_ROUTES.GROUPS,
+    title: 'Groups',
+    blurb: 'Shared workspaces, and who can get into them.',
+    blocks: [
+      {
+        heading: 'A group has its own workspace',
+        body: 'It is a whole second brain, not a folder inside yours. It has its own inbox, projects, goals and boards, and everyone in the group sees all of it. Nothing you keep in your own workspace ever appears there.',
+      },
+      {
+        heading: 'Switching, not opening',
+        body: 'This page is for changing who is in a group. To work in one, use the workspace switcher at the top of the screen. It keeps you on the same page, so switching while looking at your projects shows the group’s projects.',
+      },
+      {
+        heading: 'Capture always starts with you',
+        body: 'A thought you capture goes into your own workspace unless you pick the group first, even while you are looking at the group. That is on purpose: the alternative is a thought landing somewhere shared because of where you happened to be.',
+      },
+      {
+        heading: 'Three roles',
+        body: 'Admins can invite people, change roles and remove members. Members can read and write everything in the workspace. Viewers can read it and change nothing.',
+      },
+      {
+        heading: 'An invitation grants nothing until it is accepted',
+        body: 'Inviting somebody sends them a link. They get access when they open it and accept, not before, and you can revoke the invitation up until then.',
+      },
+      {
+        heading: 'The last admin cannot leave',
+        body: 'A group with nobody able to administer it is a workspace nobody can get people into or out of. Make somebody else an admin first, and then you can go.',
+      },
+    ],
+  },
+
+  {
     href: RESPARKABLE_ROUTES.SHARED,
     title: 'Shared with me',
     blurb: 'Items other people have shared with you, kept separate from your own.',

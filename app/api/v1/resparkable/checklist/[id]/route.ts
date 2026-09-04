@@ -25,13 +25,12 @@ import {
   renumberChecklistItems,
   updateChecklistItem,
 } from '@/lib/framework/resparkable/repo/checklist';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { planMove } from '@/lib/framework/resparkable/services/fractional-position';
 import { updateChecklistItemSchema } from '@/lib/framework/resparkable/validations';
 
 export const PATCH = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, updateChecklistItemSchema);
@@ -70,7 +69,7 @@ export const PATCH = withAuth<{ id: string }>(async (request, session, { params 
 
 export const DELETE = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const removed = await deleteChecklistItem(scope, id);
@@ -80,3 +79,4 @@ export const DELETE = withAuth<{ id: string }>(async (request, session, { params
 
   return successResponse({ id, deleted: true });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

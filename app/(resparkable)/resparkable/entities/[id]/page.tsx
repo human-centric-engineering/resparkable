@@ -5,7 +5,11 @@ import { EntityDetail } from '@/components/resparkable/entities/entity-detail';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { entityViewSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Person or company',
@@ -20,14 +24,18 @@ export const metadata: Metadata = {
  */
 export default async function ResparkableEntityPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: ResparkableSearchParams;
 }) {
   const { id } = await params;
+  const space = readSpaceTarget(await searchParams);
 
   const view = await readResparkable(
     RESPARKABLE_API.viewPath(RESPARKABLE_API.ENTITIES, id),
-    entityViewSchema
+    entityViewSchema,
+    space
   );
 
   if (!view.ok) {

@@ -8,10 +8,13 @@
  *
  * The three properties that matter, all enforced in this file:
  *
- *   1. **The scope comes from the session, always.** `spaceScope(session.user.id)`
- *      is built here and nowhere else in the HTTP path. A body or query field
- *      called `userId` cannot reach a repo, because the schemas are `.strict()`
- *      and reject it outright.
+ *   1. **The actor comes from the session, always, and the workspace comes from
+ *      the URL.** `requestSpaceScope(request, session.user.id)` is the only
+ *      thing in this file that produces a scope: the actor is verified, the
+ *      `?space=` target is not, and membership decides whether the two go
+ *      together (phase 47). A body or query field called `userId` still cannot
+ *      reach a repo, because the schemas are `.strict()` and reject it
+ *      outright, and neither can a body field naming a space.
  *   2. **Missing and not-yours are indistinguishable.** Repos return `null` for
  *      both, and both become `NotFoundError` — never `ForbiddenError`, which
  *      would confirm the row exists (plan §16.2).
@@ -28,7 +31,6 @@ import { NotFoundError } from '@/lib/api/errors';
 import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
@@ -55,7 +57,7 @@ export function createCollectionHandlers<TCreate, TUpdate, TQuery>(
 ): { GET: CollectionHandler; POST: CollectionHandler } {
   const GET = withAuth(async (request, session) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
 
     const query = validateQueryParams(new URL(request.url).searchParams, resource.listQuerySchema);
     const { items, total } = await resource.list(scope, query);
@@ -67,7 +69,7 @@ export function createCollectionHandlers<TCreate, TUpdate, TQuery>(
 
   const POST = withAuth(async (request, session) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
 
     const body = await validateRequestBody(request, resource.createSchema);
     const created = await resource.create(scope, body);
@@ -86,7 +88,7 @@ export function createItemHandlers<TCreate, TUpdate, TQuery>(
 ): { GET: ItemHandler; PATCH: ItemHandler; DELETE: ItemHandler } {
   const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     const item = await resource.get(scope, id);
@@ -101,7 +103,7 @@ export function createItemHandlers<TCreate, TUpdate, TQuery>(
 
   const PATCH = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     const body = await validateRequestBody(request, resource.updateSchema);
@@ -124,7 +126,7 @@ export function createItemHandlers<TCreate, TUpdate, TQuery>(
    */
   const DELETE = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     const permanent = new URL(request.url).searchParams.get('permanent') === 'true';
@@ -159,7 +161,7 @@ export function createRestoreHandler<TCreate, TUpdate, TQuery>(
 ): { POST: ItemHandler } {
   const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     if (!resource.restore) throw new NotFoundError(`${resource.name} not found`);
@@ -190,7 +192,7 @@ export function createSnoozeHandlers(type: SnoozableType): {
 } {
   const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     const body = await validateRequestBody(request, snoozeSchema);
@@ -208,7 +210,7 @@ export function createSnoozeHandlers(type: SnoozableType): {
 export function createUnsnoozeHandlers(type: SnoozableType): { POST: ItemHandler } {
   const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     const result = await unsnoozeItem(scope, type, id);
@@ -242,7 +244,7 @@ export type SummarizableType = 'area' | 'goal' | 'project';
 export function createSummarizeHandlers(type: SummarizableType): { POST: ItemHandler } {
   const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id } = await params;
 
     if (!(await entityExists(scope, type, id))) throw new NotFoundError(`${type} not found`);
@@ -268,6 +270,7 @@ export function createSummarizeHandlers(type: SummarizableType): { POST: ItemHan
 
   return { POST };
 }
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 
 /** Exported for the archive-reason schema so route files stay two lines. */
 export { archiveSchema };

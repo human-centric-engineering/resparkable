@@ -5,7 +5,11 @@ import { BoardsList } from '@/components/resparkable/board/boards-list';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { boardSchema, projectSchema, tagSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Boards',
@@ -18,11 +22,20 @@ export const metadata: Metadata = {
  * Three fetches for the page — boards, projects for the filter picker, tags for the
  * library — issued concurrently. None per row.
  */
-export default async function ResparkableBoardsPage() {
+export default async function ResparkableBoardsPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const [boards, projects, tags] = await Promise.all([
-    readResparkable(`${RESPARKABLE_API.BOARDS}?limit=100`, z.array(boardSchema)),
-    readResparkable(`${RESPARKABLE_API.PROJECTS}?status=active&limit=200`, z.array(projectSchema)),
-    readResparkable(`${RESPARKABLE_API.TAGS}?limit=100`, z.array(tagSchema)),
+    readResparkable(`${RESPARKABLE_API.BOARDS}?limit=100`, z.array(boardSchema), space),
+    readResparkable(
+      `${RESPARKABLE_API.PROJECTS}?status=active&limit=200`,
+      z.array(projectSchema),
+      space
+    ),
+    readResparkable(`${RESPARKABLE_API.TAGS}?limit=100`, z.array(tagSchema), space),
   ]);
 
   if (!boards.ok) {

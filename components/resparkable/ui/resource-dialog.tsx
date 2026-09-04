@@ -56,7 +56,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
 export interface ResourceFormBodyProps<TValues extends FieldValues> {
@@ -90,8 +90,8 @@ export function ResourceFormBody<TValues extends FieldValues>({
 
     const ok = await run(() =>
       id
-        ? apiClient.patch(RESPARKABLE_API.itemPath(collection, id), { body })
-        : apiClient.post(collection, { body })
+        ? resparkableApi.patch(RESPARKABLE_API.itemPath(collection, id), { body })
+        : resparkableApi.post(collection, { body })
     );
 
     if (ok) onSaved();

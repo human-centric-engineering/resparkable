@@ -9,8 +9,18 @@
  * request has already wiped the only copy of what the user typed. The restore
  * path is therefore the most important assertion in this file, not an edge case.
  *
+ * ## Why the endpoint moved (phase 47)
+ *
+ * This posted to `/resparkable/thoughts` and now posts to `/resparkable/capture`.
+ * Not a tidy-up: `/thoughts` is the ordinary CRUD create and follows the
+ * workspace in the address bar, which for a capture box is exactly the
+ * stickiness §23.4 forbids. `/capture` takes the target as an explicit body
+ * field and reads no `?space=` at all, so nothing typed here can inherit the
+ * workspace on screen. The plan's own table said `/capture` all along; the UI
+ * had drifted.
+ *
  * Test Coverage:
- * - Submitting POSTs the thought content to the thoughts collection
+ * - Submitting POSTs the thought content to the capture front door
  * - Typed-only input sends no `source` — the schema's own default (`web`) covers it
  * - Dictating and submitting without further edits sends `source: 'voice'`
  * - Photographing and submitting without further edits sends `source: 'image'`
@@ -32,6 +42,7 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { QuickCapture } from '@/components/resparkable/layout/quick-capture';
+import { SpacesProvider } from '@/components/resparkable/shell/spaces-context';
 
 vi.mock('@/components/resparkable/documents/upload-request', () => ({
   uploadDocument: vi.fn(),
@@ -150,7 +161,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Ring the accountant about the Q4 filing' },
       });
     });
@@ -178,7 +189,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Ring the accountant', source: 'voice' },
       });
     });
@@ -204,7 +215,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Buy milk, call the dentist', source: 'image' },
       });
     });
@@ -220,7 +231,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Ring the accountant tomorrow' },
       });
     });
@@ -243,7 +254,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenLastCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenLastCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Ring the accountant', source: 'voice' },
       });
     });
@@ -296,7 +307,7 @@ describe('QuickCapture', () => {
     await user.keyboard('{Control>}{Enter}{/Control}');
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Captured by keyboard' },
       });
     });
@@ -399,7 +410,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Shared from another app', source: 'pwa' },
       });
     });
@@ -413,7 +424,7 @@ describe('QuickCapture', () => {
     await user.click(screen.getByRole('button', { name: /capture/i }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/thoughts', {
+      expect(mockedPost).toHaveBeenCalledWith('/api/v1/resparkable/capture', {
         body: { content: 'Shared from another app — worth following up' },
       });
     });
@@ -505,5 +516,147 @@ describe('QuickCapture', () => {
       expect(screen.getByRole('alert')).toHaveTextContent(/vision-capable model/i);
     });
     expect(mockedPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('QuickCapture — where the thought lands (test 13e)', () => {
+  const PERSONAL = {
+    spaceId: 'user_a',
+    name: 'Personal',
+    kind: 'personal' as const,
+    role: 'owner',
+    groupId: null,
+  };
+  const GROUP = {
+    spaceId: 'spc_group_1',
+    name: 'Study Group B',
+    kind: 'group' as const,
+    role: 'member',
+    groupId: 'grp_1',
+  };
+
+  function renderInSpaces(spaces: (typeof PERSONAL)[] | Array<typeof PERSONAL | typeof GROUP>) {
+    return render(
+      <SpacesProvider spaces={spaces as never}>
+        <QuickCapture />
+      </SpacesProvider>
+    );
+  }
+
+  it('offers no choice at all to somebody in no group', () => {
+    renderInSpaces([PERSONAL]);
+
+    // Capture has to be faster than thinking. A control offering one option is
+    // the first thing that would get in the way of that.
+    expect(screen.queryByLabelText('Save this to')).not.toBeInTheDocument();
+  });
+
+  it('sends no target by default, even inside a group workspace', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'a thought');
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    // The default is personal on every path and every mount. Not "the workspace
+    // you are looking at": that is the stickiness the whole control exists to
+    // prevent, and the failure it produces is silent.
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/resparkable/capture',
+      expect.objectContaining({ body: expect.not.objectContaining({ spaceId: expect.anything() }) })
+    );
+  });
+
+  it('sends the group only once somebody picks it', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'a thought');
+    await user.click(screen.getByLabelText('Save this to'));
+    await user.click(await screen.findByRole('option', { name: 'Study Group B' }));
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/resparkable/capture',
+      expect.objectContaining({ body: expect.objectContaining({ spaceId: 'spc_group_1' }) })
+    );
+  });
+
+  it('goes back to personal after a save', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'first');
+    await user.click(screen.getByLabelText('Save this to'));
+    await user.click(await screen.findByRole('option', { name: 'Study Group B' }));
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    await user.type(screen.getByLabelText(/capture/i), 'second');
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    // A target that persisted between thoughts would be the same stickiness,
+    // just held per box instead of per URL.
+    expect(mockedPost).toHaveBeenLastCalledWith(
+      '/api/v1/resparkable/capture',
+      expect.objectContaining({ body: expect.not.objectContaining({ spaceId: expect.anything() }) })
+    );
+  });
+
+  it('keeps the chosen target when the save fails', async () => {
+    const user = userEvent.setup();
+    mockedPost.mockRejectedValueOnce(new Error('offline'));
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'a thought');
+    await user.click(screen.getByLabelText('Save this to'));
+    await user.click(await screen.findByRole('option', { name: 'Study Group B' }));
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    // The text comes back into the box on failure, and the target has to come
+    // back with it: a retry that silently re-aimed at the personal space would
+    // be a worse answer than the failure was.
+    await screen.findByDisplayValue('a thought');
+    expect(screen.getByLabelText('Save this to')).toHaveTextContent('Study Group B');
+  });
+
+  it('warns before a personal-sounding thought goes to a group', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'Started therapy for anxiety this week');
+    await user.click(screen.getByLabelText('Save this to'));
+    await user.click(await screen.findByRole('option', { name: 'Study Group B' }));
+
+    // Queried by its words rather than by role: `SaveStatus` is also a live
+    // region, and both being announced is correct.
+    expect(
+      screen.getByText(/Everyone in Study Group B will be able to see it/)
+    ).toBeInTheDocument();
+  });
+
+  it('warns and does not block', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'Started therapy for anxiety this week');
+    await user.click(screen.getByLabelText('Save this to'));
+    await user.click(await screen.findByRole('option', { name: 'Study Group B' }));
+    await user.click(screen.getByRole('button', { name: /^Capture$/ }));
+
+    // The classifier is broad and wrong often enough that refusing would train
+    // people to route around it, and somebody telling their group about their
+    // week is not making a mistake.
+    expect(mockedPost).toHaveBeenCalled();
+  });
+
+  it('says nothing about sensitivity when the thought is staying personal', async () => {
+    const user = userEvent.setup();
+    renderInSpaces([PERSONAL, GROUP]);
+
+    await user.type(screen.getByLabelText(/capture/i), 'Started therapy for anxiety this week');
+
+    // Nobody else can read it, so there is nothing to warn about. A warning
+    // here would be the kind that teaches people to stop reading warnings.
+    expect(screen.queryByText(/will be able to see it/)).not.toBeInTheDocument();
   });
 });

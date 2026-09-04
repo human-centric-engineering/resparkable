@@ -138,6 +138,20 @@ export const RESPARKABLE_SCHEDULE_OWNER_KEY = 'resparkableUserId';
  * one-line deletion for a later phase. Read through
  * {@link readResparkableScheduleSpaceId} rather than either constant directly,
  * so the fallback lives in one place.
+ *
+ * **The name says `SCHEDULE` and the key is not only a schedule's** (phase 47).
+ * A schedule row was the first carrier and is where the name comes from; the
+ * chat route now writes the same key onto `ChatRequest.scope` so a turn's tools
+ * read the workspace the turn is about. The constant keeps its name rather than
+ * gaining a synonym: one spelling of a wire value is worth more than an
+ * accurate variable name, and two names for one string is how a carrier ends up
+ * half-migrated.
+ *
+ * The two carriers are read differently and deliberately so. A schedule's scope
+ * is admin-written and there is no actor to check it against, so it is the
+ * authority. A chat request's is a hint core routes through `hintScope`, and
+ * `requireResparkableSpace` re-resolves it against membership. `capabilities/
+ * base.ts` is where that split is spelled out.
  */
 export const RESPARKABLE_SCHEDULE_SPACE_KEY = 'resparkableSpaceId';
 

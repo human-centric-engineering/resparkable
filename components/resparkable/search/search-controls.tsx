@@ -21,6 +21,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Label } from '@/components/ui/label';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 export interface SearchControlsProps {
@@ -57,7 +58,7 @@ export function SearchControls({
     } else {
       search.delete('includeArchived');
     }
-    router.push(`${RESPARKABLE_ROUTES.SEARCH}?${search.toString()}`);
+    router.push(withActiveSpace(`${RESPARKABLE_ROUTES.SEARCH}?${search.toString()}`));
   }
 
   return (

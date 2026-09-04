@@ -29,7 +29,6 @@ import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
 import { canServeRetainedOriginals } from '@/lib/framework/resparkable/documents/ingest';
 import { findDocument } from '@/lib/framework/resparkable/repo/documents';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { logger } from '@/lib/logging';
 import { getStorageClient } from '@/lib/storage/client';
 
@@ -38,7 +37,7 @@ const SIGNED_URL_TTL_SECONDS = 300;
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   // Scoped read first: another user's document id must 404 here exactly as it
@@ -68,3 +67,4 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
     fileName: document.fileName,
   });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

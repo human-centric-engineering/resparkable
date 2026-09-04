@@ -49,19 +49,31 @@ import { Play } from 'lucide-react';
 import { UserButton } from '@/components/auth/user-button';
 import { BrandMark } from '@/components/brand/brand-mark';
 import { ResparkableSearchBox } from '@/components/resparkable/layout/resparkable-search-box';
+import { SpaceSwitcher } from '@/components/resparkable/shell/space-switcher';
 import { Button } from '@/components/ui/button';
 import { ThemeToggle } from '@/components/theme-toggle';
+import type { OpenableSpaceWire } from '@/lib/framework/resparkable/ui/payloads';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
+import { useSpaceHref } from '@/lib/framework/resparkable/ui/use-active-space';
 
 export interface ResparkableAppHeaderProps {
   onPresent?: () => void;
+  /**
+   * The workspaces this person can open. Defaulted to empty so this component
+   * still renders standalone, the same reason `onPresent` is optional; the
+   * switcher hides itself when there is nothing to switch to.
+   */
+  spaces?: OpenableSpaceWire[];
 }
 
-export function ResparkableAppHeader({ onPresent }: ResparkableAppHeaderProps = {}) {
+export function ResparkableAppHeader({ onPresent, spaces = [] }: ResparkableAppHeaderProps = {}) {
+  // "Home" means the Today page of the workspace you are in, not of your own.
+  const spaceHref = useSpaceHref();
+
   return (
     <header className="border-border/60 lattice-chrome sticky top-0 z-40 flex items-center gap-4 border-b px-3 py-2">
       <Link
-        href={RESPARKABLE_ROUTES.TODAY}
+        href={spaceHref(RESPARKABLE_ROUTES.TODAY)}
         className="shrink-0 text-lg transition-opacity hover:opacity-75"
         aria-label="Resparkable — go to Today"
       >
@@ -71,6 +83,10 @@ export function ResparkableAppHeader({ onPresent }: ResparkableAppHeaderProps = 
       <ResparkableSearchBox size="compact" className="w-full max-w-xs" />
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
+        {/* The switcher sits at the start of the right cluster, before the
+            actions: it says WHERE you are, and the buttons beside it act on
+            that place. It renders nothing for somebody with one workspace. */}
+        <SpaceSwitcher spaces={spaces} />
         {onPresent && (
           <Button size="sm" onClick={onPresent}>
             <Play className="h-3.5 w-3.5" aria-hidden="true" />

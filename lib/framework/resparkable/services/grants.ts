@@ -52,6 +52,7 @@ import {
   type GrantFilters,
 } from '@/lib/framework/resparkable/repo/grants';
 import { ownsEntity } from '@/lib/framework/resparkable/repo/share-links';
+import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 import type { CreateGrantInput, UpdateGrantInput } from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
 import { isShareActive } from '@/lib/utils/share-window';
@@ -142,6 +143,7 @@ export async function issueGrant(
   input: CreateGrantInput,
   now: Date = new Date()
 ): Promise<GrantSummary | null> {
+  if (!permissionsFor(scope.role).write) return null;
   if (!(await ownsEntity(scope, input.entityType, input.entityId))) return null;
 
   const granteeUserId = await findAccountIdForEmail(input.granteeEmail);
@@ -193,6 +195,8 @@ export async function updateGrant(
   input: UpdateGrantInput,
   now: Date = new Date()
 ): Promise<GrantSummary | null> {
+  if (!permissionsFor(scope.role).write) return null;
+
   const moved = await updateGrantRow(scope, id, {
     ...(input.role !== undefined ? { role: input.role } : {}),
     ...(input.includeTaskDetail !== undefined
@@ -226,6 +230,8 @@ export async function revokeGrant(
   id: string,
   now: Date = new Date()
 ): Promise<GrantSummary | null> {
+  if (!permissionsFor(scope.role).write) return null;
+
   const revoked = await revokeGrantRow(scope, id, now);
   if (!revoked) return null;
 

@@ -862,11 +862,26 @@ export const documentListQuerySchema = resparkableListQuerySchema.extend({
  * so a double-tapped Shortcut or a redelivered webhook returns the original row
  * rather than a duplicate or a 409.
  */
+/**
+ * `spaceId` is a capture's TARGET, and its absence is the personal space.
+ *
+ * The one field in this schema that is not about the thought. It is here rather
+ * than read off the URL because ambient beats explicit is the wrong precedence
+ * for a write that creates a row: a person looking at a group workspace who
+ * types into the capture box has not thereby said "put this in the group", and
+ * a thought landing in a shared brain because the last workspace was sticky is
+ * the failure §23.4 names and phase 47's acceptance criterion (test 13e) exists
+ * to catch.
+ *
+ * Untrusted, like every other field here. `resolveActiveSpaceScope` reads
+ * membership and refuses a space the caller is not in.
+ */
 export const captureSchema = z
   .object({
     content: z.string().trim().min(1, 'Required').max(100_000),
     source: z.enum(THOUGHT_SOURCES).default('web'),
     externalId: z.string().trim().min(1).max(200).optional(),
+    spaceId: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
 

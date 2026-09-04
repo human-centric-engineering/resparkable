@@ -4,7 +4,11 @@ import { MySharesView } from '@/components/resparkable/share/my-shares-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { mySharesSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Shared by me',
@@ -24,8 +28,13 @@ export const metadata: Metadata = {
  * archived, then live. Somebody on this page is nearly always here to close
  * something, and the shares with no other route to them belong at the top.
  */
-export default async function ResparkableSharingPage() {
-  const shares = await readResparkable(RESPARKABLE_API.SHARES, mySharesSchema);
+export default async function ResparkableSharingPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
+  const shares = await readResparkable(RESPARKABLE_API.SHARES, mySharesSchema, space);
 
   if (!shares.ok) {
     return <LoadError what="what you have shared" message={shares.message} />;

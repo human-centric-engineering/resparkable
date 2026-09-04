@@ -63,7 +63,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { cn } from '@/lib/utils';
 
@@ -125,7 +125,7 @@ export function PinControl({
 
   async function write(body: Record<string, unknown>): Promise<void> {
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, taskId), { body })
+      resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, taskId), { body })
     );
     if (ok) onDone?.();
   }

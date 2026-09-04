@@ -9,7 +9,11 @@ import { LoadError } from '@/components/resparkable/ui/load-error';
 import { Button } from '@/components/ui/button';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { boardSchema, boardViewSchema, tagSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Board',
@@ -31,14 +35,21 @@ export const metadata: Metadata = {
  */
 export default async function ResparkableBoardPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ slug: string }>;
+  searchParams: ResparkableSearchParams;
 }) {
   const { slug } = await params;
+  const space = readSpaceTarget(await searchParams);
 
   // Resolved client-side of the API rather than adding a by-slug endpoint: one list
   // read, and the id never appears in a URL anybody sees.
-  const boards = await readResparkable(`${RESPARKABLE_API.BOARDS}?limit=200`, z.array(boardSchema));
+  const boards = await readResparkable(
+    `${RESPARKABLE_API.BOARDS}?limit=200`,
+    z.array(boardSchema),
+    space
+  );
   if (!boards.ok) {
     return <LoadError what="this board" message={boards.message} />;
   }
@@ -47,8 +58,12 @@ export default async function ResparkableBoardPage({
   if (!board) notFound();
 
   const [view, tags] = await Promise.all([
-    readResparkable(RESPARKABLE_API.viewPath(RESPARKABLE_API.BOARDS, board.id), boardViewSchema),
-    readResparkable(`${RESPARKABLE_API.TAGS}?limit=100`, z.array(tagSchema)),
+    readResparkable(
+      RESPARKABLE_API.viewPath(RESPARKABLE_API.BOARDS, board.id),
+      boardViewSchema,
+      space
+    ),
+    readResparkable(`${RESPARKABLE_API.TAGS}?limit=100`, z.array(tagSchema), space),
   ]);
 
   if (!view.ok) {

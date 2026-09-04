@@ -8,14 +8,29 @@
  *
  * ## The one rule that matters
  *
- * **The loader ignores `id` and reads `request.userId`.** `buildContext` caches
- * on `type:id:userId`, and the chat route pins `contextId` server-side to the
- * session user — but the loader must not depend on that route having done so.
- * If a future caller passed a client-supplied `contextId` and this function
- * trusted it, one person's goals would be rendered into another person's prompt
- * and the cache would then serve it repeatedly. Reading only `request.userId`
- * makes that unreachable rather than merely unlikely; `''` when it is absent
- * means a run with no owner gets no context instead of somebody else's.
+ * **`id` is a space and is never trusted; `request.userId` is the actor and
+ * always is.** Until phase 47 this loader ignored `id` outright and read only
+ * `request.userId`, which was the correct rule while a person had exactly one
+ * brain: trusting a client-supplied `contextId` would have rendered one
+ * person's goals into another person's prompt, and `buildContext` caches on
+ * `type:id:userId`, so it would then have served that repeatedly.
+ *
+ * A group workspace makes ignoring `id` the wrong answer, because the context a
+ * member needs in a group space is the GROUP's (§23.9) and the actor's id
+ * cannot express it. So the loader now reads `id` and **resolves** it:
+ * `resolveActiveSpaceScope` reads membership and returns nothing for a space
+ * this person is not in, which becomes `''` here. The old guarantee is intact
+ * and reached by a different road — a forged `contextId` yields no context
+ * rather than somebody else's — and it no longer depends on the chat route
+ * having pinned the field, which is what made the original rule necessary.
+ *
+ * The cache key needs no change: `type:id:userId` already carries the space in
+ * `id`. Two members of one group get two entries for identical content, which
+ * is a wasted cache slot rather than a leak, and collapsing it would mean
+ * dropping the actor from a key whose whole job is keeping brains apart.
+ *
+ * The cost is one indexed membership read per turn in a group workspace, and
+ * none at all in a personal one, where the resolver short-circuits.
  *
  * ## Why it has a hard cap
  *
@@ -34,7 +49,7 @@
  * The block is an orientation, not a corpus.
  */
 
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
 import { buildSnapshot, type SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 import { logger } from '@/lib/logging';
 
@@ -203,20 +218,26 @@ export function renderResparkableContext(snapshot: SnapshotPayload): string {
 /**
  * The registered loader.
  *
- * `id` is accepted because the contributor signature requires it and ignored
- * because trusting it would be the leak this file exists to prevent. See the
- * header.
+ * `id` is the workspace this turn is about, and it is a TARGET rather than an
+ * authority: see the header for why that is now safe to read and was not
+ * before.
  */
 export async function loadResparkableContext(
-  _id: string,
+  id: string,
   request: { userId?: string }
 ): Promise<string> {
   const userId = request.userId;
-  // No owner, no context. Never a fallback to "some user" or to the id.
+  // No actor, no context. Never a fallback to "some user" or to the id.
   if (!userId) return '';
 
   try {
-    return renderResparkableContext(await buildSnapshot(spaceScope(userId)));
+    // Membership decides. A space this person is not in resolves to nothing,
+    // and nothing renders as an empty block rather than as somebody else's
+    // goals.
+    const scope = await resolveActiveSpaceScope(userId, id || null);
+    if (!scope) return '';
+
+    return renderResparkableContext(await buildSnapshot(scope));
   } catch (error) {
     // `buildContext` already degrades a throwing contributor to a placeholder,
     // but it logs it as an unexplained failure. Logging here first names the

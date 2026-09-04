@@ -29,11 +29,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@/lib/framework/resparkable/services/snapshot', () => ({ buildSnapshot: vi.fn() }));
+// Only the membership READ. The resolver, the personal short-circuit and the
+// scope mint are the real ones, because they are what decides whose brain the
+// companion is talking about.
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
 
 import {
   loadResparkableContext,
   renderResparkableContext,
 } from '@/lib/framework/resparkable/context/contributor';
+import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
 import { buildSnapshot } from '@/lib/framework/resparkable/services/snapshot';
 import type { SnapshotPayload } from '@/lib/framework/resparkable/services/snapshot';
 
@@ -61,16 +66,67 @@ beforeEach(() => {
 
 describe('loadResparkableContext', () => {
   /**
-   * The whole isolation story for this file. `id` is deliberately a different
-   * user's id: if the loader ever honoured it, this test fails and the leak is
-   * caught at the boundary rather than in someone's transcript.
+   * The whole isolation story for this file, and it changed shape in phase 47
+   * without changing what it guarantees.
+   *
+   * This loader used to ignore `id` outright, which was the right rule while a
+   * person had one brain. A group workspace makes it the wrong one: the context
+   * a member needs in a group space is the group's, and the actor's id cannot
+   * express that. So `id` is now read and RESOLVED, and the guarantee is
+   * reached by a different road: a `contextId` naming a space this person is
+   * not in yields no context rather than somebody else's.
    */
-  it('scopes to request.userId and ignores the id argument entirely', async () => {
+  it("returns '' for a space the actor is not in, rather than that space's context", async () => {
+    mocked.mockResolvedValue(snapshot());
+    vi.mocked(findMembershipBySpace).mockResolvedValue(null);
+
+    expect(await loadResparkableContext('spc_not_mine', { userId: 'user-a' })).toBe('');
+    // Refused before the read, not filtered after it.
+    expect(buildSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("scopes to the actor's own space when the id names it", async () => {
     mocked.mockResolvedValue(snapshot());
 
-    await loadResparkableContext('user-b', { userId: 'user-a' });
+    await loadResparkableContext('user-a', { userId: 'user-a' });
 
     expect(buildSnapshot).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user-a' }));
+    // A personal space costs no membership read, which is every turn for
+    // everybody in no group.
+    expect(findMembershipBySpace).not.toHaveBeenCalled();
+  });
+
+  it("scopes to the actor's own space when there is no id at all", async () => {
+    mocked.mockResolvedValue(snapshot());
+
+    await loadResparkableContext('', { userId: 'user-a' });
+
+    expect(buildSnapshot).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'user-a' }));
+  });
+
+  it('scopes to the GROUP when the id names one the actor is in', async () => {
+    mocked.mockResolvedValue(snapshot());
+    const at = new Date('2026-09-01T10:00:00.000Z');
+    vi.mocked(findMembershipBySpace).mockResolvedValue({
+      id: 'mem_1',
+      groupId: 'grp_1',
+      userId: 'user-a',
+      role: 'member',
+      invitedByUserId: null,
+      joinedAt: at,
+      createdAt: at,
+      updatedAt: at,
+    } as never);
+
+    await loadResparkableContext('spc_group_1', { userId: 'user-a' });
+
+    // §23.9: the agent layer follows the space, not the actor. Sparkey is a
+    // permanent pane, so the moment somebody opens a group workspace this is
+    // live, and reading the actor's own goals there would be the companion
+    // answering about the wrong brain.
+    expect(buildSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: 'spc_group_1', actorUserId: 'user-a' })
+    );
   });
 
   it("returns '' when the run has no owner, rather than anyone's context", async () => {

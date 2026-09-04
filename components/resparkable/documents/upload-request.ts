@@ -31,6 +31,7 @@
  * them write the same try/catch to get back to the same string.
  */
 
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
 export type UploadDocumentResult = { ok: true; deduped: boolean } | { ok: false; message: string };
@@ -53,7 +54,13 @@ export function uploadDocument(
     form.append('file', file);
 
     const request = new XMLHttpRequest();
-    request.open('POST', RESPARKABLE_API.DOCUMENTS);
+    // Ambient workspace, like every other CRUD create and unlike capture. A
+    // document is added TO a workspace you are looking at; a thought is caught
+    // and then aimed. `withActiveSpace` because this bypasses `resparkableApi`
+    // for the progress events, and bypassing it must not also mean bypassing
+    // the workspace: without this an upload from a group workspace would land
+    // silently in the uploader's own documents.
+    request.open('POST', withActiveSpace(RESPARKABLE_API.DOCUMENTS));
 
     request.upload.onprogress = (event) => {
       options.onProgress?.(

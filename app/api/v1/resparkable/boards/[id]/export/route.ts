@@ -22,14 +22,13 @@ import { NotFoundError } from '@/lib/api/errors';
 import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { PRIVATE_NO_CACHE } from '@/lib/framework/resparkable/api/cache';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { boardToCsv, boardToJson } from '@/lib/framework/resparkable/services/board-export';
 import { buildBoardView } from '@/lib/framework/resparkable/services/board-view';
 import { boardExportQuerySchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const query = validateQueryParams(new URL(request.url).searchParams, boardExportQuerySchema);
@@ -62,3 +61,4 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
     },
   });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

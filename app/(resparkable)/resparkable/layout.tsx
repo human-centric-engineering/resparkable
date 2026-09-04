@@ -4,6 +4,23 @@ import { Suspense } from 'react';
 import { MaintenanceWrapperWithAdminNotice } from '@/components/maintenance-wrapper';
 import { WorkspaceShell } from '@/components/resparkable/shell/workspace-shell';
 import { WorkspaceShellSkeleton } from '@/components/resparkable/shell/workspace-shell-skeleton';
+import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { openableSpacesSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+
+/**
+ * Nothing under `/resparkable` can be prerendered, and from phase 47 saying so
+ * costs a line and saves twenty-one build errors.
+ *
+ * Every route here is session-gated and reads cookies, so all of them were
+ * already `ƒ` in the build output. What changed is that this layout fetches
+ * again: Next probes each route for static rendering, that probe reaches the
+ * switcher's read, `cookies` makes it bail, and `readResparkable` catches the
+ * bail and logs it as a failed read. The page was correct either way; the log
+ * line was not, and twenty-one of them per build is how a real error stops
+ * being noticed.
+ */
+export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: {
@@ -73,6 +90,13 @@ export const metadata: Metadata = {
  * else in the new shell wants those three counts, so this layout no
  * longer fetches them.
  *
+ * It does fetch one thing again, from phase 47: the list of workspaces the
+ * switcher shows. That read belongs here and nowhere else in the tree, for
+ * a reason specific to layouts — a layout is handed no `searchParams`, so
+ * it cannot know the active workspace, and this is the only Resparkable
+ * read that does not need to. Everything else a page shows is space-scoped
+ * and is therefore read by the page, which does get `searchParams`.
+ *
  * `ResparkableSidekick` (the fixed capture drawer) and `ResparkableNav`
  * (the rail) are unused from here on, but not deleted — Phase 9's job,
  * once nothing else could plausibly still reference them.
@@ -86,11 +110,27 @@ export const metadata: Metadata = {
  * loading" instead of a blank screen with only the pane collapse
  * buttons floating on it (live feedback).
  */
-export default function ResparkableLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function ResparkableLayout({
+  children,
+}: Readonly<{ children: React.ReactNode }>) {
+  // The switcher's list, read here rather than in the client component that
+  // shows it. A layout renders once and survives client-side navigation, so
+  // this is one request per cold load rather than one per page, and the header
+  // names the workspace on the first paint instead of after a spinner.
+  //
+  // `null` because this list is keyed on the ACTOR, not on a workspace: "which
+  // workspaces are mine" asked from inside one of them would be circular. It is
+  // also the one read in the tier a layout can make, since a layout is handed no
+  // `searchParams` and therefore cannot know the active space at all.
+  //
+  // A failure degrades to no switcher rather than taking the shell down. The
+  // list is chrome; the workspace still resolves from the URL underneath it.
+  const spaces = await readResparkable(RESPARKABLE_API.SPACES, openableSpacesSchema, null);
+
   return (
     <Suspense fallback={<WorkspaceShellSkeleton />}>
       <MaintenanceWrapperWithAdminNotice>
-        <WorkspaceShell>{children}</WorkspaceShell>
+        <WorkspaceShell spaces={spaces.ok ? spaces.data : []}>{children}</WorkspaceShell>
       </MaintenanceWrapperWithAdminNotice>
     </Suspense>
   );

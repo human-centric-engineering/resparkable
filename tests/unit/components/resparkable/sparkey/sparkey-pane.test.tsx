@@ -10,6 +10,11 @@
  * behavior when an agent turn delivers nothing.
  *
  * @see components/resparkable/sparkey/sparkey-pane.tsx
+ *
+ * Capture posts to `/resparkable/capture` rather than `/resparkable/thoughts`
+ * from phase 47, for the reason `quick-capture.test.tsx`'s header gives: the
+ * front door takes an explicit workspace and reads no `?space=`, so a capture
+ * cannot inherit the workspace on screen.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -99,7 +104,7 @@ describe('SparkeyPane — capture mode', () => {
     await typeAndSend(user, 'a thought worth keeping');
 
     expect(apiClient.post).toHaveBeenCalledWith(
-      '/api/v1/resparkable/thoughts',
+      '/api/v1/resparkable/capture',
       expect.objectContaining({
         body: expect.objectContaining({ content: 'a thought worth keeping' }),
       })

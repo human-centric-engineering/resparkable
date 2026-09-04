@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 export interface GraphControlsProps {
@@ -49,7 +50,7 @@ export function GraphControls({
   function setParam(key: string, value: string): void {
     const search = new URLSearchParams(params.toString());
     search.set(key, value);
-    router.push(`${RESPARKABLE_ROUTES.GRAPH}?${search.toString()}`);
+    router.push(withActiveSpace(`${RESPARKABLE_ROUTES.GRAPH}?${search.toString()}`));
   }
 
   return (
