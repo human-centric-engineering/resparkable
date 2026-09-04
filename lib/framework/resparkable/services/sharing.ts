@@ -48,6 +48,7 @@ import {
   type SharedItemView,
 } from '@/lib/framework/resparkable/repo/shared-view';
 import { buildBoardView } from '@/lib/framework/resparkable/services/board-view';
+import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 import type { CreateShareLinkInput } from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
 import type { ResparkableShareLink } from '@prisma/client';
@@ -103,6 +104,7 @@ export async function mintShareLink(
   input: CreateShareLinkInput,
   now: Date = new Date()
 ): Promise<MintedShareLink | null> {
+  if (!permissionsFor(scope.role).write) return null;
   if (!(await ownsEntity(scope, input.entityType, input.entityId))) return null;
 
   const token = mintToken();
@@ -146,6 +148,8 @@ export async function revokeShareLink(
   id: string,
   now: Date = new Date()
 ): Promise<ResparkableShareLink | null> {
+  if (!permissionsFor(scope.role).write) return null;
+
   const revoked = await revokeShareLinkRow(scope, id, now);
   if (revoked) logger.info('Resparkable share link revoked', { entityType: revoked.entityType });
   return revoked;
