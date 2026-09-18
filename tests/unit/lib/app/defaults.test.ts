@@ -70,6 +70,8 @@ vi.mock('@/lib/framework/resparkable/repo/subject-export', async (importOriginal
 }));
 vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
   collectResparkableCrossSubjectData: vi.fn().mockResolvedValue({ crossSection: [] }),
+  GROUP_CONTRIBUTIONS_SCOPE_NOTE: 'Only rows you created in each group workspace.',
+  RESPARKABLE_GROUP_CONTRIBUTION_MODEL: 'ResparkableGroup',
 }));
 
 import { registerAppRateLimits } from '@/lib/app/rate-limit';

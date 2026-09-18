@@ -37,23 +37,52 @@
  *   7. **A pending membership is still exported.** `joinedAt: null` means a
  *      request waiting on an admin (§23.11), which is a fact about this person,
  *      and filtering it would make the export disagree with the product.
+ *   8. **Except what they wrote there** (phase 48, §23.6). Rows in a group
+ *      space whose `createdByUserId` is the subject are theirs, and are exported
+ *      by group. Only those rows: another member's rows never appear, and the
+ *      space key is stripped from every row.
  *
  * @see lib/framework/resparkable/access/subject-export.ts
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/db/client', () => ({
-  prisma: {
-    resparkableGrant: { findMany: vi.fn().mockResolvedValue([]) },
-    resparkableComment: { findMany: vi.fn().mockResolvedValue([]) },
-    resparkableGroupMember: { findMany: vi.fn().mockResolvedValue([]) },
-    resparkableGroupInvite: { findMany: vi.fn().mockResolvedValue([]) },
-  },
-}));
+vi.mock('@/lib/db/client', () => {
+  const reader = () => ({ findMany: vi.fn().mockResolvedValue([]) });
+  return {
+    prisma: {
+      resparkableGrant: reader(),
+      resparkableComment: reader(),
+      resparkableGroupMember: reader(),
+      resparkableGroupInvite: reader(),
+      resparkableGroup: reader(),
+      // The tables phase 48's group contributions read.
+      resparkableArea: reader(),
+      resparkableGoal: reader(),
+      resparkableProject: reader(),
+      resparkableTask: reader(),
+      resparkableThought: reader(),
+      resparkableLink: reader(),
+      resparkableBoard: reader(),
+      resparkableBoardCard: reader(),
+      resparkableTag: reader(),
+      resparkableTaskTag: reader(),
+      resparkableChecklistItem: reader(),
+      resparkableEntity: reader(),
+      resparkableDocument: reader(),
+      resparkableTimeBlock: reader(),
+      resparkableReview: reader(),
+      resparkableEvent: reader(),
+      resparkableShareLink: reader(),
+    },
+  };
+});
 
 import { prisma } from '@/lib/db/client';
-import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
+import {
+  collectGroupContributions,
+  collectResparkableCrossSubjectData,
+} from '@/lib/framework/resparkable/access/subject-export';
 
 const NOW = new Date('2026-08-28T10:00:00.000Z');
 
@@ -160,6 +189,7 @@ describe('collectResparkableCrossSubjectData', () => {
       commentsIWrote: [],
       groupMemberships: [],
       groupInvites: [],
+      groupContributions: [],
     });
     // An unfiltered `OR: []` would match every grant in the installation. This
     // is the one failure mode here worth spending a branch on.
@@ -168,6 +198,9 @@ describe('collectResparkableCrossSubjectData', () => {
     // actor would return every outstanding invitation in the deployment.
     expect(prisma.resparkableGroupInvite.findMany).not.toHaveBeenCalled();
     expect(prisma.resparkableGroupMember.findMany).not.toHaveBeenCalled();
+    // And a contributions read with no author would be `createdByUserId:
+    // undefined`, which Prisma reads as no filter: every row in every group.
+    expect(prisma.resparkableTask.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -302,5 +335,98 @@ describe('the group half (phase 46)', () => {
     // the subject's personal data, and a withdrawn invitation is part of it.
     expect(JSON.stringify(where)).not.toContain('revokedAt');
     expect(JSON.stringify(where)).not.toContain('acceptedAt');
+  });
+});
+
+describe('collectGroupContributions (phase 48, §23.6)', () => {
+  const at = new Date('2026-09-10T10:00:00.000Z');
+
+  it('filters on the subject as author AND on the space being a group', async () => {
+    await collectGroupContributions('user_b', []);
+
+    // Both halves are load-bearing. Without `kind: 'group'` the section would
+    // repeat the personal export; without `createdByUserId` it would hand the
+    // subject every other member's rows.
+    expect(vi.mocked(prisma.resparkableTask.findMany).mock.calls[0]?.[0]?.where).toEqual({
+      createdByUserId: 'user_b',
+      space: { kind: 'group' },
+    });
+  });
+
+  it('groups rows by group, labels them by name, and strips the space key', async () => {
+    vi.mocked(prisma.resparkableTask.findMany).mockResolvedValueOnce([
+      { id: 't1', title: 'Problem set 4', spaceId: 'spc_b', createdAt: at },
+    ] as never);
+    vi.mocked(prisma.resparkableThought.findMany).mockResolvedValueOnce([
+      { id: 'th1', content: 'Ask about Q3', spaceId: 'spc_b', createdAt: at },
+      { id: 'th2', content: 'Old idea', spaceId: 'spc_left', createdAt: at },
+    ] as never);
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValueOnce([
+      { id: 'grp_b', name: 'Study Group B', spaceId: 'spc_b' },
+      { id: 'grp_left', name: 'Book Club', spaceId: 'spc_left' },
+    ] as never);
+
+    const groups = await collectGroupContributions('user_b', [{ groupId: 'grp_b', joinedAt: at }]);
+
+    expect(groups).toEqual([
+      {
+        groupId: 'grp_b',
+        groupName: 'Study Group B',
+        currentMember: true,
+        rows: {
+          tasks: [{ id: 't1', title: 'Problem set 4', createdAt: at }],
+          thoughts: [{ id: 'th1', content: 'Ask about Q3', createdAt: at }],
+        },
+      },
+      {
+        // A group they have left. What they wrote there is still theirs.
+        groupId: 'grp_left',
+        groupName: 'Book Club',
+        currentMember: false,
+        rows: { thoughts: [{ id: 'th2', content: 'Old idea', createdAt: at }] },
+      },
+    ]);
+    // The space key is the partition key of other people's content.
+    expect(JSON.stringify(groups)).not.toContain('spc_');
+  });
+
+  it('does not count a pending membership as being in the group', async () => {
+    vi.mocked(prisma.resparkableTask.findMany).mockResolvedValueOnce([
+      { id: 't1', spaceId: 'spc_b', createdAt: at },
+    ] as never);
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValueOnce([
+      { id: 'grp_b', name: 'Study Group B', spaceId: 'spc_b' },
+    ] as never);
+
+    const [group] = await collectGroupContributions('user_b', [
+      { groupId: 'grp_b', joinedAt: null },
+    ]);
+
+    expect(group.currentMember).toBe(false);
+  });
+
+  it('never exports a credential digest from a group grant or link', async () => {
+    await collectGroupContributions('user_b', []);
+
+    expect(vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0]?.[0]).toMatchObject({
+      omit: { inviteTokenHash: true },
+    });
+    expect(vi.mocked(prisma.resparkableShareLink.findMany).mock.calls[0]?.[0]).toMatchObject({
+      omit: { tokenHash: true },
+    });
+  });
+
+  it('skips the group lookup entirely when the subject wrote nothing in any group', async () => {
+    expect(await collectGroupContributions('user_b', [])).toEqual([]);
+    expect(prisma.resparkableGroup.findMany).not.toHaveBeenCalled();
+  });
+
+  it('is part of the cross-subject answer', async () => {
+    const data = await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+    });
+
+    expect(data.groupContributions).toEqual([]);
   });
 });
