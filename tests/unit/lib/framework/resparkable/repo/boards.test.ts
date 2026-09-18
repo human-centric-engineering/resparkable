@@ -480,7 +480,13 @@ describe('addBoardCard', () => {
     });
 
     expect(resparkableBoardCard.create).toHaveBeenCalledWith({
-      data: { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1500 },
+      data: {
+        spaceId: 'user_a',
+        createdByUserId: 'user_a',
+        boardId: 'board_1',
+        taskId: 'task_1',
+        position: 1500,
+      },
     });
     expect(resparkableBoardCard.update).not.toHaveBeenCalled();
   });
@@ -642,8 +648,20 @@ describe('snapshotBoardMembership', () => {
     const createCall = vi.mocked(resparkableBoardCard.createMany).mock.calls[0]?.[0];
     expect(createCall?.skipDuplicates).toBe(true);
     expect(createCall?.data).toEqual([
-      { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_1', position: 1000 },
-      { spaceId: 'user_a', boardId: 'board_1', taskId: 'task_2', position: 2000 },
+      {
+        spaceId: 'user_a',
+        createdByUserId: 'user_a',
+        boardId: 'board_1',
+        taskId: 'task_1',
+        position: 1000,
+      },
+      {
+        spaceId: 'user_a',
+        createdByUserId: 'user_a',
+        boardId: 'board_1',
+        taskId: 'task_2',
+        position: 2000,
+      },
     ]);
   });
 

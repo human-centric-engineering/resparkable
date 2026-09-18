@@ -111,7 +111,7 @@ describe('upsertGrant', () => {
     await upsertGrant(OWNER, CREATE);
 
     const args = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[0][0];
-    expect(args.create).toMatchObject({ spaceId: 'user_a' });
+    expect(args.create).toMatchObject({ spaceId: 'user_a', createdByUserId: 'user_a' });
     // Never in the update payload: a grant's owner is fixed at creation, and a
     // writable one would make re-sharing a way to move a row between brains.
     expect(args.update).not.toHaveProperty('userId');

@@ -20,7 +20,11 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -59,7 +63,7 @@ export async function findTagBySlug(
 }
 
 export async function createTag(scope: SpaceScope, data: TagCreateData): Promise<ResparkableTag> {
-  return prisma.resparkableTag.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableTag.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 export async function updateTag(
@@ -132,7 +136,7 @@ export async function setTaskTags(
 
     if (ownedIds.length > 0) {
       await tx.resparkableTaskTag.createMany({
-        data: ownedIds.map((tagId) => ({ ...spaceWhere(scope), taskId, tagId })),
+        data: ownedIds.map((tagId) => ({ ...authoredBy(scope), taskId, tagId })),
         // The unique `[taskId, tagId]` makes re-adding an existing tag a no-op
         // rather than an error, which is what a set-replacement needs.
         skipDuplicates: true,

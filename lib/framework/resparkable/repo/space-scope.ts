@@ -284,6 +284,34 @@ export function spaceWhere(scope: SpaceScope): { spaceId: string } {
 }
 
 /**
+ * The space a new row goes in, and who wrote it (§23.5). For create `data`
+ * only, never a `where`.
+ *
+ * `spaceWhere` plus `createdByUserId`, spread last in exactly the position
+ * `spaceWhere` was, so the ordering rule above still holds for both keys: a
+ * caller cannot supply either. The actor comes from the scope, which is minted
+ * from the verified session, so a row's author is always who was signed in when
+ * it was written and never a value from a request body.
+ *
+ * ## Why this landed in phase 48 rather than phase 47
+ *
+ * Phase 45 added the column and nothing wrote it. That was invisible while
+ * every space had one person in it, and stayed invisible through phase 47,
+ * because nothing read it either. Phase 48's Art. 15 source is the first
+ * reader: "the rows you wrote in a group", filtered on this column. Unwritten,
+ * that filter matches nothing, and the export would report an empty section
+ * that looks like a true answer.
+ *
+ * `actorUserId` is `null` on a scope with no human behind it, and so is the
+ * column then. That is the right answer for a row the system wrote.
+ *
+ * @see `isolation.test.ts`, which asserts every scoped create carries it.
+ */
+export function authoredBy(scope: SpaceScope): { spaceId: string; createdByUserId: string | null } {
+  return { spaceId: scope.spaceId, createdByUserId: scope.actorUserId };
+}
+
+/**
  * How much of the archive a query sees.
  *
  * `false` (the default everywhere) hides it, `true` mixes archived rows in with

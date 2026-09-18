@@ -18,10 +18,11 @@ import {
   embeddingSensitivityUpdateArgs,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
+  authoredBy,
   liveSpaceWhere,
   spaceWhere,
-  type SpaceScope,
   type ArchiveVisibility,
+  type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   isUniqueConstraintViolation,
@@ -104,7 +105,7 @@ export async function createThought(
   scope: SpaceScope,
   data: ThoughtCreateData
 ): Promise<ResparkableThought> {
-  return prisma.resparkableThought.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableThought.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 /** Batch lookup, for hydrating a set of thought ids from a link walk (context-digest.ts). */

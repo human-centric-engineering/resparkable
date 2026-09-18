@@ -77,6 +77,20 @@ describe('createComment', () => {
       authorUserId: 'user_b',
     });
   });
+
+  it('records the comment’s author as who wrote the row (§23.5)', async () => {
+    await createComment(OWNER, {
+      entityType: 'project',
+      entityId: 'p_1',
+      authorUserId: 'user_b',
+      body: 'Looks right',
+    });
+
+    // The author, not the owner whose space it lands in.
+    expect(vi.mocked(prisma.resparkableComment.create).mock.calls[0][0].data.createdByUserId).toBe(
+      'user_b'
+    );
+  });
 });
 
 const REF = { entityType: 'project' as const, entityId: 'p_1' };

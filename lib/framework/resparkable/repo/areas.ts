@@ -14,10 +14,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
+  authoredBy,
   liveSpaceWhere,
   spaceWhere,
-  type SpaceScope,
   type ArchiveVisibility,
+  type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
@@ -70,7 +71,7 @@ export async function createArea(
   scope: SpaceScope,
   data: AreaCreateData
 ): Promise<ResparkableArea> {
-  return prisma.resparkableArea.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableArea.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 export async function updateArea(

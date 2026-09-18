@@ -13,10 +13,11 @@ import {
   deleteAndDropVectors,
 } from '@/lib/framework/resparkable/repo/embeddings';
 import {
+  authoredBy,
   liveSpaceWhere,
   spaceWhere,
-  type SpaceScope,
   type ArchiveVisibility,
+  type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
@@ -113,7 +114,7 @@ export async function createGoal(
   scope: SpaceScope,
   data: GoalCreateData
 ): Promise<ResparkableGoal> {
-  return prisma.resparkableGoal.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableGoal.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 export async function updateGoal(

@@ -22,7 +22,11 @@
 
 import { prisma } from '@/lib/db/client';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss } from '@/lib/framework/resparkable/repo/shared';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableShareLink } from '@prisma/client';
@@ -149,7 +153,7 @@ export async function createShareLink(
 ): Promise<ResparkableShareLink> {
   return prisma.$transaction(async (tx) => {
     const created = await tx.resparkableShareLink.create({
-      data: { ...data, ...spaceWhere(scope) },
+      data: { ...data, ...authoredBy(scope) },
     });
     await setVisibility(tx, scope, data.entityType, data.entityId, 'link');
     return created;

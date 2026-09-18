@@ -172,7 +172,7 @@ describe('createTag', () => {
     await createTag(SCOPE, { name: 'Urgent', slug: 'urgent' });
 
     expect(resparkableTag.create).toHaveBeenCalledWith({
-      data: { spaceId: 'user_a', name: 'Urgent', slug: 'urgent' },
+      data: { spaceId: 'user_a', createdByUserId: 'user_a', name: 'Urgent', slug: 'urgent' },
     });
   });
 
@@ -322,8 +322,8 @@ describe('setTaskTags', () => {
     });
     expect(resparkableTaskTag.createMany).toHaveBeenCalledWith({
       data: [
-        { spaceId: 'user_a', taskId: 'task_1', tagId: 'tag_1' },
-        { spaceId: 'user_a', taskId: 'task_1', tagId: 'tag_3' },
+        { spaceId: 'user_a', createdByUserId: 'user_a', taskId: 'task_1', tagId: 'tag_1' },
+        { spaceId: 'user_a', createdByUserId: 'user_a', taskId: 'task_1', tagId: 'tag_3' },
       ],
       skipDuplicates: true,
     });

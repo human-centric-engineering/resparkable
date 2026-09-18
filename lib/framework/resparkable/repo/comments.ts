@@ -78,6 +78,10 @@ export async function createComment(
       entityType: data.entityType,
       entityId: data.entityId,
       authorUserId: data.authorUserId,
+      // From the author, not the scope's actor. The comment service mints its
+      // scope with the author as actor, so today the two agree; taking it from
+      // the column that means "who wrote this" is what keeps them agreeing.
+      createdByUserId: data.authorUserId,
       body: data.body,
     },
   });

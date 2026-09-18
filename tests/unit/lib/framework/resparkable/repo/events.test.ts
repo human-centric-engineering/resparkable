@@ -50,6 +50,29 @@ beforeEach(() => {
 });
 
 describe('insertEvent', () => {
+  it('attributes the event to the actor who did the thing', async () => {
+    await insertEvent(SCOPE, { kind: 'completed', entityType: 'task', entityId: 'task_1' });
+
+    // The actor, not the item's author (plan.md "Attribution"): a task Sam
+    // created and Priya completed gives an event attributed to each.
+    const call = vi.mocked(prisma.resparkableEvent.create).mock.calls[0]?.[0];
+    expect(call?.data).toMatchObject({ createdByUserId: 'user_x' });
+  });
+
+  it('attributes a system event to nobody', async () => {
+    await insertEvent(SCOPE, {
+      kind: 'archived',
+      entityType: 'task',
+      entityId: 'task_1',
+      source: 'system',
+    });
+
+    // The workspace did it. Stamping the scope's actor here would put a
+    // person's name on a background run.
+    const call = vi.mocked(prisma.resparkableEvent.create).mock.calls[0]?.[0];
+    expect(call?.data).toMatchObject({ createdByUserId: null });
+  });
+
   it('omits metadata from the create payload when not provided', async () => {
     // Arrange / Act
     await insertEvent(SCOPE, { kind: 'created', entityType: 'task', entityId: 'task_1' });

@@ -20,10 +20,11 @@
 
 import { prisma } from '@/lib/db/client';
 import {
+  authoredBy,
   liveSpaceWhere,
   spaceWhere,
-  type SpaceScope,
   type ArchiveVisibility,
+  type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
@@ -89,7 +90,7 @@ export async function createReview(
   scope: SpaceScope,
   data: ReviewCreateData
 ): Promise<ResparkableReview> {
-  return prisma.resparkableReview.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableReview.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 export async function archiveReview(
