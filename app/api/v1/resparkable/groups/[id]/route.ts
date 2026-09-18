@@ -19,26 +19,25 @@
  * It removes the space, which cascades the whole brain, the group, its
  * memberships and its outstanding invitations. §23.6 gates it behind the same
  * explicitness §13 demands for a never-expiring share link: a typed confirmation
- * naming the group, plus a notification to every member. **Both are phase 48's
- * and neither is here yet**, so this route is admin-only and does the cascade,
- * and the client must not offer it as a menu item beside "leave group" until
- * that phase lands.
+ * naming the group, plus a notification to every other member. Both are checked
+ * and sent by `services/group-deletion.ts`, so they hold for every caller and
+ * not only for the dialog. The body is `{ confirmName }`; a mismatch is a 400.
  *
  * Authentication: required.
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { ForbiddenError, NotFoundError } from '@/lib/api/errors';
+import { ForbiddenError, NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
+import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import {
-  deleteGroup,
   resolveGroupMembership,
   updateGroupSettings,
 } from '@/lib/framework/resparkable/services/membership';
-import { updateGroupSchema } from '@/lib/framework/resparkable/validations';
+import { deleteGroupSchema, updateGroupSchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
@@ -94,13 +93,25 @@ export const DELETE = withAuth<{ id: string }>(async (request, session, { params
   const log = await getRouteLogger(request);
   const { id } = await params;
 
-  const result = await deleteGroup(session.user.id, id);
+  const body = await validateRequestBody(request, deleteGroupSchema);
+
+  const result = await deleteGroupConfirmed(session.user.id, id, body.confirmName);
   if (!result.ok) {
     if (result.reason === 'not_a_member') throw new NotFoundError('Group not found');
+    if (result.reason === 'confirmation_mismatch') {
+      throw new ValidationError('Type the group’s name exactly to delete it', {
+        confirmName: ['Does not match the group’s name'],
+      });
+    }
     throw new ForbiddenError('Only an admin can delete a group');
   }
 
-  log.warn('Resparkable group deleted', { groupId: id });
+  log.warn('Resparkable group deleted', { groupId: id, notified: result.notified });
 
-  return successResponse({ groupId: id, deleted: true });
+  return successResponse({
+    groupId: id,
+    deleted: true,
+    notified: result.notified,
+    notifyFailed: result.notifyFailed,
+  });
 });

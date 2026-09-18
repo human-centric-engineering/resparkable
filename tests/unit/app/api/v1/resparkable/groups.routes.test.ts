@@ -72,9 +72,12 @@ vi.mock('@/lib/framework/resparkable/services/membership', () => ({
   listGroupsForActor: vi.fn(),
   resolveGroupMembership: vi.fn(),
   updateGroupSettings: vi.fn(),
-  deleteGroup: vi.fn(),
   changeMemberRole: vi.fn(),
   removeMember: vi.fn(),
+}));
+
+vi.mock('@/lib/framework/resparkable/services/group-deletion', () => ({
+  deleteGroupConfirmed: vi.fn(),
 }));
 
 vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
@@ -106,12 +109,12 @@ import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   changeMemberRole,
   createGroup,
-  deleteGroup,
   listGroupsForActor,
   removeMember,
   resolveGroupMembership,
   updateGroupSettings,
 } from '@/lib/framework/resparkable/services/membership';
+import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import {
   acceptGroupInvite,
   issueGroupInvite,
@@ -377,42 +380,71 @@ describe('PATCH /api/v1/resparkable/groups/[id]', () => {
 });
 
 describe('DELETE /api/v1/resparkable/groups/[id]', () => {
-  it('is a 404, not a 403, when the caller is not a member', async () => {
-    vi.mocked(deleteGroup).mockResolvedValue({ ok: false, reason: 'not_a_member' });
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}`;
 
-    const response = await invoke(
-      GROUP_DELETE,
-      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
-      { id: GROUP_ID }
-    );
+  it('is a 404, not a 403, when the caller is not a member', async () => {
+    vi.mocked(deleteGroupConfirmed).mockResolvedValue({ ok: false, reason: 'not_a_member' });
+
+    const response = await invoke(GROUP_DELETE, req(url, { confirmName: 'Study Group B' }), {
+      id: GROUP_ID,
+    });
 
     expect(response.status).toBe(404);
   });
 
   it('is a 403 when the caller is a member but not an admin', async () => {
-    vi.mocked(deleteGroup).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
+    vi.mocked(deleteGroupConfirmed).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
 
-    const response = await invoke(
-      GROUP_DELETE,
-      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
-      { id: GROUP_ID }
-    );
+    const response = await invoke(GROUP_DELETE, req(url, { confirmName: 'Study Group B' }), {
+      id: GROUP_ID,
+    });
 
     expect(response.status).toBe(403);
   });
 
-  it('deletes on a successful admin call and reports it', async () => {
-    vi.mocked(deleteGroup).mockResolvedValue({ ok: true, value: null });
+  it('refuses a DELETE with no confirmation before reaching the service', async () => {
+    // §23.6: the typed confirmation is enforced for every caller, not only the
+    // dialog. A bare DELETE from a script must not be a deletion.
+    const response = await invoke(GROUP_DELETE, req(url), { id: GROUP_ID });
 
-    const response = await invoke(
-      GROUP_DELETE,
-      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
-      { id: GROUP_ID }
-    );
+    expect(response.status).toBe(400);
+    expect(deleteGroupConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('is a 400 naming the field when the confirmation does not match', async () => {
+    vi.mocked(deleteGroupConfirmed).mockResolvedValue({
+      ok: false,
+      reason: 'confirmation_mismatch',
+    });
+
+    const response = await invoke(GROUP_DELETE, req(url, { confirmName: 'study group b' }), {
+      id: GROUP_ID,
+    });
+    const body = await response.json();
+
+    // A 400, not a 403: the caller may do this, they have not said which group.
+    expect(response.status).toBe(400);
+    expect(body.error.details).toEqual({ confirmName: ['Does not match the group’s name'] });
+  });
+
+  it('passes the session user and the typed name to the service, never a body user', async () => {
+    vi.mocked(deleteGroupConfirmed).mockResolvedValue({ ok: true, notified: 2, notifyFailed: 0 });
+
+    await invoke(GROUP_DELETE, req(url, { confirmName: 'Study Group B' }), { id: GROUP_ID });
+
+    expect(deleteGroupConfirmed).toHaveBeenCalledWith('user_a', GROUP_ID, 'Study Group B');
+  });
+
+  it('reports how many members were told', async () => {
+    vi.mocked(deleteGroupConfirmed).mockResolvedValue({ ok: true, notified: 2, notifyFailed: 1 });
+
+    const response = await invoke(GROUP_DELETE, req(url, { confirmName: 'Study Group B' }), {
+      id: GROUP_ID,
+    });
     const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.data).toEqual({ groupId: GROUP_ID, deleted: true });
+    expect(body.data).toEqual({ groupId: GROUP_ID, deleted: true, notified: 2, notifyFailed: 1 });
   });
 });
 

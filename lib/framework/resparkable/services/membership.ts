@@ -389,29 +389,6 @@ export async function removeMember(
   return { ok: true, value: { groupDeleted: false } };
 }
 
-/**
- * Delete a group and everything in it. Admin only, and unrecoverable.
- *
- * One `DELETE` of the space row: the group, its memberships, its invitations and
- * all 23 satellites cascade from it (see `deleteGroupSpace`). The typed
- * confirmation naming the group and the notification to every member are §23.6's
- * and land in phase 48; this is the service the route behind them calls.
- */
-export async function deleteGroup(
-  actorUserId: string,
-  groupId: string
-): Promise<MembershipResult<null>> {
-  const resolved = await resolveGroupMembership(actorUserId, groupId);
-  if (!resolved) return { ok: false, reason: 'not_a_member' };
-  if (!permissionsFor(resolved.scope.role).administer) {
-    return { ok: false, reason: 'not_an_admin' };
-  }
-
-  await deleteGroupSpace(resolved.membership.group.spaceId);
-  logger.info('Resparkable group deleted', { groupId });
-  return { ok: true, value: null };
-}
-
 /** What erasing one member means for one group. */
 export type ErasureSuccession =
   { kind: 'unchanged' } | { kind: 'promote'; userId: string } | { kind: 'delete' };

@@ -52,7 +52,6 @@ import * as repo from '@/lib/framework/resparkable/repo/groups';
 import {
   changeMemberRole,
   createGroup,
-  deleteGroup,
   permissionsFor,
   planErasureSuccession,
   removeMember,
@@ -367,31 +366,6 @@ describe('the last member out', () => {
     // The space, never the group row: deleting the group would strand the space
     // and all 23 satellites behind it.
     expect(repo.deleteMember).not.toHaveBeenCalled();
-  });
-});
-
-describe('deleteGroup', () => {
-  it('is admin only', async () => {
-    vi.mocked(repo.findMembership).mockResolvedValue(membership());
-
-    expect(await deleteGroup('user_a', 'grp_1')).toEqual({ ok: false, reason: 'not_an_admin' });
-    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
-  });
-
-  it('deletes the space, which is what cascades everything else', async () => {
-    vi.mocked(repo.findMembership).mockResolvedValue(membership({ role: 'admin' }));
-
-    expect(await deleteGroup('user_a', 'grp_1')).toEqual({ ok: true, value: null });
-    expect(repo.deleteGroupSpace).toHaveBeenCalledWith(SPACE);
-  });
-
-  it('refuses a stranger without telling them the group exists', async () => {
-    vi.mocked(repo.findMembership).mockResolvedValue(null);
-
-    expect(await deleteGroup('user_stranger', 'grp_1')).toEqual({
-      ok: false,
-      reason: 'not_a_member',
-    });
   });
 });
 

@@ -310,6 +310,45 @@ export async function listJoinedGroupsForErasure(
   return rows.map((row) => ({ groupId: row.groupId, spaceId: row.group.spaceId }));
 }
 
+/** Who to tell when a group is deleted: an address and a name, nothing else. */
+export interface MemberContact {
+  userId: string;
+  email: string;
+  name: string | null;
+}
+
+/**
+ * The contact details of a group's joined members, for the deletion notice.
+ *
+ * **The one read in this file that returns addresses**, and it has exactly one
+ * caller: `services/group-deletion.ts`, which reads them before the delete and
+ * uses them to send one email each. No route returns them. `GET /groups/[id]`
+ * deliberately hands out user ids and roles only, because every member seeing
+ * everybody else's address is a decision nobody made.
+ *
+ * Joined members only. A pending request to join was never in the workspace,
+ * so it has nothing there to lose.
+ *
+ * Two queries rather than a join, because `ResparkableGroupMember.userId` is a
+ * hand-written FK with no Prisma relation (see the schema's drift warning).
+ */
+export async function listMemberContacts(groupId: string): Promise<MemberContact[]> {
+  const members = await prisma.resparkableGroupMember.findMany({
+    where: { groupId, joinedAt: { not: null } },
+    select: { userId: true },
+  });
+  if (members.length === 0) return [];
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: members.map((member) => member.userId) } },
+    select: { id: true, email: true, name: true },
+  });
+
+  return users
+    .filter((user) => Boolean(user.email))
+    .map((user) => ({ userId: user.id, email: user.email, name: user.name ?? null }));
+}
+
 /** Outstanding invitations for a group, newest first, for the admin's list. */
 export async function listGroupInvites(groupId: string): Promise<ResparkableGroupInvite[]> {
   return prisma.resparkableGroupInvite.findMany({
