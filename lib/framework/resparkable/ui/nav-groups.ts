@@ -35,6 +35,7 @@ import {
   Sun,
   Target,
   Users,
+  UsersRound,
 } from 'lucide-react';
 import type * as React from 'react';
 
@@ -106,6 +107,10 @@ export const RESPARKABLE_NAV_GROUPS: NavGroup[] = [
       // close your own outbound shares, which is housekeeping and sits with
       // the vault and the settings.
       { href: RESPARKABLE_ROUTES.SHARING, label: 'Shared by me', icon: Send },
+      // Manage, and not Organise, for the same reason. Working IN a group is a
+      // workspace switch in the header; this is where you change who is in one,
+      // which is something you do occasionally and on purpose.
+      { href: RESPARKABLE_ROUTES.GROUPS, label: 'Groups', icon: UsersRound },
       { href: RESPARKABLE_ROUTES.VAULT, label: 'Vault', icon: FolderSync },
       { href: RESPARKABLE_ROUTES.SETTINGS, label: 'Settings', icon: Settings },
     ],

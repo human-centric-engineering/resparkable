@@ -13,7 +13,11 @@ import {
   taskSchema,
   thoughtSchema,
 } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Archive',
@@ -45,16 +49,21 @@ export const metadata: Metadata = {
  * what makes this an archive rather than a longer list: `true` would mix the
  * archived rows in among everything still live.
  */
-export default async function ResparkableArchivePage() {
+export default async function ResparkableArchivePage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const archived = (collection: string): string => `${collection}?includeArchived=only&limit=100`;
 
   const [digest, projects, goals, tasks, thoughts, entities] = await Promise.all([
-    readResparkable(RESPARKABLE_API.STALE, staleDigestSchema),
-    readResparkable(archived(RESPARKABLE_API.PROJECTS), z.array(projectSchema)),
-    readResparkable(archived(RESPARKABLE_API.GOALS), z.array(goalSchema)),
-    readResparkable(archived(RESPARKABLE_API.TASKS), z.array(taskSchema)),
-    readResparkable(archived(RESPARKABLE_API.THOUGHTS), z.array(thoughtSchema)),
-    readResparkable(archived(RESPARKABLE_API.ENTITIES), z.array(entitySchema)),
+    readResparkable(RESPARKABLE_API.STALE, staleDigestSchema, space),
+    readResparkable(archived(RESPARKABLE_API.PROJECTS), z.array(projectSchema), space),
+    readResparkable(archived(RESPARKABLE_API.GOALS), z.array(goalSchema), space),
+    readResparkable(archived(RESPARKABLE_API.TASKS), z.array(taskSchema), space),
+    readResparkable(archived(RESPARKABLE_API.THOUGHTS), z.array(thoughtSchema), space),
+    readResparkable(archived(RESPARKABLE_API.ENTITIES), z.array(entitySchema), space),
   ]);
 
   // Only the digest is load-bearing enough to fail the page. An archive section

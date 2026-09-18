@@ -56,7 +56,7 @@ import { ShareButton } from '@/components/resparkable/share/share-button';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ClientDate } from '@/components/ui/client-date';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { TodayPayloadWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -71,7 +71,7 @@ export function BriefingCard({ initial }: { initial: BriefingWire }): React.Reac
   const regenerate = React.useCallback(async (surpriseMe: boolean) => {
     setState('requesting');
     try {
-      await apiClient.post(RESPARKABLE_API.BRIEFING_REGENERATE, {
+      await resparkableApi.post(RESPARKABLE_API.BRIEFING_REGENERATE, {
         body: {
           // "Surprise me today" runs this one against `exploratory` without
           // touching the stored setting — people are structured in a deadline

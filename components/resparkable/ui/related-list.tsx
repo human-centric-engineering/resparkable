@@ -31,7 +31,7 @@ import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-stat
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { RelatedItemWire } from '@/lib/framework/resparkable/ui/payloads';
 import { cn } from '@/lib/utils';
@@ -60,7 +60,7 @@ export function RelatedList({ related, emptyMessage }: RelatedListProps): React.
     setReviewed((current) => new Set(current).add(linkId));
 
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.linkById(linkId), { body: { status } })
+      resparkableApi.patch(RESPARKABLE_API.linkById(linkId), { body: { status } })
     );
 
     if (ok) {

@@ -513,7 +513,14 @@ tree and "the pane you clicked from" means nothing there.
 1. Does an endpoint return **everything** the page renders? If not, add a `/view`
    sibling and a service that batches. Assert the query count.
 2. Add its wire schema to `ui/payloads.ts`.
-3. Server page: `readResparkable` → `<LoadError>` on failure → pass `initial` down.
+3. Server page: `readResparkable(path, schema, space)` → `<LoadError>` on failure →
+   pass `initial` down. **The third argument is required and there is no default**
+   (phase 47): a page cannot read its own URL, so the workspace is threaded from
+   its `searchParams` by hand, and the failure mode of forgetting is a page that
+   renders perfectly while the switcher says one workspace and the content is
+   another's. `readSpaceTarget(await searchParams)` gets it; `null` is the honest
+   answer for a surface that is not reading a workspace at all (`/shared`, which
+   is keyed on the reader, and `/groups`, which is keyed on the actor).
 4. Add the route to `RESPARKABLE_ROUTES` and, if it deserves one, a nav entry — into
    a group in `RESPARKABLE_NAV_GROUPS`, and a matching entry in `ui/section-help.ts`
    or its test fails.
@@ -524,5 +531,14 @@ tree and "the pane you clicked from" means nothing there.
    Any mutating control refreshes through `useResparkableRefresh()`, any filter
    it carries goes in `TabParams` with a navigating-by-default callback prop on
    the view, and any in-content link is a `<WorkspaceLink>` — §15.
-7. Component tests for the behaviour that would look fine if wrong — optimistic
+7. Client components fetch through `resparkableApi`, not core's `apiClient`. It
+   is the same client with the active workspace on the path, read from the
+   address bar at call time. The exceptions are deliberate and each carries its
+   reason in a comment: **capture** (an explicit target, defaulting to personal
+   — never the ambient one), the **group management routes** (keyed on the
+   actor, and they read no `?space=`), and the **deployment-level admin**
+   surfaces. A raw `fetch` or `XMLHttpRequest` needs `withActiveSpace()` applied
+   by hand, and a rendered `href` needs `useSpaceHref()` rather than
+   `withActiveSpace()` so the server and the client agree.
+8. Component tests for the behaviour that would look fine if wrong — optimistic
    rollback, request shape, and the copy that explains a silent behaviour.

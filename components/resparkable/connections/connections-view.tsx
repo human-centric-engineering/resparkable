@@ -32,7 +32,7 @@ import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-stat
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { ConnectionRowWire } from '@/lib/framework/resparkable/ui/payloads';
 import { z } from 'zod';
@@ -64,7 +64,7 @@ export function ConnectionsView({
     setReviewed((current) => new Set(current).add(id));
 
     const ok = await review.run(() =>
-      apiClient.patch(RESPARKABLE_API.linkById(id), { body: { status } })
+      resparkableApi.patch(RESPARKABLE_API.linkById(id), { body: { status } })
     );
 
     if (ok) {
@@ -82,7 +82,7 @@ export function ConnectionsView({
     let result: SweepResult | null = null;
 
     const ok = await sweep.run(async () => {
-      const response = await apiClient.post<unknown>(RESPARKABLE_API.CONNECTIONS_SWEEP);
+      const response = await resparkableApi.post<unknown>(RESPARKABLE_API.CONNECTIONS_SWEEP);
       result = sweepResultSchema.parse(response);
     });
 

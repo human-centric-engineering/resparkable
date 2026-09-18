@@ -55,7 +55,7 @@ import { ShareButton } from '@/components/resparkable/share/share-button';
 import { ShareDialog } from '@/components/resparkable/share/share-dialog';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
   BoardCardWire,
@@ -157,7 +157,9 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
 
     const ok = await run(async () => {
       if (Object.keys(body).length > 0) {
-        await apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, taskId), { body });
+        await resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, taskId), {
+          body,
+        });
       }
       // Only an explicit board keeps a hand-ordering; writing a position on a
       // filter board would imply an order nothing reads.
@@ -166,7 +168,7 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
         // which column that is — a board's positions run across all of them, and
         // without the status it would measure the index against the whole board
         // and drop the card among another column's cards.
-        await apiClient.patch(RESPARKABLE_API.boardCard(view.board.id, found.card.cardId), {
+        await resparkableApi.patch(RESPARKABLE_API.boardCard(view.board.id, found.card.cardId), {
           body: { targetIndex, status: targetStatus },
         });
       }

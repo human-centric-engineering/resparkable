@@ -56,7 +56,7 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { BoardCardWire, TagWire } from '@/lib/framework/resparkable/ui/payloads';
 import { cn } from '@/lib/utils';
@@ -127,7 +127,7 @@ function CardDetailBody({
     setChecked((current) => ({ ...current, [itemId]: next }));
 
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.checklistItem(itemId), { body: { isDone: next } })
+      resparkableApi.patch(RESPARKABLE_API.checklistItem(itemId), { body: { isDone: next } })
     );
 
     if (ok) refresh({ type: 'task', id: taskId });
@@ -141,7 +141,7 @@ function CardDetailBody({
     setNewItem('');
 
     const ok = await run(() =>
-      apiClient.post(RESPARKABLE_API.taskChecklist(taskId), { body: { text } })
+      resparkableApi.post(RESPARKABLE_API.taskChecklist(taskId), { body: { text } })
     );
 
     if (ok) refresh({ type: 'task', id: taskId });
@@ -150,7 +150,7 @@ function CardDetailBody({
   }
 
   async function removeItem(itemId: string): Promise<void> {
-    const ok = await run(() => apiClient.delete(RESPARKABLE_API.checklistItem(itemId)));
+    const ok = await run(() => resparkableApi.delete(RESPARKABLE_API.checklistItem(itemId)));
     if (ok) refresh({ type: 'task', id: taskId });
   }
 
@@ -162,7 +162,7 @@ function CardDetailBody({
 
     // The whole set, not a delta — the endpoint replaces for exactly this reason.
     const ok = await run(() =>
-      apiClient.put(RESPARKABLE_API.taskTags(taskId), { body: { tagIds: next } })
+      resparkableApi.put(RESPARKABLE_API.taskTags(taskId), { body: { tagIds: next } })
     );
 
     if (ok) refresh({ type: 'task', id: taskId });

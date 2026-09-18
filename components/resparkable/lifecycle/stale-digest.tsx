@@ -26,7 +26,7 @@ import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/t
 import { ClientDate } from '@/components/ui/client-date';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import type { StaleDigestWire, StaleSectionWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -120,7 +120,7 @@ function StaleRow({
 
   async function stillLive(): Promise<void> {
     const ok = await run(() =>
-      apiClient.post(RESPARKABLE_API.STALE_STILL_LIVE, { body: { type, id: row.id } })
+      resparkableApi.post(RESPARKABLE_API.STALE_STILL_LIVE, { body: { type, id: row.id } })
     );
     // The row leaves the digest because `lastActivityAt` moved, not because the
     // component hid it — so a refresh is the honest way to reflect the answer.

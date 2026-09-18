@@ -30,7 +30,7 @@ import {
   useTabTitle,
 } from '@/components/resparkable/workspace/tabs/use-tab-title';
 import { Textarea } from '@/components/ui/textarea';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { thoughtSchema } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -83,7 +83,7 @@ function NoteEditor({
 
   function save(next: string): void {
     void run(() =>
-      apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, id), {
+      resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, id), {
         body: { content: next },
       })
     );

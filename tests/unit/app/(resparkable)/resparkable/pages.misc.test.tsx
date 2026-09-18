@@ -187,7 +187,7 @@ describe('ResparkableTodayPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
-    await ResparkableTodayPage();
+    await ResparkableTodayPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([RESPARKABLE_API.TODAY]);
   });
@@ -196,7 +196,7 @@ describe('ResparkableTodayPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500, 'today down'));
     const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
-    render(await ResparkableTodayPage());
+    render(await ResparkableTodayPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('today down');
   });
@@ -206,7 +206,7 @@ describe('ResparkableTodayPage', () => {
     vi.mocked(readResparkable).mockResolvedValue(ok(payload));
     const { default: ResparkableTodayPage } = await import('@/app/(resparkable)/resparkable/page');
 
-    render(await ResparkableTodayPage());
+    render(await ResparkableTodayPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('today-view');
     expect(view.getAttribute('data-props')).toBe(JSON.stringify({ payload }));
@@ -328,7 +328,7 @@ describe('ResparkableSettingsPage', () => {
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
-    await ResparkableSettingsPage();
+    await ResparkableSettingsPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([RESPARKABLE_API.SPACE]);
   });
@@ -338,7 +338,7 @@ describe('ResparkableSettingsPage', () => {
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
-    render(await ResparkableSettingsPage());
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('settings down');
   });
@@ -349,7 +349,7 @@ describe('ResparkableSettingsPage', () => {
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
-    render(await ResparkableSettingsPage());
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
 
     const form = screen.getByTestId('space-settings-form');
     expect(form.getAttribute('data-props')).toBe(JSON.stringify({ initial: settings }));
@@ -361,7 +361,7 @@ describe('ResparkableSettingsPage', () => {
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
-    render(await ResparkableSettingsPage());
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
 
     const card = screen.getByTestId('about-sparkey');
     expect(card.getAttribute('data-props')).toBe(JSON.stringify({ pronoun: 'he' }));
@@ -375,7 +375,7 @@ describe('ResparkableSettingsPage', () => {
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
-    render(await ResparkableSettingsPage());
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByTestId('about-sparkey')).toBeInTheDocument();
     expect(screen.getByRole('alert')).toHaveTextContent('settings down');
@@ -573,7 +573,7 @@ describe('ResparkableConnectionsPage', () => {
     const { default: ResparkableConnectionsPage } =
       await import('@/app/(resparkable)/resparkable/connections/page');
 
-    await ResparkableConnectionsPage();
+    await ResparkableConnectionsPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([`${RESPARKABLE_API.CONNECTIONS}?limit=50`]);
   });
@@ -583,7 +583,7 @@ describe('ResparkableConnectionsPage', () => {
     const { default: ResparkableConnectionsPage } =
       await import('@/app/(resparkable)/resparkable/connections/page');
 
-    render(await ResparkableConnectionsPage());
+    render(await ResparkableConnectionsPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('connections down');
   });
@@ -594,7 +594,7 @@ describe('ResparkableConnectionsPage', () => {
     const { default: ResparkableConnectionsPage } =
       await import('@/app/(resparkable)/resparkable/connections/page');
 
-    render(await ResparkableConnectionsPage());
+    render(await ResparkableConnectionsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('connections-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -610,7 +610,7 @@ describe('ResparkableConnectionsPage', () => {
     const { default: ResparkableConnectionsPage } =
       await import('@/app/(resparkable)/resparkable/connections/page');
 
-    render(await ResparkableConnectionsPage());
+    render(await ResparkableConnectionsPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('connections-view');
     const props = JSON.parse(view.getAttribute('data-props') ?? '{}') as {
@@ -647,7 +647,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    await ResparkableArchivePage();
+    await ResparkableArchivePage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([
       RESPARKABLE_API.STALE,
@@ -666,7 +666,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('digest down');
     expect(screen.queryByTestId('stale-digest')).not.toBeInTheDocument();
@@ -691,7 +691,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     // The digest itself still renders — only the section-level read failed.
     expect(screen.getByTestId('stale-digest')).toBeInTheDocument();
@@ -736,7 +736,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     expect(archivedListProps('project').items[0]?.title).toBe('Q4 launch');
     expect(archivedListProps('goal').items[0]?.title).toBe('Learn Spanish');
@@ -760,7 +760,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     expect(archivedListProps('note').items[0]?.title).toBe(`${'A'.repeat(120)}…`);
   });
@@ -775,7 +775,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     expect(archivedListProps('note').items[0]?.title).toBe('Empty note');
   });
@@ -796,7 +796,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     // The one section whose read succeeded still renders its item.
     expect(archivedListProps('project').items).toEqual([
@@ -842,7 +842,7 @@ describe('ResparkableArchivePage', () => {
     const { default: ResparkableArchivePage } =
       await import('@/app/(resparkable)/resparkable/archive/page');
 
-    render(await ResparkableArchivePage());
+    render(await ResparkableArchivePage({ searchParams: Promise.resolve({}) }));
 
     expect(archivedListProps('project').items[0]?.archivedReason).toBeNull();
     expect(archivedListProps('goal').items[0]?.archivedReason).toBeNull();

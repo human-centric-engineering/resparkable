@@ -22,7 +22,8 @@ import * as React from 'react';
 import type { z } from 'zod';
 
 import { useTabRefreshGeneration } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
-import { apiClient, APIClientError } from '@/lib/api/client';
+import { APIClientError } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 
 export type TabFetchState<T> =
   | { status: 'loading' }
@@ -91,7 +92,7 @@ export function useTabFetch<T>(
       prev.status === 'ready' && loadedFrom.current === endpoint ? prev : { status: 'loading' }
     );
 
-    apiClient
+    resparkableApi
       .get<unknown>(endpoint)
       .then((raw) => {
         if (cancelled) return;

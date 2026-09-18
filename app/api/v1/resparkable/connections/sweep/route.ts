@@ -19,12 +19,11 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
 
   const result = await sweepConnections(scope);
 
@@ -32,3 +31,4 @@ export const POST = withAuth(async (request, session) => {
 
   return successResponse(result);
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

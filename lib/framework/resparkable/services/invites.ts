@@ -48,6 +48,7 @@ import {
 } from '@/lib/framework/resparkable/repo/grants';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { sendEmail } from '@/lib/email/send';
 import { env } from '@/lib/env';
@@ -98,6 +99,8 @@ export async function sendGrantInvite(
   grantId: string,
   now: Date = new Date()
 ): Promise<InviteOutcome> {
+  if (!permissionsFor(scope.role).write) return 'no_grant';
+
   const grant = await findOwnGrant(scope, grantId);
   if (!grant || !isShareActive(grant, now)) return 'no_grant';
 

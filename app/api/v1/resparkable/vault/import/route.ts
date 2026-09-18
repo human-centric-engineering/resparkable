@@ -51,6 +51,14 @@ const MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
+  // Personal space only, deliberately, while every other read in the tier
+  // follows `?space=`. §24.5 has not settled what exporting or importing a
+  // *group* workspace means: an archive of a shared brain is several people's
+  // content in one person's download, and an import into one is a write of
+  // somebody else's rows under the importer's name. Both are answers this
+  // branch would be guessing at, and a guess here is a data-protection
+  // decision. A group member gets a 404-free personal export, and the group
+  // question stays open rather than silently answered.
   const scope = spaceScope(session.user.id);
 
   // BEFORE formData() — see the header note.

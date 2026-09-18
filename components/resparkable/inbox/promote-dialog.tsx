@@ -51,7 +51,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { GOAL_HORIZONS } from '@/lib/framework/resparkable/validations';
 
@@ -121,7 +121,9 @@ export function PromoteDialog({
           ? { target, ...(trimmed ? { title: trimmed } : {}) }
           : { target, ...(trimmed ? { title: trimmed } : {}), horizon };
 
-    const ok = await run(() => apiClient.post(RESPARKABLE_API.promotePath(thoughtId), { body }));
+    const ok = await run(() =>
+      resparkableApi.post(RESPARKABLE_API.promotePath(thoughtId), { body })
+    );
 
     if (ok) {
       onOpenChange(false);

@@ -15,6 +15,12 @@ export const RESPARKABLE_API = {
   TODAY: '/api/v1/resparkable/today',
   INBOX: '/api/v1/resparkable/inbox',
   SPACE: '/api/v1/resparkable/space',
+  /**
+   * Every workspace the caller can open, for the header switcher. Actor-keyed
+   * rather than space-keyed: asking "which workspaces are mine" from inside one
+   * of them would be circular.
+   */
+  SPACES: '/api/v1/resparkable/spaces',
   /** Badge numbers for the shell — cheap enough to read on every navigation. */
   COUNTS: '/api/v1/resparkable/counts',
 

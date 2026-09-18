@@ -48,6 +48,7 @@ import { AutoGrowTextarea } from '@/components/resparkable/ui/auto-grow-textarea
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { Button } from '@/components/ui/button';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { useTypingAnimation } from '@/lib/hooks/use-typing-animation';
 import { getUserFacingError } from '@/lib/orchestration/chat/error-messages';
@@ -222,7 +223,7 @@ export function ResparkableChat({
       };
 
       try {
-        const response = await fetch(RESPARKABLE_API.CHAT_STREAM, {
+        const response = await fetch(withActiveSpace(RESPARKABLE_API.CHAT_STREAM), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

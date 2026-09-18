@@ -108,7 +108,10 @@ describe('ResparkableProjectPage', () => {
     const { default: ResparkableProjectPage } =
       await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
-    await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-123' }) });
+    await ResparkableProjectPage({
+      params: Promise.resolve({ id: 'proj-123' }),
+      searchParams: Promise.resolve({}),
+    });
 
     expect(callPaths()).toEqual([
       RESPARKABLE_API.viewPath(RESPARKABLE_API.PROJECTS, 'proj-123'),
@@ -126,7 +129,10 @@ describe('ResparkableProjectPage', () => {
       await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
     await expect(
-      ResparkableProjectPage({ params: Promise.resolve({ id: 'missing' }) })
+      ResparkableProjectPage({
+        params: Promise.resolve({ id: 'missing' }),
+        searchParams: Promise.resolve({}),
+      })
     ).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFound).toHaveBeenCalled();
   });
@@ -140,7 +146,12 @@ describe('ResparkableProjectPage', () => {
     const { default: ResparkableProjectPage } =
       await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
-    render(await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-1' }) }));
+    render(
+      await ResparkableProjectPage({
+        params: Promise.resolve({ id: 'proj-1' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('server unwell');
     expect(notFound).not.toHaveBeenCalled();
@@ -156,7 +167,12 @@ describe('ResparkableProjectPage', () => {
     const { default: ResparkableProjectPage } =
       await import('@/app/(resparkable)/resparkable/projects/[id]/page');
 
-    render(await ResparkableProjectPage({ params: Promise.resolve({ id: 'proj-1' }) }));
+    render(
+      await ResparkableProjectPage({
+        params: Promise.resolve({ id: 'proj-1' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     const detail = screen.getByTestId('project-detail');
     const props = JSON.parse(detail.getAttribute('data-props') ?? '{}') as {
@@ -176,7 +192,10 @@ describe('ResparkableEntityPage', () => {
     const { default: ResparkableEntityPage } =
       await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
-    await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) });
+    await ResparkableEntityPage({
+      params: Promise.resolve({ id: 'ent-1' }),
+      searchParams: Promise.resolve({}),
+    });
 
     expect(callPaths()).toEqual([RESPARKABLE_API.viewPath(RESPARKABLE_API.ENTITIES, 'ent-1')]);
   });
@@ -187,7 +206,10 @@ describe('ResparkableEntityPage', () => {
       await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
     await expect(
-      ResparkableEntityPage({ params: Promise.resolve({ id: 'missing' }) })
+      ResparkableEntityPage({
+        params: Promise.resolve({ id: 'missing' }),
+        searchParams: Promise.resolve({}),
+      })
     ).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFound).toHaveBeenCalled();
   });
@@ -197,7 +219,12 @@ describe('ResparkableEntityPage', () => {
     const { default: ResparkableEntityPage } =
       await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
-    render(await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) }));
+    render(
+      await ResparkableEntityPage({
+        params: Promise.resolve({ id: 'ent-1' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('server unwell');
     expect(notFound).not.toHaveBeenCalled();
@@ -209,7 +236,12 @@ describe('ResparkableEntityPage', () => {
     const { default: ResparkableEntityPage } =
       await import('@/app/(resparkable)/resparkable/entities/[id]/page');
 
-    render(await ResparkableEntityPage({ params: Promise.resolve({ id: 'ent-1' }) }));
+    render(
+      await ResparkableEntityPage({
+        params: Promise.resolve({ id: 'ent-1' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     const detail = screen.getByTestId('entity-detail');
     expect(detail.getAttribute('data-props')).toBe(JSON.stringify({ view }));
@@ -232,7 +264,10 @@ describe('ResparkableBoardPage', () => {
 
     // The view read fails with a non-404 status here, so the page resolves to
     // a LoadError element rather than throwing — only the call order matters.
-    await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) });
+    await ResparkableBoardPage({
+      params: Promise.resolve({ slug: 'my-board' }),
+      searchParams: Promise.resolve({}),
+    });
 
     expect(callPaths()[0]).toBe(BOARDS_LIST_PATH);
     expect(callPaths()[1]).toBe(RESPARKABLE_API.viewPath(RESPARKABLE_API.BOARDS, 'board-1'));
@@ -244,7 +279,12 @@ describe('ResparkableBoardPage', () => {
     const { default: ResparkableBoardPage } =
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
-    render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
+    render(
+      await ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('boards list down');
     expect(notFound).not.toHaveBeenCalled();
@@ -256,7 +296,10 @@ describe('ResparkableBoardPage', () => {
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     await expect(
-      ResparkableBoardPage({ params: Promise.resolve({ slug: 'missing-board' }) })
+      ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'missing-board' }),
+        searchParams: Promise.resolve({}),
+      })
     ).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFound).toHaveBeenCalled();
   });
@@ -273,7 +316,10 @@ describe('ResparkableBoardPage', () => {
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
     await expect(
-      ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) })
+      ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
     ).rejects.toThrow('NEXT_NOT_FOUND');
     expect(notFound).toHaveBeenCalled();
   });
@@ -289,7 +335,12 @@ describe('ResparkableBoardPage', () => {
     const { default: ResparkableBoardPage } =
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
-    render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
+    render(
+      await ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('view server unwell');
     expect(notFound).not.toHaveBeenCalled();
@@ -311,7 +362,12 @@ describe('ResparkableBoardPage', () => {
     const { default: ResparkableBoardPage } =
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
-    render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
+    render(
+      await ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     const boardView = screen.getByTestId('board-view');
     const props = JSON.parse(boardView.getAttribute('data-props') ?? '{}') as {
@@ -338,7 +394,12 @@ describe('ResparkableBoardPage', () => {
     const { default: ResparkableBoardPage } =
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
-    render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
+    render(
+      await ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('heading', { name: 'My Board' })).toBeInTheDocument();
     // Singular "card" for a count of 1, and the hand-picked (not live-query) copy.
@@ -362,7 +423,12 @@ describe('ResparkableBoardPage', () => {
     const { default: ResparkableBoardPage } =
       await import('@/app/(resparkable)/resparkable/boards/[slug]/page');
 
-    render(await ResparkableBoardPage({ params: Promise.resolve({ slug: 'my-board' }) }));
+    render(
+      await ResparkableBoardPage({
+        params: Promise.resolve({ slug: 'my-board' }),
+        searchParams: Promise.resolve({}),
+      })
+    );
 
     expect(screen.getByRole('link', { name: /csv/i })).toHaveAttribute(
       'href',

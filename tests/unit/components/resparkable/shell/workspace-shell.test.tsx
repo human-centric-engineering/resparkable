@@ -161,7 +161,10 @@ vi.mock('@/components/ui/resizable', () => {
 });
 
 function renderShell(children: React.ReactNode = <div>page content marker</div>) {
-  return render(<WorkspaceShell>{children}</WorkspaceShell>);
+  // One workspace, so the header's switcher renders nothing: these tests are
+  // about the pane tree, and a second workspace here would put a control in
+  // every one of their snapshots for no reason.
+  return render(<WorkspaceShell spaces={[]}>{children}</WorkspaceShell>);
 }
 
 /** `panel-last-call` markers in render order: Sparkey, middle, Activity. */

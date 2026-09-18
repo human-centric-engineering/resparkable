@@ -25,7 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { BoardWire, ProjectWire, TagWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -140,7 +140,9 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
 
     setName('');
 
-    const ok = await run(() => apiClient.post(RESPARKABLE_API.TAGS, { body: { name: trimmed } }));
+    const ok = await run(() =>
+      resparkableApi.post(RESPARKABLE_API.TAGS, { body: { name: trimmed } })
+    );
 
     if (ok) refresh({ type: 'tag' });
     else setName(trimmed);
@@ -148,7 +150,7 @@ function TagLibrary({ tags }: { tags: TagWire[] }): React.ReactElement {
 
   async function remove(tagId: string): Promise<void> {
     const ok = await run(() =>
-      apiClient.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TAGS, tagId))
+      resparkableApi.delete(RESPARKABLE_API.itemPath(RESPARKABLE_API.TAGS, tagId))
     );
     if (ok) refresh({ type: 'tag' });
   }

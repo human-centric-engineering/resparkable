@@ -18,6 +18,43 @@ release process.
 
 ### Added
 
+- **The workspace switcher, and `?space=` (Release 9, phase 47).** A person can
+  now open a group's workspace, and which workspace a request is for travels as
+  **one search param on the URL** — `?space=<spaceId>`, with **absence meaning
+  the personal space**. §24.2 required it be "held in the shell and in the URL,
+  never in a cookie alone"; a search param leaves every existing bookmark,
+  emailed link and route resolving exactly as before, which a path segment would
+  not.
+
+  Personal has one spelling. Not `?space=personal`, and not the owner's user id:
+  the first is a magic value every reader would have to know about, the second
+  puts a user id in every access log and referrer header. A repeated
+  `?space=a&space=b` resolves to **nothing** rather than to the first value.
+
+  New seams a fork will meet: `readSpaceTarget()` / `withSpace()` in
+  `ui/active-space.ts` (client-safe, imports nothing), `requestSpaceScope()` in
+  `api/space-request.ts` (the one line a route writes), `resolveActiveSpaceScope()`
+  in `services/membership.ts`, `listOpenableSpaces()` in `services/spaces.ts`,
+  the `resparkableApi` client wrapper and `withActiveSpace()` in `api/client.ts`,
+  and `useSpaceHref()` / `useActiveSpaceId()` in `ui/use-active-space.ts`.
+
+  `GET /api/v1/resparkable/spaces` is new: every workspace the caller can open,
+  keyed on the actor rather than on a workspace, for the header switcher.
+
+  **The greppable trust boundary got shorter, not longer.**
+  `rg 'spaceScope\(|spaceScopeFor\('` returned fifty route files before this
+  phase, each an unaudited mint; it now returns `services/membership.ts` plus the
+  background and export paths that have no session to read.
+
+- **The `/resparkable/groups` section.** List, create, invite, change a role,
+  remove a member, leave. Two tab kinds (`groups`, `group`), a nav entry under
+  Manage, a `section-help.ts` entry and the rest of `ui.md`'s checklist.
+  Deleting a group and admin succession are phase 48's.
+
+- **`spaceId` on `captureSchema`.** A capture's target, optional, and its
+  absence is the personal space. See the Changed note below for why it is a body
+  field and not the URL param.
+
 - **Groups: a principal that owns a workspace (Release 9, phase 46).** Three new
   Prisma models, `ResparkableGroup`, `ResparkableGroupMember` and
   `ResparkableGroupInvite`, plus a new drift probe **B13** covering the three
@@ -590,6 +627,56 @@ release process.
 
 
 ### Changed
+
+
+- **`readResparkable()` takes a required third argument, the workspace**
+  (phase 47). Every Resparkable server page passes it, threaded from the page's
+  own `searchParams`; `null` is a visible answer for the surfaces that are not
+  reading a workspace at all. Optional would have been kinder to write and is
+  the wrong choice: a page that forgets renders perfectly, the switcher says
+  "Study Group B", and the content is the reader's own. Required hands that
+  check to the type checker.
+
+  **A fork with its own Resparkable pages must pass the third argument.** This
+  is a compile error rather than a silent behaviour change, deliberately.
+
+- **`requireResparkableUser()` is now `requireResparkableSpace()`, and is async.**
+  A capability invoked in a group workspace has to read that workspace, and
+  verifying which one needs a membership read. Its two routes now differ in kind:
+  a person acting through an agent supplies a verified actor and an untrusted
+  space **hint** (`ChatRequest.scope`, which core routes through `hintScope`),
+  resolved against membership on every turn; a background run with no actor
+  still treats the schedule's `scope` column as the authority, because there is
+  nobody to check it against.
+
+  A hint naming a space the actor is not in **refuses** rather than falling back
+  to their personal brain: a model that read "use workspace spc_x" in a document
+  could otherwise redirect a turn with nothing on screen to show it.
+
+- **`loadResparkableContext()` reads its `id` argument** instead of ignoring it.
+  It is the space, and it is resolved through membership rather than trusted, so
+  a forged `contextId` still yields no context rather than somebody else's. The
+  `buildContext` cache key needs no change: it already carries the space in `id`.
+
+- **`POST /api/v1/resparkable/chat/stream` pins `contextId` to the resolved
+  workspace** rather than to `session.user.id`, and passes the same id as
+  `scope.resparkableSpaceId` so a turn's tools read the brain its context block
+  describes. The body field named `contextId` is still rejected outright.
+
+- **`RESPARKABLE_SCHEDULE_SPACE_KEY` is no longer only a schedule's.** Same
+  constant, same wire value (`resparkableSpaceId`); the chat route now writes it
+  onto `ChatRequest.scope`. The two carriers are read differently on purpose: a
+  schedule's is authoritative, a chat request's is a hint.
+
+- **Quick capture and the Sparkey composer post to `/resparkable/capture`**
+  rather than `/resparkable/thoughts`. `/thoughts` is the ordinary CRUD create
+  and follows the ambient workspace; `/capture` takes an explicit target and
+  **reads no `?space=` at all**, so a capture cannot inherit the workspace on
+  screen. Capture defaults to the personal space on every path, always, and
+  resets to it after every save. `ResparkableThought.sensitivity` becomes a
+  warning at the point of capture in a group workspace, and is still never a
+  filter.
+
 
 - **Merged Sunrise 0.11.2 (75 commits, v0.9.0..v0.11.2).** Four upstream
   releases in one sync, and three of them change a surface this fork publishes.

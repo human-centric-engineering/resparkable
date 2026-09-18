@@ -5,7 +5,11 @@ import { AboutSparkey } from '@/components/settings/about-sparkey';
 import { SpaceSettingsForm } from '@/components/resparkable/settings/space-settings-form';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 import { getSparkeyPronoun } from '@/lib/resparkable/get-sparkey-pronoun';
 
 export const metadata: Metadata = {
@@ -33,9 +37,14 @@ const settingsSchema = z.object({
   retentionPolicy: z.record(z.string(), z.number()),
 });
 
-export default async function ResparkableSettingsPage() {
+export default async function ResparkableSettingsPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
   const [result, pronoun] = await Promise.all([
-    readResparkable(RESPARKABLE_API.SPACE, settingsSchema),
+    readResparkable(RESPARKABLE_API.SPACE, settingsSchema, space),
     getSparkeyPronoun(),
   ]);
 

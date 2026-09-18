@@ -48,6 +48,7 @@ import * as React from 'react';
 import { Loader2, Send } from 'lucide-react';
 
 import { AttachButton, AttachmentCard } from '@/components/resparkable/layout/capture-attachment';
+import { CaptureTarget } from '@/components/resparkable/layout/capture-target';
 import { VoiceCaptureButton } from '@/components/resparkable/layout/voice-capture-button';
 import { MismatchPrompt } from '@/components/resparkable/sparkey/mismatch-prompt';
 import { ModeSelector } from '@/components/resparkable/sparkey/mode-selector';
@@ -75,6 +76,13 @@ export interface ComposerProps {
    * was actually observed" rule `QuickCapture` follows.
    */
   onSubmit: (text: string, source?: 'voice' | 'image') => void;
+  /**
+   * Capture mode only: which workspace the thought lands in, `null` for
+   * personal. Held by the pane rather than here so it survives a mode switch
+   * and can be reset to personal after every save.
+   */
+  captureTarget?: string | null;
+  onCaptureTargetChange?: (spaceId: string | null) => void;
   disabled?: boolean;
 }
 
@@ -84,6 +92,8 @@ export function Composer({
   value,
   onValueChange,
   onSubmit,
+  captureTarget = null,
+  onCaptureTargetChange,
   disabled = false,
 }: ComposerProps): React.ReactElement {
   const [source, setSource] = React.useState<'voice' | 'image' | undefined>(undefined);
@@ -193,6 +203,17 @@ export function Composer({
         <div className="flex items-center justify-between gap-2 px-2 pb-2">
           <div className="flex items-center gap-1">
             <AttachButton onFile={setFile} disabled={disabled} />
+            {/* Capture mode only. Ask and Instruct send a question to an agent
+                in the workspace already on screen; only Capture writes a row,
+                and only a write needs to say where. */}
+            {mode === 'capture' && onCaptureTargetChange && (
+              <CaptureTarget
+                value={captureTarget}
+                onChange={onCaptureTargetChange}
+                content={value}
+                className="ml-1"
+              />
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             <VoiceCaptureButton

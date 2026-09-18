@@ -9,6 +9,7 @@ import {
   projectSchema,
   timeBlockSchema,
 } from '@/lib/framework/resparkable/ui/payloads';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
@@ -36,6 +37,7 @@ export default async function ResparkablePlanPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const space = readSpaceTarget(params);
   const raw = Array.isArray(params.day) ? params.day[0] : params.day;
 
   const day = raw && /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : todayIso();
@@ -50,9 +52,17 @@ export default async function ResparkablePlanPage({
   });
 
   const [blocks, projects, areas] = await Promise.all([
-    readResparkable(`${RESPARKABLE_API.TIME_BLOCKS}?${query.toString()}`, z.array(timeBlockSchema)),
-    readResparkable(`${RESPARKABLE_API.PROJECTS}?status=active&limit=200`, z.array(projectSchema)),
-    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema)),
+    readResparkable(
+      `${RESPARKABLE_API.TIME_BLOCKS}?${query.toString()}`,
+      z.array(timeBlockSchema),
+      space
+    ),
+    readResparkable(
+      `${RESPARKABLE_API.PROJECTS}?status=active&limit=200`,
+      z.array(projectSchema),
+      space
+    ),
+    readResparkable(`${RESPARKABLE_API.AREAS}?limit=200`, z.array(areaSchema), space),
   ]);
 
   if (!blocks.ok) {

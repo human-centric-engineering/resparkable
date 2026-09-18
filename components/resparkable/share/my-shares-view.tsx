@@ -60,7 +60,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { MyShareItemWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -93,7 +93,7 @@ export function MySharesView({ items }: MySharesViewProps): React.ReactElement {
           ? RESPARKABLE_API.itemPath(RESPARKABLE_API.GRANTS, id)
           : RESPARKABLE_API.itemPath(RESPARKABLE_API.SHARE_LINKS, id);
 
-      const ok = await run(() => apiClient.delete(path));
+      const ok = await run(() => resparkableApi.delete(path));
 
       if (!ok) {
         // Put it back. A share that looks closed and is not is the one failure

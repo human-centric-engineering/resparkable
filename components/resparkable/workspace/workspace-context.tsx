@@ -57,6 +57,7 @@ import type {
   TabSource,
   TabState,
 } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
+import { useActiveSpaceId } from '@/lib/framework/resparkable/ui/use-active-space';
 import { useLocalStorage } from '@/lib/hooks/use-local-storage';
 
 // v2: added `floatingPanels` — a v1 blob has no such field, and this hook's
@@ -64,6 +65,27 @@ import { useLocalStorage } from '@/lib/hooks/use-local-storage';
 // scattering `?? []` defensive reads through every action below. Existing
 // users' saved pane layout resets once on first load after this ships.
 const STORAGE_KEY = 'resparkable.workspace.v2';
+
+/**
+ * Tab state is per workspace, and the key is what makes it so (§24.2).
+ *
+ * Switching to "Study Group B" and back returns the panes exactly as they were,
+ * rather than to a default view. Resetting on every switch is what would make
+ * three workspaces feel like three logins, which is the failure §24.8's open
+ * question named; retaining is nearly free because the state was already
+ * per-surface, and this adds one segment to its key.
+ *
+ * **No migration.** An existing `resparkable.workspace.v2` blob keeps working
+ * untouched, because the personal space keeps the unsuffixed key. A group's key
+ * has never been written before, so it reads as no state, which is a fresh tab
+ * set, which is the right answer for a workspace you have not opened yet.
+ *
+ * The id is the space id, not the group name: a rename must not lose somebody's
+ * pane layout.
+ */
+function storageKeyFor(spaceId: string | null): string {
+  return spaceId ? `${STORAGE_KEY}.${spaceId}` : STORAGE_KEY;
+}
 
 /** The one leaf that exists before anything is ever opened. Never removed — see `closeLeaf`'s guarantee. */
 const ROOT_LEAF_ID = 'root';
@@ -180,7 +202,11 @@ export interface WorkspaceProviderProps {
 }
 
 export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.ReactElement {
-  const [state, setState] = useLocalStorage<WorkspaceState>(STORAGE_KEY, DEFAULT_STATE);
+  const activeSpaceId = useActiveSpaceId();
+  const [state, setState] = useLocalStorage<WorkspaceState>(
+    storageKeyFor(activeSpaceId),
+    DEFAULT_STATE
+  );
 
   const openTab = React.useCallback<WorkspaceContextValue['openTab']>(
     (kind, params = {}, opts) => {

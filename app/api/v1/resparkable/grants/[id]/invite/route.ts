@@ -30,12 +30,11 @@ import { getRouteLogger } from '@/lib/api/context';
 import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
 
 export const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const outcome = await sendGrantInvite(scope, id);
@@ -51,3 +50,4 @@ export const POST = withAuth<{ id: string }>(async (request, session, { params }
   // client's answer to both is the same: offer to try again.
   return successResponse({ sent: outcome === 'sent' });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

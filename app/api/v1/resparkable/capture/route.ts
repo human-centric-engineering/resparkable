@@ -18,22 +18,29 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
+import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
+import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
 import { captureSchema } from '@/lib/framework/resparkable/validations';
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
 
-  const body = await validateRequestBody(request, captureSchema);
+  const { spaceId, ...input } = await validateRequestBody(request, captureSchema);
 
-  const { thought, deduped } = await captureThought(scope, body);
+  // The target comes from the BODY, and this route does not call
+  // `requestSpaceScope`: it never reads `?space=`, so a capture cannot inherit
+  // the workspace somebody happens to be looking at. Absent means personal.
+  // See the schema's own note, and test 13e.
+  const scope = await resolveActiveSpaceScope(session.user.id, spaceId ?? null);
+  if (!scope) throw new NotFoundError('Workspace not found');
 
-  log.info('Resparkable capture', { source: thought.source, deduped });
+  const { thought, deduped } = await captureThought(scope, input);
+
+  log.info('Resparkable capture', { source: thought.source, deduped, toGroup: Boolean(spaceId) });
 
   // 200 on a dedupe, 201 on a create — the status says which happened without
   // the caller having to read the body, and a retry that gets 200 is a retry

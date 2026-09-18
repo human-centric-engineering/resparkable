@@ -37,7 +37,7 @@ import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/t
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { InboxItemWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -73,7 +73,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
     setReviewed((current) => new Set(current).add(linkId));
 
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.linkById(linkId), { body: { status } })
+      resparkableApi.patch(RESPARKABLE_API.linkById(linkId), { body: { status } })
     );
 
     if (ok) {
@@ -89,7 +89,7 @@ export function ThoughtCard({ item, projects }: ThoughtCardProps): React.ReactEl
 
   async function drop(): Promise<void> {
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, thought.id), {
+      resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.THOUGHTS, thought.id), {
         body: { status: 'dropped' },
       })
     );

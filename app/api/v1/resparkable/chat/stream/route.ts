@@ -17,11 +17,22 @@
  *
  * ## The two things pinned server-side
  *
- * **`contextId` is `session.user.id`, never client-supplied.** `buildContext`
- * caches on `type:id:userId`, and the Resparkable loader ignores `id` and reads
- * `request.userId` for exactly this reason — but defence in depth is cheap and a
- * body field named `contextId` is the obvious thing for a later change to start
- * honouring.
+ * **`contextId` is the RESOLVED workspace, never client-supplied.** It was
+ * `session.user.id` until phase 47, which was the same value while a person had
+ * one brain. It is now `scope.spaceId`, and the scope came from
+ * `requestSpaceScope`, which read `?space=` and then read membership — so the
+ * id pinned here is one this session is entitled to, and the body field named
+ * `contextId` is still ignored outright. `buildContext` caches on
+ * `type:id:userId`, so this is also what gives a group turn its own cache
+ * entry rather than serving the actor's personal context inside a shared brain.
+ *
+ * The same resolved id travels a second time as `scope`, which is what reaches
+ * a capability's `CapabilityContext`. Core routes that through `hintScope` and
+ * calls it a hint, correctly, because a consumer body can set it; the tier's
+ * `requireResparkableSpace` re-resolves it against membership rather than
+ * trusting it. Two paths for one value is not duplication: `contextId` feeds
+ * the prompt's context block and `scope` feeds the tools, and they are read by
+ * different code with different trust rules.
  *
  * **`agentSlug` is checked against `RESPARKABLE_CHAT_AGENT_SLUGS`.** That list is a
  * security boundary, not a UI convenience: `resparkable-triage` and
@@ -59,7 +70,7 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { RESPARKABLE_CHAT_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { RESPARKABLE_SCHEDULE_SPACE_KEY } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   assertPositiveBalance,
   recordAgentSpend,
@@ -86,7 +97,7 @@ export const POST = withAuth(async (request, session) => {
   // every scoped table has an FK to the space row. Idempotent and race-safe.
   await ensureResparkableSpace(session.user.id);
 
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   // Refused before any provider call: see services/billing.ts. Throws
   // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
   await assertPositiveBalance(scope);
@@ -105,7 +116,11 @@ export const POST = withAuth(async (request, session) => {
     ...(body.conversationId ? { conversationId: body.conversationId } : {}),
     // Both pinned. See the header — `contextId` is the field that would leak.
     contextType: RESPARKABLE_CONTEXT_TYPE,
-    contextId: session.user.id,
+    contextId: scope.spaceId,
+    // The workspace, again, on the carrier that reaches a capability's
+    // `CapabilityContext`. A hint by core's rules and re-resolved by the tier's,
+    // so a turn's tools read the same brain its context block describes.
+    scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: scope.spaceId },
     ...(body.entityContext ? { entityContext: body.entityContext } : {}),
     requestId,
     ...(visitorId ? { visitorId } : {}),
@@ -130,7 +145,7 @@ export const POST = withAuth(async (request, session) => {
  */
 async function* tapChatSpend(
   events: AsyncIterable<ChatEvent>,
-  scope: ReturnType<typeof spaceScope>
+  scope: SpaceScope
 ): AsyncGenerator<ChatEvent> {
   let conversationId: string | undefined;
 
@@ -145,7 +160,7 @@ async function* tapChatSpend(
         });
       } catch (error) {
         logger.error('Resparkable chat spend could not be recorded', error, {
-          userId: scope.spaceId,
+          spaceId: scope.spaceId,
           conversationId,
         });
       }
@@ -153,3 +168,5 @@ async function* tapChatSpend(
     yield event;
   }
 }
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';

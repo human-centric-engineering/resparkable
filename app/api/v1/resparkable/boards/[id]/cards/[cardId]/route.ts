@@ -17,6 +17,7 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 import {
   findBoardCard,
   listBoardCardsWithStatus,
@@ -24,14 +25,13 @@ import {
   renumberBoardCards,
   updateBoardCardPosition,
 } from '@/lib/framework/resparkable/repo/boards';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { planMove } from '@/lib/framework/resparkable/services/fractional-position';
 import { moveBoardCardSchema } from '@/lib/framework/resparkable/validations';
 
 export const PATCH = withAuth<{ id: string; cardId: string }>(
   async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id, cardId } = await params;
 
     const body = await validateRequestBody(request, moveBoardCardSchema);
@@ -78,7 +78,7 @@ export const PATCH = withAuth<{ id: string; cardId: string }>(
 export const DELETE = withAuth<{ id: string; cardId: string }>(
   async (request, session, { params }) => {
     const log = await getRouteLogger(request);
-    const scope = spaceScope(session.user.id);
+    const scope = await requestSpaceScope(request, session.user.id);
     const { id, cardId } = await params;
 
     const card = await findBoardCard(scope, cardId);

@@ -54,6 +54,7 @@ import {
   deleteGroup,
   permissionsFor,
   removeMember,
+  resolveActiveSpaceScope,
   resolveGroupSpaceScope,
   transferAdminAfterErasure,
 } from '@/lib/framework/resparkable/services/membership';
@@ -438,5 +439,53 @@ describe('transferAdminAfterErasure', () => {
     // has not yet let in. That would make erasure a way past the approval queue.
     expect(await transferAdminAfterErasure('grp_1', 'user_erased')).toBeNull();
     expect(repo.updateMemberRole).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveActiveSpaceScope', () => {
+  it('resolves an absent target to the personal space, without a query', async () => {
+    const scope = await resolveActiveSpaceScope('user_a', null);
+
+    // The whole surface passes through this function from phase 47 on, and the
+    // overwhelming majority of requests carry no target. If that case cost a
+    // membership read, every page in the app would pay for a feature its user
+    // may not use.
+    expect(scope).toMatchObject({ spaceId: 'user_a', actorUserId: 'user_a', role: 'owner' });
+    expect(repo.findMembershipBySpace).not.toHaveBeenCalled();
+  });
+
+  it("resolves the actor's own id to the personal space, without a query", async () => {
+    // Not a special case being smuggled in: a personal space's key IS its
+    // owner's user id (phase 45), so a switcher link back to "Personal" spells
+    // it this way. Sending it through group resolution would 404 the user out
+    // of their own brain.
+    const scope = await resolveActiveSpaceScope('user_a', 'user_a');
+
+    expect(scope).toMatchObject({ spaceId: 'user_a', role: 'owner' });
+    expect(repo.findMembershipBySpace).not.toHaveBeenCalled();
+  });
+
+  it('resolves a group target through membership', async () => {
+    vi.mocked(repo.findMembershipBySpace).mockResolvedValue(membership());
+
+    const scope = await resolveActiveSpaceScope('user_a', SPACE);
+
+    expect(scope).toMatchObject({ spaceId: SPACE, actorUserId: 'user_a', role: 'member' });
+  });
+
+  it('resolves a stranger asking for a group space to nothing', async () => {
+    vi.mocked(repo.findMembershipBySpace).mockResolvedValue(null);
+
+    // The URL is a target and not an authority. Somebody who is handed a link
+    // carrying a space id they are not in gets the same nothing a made-up id
+    // gets, which the route turns into a 404.
+    expect(await resolveActiveSpaceScope('user_stranger', SPACE)).toBeNull();
+  });
+
+  it('refuses an empty actor even when the target is absent', async () => {
+    // An unauthenticated caller must not fall through to a personal scope on
+    // the empty string. `spaceScope('')` throws by design, and this returns
+    // before reaching it so the refusal is a 404 rather than a 500.
+    expect(await resolveActiveSpaceScope('', null)).toBeNull();
   });
 });

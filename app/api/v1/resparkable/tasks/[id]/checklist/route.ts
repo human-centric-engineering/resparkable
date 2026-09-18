@@ -19,14 +19,13 @@ import {
   findLastChecklistPosition,
   listChecklist,
 } from '@/lib/framework/resparkable/repo/checklist';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { findTask } from '@/lib/framework/resparkable/repo/tasks';
 import { positionBetween } from '@/lib/framework/resparkable/services/fractional-position';
 import { createChecklistItemSchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   // Checked explicitly: an empty list for somebody else's task id would be a
@@ -44,7 +43,7 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
 
 export const POST = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const body = await validateRequestBody(request, createChecklistItemSchema);
@@ -60,3 +59,4 @@ export const POST = withAuth<{ id: string }>(async (request, session, { params }
 
   return successResponse(item, undefined, { status: 201 });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

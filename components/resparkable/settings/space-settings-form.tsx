@@ -53,7 +53,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { PRIORITY_FACTORS, WORK_STYLES } from '@/lib/framework/resparkable/validations';
@@ -217,7 +217,7 @@ export function SpaceSettingsForm({ initial }: { initial: SpaceSettings }): Reac
     if (!weightsValid) return;
 
     const ok = await run(() =>
-      apiClient.patch(RESPARKABLE_API.SPACE, {
+      resparkableApi.patch(RESPARKABLE_API.SPACE, {
         body: {
           timezone: values.timezone,
           workStyle: values.workStyle,

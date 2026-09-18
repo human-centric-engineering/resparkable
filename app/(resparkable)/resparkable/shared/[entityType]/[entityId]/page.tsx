@@ -28,9 +28,16 @@ export default async function ResparkableSharedItemPage({
 }) {
   const { entityType, entityId } = await params;
 
+  // `null`, and deliberately: this surface is keyed on the READER, not on a
+  // workspace. §13's grants match a grantee's address or account, so what is
+  // shared with somebody does not change when they switch workspace, and
+  // narrowing it by the active space would hide half of it with no way to tell.
+  // Phase 49 makes it per-space, when a group can be a grantee and "shared with
+  // Study Group B" becomes a different list from "shared with me".
   const detail = await readResparkable(
     RESPARKABLE_API.sharedItem(entityType, entityId),
-    sharedItemDetailSchema
+    sharedItemDetailSchema,
+    null
   );
 
   // Every failure is the same failure. No grant, a revoked grant, an expired

@@ -318,6 +318,52 @@ Design detail is thinner here on purpose: it is UI over seams this branch has
 already built, and the decisions that matter are about defaults rather than
 structure.
 
+### Decision 11: the space is one search param, and absence is personal
+
+§24.2 says the active workspace is "held in the shell and in the URL, never in
+a cookie alone" and does not say what that looks like. This branch spells it
+`?space=<spaceId>`, on page URLs and API paths alike, with **absence meaning
+the personal space**.
+
+A path segment (`/resparkable/s/<slug>/today`) was the alternative and is
+rejected on cost: it restructures 27 page files and every route in
+`ui/routes.ts` to buy a prettier URL, and it makes every existing bookmark and
+emailed link a redirect. A search param leaves all of them resolving exactly as
+they do today, which is the same property phase 45 bought by keeping a personal
+space's key equal to its owner's user id.
+
+Absence has no second spelling. Not `?space=personal`, and not the owner's user
+id: the first is a magic value every reader would have to know about, and the
+second puts a user id in every URL, and therefore in every access log, referrer
+header and pasted link. `resolveActiveSpaceScope` still accepts the user id,
+because a switcher built the link and the personal space's key genuinely is
+that value, but nothing generates it.
+
+A repeated `?space=a&space=b` resolves to **nothing**, not to the first value.
+Two answers to "which brain" is not a question with a sensible default, and
+picking one is a coin toss whose losing side is a cross-space read attempt.
+Resolving to personal makes it fail as a 404 on the caller's own space.
+
+### Decision 12: ambient for reading, explicit for capture
+
+The switcher makes the space ambient, and ambient state is what mis-targets a
+capture. So the two directions get opposite defaults, and the rule is short
+enough to hold in the head: **a surface that displays a workspace reads the URL;
+a path that creates a row does not.**
+
+- `requestSpaceScope(request, session.user.id)` in `api/space-request.ts` is the
+  one line a read or an in-place mutation writes. It reads `?space=`, resolves
+  membership and throws `NotFoundError` on refusal.
+- Every capture path takes its target from an **explicit field** and defaults to
+  personal, and none of them calls `requestSpaceScope`. Test 13e asserts it per
+  path.
+
+The side effect is that the greppable trust boundary §23.4 leans on gets
+_shorter_. `rg 'spaceScope\(|spaceScopeFor\('` used to return fifty route
+files, each an unaudited mint; it now returns `services/membership.ts` plus the
+background and export paths that have no session to read. A list that fits on
+one screen is a list somebody will actually read.
+
 **The switcher is in the shell header** (§24.2), in
 `components/resparkable/shell/app-header.tsx`'s right cluster, because that is
 the one piece of chrome always on screen. The active space is **in the URL**, so
@@ -376,6 +422,57 @@ New section wiring follows `ui.md`'s checklist in full: `ui/routes.ts`,
 an invite-a-person-with-a-role form; `my-shares-view.tsx` is the list-with-revoke
 pattern with optimistic remove and rollback; `accept-invite.tsx` plus
 `invite/[token]/page.tsx` is the whole token to session to bind to redirect flow.
+
+### What phase 47 actually shipped, and where it departed
+
+Landed on `main` 2026-09-03. Six departures from the text above, all found by
+building it rather than by re-reading the plan.
+
+**1. Two of the six capture paths cannot write a thought.** `/transcribe` and
+`/transcribe/image` return text into the capture box; neither calls
+`captureThought` or creates anything. That is what makes them safe, and it is a
+better answer than a default would have been, so test 13e asserts the absence
+rather than inventing a default for them to have. §24.2's table lists them as
+entry points because they are entry points for a _person_; in this codebase they
+are not entry points for a _row_.
+
+**2. Quick capture and the Sparkey composer were posting to `/thoughts`.** The
+plan's table says `/capture` and always did; the UI had drifted, and the drift
+only became dangerous in this phase, because `/thoughts` is the ordinary CRUD
+create and now follows the ambient workspace. Both moved.
+
+**3. `resolveSpaceScope()` is three functions.** `resolveGroupSpaceScope` (phase
+46, by space id), `resolveGroupMembership` (phase 46, by group id) and
+`resolveActiveSpaceScope` (phase 47, the entry point that short-circuits the
+personal case). The plan's single name would have hidden the short-circuit,
+which is the thing that keeps a membership read off every request in the
+product.
+
+**4. The outbound-sharing routes follow the ambient workspace.** `grants`,
+`shares` and `share-links` were not mentioned in either plan for this phase.
+Leaving them personal would have made "share this project" 404 inside a group,
+because the item is in the group's space and the scope would not be. What phase
+49 still owns is unchanged: a grant whose _grantee_ is a group.
+
+**5. `vault/export` and `vault/import` stay personal, deliberately.** §24.5 has
+not settled what exporting a group workspace means, and both answers are
+data-protection decisions rather than routing ones: an archive of a shared brain
+is several people's content in one person's download, and an import into one
+writes somebody else's rows under the importer's name. The question stays
+visibly open in a comment rather than being answered by a one-line edit.
+
+**6. `requireResparkableSpace`'s background route still trusts its carrier.**
+The tightening it wants is a `context.scopeIsAuthoritative` check, which is the
+field core provides to tell a platform-written carrier from a consumer-supplied
+one. Adding it blind would silently stop every 04:30 run if the scheduler path
+turns out not to set the flag, so it needs a test proving that first. Named in
+the code rather than left as a gap to rediscover.
+
+One boundary worth stating because it will come up again: **a capture is aimed;
+everything else follows the room you are in.** A document upload from the
+capture box lands in the workspace on screen, like every other CRUD create,
+because a document is added _to_ a workspace. A thought is caught first and
+targeted second, which is why it is the one write path that ignores `?space=`.
 
 ---
 

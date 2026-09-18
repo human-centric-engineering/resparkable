@@ -42,6 +42,7 @@ import {
   Sun,
   Target,
   Users,
+  UsersRound,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -65,6 +66,8 @@ export type TabKind =
   | 'shared'
   | 'sharedItem'
   | 'sharing'
+  | 'groups'
+  | 'group'
   | 'vault'
   | 'settings'
   | 'archive'
@@ -364,6 +367,22 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     routeBacked: true,
     matchRoute: exact(RESPARKABLE_ROUTES.SHARING),
     buildRoute: () => RESPARKABLE_ROUTES.SHARING,
+  },
+  groups: {
+    kind: 'groups',
+    defaultTitle: 'Groups',
+    icon: UsersRound,
+    routeBacked: true,
+    matchRoute: exact(RESPARKABLE_ROUTES.GROUPS),
+    buildRoute: () => RESPARKABLE_ROUTES.GROUPS,
+  },
+  group: {
+    kind: 'group',
+    defaultTitle: 'Group',
+    icon: UsersRound,
+    routeBacked: true,
+    matchRoute: detail(RESPARKABLE_ROUTES.GROUPS, 'id'),
+    buildRoute: (params) => RESPARKABLE_ROUTES.group(requireParam(params, 'id', 'group')),
   },
   vault: {
     kind: 'vault',

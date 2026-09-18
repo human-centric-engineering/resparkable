@@ -18,13 +18,14 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import { ResparkableAppHeader } from '@/components/resparkable/shell/app-header';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
+  usePathname: vi.fn(),
   useRouter: vi.fn(),
   useSearchParams: vi.fn(),
 }));
@@ -52,6 +53,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedRouter.mockReturnValue(createMockRouter());
   mockedSearchParams.mockReturnValue(new URLSearchParams());
+  vi.mocked(usePathname).mockReturnValue(RESPARKABLE_ROUTES.TODAY);
   mockUseSession.mockReturnValue({
     data: { user: { name: 'Jamie Doe', email: 'jamie@example.com', role: 'USER' } },
     isPending: false,

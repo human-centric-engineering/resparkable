@@ -27,7 +27,13 @@ export const metadata: Metadata = {
  * with two hundred rows when the honest answer is one project.
  */
 export default async function ResparkableSharedPage() {
-  const shared = await readResparkable(RESPARKABLE_API.SHARED, sharedWithMeListSchema);
+  // `null`, and deliberately: this surface is keyed on the READER, not on a
+  // workspace. §13's grants match a grantee's address or account, so what is
+  // shared with somebody does not change when they switch workspace, and
+  // narrowing it by the active space would hide half of it with no way to tell.
+  // Phase 49 makes it per-space, when a group can be a grantee and "shared with
+  // Study Group B" becomes a different list from "shared with me".
+  const shared = await readResparkable(RESPARKABLE_API.SHARED, sharedWithMeListSchema, null);
 
   if (!shared.ok) {
     return <LoadError what="what has been shared with you" message={shared.message} />;

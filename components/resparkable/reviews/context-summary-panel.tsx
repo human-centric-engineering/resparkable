@@ -40,7 +40,7 @@ import { z } from 'zod';
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
-import { apiClient } from '@/lib/api/client';
+import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
 const proposalSchema = z.object({
@@ -106,7 +106,7 @@ export function ContextSummaryPanel({
     // generous enough that an unresolved proposal for an older entity can't
     // fall off the page. 200 is the collection's own max page size.
     const rows = reviewListSchema.parse(
-      await apiClient.get<unknown>(RESPARKABLE_API.REVIEWS, {
+      await resparkableApi.get<unknown>(RESPARKABLE_API.REVIEWS, {
         params: { horizon: 'context_summary', limit: 200 },
       })
     );
@@ -132,7 +132,7 @@ export function ContextSummaryPanel({
 
   async function requestSummary(): Promise<void> {
     const ok = await queue.run(() =>
-      apiClient.post(RESPARKABLE_API.summarizePath(COLLECTION_BY_TYPE[entityType], entityId))
+      resparkableApi.post(RESPARKABLE_API.summarizePath(COLLECTION_BY_TYPE[entityType], entityId))
     );
     if (!ok || polling) return;
 
@@ -156,10 +156,13 @@ export function ContextSummaryPanel({
   async function accept(): Promise<void> {
     if (!proposal) return;
     const ok = await decide.run(async () => {
-      await apiClient.patch(RESPARKABLE_API.itemPath(COLLECTION_BY_TYPE[entityType], entityId), {
-        body: { description: proposal.body },
-      });
-      await apiClient.post(RESPARKABLE_API.dismissReviewPath(proposal.id));
+      await resparkableApi.patch(
+        RESPARKABLE_API.itemPath(COLLECTION_BY_TYPE[entityType], entityId),
+        {
+          body: { description: proposal.body },
+        }
+      );
+      await resparkableApi.post(RESPARKABLE_API.dismissReviewPath(proposal.id));
     });
     if (ok) setProposal(null);
   }
@@ -167,7 +170,7 @@ export function ContextSummaryPanel({
   async function dismiss(): Promise<void> {
     if (!proposal) return;
     const ok = await decide.run(() =>
-      apiClient.post(RESPARKABLE_API.dismissReviewPath(proposal.id))
+      resparkableApi.post(RESPARKABLE_API.dismissReviewPath(proposal.id))
     );
     if (ok) setProposal(null);
   }

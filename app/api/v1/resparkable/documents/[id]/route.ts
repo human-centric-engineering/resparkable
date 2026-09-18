@@ -25,13 +25,12 @@ import {
   deleteDocument,
   findDocument,
 } from '@/lib/framework/resparkable/repo/documents';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { logger } from '@/lib/logging';
 import { deleteFile } from '@/lib/storage/upload';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const document = await findDocument(scope, id);
@@ -46,7 +45,7 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
 
 export const DELETE = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
-  const scope = spaceScope(session.user.id);
+  const scope = await requestSpaceScope(request, session.user.id);
   const { id } = await params;
 
   const permanent = new URL(request.url).searchParams.get('permanent') === 'true';
@@ -77,3 +76,4 @@ export const DELETE = withAuth<{ id: string }>(async (request, session, { params
 
   return successResponse({ id, deleted: true });
 });
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';

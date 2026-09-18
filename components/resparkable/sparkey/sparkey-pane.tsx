@@ -55,6 +55,7 @@ import * as React from 'react';
 import { SparkIcon } from '@/components/brand/spark-glyph';
 import { useChatStream } from '@/components/resparkable/chat/use-chat-stream';
 import { PaneRail } from '@/components/resparkable/shell/pane-rail';
+import { defaultCaptureTarget } from '@/components/resparkable/layout/capture-target';
 import { Composer } from '@/components/resparkable/sparkey/composer';
 import type {
   CaptureEntry,
@@ -91,6 +92,10 @@ export function SparkeyPane({
 }: SparkeyPaneProps = {}): React.ReactElement {
   const [mode, setMode] = useLocalStorage<SparkeyMode>(MODE_KEY, 'chat');
   const [draft, setDraft] = React.useState('');
+  // React state and NOT `useLocalStorage`, unlike `mode` above. A remembered
+  // mode is a preference; a remembered capture target is a loaded gun pointing
+  // at somebody else's brain three days later.
+  const [captureTarget, setCaptureTarget] = React.useState<string | null>(defaultCaptureTarget());
   const [entries, setEntries] = React.useState<TranscriptEntry[]>([]);
   const chat = useChatStream({ agentSlug: RESPARKABLE_AGENT_SLUGS.companion });
   const notifyDataChange = useNotifyDataChange();
@@ -127,11 +132,22 @@ export function SparkeyPane({
 
   function submitCapture(text: string, source?: 'voice' | 'image'): void {
     const id = createId();
+    const capturedTarget = captureTarget;
     setEntries((prev) => [...prev, { kind: 'capture', id, content: text, status: 'saving' }]);
+    // Back to personal after every capture. A target that persisted between
+    // thoughts would be the stickiness `CaptureTarget` exists to prevent.
+    setCaptureTarget(defaultCaptureTarget());
 
     void apiClient
-      .post<unknown>(RESPARKABLE_API.THOUGHTS, {
-        body: { content: text, ...(source ? { source } : {}) },
+      // `/capture` and `apiClient`, deliberately, for the reason `QuickCapture`
+      // gives: the front door takes an explicit target and reads no `?space=`,
+      // so a capture cannot inherit the workspace on screen.
+      .post<unknown>(RESPARKABLE_API.CAPTURE, {
+        body: {
+          content: text,
+          ...(source ? { source } : {}),
+          ...(capturedTarget ? { spaceId: capturedTarget } : {}),
+        },
       })
       .then(() => {
         patchCapture(id, { status: 'saved' });
@@ -221,6 +237,8 @@ export function SparkeyPane({
         value={draft}
         onValueChange={setDraft}
         onSubmit={onSubmit}
+        captureTarget={captureTarget}
+        onCaptureTargetChange={setCaptureTarget}
         disabled={chat.streaming}
       />
     </div>

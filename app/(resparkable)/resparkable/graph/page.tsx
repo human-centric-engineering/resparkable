@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { graphPayloadSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
@@ -30,6 +31,7 @@ export default async function ResparkableGraphPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
+  const space = readSpaceTarget(params);
   const first = (value: string | string[] | undefined): string | undefined =>
     Array.isArray(value) ? value[0] : value;
 
@@ -54,7 +56,8 @@ export default async function ResparkableGraphPage({
 
   const result = await readResparkable(
     `${RESPARKABLE_API.GRAPH}?${query.toString()}`,
-    graphPayloadSchema
+    graphPayloadSchema,
+    space
   );
 
   if (!result.ok) {
