@@ -199,8 +199,11 @@ export async function listMembershipsForActor(
  * key rather than `createdAt`, because a member invited in March who accepted in
  * June has been in the group since June.
  */
-export async function listGroupMembers(groupId: string): Promise<ResparkableGroupMember[]> {
-  return prisma.resparkableGroupMember.findMany({
+export async function listGroupMembers(
+  groupId: string,
+  db: GroupDb = prisma
+): Promise<ResparkableGroupMember[]> {
+  return db.resparkableGroupMember.findMany({
     where: { groupId },
     orderBy: [{ joinedAt: 'asc' }, { createdAt: 'asc' }],
   });
@@ -231,9 +234,10 @@ export async function updateGroup(
 export async function updateMemberRole(
   groupId: string,
   userId: string,
-  role: string
+  role: string,
+  db: GroupDb = prisma
 ): Promise<ResparkableGroupMember> {
-  return prisma.resparkableGroupMember.update({
+  return db.resparkableGroupMember.update({
     where: { groupId_userId: { groupId, userId } },
     data: { role },
   });
@@ -283,8 +287,27 @@ export async function deleteMember(groupId: string, userId: string): Promise<voi
  * confirmation and the notification to every member are the caller's
  * responsibility (§23.6, phase 48).
  */
-export async function deleteGroupSpace(spaceId: string): Promise<void> {
-  await prisma.resparkableSpace.delete({ where: { spaceId } });
+export async function deleteGroupSpace(spaceId: string, db: GroupDb = prisma): Promise<void> {
+  await db.resparkableSpace.delete({ where: { spaceId } });
+}
+
+/**
+ * Every group a person has joined, read inside the erasure transaction.
+ *
+ * Joined only. A pending row is a request to come in, and erasing its author
+ * leaves the group exactly as it was: the row cascades with the user and
+ * nothing about the group's administration turns on it.
+ */
+export async function listJoinedGroupsForErasure(
+  userId: string,
+  db: GroupDb
+): Promise<Array<{ groupId: string; spaceId: string }>> {
+  const rows = await db.resparkableGroupMember.findMany({
+    where: { userId, joinedAt: { not: null } },
+    select: { groupId: true, group: { select: { spaceId: true } } },
+    orderBy: { createdAt: 'asc' },
+  });
+  return rows.map((row) => ({ groupId: row.groupId, spaceId: row.group.spaceId }));
 }
 
 /** Outstanding invitations for a group, newest first, for the admin's list. */
@@ -473,3 +496,14 @@ export async function acceptInviteAndJoin(
 
 /** Narrow the transaction client's type without importing the runtime namespace. */
 export type GroupTx = Prisma.TransactionClient;
+
+/**
+ * The client a repo function runs against: the global one by default, or a
+ * transaction's.
+ *
+ * Only the functions the erasure hook needs take one. The hook runs inside
+ * `eraseUser`'s transaction, and a succession written through the global client
+ * would commit even when the erasure it belongs to rolls back, leaving a person
+ * promoted to admin of a group whose admin still exists.
+ */
+type GroupDb = typeof prisma | GroupTx;

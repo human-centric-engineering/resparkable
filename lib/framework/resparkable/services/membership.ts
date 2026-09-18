@@ -57,10 +57,12 @@ import {
   findMembership,
   findMembershipBySpace,
   listGroupMembers,
+  listJoinedGroupsForErasure,
   listMembershipsForActor,
   updateGroup,
   updateMemberRole,
   type GroupMemberWithGroup,
+  type GroupTx,
   type GroupUpdateData,
 } from '@/lib/framework/resparkable/repo/groups';
 import {
@@ -410,52 +412,94 @@ export async function deleteGroup(
   return { ok: true, value: null };
 }
 
+/** What erasing one member means for one group. */
+export type ErasureSuccession =
+  { kind: 'unchanged' } | { kind: 'promote'; userId: string } | { kind: 'delete' };
+
 /**
- * Hand the admin role to the longest-standing remaining member.
+ * Decide what erasing a member does to a group. Pure, so the rule can be read
+ * and tested without a transaction.
  *
- * Called when the last admin is **erased**, which is the case §23.3 singles out:
- * a refusal is the right answer when somebody chooses to leave and the wrong one
- * when their account is being deleted, because erasure cannot be refused. The
- * precedent is §18's circle rule, which transfers a circle to its longest-standing
- * member "rather than vanishing".
+ * Three answers, and the first version of this conflated two of them: it
+ * returned `null` both for "another admin is still here" and for "nobody is left",
+ * and left the caller to tell them apart by reading the members a second time.
  *
- * Longest-standing is read off `listGroupMembers`, which orders by `joinedAt`.
- * A member invited in March who accepted in June has been in the group since
- * June, which is what "longest-standing" means to the people in it.
+ *   • **Nobody joined is left: delete.** `removeMember`'s reason: a memberless
+ *     group space is a brain no route can open, no cascade can remove and no
+ *     subject-access request can reach. Pending rows do not count, because a
+ *     request to join cannot keep a workspace alive.
+ *   • **The erased member was the last admin: promote** the longest-standing
+ *     remaining member (§23.3). Erasure cannot be refused, which is what makes
+ *     this different from leaving, where the same situation is a `last_admin`
+ *     refusal. The precedent is §18's circle rule.
+ *   • **Otherwise nothing.** Their membership row cascades with the user, and
+ *     the group carries on without them.
  *
- * Returns the promoted user id, or `null` when the group has no remaining
- * members. The caller deletes the group in that case, for `removeMember`'s
- * reason: a memberless group space is unreachable by anything.
+ * Longest-standing is `members`' own order, which `listGroupMembers` sorts by
+ * `joinedAt`: a member invited in March who accepted in June has been in the
+ * group since June. A pending member is never promoted, because that would make
+ * erasure a way past the approval queue.
+ */
+export function planErasureSuccession(
+  members: ReadonlyArray<{ userId: string; role: string; joinedAt: Date | null }>,
+  erasedUserId: string
+): ErasureSuccession {
+  const remaining = members.filter(
+    (member) => member.userId !== erasedUserId && member.joinedAt !== null
+  );
+  if (remaining.length === 0) return { kind: 'delete' };
+  if (remaining.some((member) => member.role === 'admin')) return { kind: 'unchanged' };
+  return { kind: 'promote', userId: remaining[0].userId };
+}
+
+/** What `settleGroupsAfterErasure` did, for the erasure log line. */
+export interface ErasureSettlement {
+  promoted: number;
+  deleted: number;
+}
+
+/**
+ * Apply `planErasureSuccession` to every group the erased person had joined.
  *
- * ## Not wired yet, and what that means today
- *
- * **Phase 48 wires this into the erasure hook. Until then it has no callers**,
- * so erasing a group's only admin currently leaves that group adminless: nobody
- * can invite, change a role, or delete it. That is deferred scope rather than a
- * defect, and it is stated here because a reviewer finding an exported,
- * unit-tested function with no call sites should be able to tell those apart.
+ * Runs inside `eraseUser`'s transaction, through `tx`, so it commits or rolls
+ * back with the erasure itself. Written through the global client, a promotion
+ * would survive an erasure that failed, and the group would have two admins
+ * where it meant to have one.
  *
  * **It takes no actor and performs no authorization**, deliberately: erasure
- * cannot be refused, so there is no principal to check. That makes it unsafe to
- * call from anywhere else. It promotes an arbitrary member to admin from a bare
- * group id, and the only caller it may ever have is the erasure hook.
+ * cannot be refused, so there is no principal to check. That makes it unsafe
+ * to call from anywhere else. It promotes a member to admin and deletes whole
+ * workspaces from a bare user id, and the only caller it may ever have is the
+ * erasure hook in `privacy/erasure.ts`.
+ *
+ * What it does NOT do is remove the erased person's own membership rows, null
+ * `createdByUserId` on what they wrote, or touch a group space that still has
+ * people in it. Those are database constraints (B13, B11 and B12), and doing
+ * any of them here would be a second definition of what erasure means.
  *
  * @internal Erasure-hook use only. Never call this from a request path.
  */
-export async function transferAdminAfterErasure(
-  groupId: string,
-  erasedUserId: string
-): Promise<string | null> {
-  const remaining = (await listGroupMembers(groupId)).filter(
-    (member) => member.userId !== erasedUserId && member.joinedAt !== null
-  );
-  if (remaining.length === 0) return null;
-  if (remaining.some((member) => member.role === 'admin')) return null;
+export async function settleGroupsAfterErasure(
+  erasedUserId: string,
+  tx: GroupTx
+): Promise<ErasureSettlement> {
+  const settlement: ErasureSettlement = { promoted: 0, deleted: 0 };
 
-  const successor = remaining[0];
-  await updateMemberRole(groupId, successor.userId, 'admin');
-  logger.info('Resparkable group admin transferred after erasure', { groupId });
-  return successor.userId;
+  for (const { groupId, spaceId } of await listJoinedGroupsForErasure(erasedUserId, tx)) {
+    const plan = planErasureSuccession(await listGroupMembers(groupId, tx), erasedUserId);
+
+    if (plan.kind === 'delete') {
+      await deleteGroupSpace(spaceId, tx);
+      settlement.deleted += 1;
+      logger.info('Resparkable group deleted: its last member was erased', { groupId });
+    } else if (plan.kind === 'promote') {
+      await updateMemberRole(groupId, plan.userId, 'admin', tx);
+      settlement.promoted += 1;
+      logger.info('Resparkable group admin transferred after erasure', { groupId });
+    }
+  }
+
+  return settlement;
 }
 
 /** Every group this person is in, for the switcher and `GET /groups`. */

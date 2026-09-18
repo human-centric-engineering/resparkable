@@ -42,6 +42,7 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   findMembership: vi.fn(),
   findMembershipBySpace: vi.fn(),
   listGroupMembers: vi.fn(),
+  listJoinedGroupsForErasure: vi.fn(),
   listMembershipsForActor: vi.fn(),
   updateGroup: vi.fn(),
   updateMemberRole: vi.fn(),
@@ -53,10 +54,11 @@ import {
   createGroup,
   deleteGroup,
   permissionsFor,
+  planErasureSuccession,
   removeMember,
   resolveActiveSpaceScope,
   resolveGroupSpaceScope,
-  transferAdminAfterErasure,
+  settleGroupsAfterErasure,
 } from '@/lib/framework/resparkable/services/membership';
 
 const NOW = new Date('2026-09-01T10:00:00.000Z');
@@ -393,52 +395,137 @@ describe('deleteGroup', () => {
   });
 });
 
-describe('transferAdminAfterErasure', () => {
-  it('promotes the longest-standing remaining member', async () => {
-    vi.mocked(repo.listGroupMembers).mockResolvedValue([
-      membership({ userId: 'user_erased', role: 'admin' }),
-      membership({ userId: 'user_b', joinedAt: new Date('2026-03-01T00:00:00.000Z') }),
-      membership({ userId: 'user_c', joinedAt: new Date('2026-06-01T00:00:00.000Z') }),
-    ] as never);
+describe('planErasureSuccession', () => {
+  const at = (iso: string) => new Date(iso);
 
+  it('promotes the longest-standing remaining member when the last admin is erased', () => {
     // `listGroupMembers` orders by `joinedAt`, so the succession order IS the
-    // read order and this function does not sort again. §18's circle rule is the
-    // precedent: a circle whose owner is erased transfers to its longest-standing
+    // input order and the plan does not sort again. §18's circle rule is the
+    // precedent: a circle whose owner is erased goes to its longest-standing
     // member rather than vanishing.
-    expect(await transferAdminAfterErasure('grp_1', 'user_erased')).toBe('user_b');
-    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_1', 'user_b', 'admin');
+    const plan = planErasureSuccession(
+      [
+        { userId: 'user_erased', role: 'admin', joinedAt: at('2026-01-01T00:00:00Z') },
+        { userId: 'user_b', role: 'member', joinedAt: at('2026-03-01T00:00:00Z') },
+        { userId: 'user_c', role: 'viewer', joinedAt: at('2026-06-01T00:00:00Z') },
+      ],
+      'user_erased'
+    );
+
+    expect(plan).toEqual({ kind: 'promote', userId: 'user_b' });
   });
 
-  it('does nothing when another admin is still there', async () => {
-    vi.mocked(repo.listGroupMembers).mockResolvedValue([
-      membership({ userId: 'user_erased', role: 'admin' }),
-      membership({ userId: 'user_b', role: 'admin' }),
-    ] as never);
+  it('changes nothing when another admin is still there', () => {
+    const plan = planErasureSuccession(
+      [
+        { userId: 'user_erased', role: 'admin', joinedAt: NOW },
+        { userId: 'user_b', role: 'admin', joinedAt: NOW },
+      ],
+      'user_erased'
+    );
 
-    expect(await transferAdminAfterErasure('grp_1', 'user_erased')).toBeNull();
-    expect(repo.updateMemberRole).not.toHaveBeenCalled();
+    expect(plan).toEqual({ kind: 'unchanged' });
   });
 
-  it('promotes nobody when nobody is left, and says so', async () => {
-    vi.mocked(repo.listGroupMembers).mockResolvedValue([
-      membership({ userId: 'user_erased', role: 'admin' }),
-    ] as never);
+  it('changes nothing when the erased person was not an admin', () => {
+    const plan = planErasureSuccession(
+      [
+        { userId: 'user_a', role: 'admin', joinedAt: NOW },
+        { userId: 'user_erased', role: 'member', joinedAt: NOW },
+      ],
+      'user_erased'
+    );
 
-    // Null rather than a throw: the caller deletes the group, for the same
-    // reason the last member leaving does.
-    expect(await transferAdminAfterErasure('grp_1', 'user_erased')).toBeNull();
+    expect(plan).toEqual({ kind: 'unchanged' });
   });
 
-  it('does not promote somebody whose membership is still pending', async () => {
+  it('deletes the group when nobody joined is left', () => {
+    // Distinguishable from "unchanged" in the return value itself. The first
+    // version returned null for both and left the caller to re-read the members.
+    const plan = planErasureSuccession(
+      [{ userId: 'user_erased', role: 'admin', joinedAt: NOW }],
+      'user_erased'
+    );
+
+    expect(plan).toEqual({ kind: 'delete' });
+  });
+
+  it('never promotes a pending member, and does not let one keep the group alive', () => {
+    // Promoting them would make erasure a way past the approval queue. And a
+    // request to join cannot be the thing that keeps a memberless workspace
+    // around, for the reason `removeMember` gives.
+    const plan = planErasureSuccession(
+      [
+        { userId: 'user_erased', role: 'admin', joinedAt: NOW },
+        { userId: 'user_pending', role: 'member', joinedAt: null },
+      ],
+      'user_erased'
+    );
+
+    expect(plan).toEqual({ kind: 'delete' });
+  });
+});
+
+describe('settleGroupsAfterErasure', () => {
+  const tx = { marker: 'the erasure transaction' } as never;
+
+  it('promotes and deletes through the transaction it is given', async () => {
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_promote', spaceId: 'spc_promote' },
+      { groupId: 'grp_delete', spaceId: 'spc_delete' },
+      { groupId: 'grp_fine', spaceId: 'spc_fine' },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockImplementation(async (groupId) => {
+      if (groupId === 'grp_promote') {
+        return [
+          membership({ groupId, userId: 'user_erased', role: 'admin' }),
+          membership({ groupId, userId: 'user_b' }),
+        ] as never;
+      }
+      if (groupId === 'grp_delete') {
+        return [membership({ groupId, userId: 'user_erased', role: 'admin' })] as never;
+      }
+      return [
+        membership({ groupId, userId: 'user_erased' }),
+        membership({ groupId, userId: 'user_a', role: 'admin' }),
+      ] as never;
+    });
+
+    const settlement = await settleGroupsAfterErasure('user_erased', tx);
+
+    expect(settlement).toEqual({ promoted: 1, deleted: 1 });
+    // Every write goes through `tx`. Through the global client, a promotion
+    // would outlive an erasure that rolled back.
+    expect(repo.listJoinedGroupsForErasure).toHaveBeenCalledWith('user_erased', tx);
+    expect(repo.updateMemberRole).toHaveBeenCalledTimes(1);
+    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_promote', 'user_b', 'admin', tx);
+    // Deleting the SPACE, not the group row: the group cascades from the space,
+    // and deleting the group alone would orphan all 23 satellites.
+    expect(repo.deleteGroupSpace).toHaveBeenCalledTimes(1);
+    expect(repo.deleteGroupSpace).toHaveBeenCalledWith('spc_delete', tx);
+  });
+
+  it('does not remove the erased person’s own membership rows', async () => {
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_1', spaceId: SPACE },
+    ]);
     vi.mocked(repo.listGroupMembers).mockResolvedValue([
-      membership({ userId: 'user_erased', role: 'admin' }),
-      membership({ userId: 'user_pending', joinedAt: null }),
+      membership({ userId: 'user_erased' }),
+      membership({ userId: 'user_a', role: 'admin' }),
     ] as never);
 
-    // Succession must not hand administration of a group to somebody an admin
-    // has not yet let in. That would make erasure a way past the approval queue.
-    expect(await transferAdminAfterErasure('grp_1', 'user_erased')).toBeNull();
-    expect(repo.updateMemberRole).not.toHaveBeenCalled();
+    await settleGroupsAfterErasure('user_erased', tx);
+
+    // B13's cascade takes them a moment later. Deleting them here as well would
+    // be a second definition of what erasure means.
+    expect(repo.deleteMember).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for somebody in no groups', async () => {
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([]);
+
+    expect(await settleGroupsAfterErasure('user_erased', tx)).toEqual({ promoted: 0, deleted: 0 });
+    expect(repo.listGroupMembers).not.toHaveBeenCalled();
   });
 });
 
