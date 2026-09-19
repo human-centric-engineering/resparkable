@@ -2198,6 +2198,18 @@ policy: §18's erasure rule already says a circle whose owner is erased
 "transfers to its longest-standing member rather than vanishing", and a group
 deserves the same treatment for the same reason.
 
+**The admin can keep that role from a viewer (added 2026-09-19).** A group
+setting, `viewersCanInheritAdmin`, on by default. Off, succession skips viewers
+and promotes the longest-standing member who is not one; if only viewers are
+left, **nobody** inherits, and the group carries on readable by them and
+administrable by no one. That is the admin's explicit choice, so the
+stranded-group sweep leaves such a group alone until someone who can inherit
+joins, and then promotes them. The admin is told what their choice means twice:
+the group page shows the only admin who would inherit today (the same rule,
+run over the members on screen), and they get one email when they first become
+the only admin of a group with somebody else in it. That email counts under
+"your membership or role changed" below, not as a fourth kind of event.
+
 ### 23.4 A group space has no private tier
 
 **Everything in a group space is visible to every member of that group. There is

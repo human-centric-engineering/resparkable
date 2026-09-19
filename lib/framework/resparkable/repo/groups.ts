@@ -62,6 +62,7 @@ export interface GroupUpdateData {
   name?: string;
   description?: string | null;
   maxMembers?: number;
+  viewersCanInheritAdmin?: boolean;
 }
 
 /**
@@ -301,13 +302,157 @@ export async function deleteGroupSpace(spaceId: string, db: GroupDb = prisma): P
 export async function listJoinedGroupsForErasure(
   userId: string,
   db: GroupDb
-): Promise<Array<{ groupId: string; spaceId: string }>> {
+): Promise<StrandableGroup[]> {
   const rows = await db.resparkableGroupMember.findMany({
     where: { userId, joinedAt: { not: null } },
-    select: { groupId: true, group: { select: { spaceId: true } } },
+    select: {
+      groupId: true,
+      group: { select: { spaceId: true, viewersCanInheritAdmin: true } },
+    },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.map((row) => ({ groupId: row.groupId, spaceId: row.group.spaceId }));
+  return rows.map((row) => ({
+    groupId: row.groupId,
+    spaceId: row.group.spaceId,
+    viewersCanInheritAdmin: row.group.viewersCanInheritAdmin,
+  }));
+}
+
+/** A group as the succession rule needs it: where it lives, and its one setting. */
+export interface StrandableGroup {
+  groupId: string;
+  spaceId: string;
+  viewersCanInheritAdmin: boolean;
+}
+
+/**
+ * Groups with no joined admin, oldest first, for the stranded-group sweep.
+ *
+ * Nothing on a request path can produce one: the founder is an admin, and the
+ * last-admin rules refuse every leave, demotion and removal that would end the
+ * run. The one way in is an erasure whose hook did not run (Sunrise ask #44),
+ * which cascades the membership row without the succession that should have
+ * gone with it. A group with nobody joined at all matches too, since it has no
+ * admin either, and it is the case that matters most.
+ *
+ * **A group without an admin by its own choice is not a match.** One whose
+ * settings keep viewers from inheriting, with only viewers joined, is exactly
+ * what its admin asked for. Leaving those in would be harmless per group, since
+ * the rule changes nothing, but they would never stop matching, and enough of
+ * them, oldest first, would fill every batch and starve the groups the sweep
+ * exists for. So the query asks for groups the rule can act on: any viewer may
+ * inherit, or a non-viewer is joined, or nobody is joined at all.
+ *
+ * A bound rather than a window: a group this pass does not reach is still a
+ * match on the next one.
+ */
+export async function listGroupsWithoutAdmin(limit: number): Promise<StrandableGroup[]> {
+  const rows = await prisma.resparkableGroup.findMany({
+    where: {
+      members: { none: { role: 'admin', joinedAt: { not: null } } },
+      OR: [
+        { viewersCanInheritAdmin: true },
+        { members: { some: { joinedAt: { not: null }, role: { not: 'viewer' } } } },
+        { members: { none: { joinedAt: { not: null } } } },
+      ],
+    },
+    select: { id: true, spaceId: true, viewersCanInheritAdmin: true },
+    orderBy: { createdAt: 'asc' },
+    take: limit,
+  });
+  return rows.map((row) => ({
+    groupId: row.id,
+    spaceId: row.spaceId,
+    viewersCanInheritAdmin: row.viewersCanInheritAdmin,
+  }));
+}
+
+/**
+ * Delete a group's space, but only if the group still has nobody joined.
+ *
+ * The condition is in the statement rather than in a read before it, so a
+ * member who joins between the sweep's read and this delete keeps the group.
+ * `kind: 'group'` is there so that no argument, however wrong, can delete a
+ * personal brain through this path.
+ *
+ * Returns whether a space was deleted.
+ */
+export async function deleteGroupSpaceIfMemberless(
+  groupId: string,
+  spaceId: string
+): Promise<boolean> {
+  const result = await prisma.resparkableSpace.deleteMany({
+    where: {
+      spaceId,
+      kind: 'group',
+      groups: { some: { id: groupId, members: { none: { joinedAt: { not: null } } } } },
+    },
+  });
+  return result.count > 0;
+}
+
+/** A sole admin who has not yet been told, with what the email needs. */
+export interface UnnotifiedSoleAdmin {
+  memberId: string;
+  groupId: string;
+  groupName: string;
+  viewersCanInheritAdmin: boolean;
+  email: string;
+  name: string | null;
+}
+
+/**
+ * Admins who are the only admin of a group that has somebody else in it, and
+ * have not been emailed about it. Oldest membership first, bounded.
+ *
+ * Raw SQL because "the only admin" compares a row with its siblings, which
+ * Prisma's `where` cannot express. Every other shape of this needed either a
+ * per-row count after the fetch, which lets multi-admin groups fill every batch
+ * forever, or a `groupBy` over every admin in the deployment. `repo/jobs.ts` is
+ * the precedent for a tagged `$queryRaw` in this layer: every value below is a
+ * bound parameter.
+ *
+ * Joined members only, on both sides. A pending admin row is not an admin, and a
+ * pending request to join is not somebody who would inherit anything. A group
+ * where the admin is alone is left out: there is nobody to succeed them, so
+ * there is nothing to tell them yet. They are found once somebody joins.
+ *
+ * Returns the address, because the one caller sends the email. The same rule as
+ * `listMemberContacts`: no route returns it, and nothing logs it.
+ */
+export async function listUnnotifiedSoleAdmins(limit: number): Promise<UnnotifiedSoleAdmin[]> {
+  if (limit <= 0) return [];
+
+  return prisma.$queryRaw<UnnotifiedSoleAdmin[]>`
+    SELECT m."id" AS "memberId", g."id" AS "groupId", g."name" AS "groupName",
+           g."viewersCanInheritAdmin", u."email", u."name"
+    FROM "framework_resparkable_group_member" m
+    JOIN "framework_resparkable_group" g ON g."id" = m."groupId"
+    JOIN "user" u ON u."id" = m."userId"
+    WHERE m."role" = 'admin'
+      AND m."joinedAt" IS NOT NULL
+      AND m."soleAdminNotifiedAt" IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM "framework_resparkable_group_member" o
+        WHERE o."groupId" = m."groupId" AND o."id" <> m."id"
+          AND o."role" = 'admin' AND o."joinedAt" IS NOT NULL
+      )
+      AND EXISTS (
+        SELECT 1 FROM "framework_resparkable_group_member" o
+        WHERE o."groupId" = m."groupId" AND o."id" <> m."id"
+          AND o."joinedAt" IS NOT NULL
+      )
+    ORDER BY m."createdAt" ASC
+    LIMIT ${limit}
+  `;
+}
+
+/** Record that a sole admin was told. Once per membership; see the schema. */
+export async function markSoleAdminNotified(memberId: string, now: Date): Promise<void> {
+  await prisma.resparkableGroupMember.update({
+    where: { id: memberId },
+    data: { soleAdminNotifiedAt: now },
+  });
 }
 
 /** Who to tell when a group is deleted: an address and a name, nothing else. */

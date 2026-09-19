@@ -13,6 +13,14 @@
  * longest-standing remaining member, and erasing the last member deletes the
  * group and its whole space.
  *
+ * And the succession setting: a group that keeps viewers from inheriting, left
+ * with only a viewer, keeps no admin and is NOT picked up by the stranded-group
+ * sweep's query until somebody who can inherit joins. Plus the sole-admin
+ * notice's raw query, which only Postgres can run: an admin alone is not
+ * listed, an admin with somebody else in the group is, and one already told is
+ * not. The sweep itself is not called, because it would act on every stranded
+ * group in the database and not only this script's.
+ *
  * Also proves the Art. 15 half before anybody is erased: the subject's export
  * contains the rows they wrote in the group, and none that anybody else wrote.
  * That depends on `createdByUserId` actually being written, which it was not
@@ -36,8 +44,13 @@ import { prisma } from '@/lib/db/client';
 import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
 import { registerResparkableErasureHook } from '@/lib/framework/resparkable/privacy/erasure';
 import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  listGroupsWithoutAdmin,
+  listUnnotifiedSoleAdmins,
+  markSoleAdminNotified,
+} from '@/lib/framework/resparkable/repo/groups';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
-import { createGroup } from '@/lib/framework/resparkable/services/membership';
+import { createGroup, updateGroupSettings } from '@/lib/framework/resparkable/services/membership';
 import { eraseUser } from '@/lib/privacy/erase-user';
 
 const stamp = Date.now();
@@ -196,6 +209,49 @@ async function main(): Promise<void> {
       (await prisma.resparkableTask.count({ where: { spaceId } })) === 0,
       'and everything in it'
     );
+
+    console.log('\nSuccession setting, and the sole-admin notice');
+    const soleAdmin = await makeUser('sole-admin');
+    const viewer = await makeUser('viewer');
+    const late = await makeUser('late-member');
+    users.push(soleAdmin.id, viewer.id, late.id);
+
+    const second = await createGroup(soleAdmin.id, { name: `${PREFIX} ${stamp} viewers` });
+    const secondId = second.groupId;
+    spaces.push(second.group.spaceId);
+
+    // A generous limit, so rows from other data in a dev database cannot push
+    // this script's out of the page.
+    const notifiable = async (): Promise<boolean> =>
+      (await listUnnotifiedSoleAdmins(10_000)).some((row) => row.groupId === secondId);
+    const stranded = async (): Promise<boolean> =>
+      (await listGroupsWithoutAdmin(10_000)).some((row) => row.groupId === secondId);
+
+    check(!(await notifiable()), 'an admin alone in a group is not told anything yet');
+    await join(secondId, viewer.id, 'viewer', new Date(Date.now() + 1_000));
+    const listed = (await listUnnotifiedSoleAdmins(10_000)).find((row) => row.groupId === secondId);
+    check(listed?.email === soleAdmin.email, 'once somebody joins, the sole admin is listed');
+    await markSoleAdminNotified(listed?.memberId ?? '', new Date());
+    check(!(await notifiable()), 'and once told, is not listed again');
+
+    const updated = await updateGroupSettings(soleAdmin.id, secondId, {
+      viewersCanInheritAdmin: false,
+    });
+    check(updated.ok, 'the admin can keep viewers from inheriting');
+
+    await erase(soleAdmin, receipts);
+    const viewerRow = await prisma.resparkableGroupMember.findUnique({
+      where: { groupId_userId: { groupId: secondId, userId: viewer.id } },
+    });
+    check(viewerRow?.role === 'viewer', 'erasing them promotes nobody: the viewer stays a viewer');
+    check(
+      (await prisma.resparkableGroup.findUnique({ where: { id: secondId } })) !== null,
+      'and the group is kept, because the viewer is still in it'
+    );
+    check(!(await stranded()), 'the sweep does not treat a group admin-less by choice as stranded');
+
+    await join(secondId, late.id, 'member', new Date(Date.now() + 2_000));
+    check(await stranded(), 'until somebody who can inherit joins, and then it does');
 
     console.log('\nframework:resparkable:smoke-group-erasure passed');
   } finally {

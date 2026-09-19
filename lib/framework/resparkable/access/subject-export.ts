@@ -465,6 +465,9 @@ export async function collectResparkableCrossSubjectData(
         groupId: true,
         role: true,
         joinedAt: true,
+        // When they were emailed that they are the group's only admin: a
+        // record of something done with their address, so theirs to see.
+        soleAdminNotifiedAt: true,
         createdAt: true,
         group: { select: { name: true } },
       },

@@ -1,6 +1,6 @@
 /**
  * GET    /api/v1/resparkable/groups/[id]: the group, and who is in it.
- * PATCH  /api/v1/resparkable/groups/[id]: name, description, member cap.
+ * PATCH  /api/v1/resparkable/groups/[id]: name, description, member cap, succession.
  * DELETE /api/v1/resparkable/groups/[id]: delete it and everything in it.
  *
  * ## 404, never 403
@@ -58,6 +58,7 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       description: resolved.membership.group.description,
       spaceId: resolved.membership.group.spaceId,
       maxMembers: resolved.membership.group.maxMembers,
+      viewersCanInheritAdmin: resolved.membership.group.viewersCanInheritAdmin,
     },
     yourRole: resolved.membership.role,
     // Members by user id and role, and no addresses. Every member can see who

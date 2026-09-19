@@ -110,6 +110,7 @@ describe('GroupDetail and deletion', () => {
       description: null,
       spaceId: 'spc_group_1',
       maxMembers: 50,
+      viewersCanInheritAdmin: true,
     },
     yourRole: 'admin',
     members: [

@@ -2063,6 +2063,12 @@ export const updateGroupSchema = z
      * would be nonsense when it IS enforced cannot be written in the meantime.
      */
     maxMembers: z.number().int().min(1).max(500).optional(),
+    /**
+     * Whether a viewer may inherit admin when the last admin's account is
+     * erased. Off means a group left with only viewers keeps no admin at all.
+     * See `services/succession.ts`.
+     */
+    viewersCanInheritAdmin: z.boolean().optional(),
   })
   .strict();
 

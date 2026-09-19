@@ -36,6 +36,22 @@ release process.
   and without the space key. `ResparkableGroup` is no longer in
   `RESPARKABLE_EXCLUDED_MODELS`.
 
+- **Group succession: the admin's choice, a backstop, and a notice.**
+  `ResparkableGroup.viewersCanInheritAdmin` (default `true`, settable through
+  `PATCH /groups/[id]`) lets an admin keep a viewer from inheriting the role;
+  with only viewers left, the group keeps no admin. The rule moves to
+  `services/succession.ts` (pure, re-exported from `services/membership.ts`)
+  and `planErasureSuccession()` now takes the policy as a required third
+  argument and can answer `no_admin`. `ErasureSettlement` gains
+  `leftWithoutAdmin`.
+
+  A new hourly app job, `resparkable:group-succession`, runs
+  `settleStrandedGroups()` (the backstop when the erasure hook did not run,
+  Sunrise ask #44) and then `notifySoleAdmins()`, which emails a group's only
+  admin once (`components/resparkable/emails/sole-admin.tsx`) and records it in
+  the new `ResparkableGroupMember.soleAdminNotifiedAt`. The group page shows
+  admins who would inherit today, beside the setting.
+
 - **`authoredBy(scope)` in `repo/space-scope.ts`.** `spaceWhere` plus
   `createdByUserId` from the scope's actor, for create `data` only. Every
   scoped create in `repo/**` uses it, and `isolation.test.ts` fails one that

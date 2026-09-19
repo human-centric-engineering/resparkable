@@ -35,7 +35,9 @@
  * A group with one admin is one resignation or one erasure away from a workspace
  * nobody can administer, holding content nobody can export. So: the last admin
  * cannot leave, be demoted or be removed; when the last admin is erased the role
- * transfers to the longest-standing remaining member; and a group whose last
+ * transfers to the longest-standing remaining member (unless only viewers are
+ * left and the group's settings say a viewer may not inherit it, in which case
+ * nobody gets it; see `services/succession.ts`); and a group whose last
  * member leaves is deleted rather than left as an unreachable space holding rows.
  * §18's circle-ownership rule is the precedent, same shape and same reasoning.
  *
@@ -51,12 +53,14 @@ import {
   countAdmins,
   createGroupWithSpace,
   deleteGroupSpace,
+  deleteGroupSpaceIfMemberless,
   deleteMember,
   findGroupById,
   findGroupBySlug,
   findMembership,
   findMembershipBySpace,
   listGroupMembers,
+  listGroupsWithoutAdmin,
   listJoinedGroupsForErasure,
   listMembershipsForActor,
   updateGroup,
@@ -72,6 +76,7 @@ import {
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { slugify } from '@/lib/framework/resparkable/services/slug';
+import { planErasureSuccession } from '@/lib/framework/resparkable/services/succession';
 import { logger } from '@/lib/logging';
 
 /**
@@ -389,50 +394,19 @@ export async function removeMember(
   return { ok: true, value: { groupDeleted: false } };
 }
 
-/** What erasing one member means for one group. */
-export type ErasureSuccession =
-  { kind: 'unchanged' } | { kind: 'promote'; userId: string } | { kind: 'delete' };
-
-/**
- * Decide what erasing a member does to a group. Pure, so the rule can be read
- * and tested without a transaction.
- *
- * Three answers, and the first version of this conflated two of them: it
- * returned `null` both for "another admin is still here" and for "nobody is left",
- * and left the caller to tell them apart by reading the members a second time.
- *
- *   • **Nobody joined is left: delete.** `removeMember`'s reason: a memberless
- *     group space is a brain no route can open, no cascade can remove and no
- *     subject-access request can reach. Pending rows do not count, because a
- *     request to join cannot keep a workspace alive.
- *   • **The erased member was the last admin: promote** the longest-standing
- *     remaining member (§23.3). Erasure cannot be refused, which is what makes
- *     this different from leaving, where the same situation is a `last_admin`
- *     refusal. The precedent is §18's circle rule.
- *   • **Otherwise nothing.** Their membership row cascades with the user, and
- *     the group carries on without them.
- *
- * Longest-standing is `members`' own order, which `listGroupMembers` sorts by
- * `joinedAt`: a member invited in March who accepted in June has been in the
- * group since June. A pending member is never promoted, because that would make
- * erasure a way past the approval queue.
- */
-export function planErasureSuccession(
-  members: ReadonlyArray<{ userId: string; role: string; joinedAt: Date | null }>,
-  erasedUserId: string
-): ErasureSuccession {
-  const remaining = members.filter(
-    (member) => member.userId !== erasedUserId && member.joinedAt !== null
-  );
-  if (remaining.length === 0) return { kind: 'delete' };
-  if (remaining.some((member) => member.role === 'admin')) return { kind: 'unchanged' };
-  return { kind: 'promote', userId: remaining[0].userId };
-}
+// The rule itself lives in `services/succession.ts`, pure, so the group page
+// can run it too. Re-exported here because this is where its callers live.
+export {
+  planErasureSuccession,
+  type ErasureSuccession,
+} from '@/lib/framework/resparkable/services/succession';
 
 /** What `settleGroupsAfterErasure` did, for the erasure log line. */
 export interface ErasureSettlement {
   promoted: number;
   deleted: number;
+  /** Groups left with only viewers, whose settings say a viewer may not inherit admin. */
+  leftWithoutAdmin: number;
 }
 
 /**
@@ -460,10 +434,15 @@ export async function settleGroupsAfterErasure(
   erasedUserId: string,
   tx: GroupTx
 ): Promise<ErasureSettlement> {
-  const settlement: ErasureSettlement = { promoted: 0, deleted: 0 };
+  const settlement: ErasureSettlement = { promoted: 0, deleted: 0, leftWithoutAdmin: 0 };
 
-  for (const { groupId, spaceId } of await listJoinedGroupsForErasure(erasedUserId, tx)) {
-    const plan = planErasureSuccession(await listGroupMembers(groupId, tx), erasedUserId);
+  for (const { groupId, spaceId, viewersCanInheritAdmin } of await listJoinedGroupsForErasure(
+    erasedUserId,
+    tx
+  )) {
+    const plan = planErasureSuccession(await listGroupMembers(groupId, tx), erasedUserId, {
+      viewersCanInheritAdmin,
+    });
 
     if (plan.kind === 'delete') {
       await deleteGroupSpace(spaceId, tx);
@@ -473,6 +452,72 @@ export async function settleGroupsAfterErasure(
       await updateMemberRole(groupId, plan.userId, 'admin', tx);
       settlement.promoted += 1;
       logger.info('Resparkable group admin transferred after erasure', { groupId });
+    } else if (plan.kind === 'no_admin') {
+      settlement.leftWithoutAdmin += 1;
+      logger.info('Resparkable group left without an admin: only viewers remain', { groupId });
+    }
+  }
+
+  return settlement;
+}
+
+/** Groups the stranded-group sweep looks at per pass. Rarely more than zero match. */
+const STRANDED_GROUP_BATCH = 50;
+
+/**
+ * Repair groups an erasure left without an admin, or without anybody.
+ *
+ * The backstop for `settleGroupsAfterErasure`. That runs from the erasure hook,
+ * and core's hook registry is a plain module-scoped `Map` that may be empty in
+ * the realm where erasure runs (Sunrise ask #44). When it is, the erased
+ * person's membership still cascades, but nothing promotes a successor or
+ * deletes the group they leave empty. This finds those groups afterwards and
+ * applies the same rule, `planErasureSuccession`, so the two paths cannot
+ * disagree about what should have happened.
+ *
+ * **Anything this settles is a sign the hook was missing**, which is why it
+ * logs at `warn` rather than `info`. Request paths cannot strand a group (see
+ * `listGroupsWithoutAdmin`), so a quiet sweep is the expected state.
+ *
+ * Safe to run on every instance at once. A delete re-checks for joined members
+ * in the statement itself, so a group somebody joined in the meantime is kept;
+ * a promotion that races another is at worst a second admin, which the group can
+ * undo. One group failing is logged and does not stop the rest.
+ *
+ * Takes no actor for the same reason `settleGroupsAfterErasure` does not: the
+ * rule it applies is the one erasure would have applied, and erasure cannot be
+ * refused. Its only caller is the job in `jobs.ts`.
+ */
+export async function settleStrandedGroups(
+  limit: number = STRANDED_GROUP_BATCH
+): Promise<ErasureSettlement> {
+  const settlement: ErasureSettlement = { promoted: 0, deleted: 0, leftWithoutAdmin: 0 };
+
+  for (const { groupId, spaceId, viewersCanInheritAdmin } of await listGroupsWithoutAdmin(limit)) {
+    try {
+      const plan = planErasureSuccession(await listGroupMembers(groupId), null, {
+        viewersCanInheritAdmin,
+      });
+
+      if (plan.kind === 'delete') {
+        if (await deleteGroupSpaceIfMemberless(groupId, spaceId)) {
+          settlement.deleted += 1;
+          logger.warn('Resparkable stranded group deleted: it had no members left', { groupId });
+        }
+      } else if (plan.kind === 'promote') {
+        await updateMemberRole(groupId, plan.userId, 'admin');
+        settlement.promoted += 1;
+        logger.warn('Resparkable stranded group given an admin', { groupId });
+      }
+      // `unchanged`: an admin appeared between the two reads. `no_admin`: the
+      // group chose this, and `listGroupsWithoutAdmin` skips such groups, so
+      // reaching it here means the last member left between the two reads.
+      // Nothing to do for either, and neither counts as settled.
+    } catch (error) {
+      logger.error('Resparkable stranded-group repair failed for one group', {
+        groupId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

@@ -36,12 +36,14 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   countAdmins: vi.fn(),
   createGroupWithSpace: vi.fn(),
   deleteGroupSpace: vi.fn(),
+  deleteGroupSpaceIfMemberless: vi.fn(),
   deleteMember: vi.fn(),
   findGroupById: vi.fn(),
   findGroupBySlug: vi.fn(),
   findMembership: vi.fn(),
   findMembershipBySpace: vi.fn(),
   listGroupMembers: vi.fn(),
+  listGroupsWithoutAdmin: vi.fn(),
   listJoinedGroupsForErasure: vi.fn(),
   listMembershipsForActor: vi.fn(),
   updateGroup: vi.fn(),
@@ -58,9 +60,12 @@ import {
   resolveActiveSpaceScope,
   resolveGroupSpaceScope,
   settleGroupsAfterErasure,
+  settleStrandedGroups,
 } from '@/lib/framework/resparkable/services/membership';
 
 const NOW = new Date('2026-09-01T10:00:00.000Z');
+/** The default every group has: the longest-standing joined member inherits, whatever their role. */
+const ANY_ROLE = { viewersCanInheritAdmin: true };
 const SPACE = 'spc_group_1';
 
 /** A live membership row, with the group it hangs off. */
@@ -71,6 +76,7 @@ function membership(overrides: Record<string, unknown> = {}) {
     userId: 'user_a',
     role: 'member',
     invitedByUserId: null,
+    soleAdminNotifiedAt: null,
     joinedAt: NOW,
     createdAt: NOW,
     updatedAt: NOW,
@@ -81,6 +87,7 @@ function membership(overrides: Record<string, unknown> = {}) {
       description: null,
       spaceId: SPACE,
       maxMembers: 50,
+      viewersCanInheritAdmin: true,
       createdAt: NOW,
       updatedAt: NOW,
     },
@@ -383,7 +390,8 @@ describe('planErasureSuccession', () => {
         { userId: 'user_b', role: 'member', joinedAt: at('2026-03-01T00:00:00Z') },
         { userId: 'user_c', role: 'viewer', joinedAt: at('2026-06-01T00:00:00Z') },
       ],
-      'user_erased'
+      'user_erased',
+      ANY_ROLE
     );
 
     expect(plan).toEqual({ kind: 'promote', userId: 'user_b' });
@@ -395,7 +403,8 @@ describe('planErasureSuccession', () => {
         { userId: 'user_erased', role: 'admin', joinedAt: NOW },
         { userId: 'user_b', role: 'admin', joinedAt: NOW },
       ],
-      'user_erased'
+      'user_erased',
+      ANY_ROLE
     );
 
     expect(plan).toEqual({ kind: 'unchanged' });
@@ -407,7 +416,8 @@ describe('planErasureSuccession', () => {
         { userId: 'user_a', role: 'admin', joinedAt: NOW },
         { userId: 'user_erased', role: 'member', joinedAt: NOW },
       ],
-      'user_erased'
+      'user_erased',
+      ANY_ROLE
     );
 
     expect(plan).toEqual({ kind: 'unchanged' });
@@ -418,7 +428,8 @@ describe('planErasureSuccession', () => {
     // version returned null for both and left the caller to re-read the members.
     const plan = planErasureSuccession(
       [{ userId: 'user_erased', role: 'admin', joinedAt: NOW }],
-      'user_erased'
+      'user_erased',
+      ANY_ROLE
     );
 
     expect(plan).toEqual({ kind: 'delete' });
@@ -433,10 +444,73 @@ describe('planErasureSuccession', () => {
         { userId: 'user_erased', role: 'admin', joinedAt: NOW },
         { userId: 'user_pending', role: 'member', joinedAt: null },
       ],
-      'user_erased'
+      'user_erased',
+      ANY_ROLE
     );
 
     expect(plan).toEqual({ kind: 'delete' });
+  });
+});
+
+describe('planErasureSuccession with viewers excluded', () => {
+  const NO_VIEWERS = { viewersCanInheritAdmin: false };
+
+  it('skips a longer-standing viewer for the first member who is not one', () => {
+    const members = [
+      { userId: 'user_erased', role: 'admin', joinedAt: NOW },
+      { userId: 'user_viewer', role: 'viewer', joinedAt: NOW },
+      { userId: 'user_member', role: 'member', joinedAt: NOW },
+    ];
+
+    expect(planErasureSuccession(members, 'user_erased', NO_VIEWERS)).toEqual({
+      kind: 'promote',
+      userId: 'user_member',
+    });
+    // The default, for contrast: the viewer has been there longest and inherits.
+    expect(planErasureSuccession(members, 'user_erased', ANY_ROLE)).toEqual({
+      kind: 'promote',
+      userId: 'user_viewer',
+    });
+  });
+
+  it('leaves the group without an admin when only viewers remain', () => {
+    // The admin chose this. Not `delete`: the viewers are still in it and can
+    // still read it. Not `unchanged`: callers count it separately.
+    const plan = planErasureSuccession(
+      [
+        { userId: 'user_erased', role: 'admin', joinedAt: NOW },
+        { userId: 'user_viewer', role: 'viewer', joinedAt: NOW },
+        { userId: 'user_pending', role: 'member', joinedAt: null },
+      ],
+      'user_erased',
+      NO_VIEWERS
+    );
+
+    expect(plan).toEqual({ kind: 'no_admin' });
+  });
+
+  it('still deletes a group nobody is left in', () => {
+    expect(
+      planErasureSuccession(
+        [{ userId: 'user_erased', role: 'admin', joinedAt: NOW }],
+        'user_erased',
+        NO_VIEWERS
+      )
+    ).toEqual({ kind: 'delete' });
+  });
+
+  it('accepts wire-shaped members, whose joinedAt is a string', () => {
+    // The group page runs the same rule over the JSON it was sent.
+    expect(
+      planErasureSuccession(
+        [
+          { userId: 'user_a', role: 'admin', joinedAt: '2026-01-01T00:00:00.000Z' },
+          { userId: 'user_b', role: 'member', joinedAt: '2026-02-01T00:00:00.000Z' },
+        ],
+        'user_a',
+        NO_VIEWERS
+      )
+    ).toEqual({ kind: 'promote', userId: 'user_b' });
   });
 });
 
@@ -445,9 +519,9 @@ describe('settleGroupsAfterErasure', () => {
 
   it('promotes and deletes through the transaction it is given', async () => {
     vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
-      { groupId: 'grp_promote', spaceId: 'spc_promote' },
-      { groupId: 'grp_delete', spaceId: 'spc_delete' },
-      { groupId: 'grp_fine', spaceId: 'spc_fine' },
+      { groupId: 'grp_promote', spaceId: 'spc_promote', viewersCanInheritAdmin: true },
+      { groupId: 'grp_delete', spaceId: 'spc_delete', viewersCanInheritAdmin: true },
+      { groupId: 'grp_fine', spaceId: 'spc_fine', viewersCanInheritAdmin: true },
     ]);
     vi.mocked(repo.listGroupMembers).mockImplementation(async (groupId) => {
       if (groupId === 'grp_promote') {
@@ -467,7 +541,7 @@ describe('settleGroupsAfterErasure', () => {
 
     const settlement = await settleGroupsAfterErasure('user_erased', tx);
 
-    expect(settlement).toEqual({ promoted: 1, deleted: 1 });
+    expect(settlement).toEqual({ promoted: 1, deleted: 1, leftWithoutAdmin: 0 });
     // Every write goes through `tx`. Through the global client, a promotion
     // would outlive an erasure that rolled back.
     expect(repo.listJoinedGroupsForErasure).toHaveBeenCalledWith('user_erased', tx);
@@ -479,9 +553,26 @@ describe('settleGroupsAfterErasure', () => {
     expect(repo.deleteGroupSpace).toHaveBeenCalledWith('spc_delete', tx);
   });
 
+  it('honours a group that keeps viewers from inheriting, and changes nothing in it', async () => {
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_viewers', spaceId: 'spc_viewers', viewersCanInheritAdmin: false },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ groupId: 'grp_viewers', userId: 'user_erased', role: 'admin' }),
+      membership({ groupId: 'grp_viewers', userId: 'user_v', role: 'viewer' }),
+    ] as never);
+
+    const settlement = await settleGroupsAfterErasure('user_erased', tx);
+
+    expect(settlement).toEqual({ promoted: 0, deleted: 0, leftWithoutAdmin: 1 });
+    expect(repo.updateMemberRole).not.toHaveBeenCalled();
+    // The viewers are still in it. Deleting it would take their workspace.
+    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
+  });
+
   it('does not remove the erased person’s own membership rows', async () => {
     vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
-      { groupId: 'grp_1', spaceId: SPACE },
+      { groupId: 'grp_1', spaceId: SPACE, viewersCanInheritAdmin: true },
     ]);
     vi.mocked(repo.listGroupMembers).mockResolvedValue([
       membership({ userId: 'user_erased' }),
@@ -498,7 +589,126 @@ describe('settleGroupsAfterErasure', () => {
   it('does nothing for somebody in no groups', async () => {
     vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([]);
 
-    expect(await settleGroupsAfterErasure('user_erased', tx)).toEqual({ promoted: 0, deleted: 0 });
+    expect(await settleGroupsAfterErasure('user_erased', tx)).toEqual({
+      promoted: 0,
+      deleted: 0,
+      leftWithoutAdmin: 0,
+    });
+    expect(repo.listGroupMembers).not.toHaveBeenCalled();
+  });
+});
+
+describe('settleStrandedGroups', () => {
+  it('applies the erasure rule late: deletes an empty group and promotes in an admin-less one', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_empty', spaceId: 'spc_empty', viewersCanInheritAdmin: true },
+      { groupId: 'grp_headless', spaceId: 'spc_headless', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockImplementation(async (groupId) =>
+      groupId === 'grp_empty'
+        ? []
+        : ([
+            membership({ groupId, userId: 'user_pending', joinedAt: null }),
+            membership({ groupId, userId: 'user_b' }),
+            membership({ groupId, userId: 'user_c', role: 'viewer' }),
+          ] as never)
+    );
+    vi.mocked(repo.deleteGroupSpaceIfMemberless).mockResolvedValue(true);
+
+    const settlement = await settleStrandedGroups();
+
+    expect(settlement).toEqual({ promoted: 1, deleted: 1, leftWithoutAdmin: 0 });
+    // The conditional delete, never the unconditional one: a member who joined
+    // since the read must keep the group.
+    expect(repo.deleteGroupSpaceIfMemberless).toHaveBeenCalledWith('grp_empty', 'spc_empty');
+    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
+    // Longest-standing JOINED member. The pending row is first in the list and
+    // is still skipped, or the sweep would be a way past the approval queue.
+    expect(repo.updateMemberRole).toHaveBeenCalledTimes(1);
+    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_headless', 'user_b', 'admin');
+  });
+
+  it('does not count a delete the database declined', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_empty', spaceId: 'spc_empty', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([]);
+    // Somebody joined between the two reads.
+    vi.mocked(repo.deleteGroupSpaceIfMemberless).mockResolvedValue(false);
+
+    expect(await settleStrandedGroups()).toEqual({ promoted: 0, deleted: 0, leftWithoutAdmin: 0 });
+  });
+
+  it('leaves a group alone when an admin appeared between the reads', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_1', spaceId: SPACE, viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ userId: 'user_a', role: 'admin' }),
+    ] as never);
+
+    expect(await settleStrandedGroups()).toEqual({ promoted: 0, deleted: 0, leftWithoutAdmin: 0 });
+    expect(repo.updateMemberRole).not.toHaveBeenCalled();
+    expect(repo.deleteGroupSpaceIfMemberless).not.toHaveBeenCalled();
+  });
+
+  it('does not let one failing group stop the rest', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_broken', spaceId: 'spc_broken', viewersCanInheritAdmin: true },
+      { groupId: 'grp_empty', spaceId: 'spc_empty', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockImplementation(async (groupId) => {
+      if (groupId === 'grp_broken') throw new Error('connection reset');
+      return [];
+    });
+    vi.mocked(repo.deleteGroupSpaceIfMemberless).mockResolvedValue(true);
+
+    expect(await settleStrandedGroups()).toEqual({ promoted: 0, deleted: 1, leftWithoutAdmin: 0 });
+    expect(repo.deleteGroupSpaceIfMemberless).toHaveBeenCalledWith('grp_empty', 'spc_empty');
+  });
+
+  it('promotes past a viewer when the group keeps viewers from inheriting', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_1', spaceId: SPACE, viewersCanInheritAdmin: false },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ userId: 'user_v', role: 'viewer' }),
+      membership({ userId: 'user_m', role: 'member' }),
+    ] as never);
+
+    expect(await settleStrandedGroups()).toEqual({
+      promoted: 1,
+      deleted: 0,
+      leftWithoutAdmin: 0,
+    });
+    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_1', 'user_m', 'admin');
+  });
+
+  it('neither writes nor counts a group left without an admin by its own choice', async () => {
+    // `listGroupsWithoutAdmin` filters these out, so this is the race where the
+    // last member left between the two reads. Nothing is settled.
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([
+      { groupId: 'grp_1', spaceId: SPACE, viewersCanInheritAdmin: false },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ userId: 'user_v', role: 'viewer' }),
+    ] as never);
+
+    expect(await settleStrandedGroups()).toEqual({
+      promoted: 0,
+      deleted: 0,
+      leftWithoutAdmin: 0,
+    });
+    expect(repo.updateMemberRole).not.toHaveBeenCalled();
+    expect(repo.deleteGroupSpaceIfMemberless).not.toHaveBeenCalled();
+  });
+
+  it('passes its bound to the query', async () => {
+    vi.mocked(repo.listGroupsWithoutAdmin).mockResolvedValue([]);
+
+    await settleStrandedGroups(7);
+
+    expect(repo.listGroupsWithoutAdmin).toHaveBeenCalledWith(7);
     expect(repo.listGroupMembers).not.toHaveBeenCalled();
   });
 });

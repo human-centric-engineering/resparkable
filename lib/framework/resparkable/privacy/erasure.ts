@@ -55,7 +55,9 @@
  * members. No route can open it and no subject-access request reaches it. The
  * membership row still cascades (B13) and `createdByUserId` still nulls out
  * (B11), so the erased person's identity leaves either way, but their content
- * stays in a workspace that nothing can reach any more.
+ * stays in a workspace that nothing can reach any more. `settleStrandedGroups`
+ * in `services/membership.ts` is the backstop: an hourly job that finds groups
+ * left with no admin, or with nobody, and applies the same succession rule late.
  *
  * ## What must NOT be done here
  *
@@ -182,7 +184,7 @@ export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
  */
 export async function scrubResparkableInTransaction(ctx: ErasureTxContext): Promise<void> {
   const settlement = await settleGroupsAfterErasure(ctx.userId, ctx.tx);
-  if (settlement.promoted > 0 || settlement.deleted > 0) {
+  if (settlement.promoted > 0 || settlement.deleted > 0 || settlement.leftWithoutAdmin > 0) {
     logger.info('Resparkable groups settled for erased user', {
       userId: ctx.userId,
       ...settlement,

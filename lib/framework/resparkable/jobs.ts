@@ -47,6 +47,8 @@ import {
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
+import { settleStrandedGroups } from '@/lib/framework/resparkable/services/membership';
+import { notifySoleAdmins } from '@/lib/framework/resparkable/services/sole-admin-notice';
 import { RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG } from '@/lib/framework/resparkable/workflows/definitions';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { logger } from '@/lib/logging';
@@ -54,6 +56,7 @@ import { registerAppJob } from '@/lib/orchestration/maintenance/app-jobs';
 import { WorkflowStatus } from '@/types/orchestration';
 
 export const RESPARKABLE_QUEUE_JOB_NAME = 'resparkable:job-queue';
+export const RESPARKABLE_GROUP_SUCCESSION_JOB_NAME = 'resparkable:group-succession';
 
 /**
  * The tick's budget: a handful of jobs, well inside the 60-second tick it
@@ -268,7 +271,7 @@ function emptyDrain(): DrainResult {
 }
 
 /**
- * Register the tick job. Called from `lib/app/jobs.ts`.
+ * Register the tick job and the group-succession pass. Called from `lib/app/jobs.ts`.
  *
  * Every 60 seconds rather than every six hours, because the unit of work is now
  * one job rather than a whole rotation: a short interval and a small budget
@@ -291,6 +294,34 @@ export function registerResparkableJobs(): void {
     intervalMs: 60_000,
     run: async () => runResparkableTick({ drain }),
   });
+
+  registerAppJob({
+    name: RESPARKABLE_GROUP_SUCCESSION_JOB_NAME,
+    intervalMs: 60 * 60_000,
+    run: runGroupSuccessionPass,
+  });
+}
+
+/**
+ * The hourly group-succession pass: settle stranded groups, then tell sole
+ * admins what happens to the role if they close their account.
+ *
+ * Settling first, because a promotion it makes can create a sole admin, who is
+ * then told in the same pass rather than an hour later.
+ *
+ * The settle half is the backstop for succession when the erasure hook did not
+ * run (see `settleStrandedGroups`). Hourly, not per tick: both halves are one
+ * query that almost always matches nothing, and a group waiting an hour is not
+ * the harm. The harm is waiting forever.
+ *
+ * Exported for the tests, like `runResparkableTick`.
+ */
+export async function runGroupSuccessionPass(): Promise<
+  Awaited<ReturnType<typeof settleStrandedGroups>> & Awaited<ReturnType<typeof notifySoleAdmins>>
+> {
+  const settled = await settleStrandedGroups();
+  const notices = await notifySoleAdmins();
+  return { ...settled, ...notices };
 }
 
 /**

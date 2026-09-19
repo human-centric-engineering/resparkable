@@ -23,8 +23,9 @@
  * ## Deleting the group
  *
  * Its own section at the bottom, admins only, and never beside "leave": see
- * `delete-group.tsx`. Admin succession when the last admin is erased is not a
- * UI concern at all; it happens in the erasure hook.
+ * `delete-group.tsx`. Admin succession itself happens in the erasure hook, but
+ * what it would do, and the one setting that changes it, are shown to admins in
+ * `group-succession.tsx`.
  *
  * ## Not on the space-carrying client
  *
@@ -37,6 +38,7 @@ import { useRouter } from 'next/navigation';
 import { Mail, UserMinus, X } from 'lucide-react';
 
 import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
+import { GroupSuccession } from '@/components/resparkable/groups/group-succession';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -293,6 +295,15 @@ export function GroupDetail({
       )}
 
       <SaveStatus state={state} message={message} />
+
+      {isAdmin && (
+        <GroupSuccession
+          groupId={groupId}
+          members={members}
+          viewerUserId={viewerUserId}
+          viewersCanInheritAdmin={detail.group.viewersCanInheritAdmin}
+        />
+      )}
 
       {isAdmin && (
         <DeleteGroup

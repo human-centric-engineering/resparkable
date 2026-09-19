@@ -1888,6 +1888,14 @@ model ResparkableGroup {
   /// to cap.
   maxMembers Int @default(50)
 
+  /// Whether a viewer may inherit the admin role when the last admin's account
+  /// is erased. `true` by default: the longest-standing joined member inherits,
+  /// whatever their role. An admin who turns it off chooses, knowingly, that a
+  /// group left with only viewers keeps no admin at all rather than handing the
+  /// role to one of them. Read by `planErasureSuccession`, on the erasure path
+  /// and in the stranded-group sweep alike.
+  viewersCanInheritAdmin Boolean @default(true)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1940,6 +1948,13 @@ model ResparkableGroupMember {
   /// request-to-join flow writes. In phase 46 every row is written with a value,
   /// because the only route in is accepting an invite.
   joinedAt DateTime?
+
+  /// When this member was emailed that they are the group's only admin, and
+  /// what happens to the role if they close their account. Once per membership:
+  /// the group page carries the same notice for as long as it stays true, so a
+  /// second email would add nothing. Null until sent. Set by
+  /// `services/sole-admin-notice.ts`, which is the only writer.
+  soleAdminNotifiedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

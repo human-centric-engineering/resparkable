@@ -136,6 +136,7 @@ const GROUP = {
   description: 'Weeknight problem sets',
   spaceId: 'spc_abc123',
   maxMembers: 50,
+  viewersCanInheritAdmin: true,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };
@@ -146,6 +147,7 @@ const MEMBERSHIP = {
   userId: 'user_a',
   role: 'admin',
   invitedByUserId: null,
+  soleAdminNotifiedAt: null,
   joinedAt: new Date('2026-08-01T00:00:00.000Z'),
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
@@ -303,6 +305,7 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
       description: 'Weeknight problem sets',
       spaceId: 'spc_abc123',
       maxMembers: 50,
+      viewersCanInheritAdmin: true,
     });
     expect(body.data.yourRole).toBe('admin');
     // The membership row carries `id`, `groupId`, `invitedByUserId`, `createdAt`,
@@ -371,6 +374,38 @@ describe('PATCH /api/v1/resparkable/groups/[id]', () => {
     const response = await invoke(
       GROUP_PATCH,
       req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`, { maxMembers: 5000 }),
+      { id: GROUP_ID }
+    );
+
+    expect(response.status).toBe(400);
+    expect(updateGroupSettings).not.toHaveBeenCalled();
+  });
+
+  it('passes the succession setting to the service for the session user', async () => {
+    vi.mocked(updateGroupSettings).mockResolvedValue({ ok: true, value: GROUP });
+
+    const response = await invoke(
+      GROUP_PATCH,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`, {
+        viewersCanInheritAdmin: false,
+      }),
+      { id: GROUP_ID }
+    );
+
+    expect(response.status).toBe(200);
+    // The service is what checks the caller is an admin, so the actor must be
+    // the session's and the body passed through as validated.
+    expect(updateGroupSettings).toHaveBeenCalledWith('user_a', GROUP_ID, {
+      viewersCanInheritAdmin: false,
+    });
+  });
+
+  it('rejects a succession setting that is not a boolean', async () => {
+    const response = await invoke(
+      GROUP_PATCH,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`, {
+        viewersCanInheritAdmin: 'no',
+      }),
       { id: GROUP_ID }
     );
 
