@@ -119,6 +119,10 @@ const SKIPPED_FILES = new Set([
 const ORACLE_SKIPPED_FILES = new Set([
   ...SKIPPED_FILES,
   'lib/orchestration/access/ownerless-surfaces.ts',
+  // FORK (Resparkable): the generated schema graph names every model and table
+  // as data (`"delegate": "aiMessage"`) and reads none of them. Sunrise offers
+  // no seam for a fork's own skip, so this is a local patch until it does.
+  'lib/portability/model-graph.generated.ts',
 ]);
 
 function isOwnerlessModel(value: string): value is OwnerlessModel {

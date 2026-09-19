@@ -161,7 +161,22 @@ export interface AppAlwaysRunTest {
  * ];
  * ```
  */
-export const appAlwaysRunTests: AppAlwaysRunTest[] = [];
+export const appAlwaysRunTests: AppAlwaysRunTest[] = [
+  {
+    path: 'tests/unit/app/api/v1/resparkable/group-isolation.test.ts',
+    reason:
+      'walks `app/api/v1/resparkable/` off disk and loads each route by a computed ' +
+      'path, so no import chain reaches it. A new route file is exactly the change ' +
+      'it exists to classify, and exactly the change that would not select it.',
+  },
+  {
+    path: 'tests/unit/lib/framework/resparkable/privacy/subject-export.test.ts',
+    reason:
+      'parses `prisma/schema/framework-resparkable.prisma` to hold every tier model ' +
+      'to an export disposition. A schema file is not in the import graph, so adding ' +
+      'a model would not select the test that fails until it is declared.',
+  },
+];
 
 /**
  * One source file allowed to read `AiWorkflowExecution`, `AiConversation` or
@@ -224,4 +239,20 @@ export interface AppOwnerlessSurfaceException {
  * ];
  * ```
  */
-export const appOwnerlessSurfaceExceptions: AppOwnerlessSurfaceException[] = [];
+export const appOwnerlessSurfaceExceptions: AppOwnerlessSurfaceException[] = [
+  {
+    path: 'lib/framework/resparkable/repo/billing.ts',
+    disposition: 'by-design',
+    reason:
+      'Site B is the billing tick: raw SQL over terminal `resparkable-` executions for ' +
+      'every account, called only from `jobs.ts`. There is no caller to scope to, and a ' +
+      'row nobody owns is billed to nobody, which is the answer it should get.',
+  },
+  {
+    path: 'lib/framework/resparkable/repo/workflow-runs.ts',
+    disposition: 'by-design',
+    reason:
+      'only creates an execution, stamping the owning `userId` as it does. It reads ' +
+      'no existing row, so there is no ownership question for the helper to answer.',
+  },
+];
