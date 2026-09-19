@@ -42,16 +42,60 @@ Deletion leans on Postgres referential actions (`prisma.user.delete` triggers
 them atomically and unbypassably). Relations to `User` fall into two policies —
 see the `account_deletion_erasure_cascade` migration for the full per-table list.
 
-| Policy                            | `onDelete` | What                                                                                                                                                                                                                                  |
-| --------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Personal data → erased**        | `Cascade`  | Sessions, accounts, conversations (+messages, embeddings, shares), workflow executions (+steps), user memory, evaluation sessions, API keys, webhook subscriptions, transfer jobs (`userId`)                                          |
-| **Org config + audit → retained** | `SetNull`  | Agents, profiles, versions, invite/embed tokens, workflows (+versions, schedules, triggers), event hooks, knowledge documents, provider configs/models, experiments, admin audit log, MCP prompts/keys, transfer jobs (`initiatedBy`) |
+| Policy                            | `onDelete` | What                                                                                                                                                                                                                                             |
+| --------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Personal data → erased**        | `Cascade`  | Sessions, accounts, conversations (+messages, embeddings, shares), workflow executions (+steps), user memory, evaluation sessions, API keys, webhook subscriptions, transfer jobs (`userId`)                                                     |
+| **Org config + audit → retained** | `SetNull`  | Agents, profiles, versions, invite/embed tokens, workflows (+versions, schedules, triggers), event hooks, knowledge documents, provider configs/models, experiments, admin audit log, MCP prompts/keys, cost logs, transfer jobs (`initiatedBy`) |
 
-**Why retain config?** `createdBy` is attribution, not ownership — any admin can
-already manage any agent/workflow/provider regardless of who created it. So a
-departing creator's config keeps working; only the `createdBy`/`uploadedBy` link
-is nulled. Child rows (messages, embeddings, deliveries, steps) already cascade
-from their parents, so only the root `User` relations carry the policy.
+**Why retain a cost log?** Different reason from the config rows beside it, and
+worth stating separately: a cost row is a **billing record**. Cascading it would
+let an erasure request quietly rewrite the books, so the FK is `SetNull` — the
+spend stays, the person is detached. `scripts/smoke/erasure.ts` asserts exactly
+that against a real database: row retained, `userId` null, amount unchanged.
+
+**Why retain config?** For most of these, `createdBy` is attribution, not
+ownership — any admin can already manage any agent/workflow/provider regardless
+of who created it. So a departing creator's config keeps working; only the
+`createdBy`/`uploadedBy` link is nulled. Child rows (messages, embeddings,
+deliveries, steps) already cascade from their parents, so only the root `User`
+relations carry the policy.
+
+**Two of them are owner-scoped, and they need a third rule.** `AiExperiment`
+(`createdBy`) and `AiDataset` (`userId`) narrow every one of their routes to the
+caller's own rows. Nulling the link on such a model does not de-attribute the row
+so much as **orphan** it: keyed purely on the caller, every route answers "not
+yours", and a row deliberately retained becomes one nobody can list, open, edit
+or delete.
+
+Both now handle that case explicitly, and it is the shape to copy. A row belongs
+to **me**, to **someone else**, or to **nobody**, and the third is not a synonym
+for the second. The visible set is "mine, plus nobody's" — and who gets the
+second half is `canRead`'s `'unattributed'` arm, which exists for exactly this.
+The default policy grants it to platform staff, so an admin sees and can delete
+an orphaned row; a fork narrows it by registering a policy rather than by editing
+a route. An admin can also **claim** one (`POST /experiments/:id/claim`,
+`POST /evaluations/datasets/:id/claim`), which stamps them as the owner so the
+row re-enters the normal rules instead of staying a permanent special case. The
+boundary is untouched: another admin's _owned_ row is still a 404.
+
+Both **log** access to a row nobody owns — the detail read and every write carry
+`metadata.accessBasis = 'orphan'`, so who reached a de-attributed row after the
+erasure is answerable. Experiments gained that in t-687; datasets have had it
+since t-679. The definitions live in `lib/orchestration/access/dataset-access.ts`
+and `lib/orchestration/access/experiment-access.ts` — one module per model, all
+four of them in that directory, each reading the policy answer
+`session.unattributedReads` carries.
+
+The two differ on one point, and it is the one to decide rather than copy when
+you add a model: experiments log a **write** whoever makes it, owner included,
+because every experiment mutation already wrote a config-change row before the
+basis existed and narrowing it would have deleted rows an operator can read.
+Datasets log only non-owner writes. Neither logs its list.
+
+**So when you classify the next `SetNull` model, decide two things, not one.**
+This table records the retain policy. Whether the model's routes are owner-scoped
+is a separate decision, and where both are true you owe the orphan rule above or
+you are shipping rows that outlive everyone's ability to reach them.
 
 ### System-owned runs
 
@@ -92,10 +136,15 @@ Two consequences follow for anything you build on these rows:
 
 - **Admin surfaces need the system basis, not an owner match.** A null owner
   matches no admin, so `lib/orchestration/access/execution-access.ts` and
-  `conversation-access.ts` grant every admin access to unowned rows (basis
-  `'system'`, audit-logged like `'shared'`). Route a new surface through those
-  helpers; a hand-rolled `userId === session.user.id` check will silently hide
-  every scheduled and inbound run.
+  `conversation-access.ts` grant admins access to unowned rows on a `'system'`
+  basis — every admin on a default install, and beyond that whichever admins the
+  authorization policy permits, which both helpers now ask. **Only the
+  conversation routes log that
+  access** (`accessBasis` on the admin audit row, as they do for `'shared'`); no
+  execution route logs a read, so do not rely on this for an audit trail over
+  scheduled runs. Route a new surface through those helpers; a hand-rolled
+  `userId === session.user.id` check will silently hide every scheduled and
+  inbound run.
 - **Steps that require a real account must refuse, not borrow one.**
   `judge_call` throws `judge_call_requires_user_context` on a system-owned run
   because it files a transcript into an account's chat history. Borrowing the

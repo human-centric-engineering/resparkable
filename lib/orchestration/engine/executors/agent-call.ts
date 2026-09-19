@@ -255,6 +255,7 @@ async function runSingleTurn(
         void logCost({
           agentId: agent!.id,
           workflowExecutionId: ctx.executionId,
+          userId: ctx.userId,
           model: model,
           provider: usedSlug,
           inputTokens: response.usage.inputTokens,
@@ -615,7 +616,26 @@ export async function executeAgentCall(
     throw new ExecutorError(
       step.id,
       'provider_unavailable',
-      `No provider configured for agent "${agentSlug}"`,
+      // Forward the message for errors this call path DEFINES — the three
+      // `ProviderError` subclasses — and only those. Widened from the two
+      // resolver classes so `NoDefaultModelConfiguredError` from
+      // `getDefaultModelForTask` keeps its remedy ("Save one in Admin →
+      // Settings → Default models") instead of being replaced by a message
+      // that sends the operator nowhere. `chat-turn.ts` makes the same call
+      // and must give the same answer; they disagreed for one commit.
+      // "No provider configured" is actively wrong for
+      // NoEligibleProviderError — providers ARE configured, the rule permits
+      // none. Forwarding every error would be wider than intended: this catch
+      // also wraps a Prisma failure in `pickActiveProviderCandidates` and a
+      // throw from `getDefaultModelForTask`, whose messages can carry env var
+      // names and base URLs (`streaming-handler.ts` scrubs exactly those).
+      // Prefixed, not replaced: forwarding alone dropped the agent slug, and in
+      // a multi-step workflow that left an operator mapping step.id back to an
+      // agent by hand. The slug is already in the fallback message below, so it
+      // is not newly disclosed.
+      err instanceof ProviderError
+        ? `Agent "${agentSlug}": ${err.message}`
+        : `No provider configured for agent "${agentSlug}"`,
       err
     );
   }

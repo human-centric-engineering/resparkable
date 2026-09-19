@@ -114,7 +114,7 @@ export class UnauthorizedError extends APIError {
  *
  * @example
  * ```typescript
- * if (session.user.role !== 'ADMIN') {
+ * if (!isPlatformAdmin(session.user)) {
  *   throw new ForbiddenError('Admin access required')
  * }
  * ```

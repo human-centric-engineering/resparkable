@@ -1,5 +1,12 @@
 # Multi-Tenancy Playbook
 
+> **Update 2026-08-27 — partially superseded.** Sunrise has since decided to
+> ship multi-tenancy as an **opt-in platform capability**; the binding design is
+> [`multi-tenancy-design.md`](./multi-tenancy-design.md), and where the two
+> disagree the design document wins. This playbook remains the proven data-plane
+> recipe (the RLS pattern, the gotchas, the model inventory) and will be
+> rewritten as the enablement guide when row isolation lands.
+>
 > **TL;DR — MT-possible, not MT-baked.** Resparkable ships **single-tenant by
 > default** and contains **zero** tenancy machinery: no `Org` table, no `orgId`
 > columns, no row-level security, no dormant fields. The one concession to
@@ -12,7 +19,8 @@
 > [The proof](#the-proof-runnable)); the empty-string footgun it caught is why
 > the policy uses `NULLIF`.
 >
-> **Whoever runs this recipe is a fork.** Sunrise core never will. So each step
+> **Until the capability lands, whoever runs this recipe is a fork** (see the
+> update above). So each step
 > below also says where the artefact lives in your tier and whether it touches a
 > Sunrise-owned file — see
 > [Where a fork's tenancy code lives](#where-a-forks-tenancy-code-lives) and
@@ -76,7 +84,7 @@ are a leaf fork, `lib/app/` is yours.
 | Org-aware periodic work                | `lib/app/jobs.ts` (`registerAppJob`)                                        | No — existing registry seam                                                                                                    |
 | Art. 15 export of your org-owned rows  | `lib/app/data-export.ts` (`collectAppSubjectData`)                          | No — existing registry seam                                                                                                    |
 | CI assertion that policies still exist | `lib/app/db-drift.ts` (`registerAppDriftProbe`)                             | No — existing registry seam                                                                                                    |
-| Org-scoped rate-limit rules            | `lib/app/rate-limit.ts`                                                     | No — but the **key** union is closed; see the research note below                                                              |
+| Org-scoped rate-limit rules and keys   | `lib/app/rate-limit.ts`                                                     | No — `registerRateLimitKeyResolver` opened the **key** space on 2026-09-01                                                     |
 | Tenant-admin nav and route gating      | `lib/app/admin-nav.ts`, `lib/app/protected-routes.ts`                       | No — but the admin console split itself is platform-tier                                                                       |
 
 **Exactly two sanctioned core edits**: the `withOrg` wrapper in
@@ -84,7 +92,7 @@ are a leaf fork, `lib/app/` is yours.
 reaches into `lib/auth/`, `lib/security/`, `lib/orchestration/`, `lib/storage/`
 or `proxy.ts` becomes a conflict on every upstream sync.
 [Research §8](./multi-tenancy-research.md#the-merge-conflict-surface-concretely)
-lists the twenty files concerned, which of the `lib/app/*` seams above absorb
+lists the eighteen files concerned, which of the `lib/app/*` seams above absorb
 work you would otherwise do in core, and
 [which provisions upstream should ship](./multi-tenancy-research.md#provisions-upstream-should-ship)
 so the rest stop being conflicts. Check that list before you copy a core file —
@@ -130,12 +138,17 @@ The direct owners (FK `userId` / `createdBy` / `uploadedBy`):
 `AiWorkflowExecution`, `AiWorkflowSchedule`, `AiWorkflowTrigger`,
 `AiKnowledgeDocument`, `AiDataset`, `AiEvaluationSession`, `AiEvaluationRun`,
 `AiExperiment`, `AiApiKey`, `AiUserMemory`, `AiWebhookSubscription`,
-`AiEventHook`, `McpApiKey`, `McpExposedPrompt`.
+`AiEventHook`, `McpApiKey`.
+
+`AiKnowledgeBase` belongs here too, and is the awkward one: it has **no owner
+column at all** — it is a container whose documents are owned — so nothing marks
+it as tenant data until you decide it is. Leave it global and every tenant shares
+one set of knowledge bases.
 
 Plus **child rows** that hang off the above by FK and have no owner column of
 their own (`AiMessage`, `AiMessageEmbedding`, `AiKnowledgeChunk`,
-`AiConversationShare`, `AiCostLog`, the workflow execution children, eval
-case/log rows, …). You have two choices for these, both valid:
+`AiConversationShare`, `AiCostLog`, `AiOutboundMessage`, the workflow execution
+children, eval case/log rows, …). You have two choices for these, both valid:
 
 - **Denormalize `orgId` onto each child** and give it its own policy — simplest
   policy, one extra column per table, must be kept consistent on write.
@@ -151,8 +164,25 @@ config), not a tenant boundary. They are platform configuration shared across
 all tenants:
 
 `AiProviderConfig`, `AiProviderModel`, `AiCapability`, `AiAgentProfile`,
-`AiAgentCapability`, `FeatureFlag`, `KnowledgeTag`, `AiOrchestrationSettings`
-(singleton), `McpServerConfig` (singleton).
+`AiAgentCapability`, `FeatureFlag`, `KnowledgeTag`, `McpExposedTool`,
+`McpExposedResource`, `AiOrchestrationSettings` (singleton), `McpServerConfig`
+(singleton).
+
+**Note the MCP split**, because neither "scope everything MCP" nor "scope
+whatever has a `createdBy`" is the right sweep:
+`McpExposedTool` is 1:1 with a global `AiCapability` and `McpExposedResource`
+is a global URI registry — both are the vendor publishing a surface.
+`McpApiKey` is genuinely tenant-owned: a key belongs to its holder.
+
+**`McpExposedPrompt` is the trap.** It carries `createdBy`, and this page's own
+rule in bold above says that is not what makes a model tenant-owned — it is
+provenance, and the FK is nullable `SetNull`. Everything about how the model is
+_used_ is global: `lib/orchestration/mcp/prompt-registry.ts:54` loads every row
+with `isEnabled: true` — no owner key — into a **process-global 5-minute
+cache** served to every MCP client, `name` is `@unique` across the whole
+install, and `MAX_ENABLED_PROMPTS` is a global cap. Scoping it means an `orgId`
+on the registry query, `@@unique([orgId, name])`, and a per-org cache key and
+cap. Until then it is global config that happens to record an author.
 
 Leaving these global is the right default. A fork **may** decide some should be
 tenant-scoped (e.g. per-org provider API keys) — that is a deliberate product
@@ -173,7 +203,151 @@ variable, which has no per-tenant form. Before scoping either, read
 `User` (gets tenancy via the additive `Org` + `OrgMembership` join, not an
 `orgId` column), `ContactSubmission` (public form), `DataErasureReceipt` and
 `McpAuditLog` and `AiAdminAuditLog` (audit — the `userId` is the actor, retained
-deliberately), `SeedHistory`, `Verification`.
+deliberately), `SeedHistory`, `Verification`, `AuthBootstrap` (the
+first-admin-bootstrap singleton).
+
+### Before you classify: global unique keys
+
+A `@unique` on a would-be tenant-owned table is a tenancy decision hiding as a
+constraint. It stays **global** after you add `orgId`, so two orgs cannot both
+have a knowledge base called `policies` — and the collision surfaces as a write
+error in whichever tenant arrives second, not as a design review. Every such key
+on a table you scope must become `@@unique([orgId, …])` in the same migration.
+
+**Derive this list; do not trust a written one.** The first version of this
+paragraph enumerated two instances and missed four — the same failure this
+whole section warns about:
+
+```bash
+grep -n '@unique' prisma/schema/*.prisma   # then cross-reference the tenant-owned list above
+```
+
+At the time of writing that yields, on the tenant-owned models above:
+`AiWorkflow.slug`, `AiKnowledgeDocument.slug`, `AiKnowledgeBase.slug`,
+`AiWorkflowExecution.dedupKey` and `AiOutboundMessage.dedupKey`. Add
+`McpExposedPrompt.name` **if** you scope that model — it is classified as global
+config above, and its global `name` namespace is one of the reasons why. Hash
+and token uniques (`AiApiKey.keyHash`, `McpApiKey.keyHash`,
+`AiAgentEmbedToken.token`, …) are not collision-prone and need nothing.
+Routing keys that are global **on purpose** — an agent slug an unauthenticated
+embed resolves before any org context exists — are the exception, and design
+decision 4 covers them.
+
+> **This inventory is hand-maintained and nothing checks it.** It was short by
+> five non-child models when the control-plane section below was derived from
+> it, and the playbook's own sync checklist tells you to classify new models
+> against it. Making that a build failure rather than a habit is scheduled with
+> row isolation, where `orgId` becomes the thing to derive the classification
+> from. Until then, treat the list as the current state and re-derive it from
+> `prisma/schema/*.prisma` before a retrofit — not as a boundary.
+
+## The control plane: which admin surfaces are whose
+
+Everything above is the **data** plane — which rows exist for whom. This section
+is the **control** plane: which _admin surfaces_ a customer runs and which stay
+the vendor's. A fork adding a customer tier has to split `app/admin/*`, and
+every fork that does it reverse-engineers the same answer.
+
+**The rule, so the table below does not have to be maintained to stay true:**
+
+> A surface belongs to whichever plane its **backing models** sit in, per the
+> inventory above. Tenant-owned models ⇒ the customer's surface. Admin-authored
+> global config and system models ⇒ platform-ops. Where a page reads both, it
+> needs splitting, not assigning.
+
+The mapping is _almost_ 1:1 with the inventory, and the "almost" is the part
+worth reading. The table is a **worked application of the rule against 68 admin
+pages, not an enumeration to keep in sync** — where they disagree, the rule and
+the model inventory win.
+
+### Platform-ops — the vendor's
+
+| Surface                                                      | Backing models                                                     |
+| ------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `orchestration/providers`, `orchestration/provider-models`   | `AiProviderConfig`, `AiProviderModel`                              |
+| `orchestration/capabilities`                                 | `AiCapability`                                                     |
+| `orchestration/agent-profiles`                               | `AiAgentProfile`                                                   |
+| `features` (feature flags)                                   | `FeatureFlag`                                                      |
+| `orchestration/knowledge/tags`                               | `KnowledgeTag`                                                     |
+| `orchestration/settings`, `orchestration/mcp/settings`       | The two singletons                                                 |
+| `orchestration/mcp/tools`, `mcp/resources`                   | `McpExposedTool`, `McpExposedResource`                             |
+| `users`, `users/[id]`, `users/invite`                        | `User` — tenancy arrives via the `Org` join, not an `orgId` column |
+| `logs`, `orchestration/audit-log`, `orchestration/mcp/audit` | Audit models — the actor is retained deliberately                  |
+| `orchestration/learn`                                        | Static content, no data                                            |
+
+Credentials are the hard stop, not a preference: `AiProviderConfig` keys its
+credential off `apiKeyEnvVar` — the _name_ of a process environment variable —
+which has no per-tenant form. Design decision Q3 keeps every model in this
+group global in v1, with one consequence worth restating: **one embedding model
+per install**, because vector dimension is a schema property.
+
+### The customer's
+
+| Surface                                             | Backing models                                        |
+| --------------------------------------------------- | ----------------------------------------------------- |
+| `orchestration/agents` (+ `new`, `[id]`, `compare`) | `AiAgent`, `AiAgentVersion`, the token models         |
+| `orchestration/workflows`                           | `AiWorkflow`, `AiWorkflowVersion`                     |
+| `orchestration/triggers`                            | `AiWorkflowTrigger`, `AiWorkflowSchedule`             |
+| `orchestration/knowledge`                           | `AiKnowledgeDocument`, `AiKnowledgeBase`              |
+| `orchestration/conversations`                       | `AiConversation`                                      |
+| `orchestration/evaluations` (+ `datasets`, `runs`)  | `AiEvaluationSession`, `AiDataset`, `AiEvaluationRun` |
+| `orchestration/experiments`                         | `AiExperiment`                                        |
+| `orchestration/event-subscriptions` (+ `dlq`)       | `AiWebhookSubscription`, `AiEventHook`                |
+| `orchestration/mcp/keys`                            | `McpApiKey`                                           |
+| `orchestration/approvals`                           | Approvals on executions                               |
+
+### Mixed — these need splitting, not assigning
+
+This is the "almost" in "almost 1:1", and skipping it is how a fork ships a
+customer console that leaks an aggregate.
+
+- **`orchestration` (dashboard) and `overview`** — headline counts over both
+  planes. Split the query, not the page.
+- **`orchestration/costs`** — the _settings_ are the global singleton
+  (platform-ops); the _spend_ is `AiCostLog`, per-tenant. Design decision Q10
+  gives that model a durable `userId` and an `orgId` precisely so this page can
+  be split.
+- **`orchestration/analytics`** — topics, unanswered questions, engagement and
+  content gaps are all derived from `AiConversation`. Tenant data presented as a
+  global roll-up: the _page_ is a customer's, the vendor's version of it is a
+  different query.
+- **`orchestration/executions`** — the one that looks cleanly splittable and is
+  not. `app/admin/orchestration/executions/page.tsx` fans three reads —
+  `getExecutions()` (`AiWorkflowExecution`, the customer's), `getInitialSnapshot()`
+  (live-engine lease state, process-global) and `getOrchestrationSettings()` (the
+  global singleton, for the stuck-step threshold) — and renders the live-engine
+  dashboard **above** the table on the same page. `executions/live` is a deeper
+  view of the same platform-ops data, not a separable surface. Assign the list to
+  a customer console and the engine state and settings singleton ship with it.
+- **`orchestration/mcp/prompts`** — looks like a customer's, and is not one
+  yet. `McpExposedPrompt` is served from a process-global cache to every MCP
+  client, with a global `name` namespace and a global enabled-cap, so shipping
+  this page in a customer console publishes one tenant's prompt to all of them,
+  lets each edit and delete the others', and lets one exhaust the cap for
+  everyone. Assign it to the customer only after scoping the model.
+- **`orchestration/mcp` (landing) and `mcp/sessions`** — sit above both halves
+  of the MCP split above.
+
+### Why the URL tree is not the answer
+
+The obvious implementation — gate `app/admin/*` by prefix — does not work, and
+`orchestration/mcp/*` is the proof: `keys` is a customer's, `tools`,
+`resources` and `settings` are the vendor's, and `prompts` is neither until the
+model behind it is scoped — three answers inside one nav section.
+Route the decision through the authorization policy
+([`.context/auth/authorization.md`](../auth/authorization.md)) with a `tier`
+input, and let each surface answer for itself.
+
+### The within-tenant axis
+
+This section splits surfaces between the **vendor and the customer**. Splitting
+rows _within_ one customer — one leader sees only the questionnaires they
+created — is the orthogonal ownership axis (#367), and it is enforced in the
+application by `subjectScope` / `canRead`, not by RLS. The distinction matters
+because the enforcement differs in kind: a query that forgets its org `where`
+returns **zero** rows under RLS, while a query that forgets its owner filter
+returns **everyone's**. See
+[the leak, stated plainly](../auth/authorization.md#the-leak-stated-plainly).
 
 ## The retrofit recipe
 
@@ -337,11 +511,21 @@ LEVEL SECURITY`, so do not let the app role own the tenant tables.
   one `withOrg` transaction per org. The path of least resistance is to run jobs
   on the bypass role; that silently undoes the isolation guarantee for the half
   of the system that runs unattended, and nothing detects it.
+- **Per-tenant quotas: register a key resolver, don't fork the middleware.**
+  `registerRateLimitKeyResolver('org', ...)` in `lib/app/rate-limit.ts` buckets
+  requests by anything you can derive from the request, so an org-scoped _key_
+  needs no edit to `lib/security/`. Derive the identifier from an authenticated
+  principal, or from a value the resolver verifies — a caller who controls the
+  identifier mints a fresh bucket per request and walks past the cap.
+  Compositing with `getClientIP()` is not a substitute: it bounds who _shares_
+  a bucket, not how many one caller can _mint_. See
+  [rate limiting → custom keys](../security/rate-limiting.md).
 - **Fork gotcha: a registry seam is only as open as its narrowest type.**
-  `lib/app/rate-limit.ts` lets you register org-scoped _rules_, but
-  `RateLimitKey` is a closed union consumed by a `switch`, so you cannot express
-  an org-scoped _key_ — the exact thing per-tenant quotas need. Audit the other
-  seams you plan to lean on for the same shape before you commit to them
+  The case above was this shape until 2026-09-01: `lib/app/rate-limit.ts` let
+  you register org-scoped _rules_ while `RateLimitKey` stayed a closed union, so
+  the seam looked open and the thing per-tenant quotas actually need was
+  unreachable. That instance is fixed; the shape is not rare. Audit the other
+  seams you plan to lean on for it before you commit to them
   ([research §8](./multi-tenancy-research.md#the-ratelimitkey-case-study)).
 
 ## Keeping the retrofit alive across upstream syncs
@@ -377,24 +561,24 @@ above is missed, and it is the cheapest thing on the list.
 registry that already exists for the pgvector indexes: `lib/app/db-drift.ts` is
 fork-owned scaffold, `registerAppDriftProbe()` accepts any
 `Probe` (`() => Promise<{ ok, note? }>`), and `npm run db:drift-check` runs in CI
-and in `/pre-pr`. No `policyExists` factory ships in
-[`lib/db/drift-probes.ts`](../../lib/db/drift-probes.ts) today, so write the
-catalog query yourself:
+and in `/pre-pr`. [`lib/db/drift-probes.ts`](../../lib/db/drift-probes.ts) ships
+`rlsEnabled(table)` and `policyExists(table, policy)` factories, so each
+protected table is two one-liners — register **both**: a policy can exist while
+RLS is disabled, and RLS can be enabled with the policy dropped.
 
 ```typescript
 // lib/app/db-drift.ts — fork-owned scaffold, merges cleanly forever
 registerAppDriftProbe({
+  name: 'RLS enabled+forced on AiConversation',
+  kind: 'RLS posture',
+  table: 'AiConversation',
+  probe: rlsEnabled('AiConversation'), // asserts ENABLE and FORCE; see its JSDoc to waive FORCE
+});
+registerAppDriftProbe({
   name: 'RLS org_isolation on AiConversation',
   kind: 'RLS policy',
   table: 'AiConversation',
-  probe: async () => {
-    const rows = await prisma.$queryRaw<Array<{ n: bigint }>>`
-      SELECT count(*)::bigint AS n
-      FROM pg_policies
-      WHERE tablename = 'AiConversation' AND policyname = 'org_isolation'
-    `;
-    return { ok: Number(rows[0]?.n ?? 0n) === 1 };
-  },
+  probe: policyExists('AiConversation', 'org_isolation'),
 });
 ```
 
@@ -430,6 +614,11 @@ declaration.
   the control plane (#366/#367) and the commercial plane, and assigns each gap
   to platform-tier or fork-tier. Read it before scoping a retrofit; read this
   one when you are building it.
+- [`.context/auth/authorization.md`](../auth/authorization.md) — **the control
+  plane's decision seam.** The section above says which admin surfaces split;
+  that document is the policy they route through, the owner-scoped list recipe
+  for the within-tenant axis, and an honest list of the read paths still
+  deciding from the platform role inline.
 - [`.context/privacy/data-erasure.md`](../privacy/data-erasure.md) — the
   cascade/`SetNull` `onDelete` graph built for GDPR erasure **is** the
   org-delete dependency graph a fork needs for tearing down a tenant.
@@ -458,7 +647,7 @@ declaration.
   [sync checklist](#keeping-the-retrofit-alive-across-upstream-syncs) above is
   the tenancy-specific addition to it.
 - [`multi-tenancy-research.md` §8](./multi-tenancy-research.md#8-downstream-fork-considerations)
-  — **the fork contract.** The twenty-file merge surface, the `lib/app/*` seams
+  — **the fork contract.** The eighteen-file merge surface, the `lib/app/*` seams
   that absorb MT work today, the provisions upstream should ship to shrink that
   surface, and the seam-design principles to follow if you build one locally
   first.

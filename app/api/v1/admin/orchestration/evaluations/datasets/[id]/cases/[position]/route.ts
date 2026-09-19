@@ -16,6 +16,12 @@
 
 import { Prisma } from '@prisma/client';
 import { withAdminAuth } from '@/lib/auth/guards';
+import {
+  datasetVisibilityWhere,
+  datasetAccessBasis,
+  logDatasetAccess,
+} from '@/lib/orchestration/access/dataset-access';
+import { getClientIP } from '@/lib/security/ip';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ValidationError } from '@/lib/api/errors';
@@ -45,10 +51,19 @@ export const PATCH = withAdminAuth<{ id: string; position: string }>(
     const body = await validateRequestBody(request, patchDatasetCaseSchema);
 
     const dataset = await prisma.aiDataset.findFirst({
-      where: { id: datasetId, userId: session.user.id },
-      select: { id: true },
+      where: { AND: [datasetVisibilityWhere(session), { id: datasetId }] },
+      // `userId` so the write below can pin itself to the ownership this read
+      // saw — not for the boundary test, which the `where` above settles.
+      select: { id: true, name: true, userId: true },
     });
     if (!dataset) throw new NotFoundError(`Dataset ${datasetId} not found`);
+    // Narrowing for the type, not re-checking the boundary: the `where` above
+    // admits only 'owner' and 'orphan' rows, so this cannot be null. It used to
+    // be `?? 'orphan'` at the log site, which filed a null — the state a
+    // widening regression produces — as an ordinary orphan read. A 404 keeps
+    // the signal; `loadDataset` in the detail route has always done this.
+    const basis = datasetAccessBasis(dataset, session.user.id);
+    if (!basis) throw new NotFoundError(`Dataset ${datasetId} not found`);
 
     const existing = await prisma.aiDatasetCase.findUnique({
       where: { datasetId_position: { datasetId, position } },
@@ -101,12 +116,26 @@ export const PATCH = withAdminAuth<{ id: string; position: string }>(
       });
       const recomputed = hashDatasetCases(allCases);
 
+      // Pinned to the ownership the visibility check saw, like every other
+      // dataset write. An orphan can now be claimed mid-request, and a case
+      // edit landing on a dataset somebody else just adopted is a surprise for
+      // both of them.
       await tx.aiDataset.update({
-        where: { id: datasetId },
+        where: { id: datasetId, userId: dataset.userId },
         data: { contentHash: recomputed, updatedAt: new Date() },
       });
 
       return { updatedCase: updated, newHash: recomputed };
+    });
+
+    logDatasetAccess({
+      adminUserId: session.user.id,
+      datasetId,
+      datasetName: dataset.name,
+      basis,
+      action: 'dataset.case_update',
+      extra: { position, fields: Object.keys(body) },
+      clientIp: getClientIP(request),
     });
 
     log.info('Dataset case patched', {
@@ -116,5 +145,12 @@ export const PATCH = withAdminAuth<{ id: string; position: string }>(
       newContentHash: newHash,
     });
     return successResponse({ case: updatedCase, contentHash: newHash });
+  },
+  {
+    ownership: {
+      decidedBy: 'self',
+      because:
+        'Resolves the dataset under the visible clause for this caller — rows they own, or rows nobody owns where canRead permits an unattributed read — before editing a case on it. Never a row belonging to another subject.',
+    },
   }
 );

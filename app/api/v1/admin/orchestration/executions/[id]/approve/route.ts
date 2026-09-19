@@ -9,8 +9,10 @@
  * `POST /workflows/:workflowId/execute?resumeFromExecutionId=<id>`.
  *
  * Ownership: the caller's own runs, plus system-owned runs (`userId = null`
- * — schedule- and inbound-triggered). Another admin's own run returns 404
- * (not 403) — we never confirm existence of a row the caller cannot see.
+ * — schedule- and inbound-triggered) where the authorization policy permits
+ * an unattributed read, which a default install does. Another admin's own run
+ * returns 404 (not 403) — we never confirm existence of a row the caller
+ * cannot see.
  *
  * Authentication: Admin role required.
  */
@@ -53,7 +55,7 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   // system-owned run has no owner to fall back on, so without it an
   // approval gate reached by a scheduled or inbound run could never be
   // cleared by anyone (#502).
-  const canAct = adminCanViewExecution(execution, session.user.id);
+  const canAct = adminCanViewExecution(execution, session);
   const isApprover = !canAct && isApproverInTrace(execution.executionTrace, session.user.id);
   if (!canAct && !isApprover) {
     throw new NotFoundError(`Execution ${id} not found`);

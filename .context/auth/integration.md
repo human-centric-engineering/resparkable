@@ -162,7 +162,7 @@ export async function GET(request: NextRequest) {
   }
 
   // Check role-based permissions
-  if (session.user.role !== 'ADMIN') {
+  if (!isPlatformAdmin(session.user)) {
     return Response.json({ success: false, error: { message: 'Forbidden' } }, { status: 403 });
   }
 
@@ -182,7 +182,7 @@ import { prisma } from '@/lib/db/client';
 export async function GET(request: NextRequest) {
   try {
     // Throws if not authenticated or not admin
-    await requireRole('ADMIN');
+    await requireRole(PLATFORM_ADMIN_ROLE);
 
     const users = await prisma.user.findMany();
     return Response.json({ success: true, data: users });
@@ -217,6 +217,10 @@ export interface WithAuthOptions {
  * - Throws UnauthorizedError (401) if no session
  * - Throws ForbiddenError (403) if `options.scope` is set and an API-key
  *   caller lacks it
+ * - Asks the authorization policy `canRead(principal, subject)`, where the
+ *   target comes from `options.resource` — or `{ kind: 'nothing' }` when the
+ *   route named none, which the default policy allows. Every core route but
+ *   `app/api/v1/users/[id]` (GET) takes that arm
  * - Passes the session to the handler
  * - Catches all errors via handleAPIError
  */
@@ -229,12 +233,57 @@ export function withAuth(
  * Wrap an API route handler with admin authentication.
  *
  * - Throws UnauthorizedError (401) if no session
- * - Throws ForbiddenError (403) if user role is not ADMIN
+ * - Throws ForbiddenError (403) when the authorization policy refuses. On a
+ *   stock install that is the role check this guard used to assert inline —
+ *   platform role for a cookie session, the `admin` scope for an API key.
  */
 export function withAdminAuth(
-  handler: (request: NextRequest, session: AuthSession) => Response | Promise<Response>
+  handler: (request: NextRequest, session: AuthSession) => Response | Promise<Response>,
+  options?: WithAdminAuthOptions
 ): (request: NextRequest) => Promise<Response>;
 ```
+
+**The authorization decision is a seam.** Both guards route it through
+`lib/auth/authorization.ts` rather than asserting a role in the guard body, so a
+fork replaces "who counts as an admin" — and "over whose data" — from
+`lib/app/authorization.ts` without touching a route. Note which face each guard
+asks: `withAdminAuth` asks `canAdminister`, and so do `app/admin/layout.tsx` and
+the maintenance-mode bypass in `components/maintenance-wrapper.tsx`; `withAuth`
+asks `canRead`. Replacing one face does not affect the other's routes.
+Behaviour on a stock install is unchanged.
+
+Both guards also take an optional `resource` resolver so the policy can see
+_which_ resource is being touched. Core supplies none, and a route with no
+resolver has the policy asked about a `null` subject, which the default policy
+allows. **A resolver that returns nothing, or throws, denies the request** —
+`null` is a refusal, not "unscoped" — and it runs before the authorization
+decision, so on an admin route it is reachable by any authenticated caller.
+
+What reaches the policy is a `ReadTarget`: `'nothing'` (no resolver on this
+route), `'unattributed'` (a row the resolver named but could not attribute to a
+user) or `'subject'` (a user id owns it). A policy must answer all three, and
+the compiler enforces that rather than a docblock — see
+`tests/unit/lib/auth/authorization-exhaustiveness.test.ts`.
+
+Both guards also take an `ownership`, and it is the one option a new route
+usually has to think about. It says how the route decides **whose** rows it may
+read: `{ decidedBy: 'policy' }` (the handler reads `session.subjectFilter`, and
+the guard checks that it did), or `{ decidedBy: 'resource' | 'self' | 'nothing',
+because }` with a sentence saying why. A `resource` resolver does **not** count
+on its own — `canRead` decided about one row, not about a list the same handler
+may also run.
+
+The guard only asks for a declaration when `subjectScope` narrows the actual
+caller, so on a stock install every `withAdminAuth` route is exempt (a platform
+admin sees every subject) and every `withAuth` route is not (a member sees their
+own). A route that owed a declaration and gave none fails its **test**, and logs
+once per route in every other environment — but never on a response that carried
+no rows, so an early `return createRateLimitResponse(...)` is safe.
+
+The full guide is [`.context/auth/authorization.md`](./authorization.md) — the
+three scope inputs, the owner-scoped list recipe, and an explicit list of what
+is **not** behind the seam yet. `app/api/v1/users/[id]/route.ts` (GET) is the
+one core route that declares a `resource`, and the example to copy from.
 
 **Usage - Simple authenticated route:**
 
@@ -244,13 +293,18 @@ import { withAuth } from '@/lib/auth/guards';
 import { successResponse } from '@/lib/api/responses';
 import { prisma } from '@/lib/db/client';
 
-export const GET = withAuth(async (request, session) => {
-  // session is guaranteed to be authenticated
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-  });
-  return successResponse(user);
-});
+export const GET = withAuth(
+  async (request, session) => {
+    // session is guaranteed to be authenticated
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+    });
+    return successResponse(user);
+  },
+  // Self-scoped by construction — NOT `'policy'`, which widens to every subject
+  // for a platform admin and would hand them somebody else's row here.
+  { ownership: { decidedBy: 'self', because: 'Reads only session.user.id.' } }
+);
 ```
 
 **Usage - requiring an API-key scope:**
@@ -342,7 +396,7 @@ import { requireRole } from '@/lib/auth/utils'
 
 export default async function AdminPage() {
   // Throws if not authenticated or not admin
-  const session = await requireRole('ADMIN')
+  const session = await requireRole(PLATFORM_ADMIN_ROLE)
 
   return (
     <div>
@@ -367,7 +421,7 @@ export default async function AdminPage() {
     redirect('/login?callbackUrl=/admin')
   }
 
-  if (session.user.role !== 'ADMIN') {
+  if (!isPlatformAdmin(session.user)) {
     redirect('/unauthorized')
   }
 
@@ -430,7 +484,7 @@ import { prisma } from '@/lib/db/client';
 
 export async function GET(request: NextRequest) {
   try {
-    await requireRole('ADMIN');
+    await requireRole(PLATFORM_ADMIN_ROLE);
 
     const users = await prisma.user.findMany();
 

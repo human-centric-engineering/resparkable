@@ -15,6 +15,12 @@
  * - Extension whitelist enforced via `ALLOWED_EXTENSIONS` (400 INVALID_FILE_TYPE)
  * - Pre-parse Content-Length guard rejects oversize bodies before allocation
  * - Missing file field returns 400
+ *
+ * Cleanup branch (runCleanup=true):
+ * - Text upload → 201 with { document, redirectTo } envelope
+ * - CSV upload → 400 CLEANUP_UNSUPPORTED_FORMAT (no document created)
+ * - PDF upload → metadata.runCleanup persisted before returning normal PDF preview
+ * - Non-cleanup text upload regression → existing path unchanged
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -46,6 +52,10 @@ vi.mock('@/lib/db/client', () => ({
     aiKnowledgeDocument: {
       findMany: vi.fn(),
       count: vi.fn(),
+      update: vi.fn(),
+    },
+    aiKnowledgeDocumentTag: {
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     // The list endpoint runs a tagged-template raw query to compute the
     // distinct BM25 keyword count per doc. Default to "no keywords yet"
@@ -58,6 +68,22 @@ vi.mock('@/lib/orchestration/knowledge/document-manager', () => ({
   uploadDocument: vi.fn(),
   uploadDocumentFromBuffer: vi.fn(),
   previewDocument: vi.fn(),
+  createDocumentForCleanup: vi.fn(),
+  parseDocumentMetadata: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock('@/lib/orchestration/knowledge/parsers', () => ({
+  parseDocument: vi.fn(),
+  // Mirror the real implementation: only PDF files require a preview step.
+  requiresPreview: vi.fn((fileName: string) => fileName.toLowerCase().endsWith('.pdf')),
+}));
+
+vi.mock('@/lib/orchestration/mcp/resource-update-hooks', () => ({
+  notifyMcpKnowledgeChanged: vi.fn(),
+}));
+
+vi.mock('@/lib/orchestration/knowledge/resolveAgentDocumentAccess', () => ({
+  invalidateAllAgentAccess: vi.fn(),
 }));
 
 vi.mock('@/lib/security/ip', () => ({ getClientIP: vi.fn(() => '127.0.0.1') }));
@@ -70,7 +96,10 @@ import {
   previewDocument,
   uploadDocument,
   uploadDocumentFromBuffer,
+  createDocumentForCleanup,
+  parseDocumentMetadata,
 } from '@/lib/orchestration/knowledge/document-manager';
+import { parseDocument, requiresPreview } from '@/lib/orchestration/knowledge/parsers';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -495,6 +524,162 @@ describe('POST /api/v1/admin/orchestration/knowledge/documents', () => {
       const response = await POST(makePostRequestWithContentLength('abc'));
 
       expect(response.status).toBe(201);
+    });
+  });
+
+  describe('Document Clean Up (runCleanup)', () => {
+    // These tests verify the runCleanup branch contract:
+    // - text/markdown/txt with runCleanup=true → createDocumentForCleanup path
+    // - CSV with runCleanup=true → 400 CLEANUP_UNSUPPORTED_FORMAT
+    // - PDF with runCleanup=true → metadata.runCleanup persisted, normal PDF preview returned
+    // - text upload without runCleanup → existing uploadDocument path (regression guard)
+
+    beforeEach(() => {
+      // Default: parseDocumentMetadata returns null (no existing metadata)
+      vi.mocked(parseDocumentMetadata).mockReturnValue(null);
+    });
+
+    it('text upload with runCleanup=true returns 201 with { document, redirectTo } envelope', async () => {
+      // Arrange
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const cleanupDoc = makeDocument({ status: 'cleaning' });
+      const knownDocId = cleanupDoc.id;
+      vi.mocked(createDocumentForCleanup).mockResolvedValue({
+        document: cleanupDoc,
+        conversationId: 'conv-123',
+        redirectTo: `/admin/orchestration/knowledge/${knownDocId}/cleanup`,
+      } as never);
+
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new File(['# Hello\n\nContent here.'], 'notes.txt', { type: 'text/plain' })
+      );
+      formData.append('runCleanup', 'true');
+
+      // Act
+      const response = await POST(makePostRequestWithFormData(formData));
+      const data = await parseJson<{
+        success: boolean;
+        data: { document: { id: string; status: string }; redirectTo: string };
+      }>(response);
+
+      // Assert — status first, then envelope shape, then URL construction
+      expect(response.status).toBe(201);
+      expect(data.success).toBe(true);
+      expect(data.data.document.id).toBe(knownDocId);
+      expect(data.data.redirectTo).toBe(`/admin/orchestration/knowledge/${knownDocId}/cleanup`);
+      // createDocumentForCleanup was called instead of uploadDocument
+      expect(createDocumentForCleanup).toHaveBeenCalledOnce();
+      expect(uploadDocument).not.toHaveBeenCalled();
+    });
+
+    it('CSV upload with runCleanup=true returns 400 CLEANUP_UNSUPPORTED_FORMAT and no document is created', async () => {
+      // Arrange
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      // CSV triggers the binary path → parseDocument is called
+      vi.mocked(parseDocument).mockResolvedValue({
+        fullText: 'name,amount\nAcme,100\n',
+        metadata: { format: 'csv' },
+        title: undefined,
+      } as never);
+
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new File(['name,amount\nAcme,100\n'], 'spending.csv', { type: 'text/csv' })
+      );
+      formData.append('runCleanup', 'true');
+
+      // Act
+      const response = await POST(makePostRequestWithFormData(formData));
+      const data = await parseJson<{
+        success: boolean;
+        error: { code: string; message: string; details: { format: string[] } };
+      }>(response);
+
+      // Assert — status first
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error.code).toBe('CLEANUP_UNSUPPORTED_FORMAT');
+      expect(data.error.message).toBeTruthy();
+      expect(Array.isArray(data.error.details.format)).toBe(true);
+      // No document should have been created
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
+      expect(uploadDocumentFromBuffer).not.toHaveBeenCalled();
+    });
+
+    it('PDF upload with runCleanup=true persists metadata.runCleanup=true before returning preview', async () => {
+      // Arrange — PDF triggers requiresPreview=true path
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(requiresPreview).mockReturnValue(true);
+      const pdfDoc = makeDocument({
+        fileName: 'report.pdf',
+        status: 'pending_review',
+        mimeType: 'application/pdf',
+        metadata: null,
+      });
+      vi.mocked(previewDocument).mockResolvedValue({
+        document: pdfDoc,
+        extractedText: 'Page 1 content',
+        title: 'Annual Report',
+        author: undefined,
+        sectionCount: 3,
+        warnings: [],
+      } as never);
+      vi.mocked(parseDocumentMetadata).mockReturnValue(null);
+      vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(pdfDoc as never);
+
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new File(['%PDF fake-pdf-bytes'], 'report.pdf', { type: 'application/pdf' })
+      );
+      formData.append('runCleanup', 'true');
+
+      // Act
+      const response = await POST(makePostRequestWithFormData(formData));
+      const data = await parseJson<{
+        success: boolean;
+        data: { document: { id: string }; preview: { requiresConfirmation: boolean } };
+      }>(response);
+
+      // Assert — status and standard PDF preview envelope shape
+      expect(response.status).toBe(201);
+      expect(data.success).toBe(true);
+      expect(data.data.preview.requiresConfirmation).toBe(true);
+      // runCleanup flag was persisted via prisma.update BEFORE returning
+      expect(prisma.aiKnowledgeDocument.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: pdfDoc.id },
+          data: expect.objectContaining({
+            metadata: expect.objectContaining({ runCleanup: true }),
+          }),
+        })
+      );
+      // createDocumentForCleanup is NOT called for PDF (defer to confirm endpoint)
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
+    });
+
+    it('text upload WITHOUT runCleanup still calls uploadDocument (regression guard)', async () => {
+      // Arrange
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(uploadDocument).mockResolvedValue(makeDocument() as never);
+
+      const formData = new FormData();
+      formData.append(
+        'file',
+        new File(['# Guide\n\nContent.'], 'guide.md', { type: 'text/markdown' })
+      );
+      // No runCleanup field
+
+      // Act
+      const response = await POST(makePostRequestWithFormData(formData));
+
+      // Assert — existing upload path, no cleanup branching
+      expect(response.status).toBe(201);
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
+      expect(uploadDocument).toHaveBeenCalledOnce();
     });
   });
 });

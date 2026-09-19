@@ -36,6 +36,20 @@ import { CallExternalApiCapability } from '@/lib/orchestration/capabilities/buil
 import { RunWorkflowCapability } from '@/lib/orchestration/capabilities/built-in/run-workflow';
 import { UploadToStorageCapability } from '@/lib/orchestration/capabilities/built-in/upload-to-storage';
 import { SendMessageToChannelCapability } from '@/lib/orchestration/capabilities/built-in/send-message-to-channel';
+import { StripLinesMatchingCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/strip-lines-matching';
+import { StripMatchesCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/strip-matches';
+import { StripTimestampsCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/strip-timestamps';
+import { StripSpeakerLabelsCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/strip-speaker-labels';
+import { CollapseWhitespaceCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/collapse-whitespace';
+import { DedupeLinesCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/dedupe-lines';
+import { NormalisePunctuationCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/normalise-punctuation';
+import { JoinWrappedLinesCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/join-wrapped-lines';
+import { ReadDocumentCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/read-document';
+import { FindInDocumentCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/find-in-document';
+import { PreviewDiffCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/preview-diff';
+import { EstimateSizeCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/estimate-size';
+import { RewriteWithLlmCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/rewrite-with-llm';
+import { RewriteSectionWithLlmCapability } from '@/lib/orchestration/capabilities/built-in/document-cleanup/rewrite-section-with-llm';
 import { initAppCapabilities } from '@/lib/app/capabilities';
 import { createAppInitGate, restoreMap, describeThrown } from '@/lib/fork-init';
 import type { BaseCapability } from '@/lib/orchestration/capabilities/base-capability';
@@ -243,6 +257,23 @@ export function registerBuiltInCapabilities(): void {
     capabilityDispatcher.register(new RunWorkflowCapability());
     capabilityDispatcher.register(new UploadToStorageCapability());
     capabilityDispatcher.register(new SendMessageToChannelCapability());
+    // Document Clean Up capabilities — only meaningful inside a chat session
+    // bound to AiConversation.contextType='knowledge_document'. Each capability
+    // errors out cleanly if invoked outside that context.
+    capabilityDispatcher.register(new StripLinesMatchingCapability());
+    capabilityDispatcher.register(new StripMatchesCapability());
+    capabilityDispatcher.register(new StripTimestampsCapability());
+    capabilityDispatcher.register(new StripSpeakerLabelsCapability());
+    capabilityDispatcher.register(new CollapseWhitespaceCapability());
+    capabilityDispatcher.register(new DedupeLinesCapability());
+    capabilityDispatcher.register(new NormalisePunctuationCapability());
+    capabilityDispatcher.register(new JoinWrappedLinesCapability());
+    capabilityDispatcher.register(new ReadDocumentCapability());
+    capabilityDispatcher.register(new FindInDocumentCapability());
+    capabilityDispatcher.register(new PreviewDiffCapability());
+    capabilityDispatcher.register(new EstimateSizeCapability());
+    capabilityDispatcher.register(new RewriteWithLlmCapability());
+    capabilityDispatcher.register(new RewriteSectionWithLlmCapability());
     registered = true;
   }
   // Auto-wire the app's capability registrations (fork-readiness — the

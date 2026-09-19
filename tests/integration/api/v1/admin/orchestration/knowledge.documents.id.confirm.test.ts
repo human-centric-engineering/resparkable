@@ -34,8 +34,27 @@ vi.mock('next/headers', () => ({
   headers: vi.fn(() => Promise.resolve(new Headers())),
 }));
 
-vi.mock('@/lib/orchestration/knowledge/document-manager', () => ({
-  confirmPreview: vi.fn(),
+vi.mock('@/lib/orchestration/knowledge/document-manager', async () => {
+  const actual = await vi.importActual<
+    typeof import('@/lib/orchestration/knowledge/document-manager')
+  >('@/lib/orchestration/knowledge/document-manager');
+  return {
+    ...actual,
+    confirmPreview: vi.fn(),
+    transitionToCleanup: vi.fn(),
+  };
+});
+
+// The confirm route now reads metadata.runCleanup from the doc row before
+// branching, so prisma needs to be mocked. Default returns null metadata so
+// `wantsCleanup` is false and the existing happy-path tests proceed to
+// confirmPreview unchanged. The cleanup-branch tests override this per-test.
+vi.mock('@/lib/db/client', () => ({
+  prisma: {
+    aiKnowledgeDocument: {
+      findUnique: vi.fn().mockResolvedValue({ metadata: null, fileName: 'guide.pdf' }),
+    },
+  },
 }));
 
 vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({

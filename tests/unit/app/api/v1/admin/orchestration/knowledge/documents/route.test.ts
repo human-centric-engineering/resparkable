@@ -36,6 +36,10 @@ vi.mock('@/lib/db/client', () => ({
     aiKnowledgeDocument: {
       findMany: vi.fn(),
       count: vi.fn(),
+      update: vi.fn(),
+    },
+    aiKnowledgeDocumentTag: {
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
     },
     // Distinct keyword count aggregation; defaults to none for existing tests.
     $queryRaw: vi.fn().mockResolvedValue([]),
@@ -54,11 +58,14 @@ vi.mock('@/lib/orchestration/knowledge/document-manager', async (importOriginal)
     uploadDocument: vi.fn(),
     uploadDocumentFromBuffer: vi.fn(),
     previewDocument: vi.fn(),
+    createDocumentForCleanup: vi.fn(),
+    parseDocumentMetadata: vi.fn(() => ({})),
   };
 });
 
 vi.mock('@/lib/orchestration/knowledge/parsers', () => ({
   requiresPreview: vi.fn(() => false),
+  parseDocument: vi.fn(),
 }));
 
 vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
@@ -75,8 +82,10 @@ import {
   uploadDocument,
   uploadDocumentFromBuffer,
   previewDocument,
+  createDocumentForCleanup,
+  parseDocumentMetadata,
 } from '@/lib/orchestration/knowledge/document-manager';
-import { requiresPreview } from '@/lib/orchestration/knowledge/parsers';
+import { requiresPreview, parseDocument } from '@/lib/orchestration/knowledge/parsers';
 import { mockAdminUser, mockUnauthenticatedUser } from '@/tests/helpers/auth';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -188,6 +197,30 @@ describe('Knowledge Documents API', () => {
       expect(doc1.distinctKeywordCount).toBe(7);
       // Docs missing from the aggregation row default to 0, not undefined.
       expect(doc2.distinctKeywordCount).toBe(0);
+    });
+
+    it('omits the cleanup Text columns and lock bookkeeping from the query', async () => {
+      // Arrange
+      vi.mocked(prisma.aiKnowledgeDocument.findMany).mockResolvedValue([
+        { ...mockDocument, _count: { chunks: 0 }, tags: [] },
+      ] as never);
+      vi.mocked(prisma.aiKnowledgeDocument.count).mockResolvedValue(1);
+
+      // Act
+      await GET(makeGetRequest());
+
+      // Assert: a page of cleaning documents would otherwise carry the full
+      // original + processed text of each one. KnowledgeDocumentListItem
+      // declares these absent — the query is what makes that true.
+      const callArg = vi.mocked(prisma.aiKnowledgeDocument.findMany).mock.calls[0][0] as {
+        omit: Record<string, boolean>;
+      };
+      expect(callArg.omit).toEqual({
+        originalContent: true,
+        processedContent: true,
+        editLockHolder: true,
+        editLockAcquiredAt: true,
+      });
     });
 
     it('filters by status', async () => {
@@ -479,6 +512,179 @@ describe('Knowledge Documents API', () => {
       // re-introduce the bug.
       expect(Object.prototype.hasOwnProperty.call(json.data.preview, 'author')).toBe(true);
       expect(json.data.preview.author).toBeNull();
+    });
+  });
+
+  // ── POST — runCleanup branches ──────────────────────────────────────────
+
+  describe('POST /knowledge/documents — runCleanup=true (text)', () => {
+    it('calls createDocumentForCleanup and returns 201 with { document, redirectTo } for text upload', async () => {
+      // Arrange
+      const cleanupDoc = { id: 'doc-cleanup-001', name: 'My Guide', fileName: 'guide.txt' };
+      const redirectTo = '/admin/orchestration/knowledge/doc-cleanup-001/cleanup';
+      vi.mocked(createDocumentForCleanup).mockResolvedValue({
+        document: cleanupDoc as never,
+        conversationId: 'conv-001',
+        redirectTo,
+      });
+
+      // Act
+      const res = await POST(
+        makeFileRequest('guide.txt', 'Some text content', 'text/plain', { runCleanup: 'true' })
+      );
+      const json = JSON.parse(await res.text()) as {
+        success: boolean;
+        data: { document: { id: string }; redirectTo: string };
+      };
+
+      // Assert — route calls the cleanup helper, not uploadDocument, and wraps result in envelope
+      expect(res.status).toBe(201);
+      expect(json.success).toBe(true);
+      expect(json.data.document.id).toBe('doc-cleanup-001');
+      expect(json.data.redirectTo).toBe(redirectTo);
+      expect(createDocumentForCleanup).toHaveBeenCalledOnce();
+      expect(uploadDocument).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for text upload with runCleanup=true AND a line that exceeds max length', async () => {
+      // Arrange: a line longer than MAX_LINE_LENGTH (10,000 chars) — validation fires BEFORE cleanup helper
+      const longLine = 'x'.repeat(10_001);
+
+      // Act
+      const res = await POST(
+        makeFileRequest('guide.txt', longLine, 'text/plain', { runCleanup: 'true' })
+      );
+
+      // Assert — validation error; cleanup helper never reached
+      expect(res.status).toBe(400);
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
+    });
+
+    it('calls uploadDocument (not createDocumentForCleanup) when runCleanup is absent', async () => {
+      // Arrange
+      vi.mocked(uploadDocument).mockResolvedValue({
+        ...mockDocument,
+        id: 'doc-normal-001',
+      } as never);
+
+      // Act
+      const res = await POST(makeFileRequest('guide.txt', 'Some content', 'text/plain'));
+      const json = JSON.parse(await res.text()) as {
+        success: boolean;
+        data: { document: { id: string } };
+      };
+
+      // Assert — regression guard: no cleanup involved
+      expect(res.status).toBe(201);
+      expect(json.data.document.id).toBe('doc-normal-001');
+      expect(uploadDocument).toHaveBeenCalledOnce();
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /knowledge/documents — runCleanup=true (PDF)', () => {
+    it('writes metadata.runCleanup=true to the preview doc before returning the preview payload', async () => {
+      // Arrange
+      vi.mocked(requiresPreview).mockReturnValue(true);
+      vi.mocked(previewDocument).mockResolvedValue({
+        document: {
+          ...mockDocument,
+          id: 'doc-pdf-cleanup-001',
+          fileName: 'report.pdf',
+          metadata: {},
+        },
+        extractedText: 'PDF text',
+        title: 'Report',
+        author: null,
+        sectionCount: 2,
+        warnings: [],
+      } as never);
+      vi.mocked(parseDocumentMetadata).mockReturnValue({});
+      vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue({} as never);
+
+      // Act
+      const res = await POST(
+        makeFileRequest('report.pdf', new Uint8Array([0, 1, 2]).buffer, 'application/pdf', {
+          runCleanup: 'true',
+        })
+      );
+
+      // Assert — update was called with runCleanup: true in the metadata before the preview payload is returned
+      expect(res.status).toBe(201);
+      expect(prisma.aiKnowledgeDocument.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'doc-pdf-cleanup-001' },
+          data: expect.objectContaining({
+            metadata: expect.objectContaining({ runCleanup: true }),
+          }),
+        })
+      );
+    });
+  });
+
+  describe('POST /knowledge/documents — runCleanup=true (binary: EPUB/DOCX)', () => {
+    it('parses EPUB to text then calls createDocumentForCleanup', async () => {
+      // Arrange: EPUB (not PDF, so requiresPreview=false) with runCleanup=true
+      vi.mocked(requiresPreview).mockReturnValue(false);
+      vi.mocked(parseDocument).mockResolvedValue({
+        fullText: 'EPUB full text',
+        title: 'My Book',
+        sections: [],
+        metadata: { format: 'epub' },
+        warnings: [],
+      });
+      const cleanupDoc = { id: 'doc-epub-cleanup-001', name: 'My Book', fileName: 'book.epub' };
+      vi.mocked(createDocumentForCleanup).mockResolvedValue({
+        document: cleanupDoc as never,
+        conversationId: 'conv-epub-001',
+        redirectTo: '/admin/orchestration/knowledge/doc-epub-cleanup-001/cleanup',
+      });
+
+      // Act
+      const res = await POST(
+        makeFileRequest('book.epub', new Uint8Array([0, 1, 2]).buffer, 'application/epub+zip', {
+          runCleanup: 'true',
+        })
+      );
+      const json = JSON.parse(await res.text()) as {
+        success: boolean;
+        data: { document: { id: string }; redirectTo: string };
+      };
+
+      // Assert — route parses the binary, then routes to cleanup instead of chunking
+      expect(res.status).toBe(201);
+      expect(json.data.document.id).toBe('doc-epub-cleanup-001');
+      expect(json.data.redirectTo).toContain('/cleanup');
+      expect(createDocumentForCleanup).toHaveBeenCalledOnce();
+      expect(uploadDocumentFromBuffer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /knowledge/documents — runCleanup=true (CSV)', () => {
+    it('returns 400 with CLEANUP_UNSUPPORTED_FORMAT for CSV files with runCleanup=true', async () => {
+      // Arrange: CSV file (not PDF so requiresPreview=false), runCleanup=true
+      vi.mocked(requiresPreview).mockReturnValue(false);
+      vi.mocked(parseDocument).mockResolvedValue({
+        fullText: 'col1,col2\nval1,val2',
+        title: 'data',
+        sections: [],
+        metadata: { format: 'csv' },
+        warnings: [],
+      });
+
+      // Act
+      const res = await POST(
+        makeFileRequest('data.csv', new Uint8Array([0, 1, 2]).buffer, 'text/csv', {
+          runCleanup: 'true',
+        })
+      );
+      const json = JSON.parse(await res.text()) as { success: boolean; error: { code: string } };
+
+      // Assert — route refuses cleanup for CSV format
+      expect(res.status).toBe(400);
+      expect(json.success).toBe(false);
+      expect(json.error.code).toBe('CLEANUP_UNSUPPORTED_FORMAT');
+      expect(createDocumentForCleanup).not.toHaveBeenCalled();
     });
   });
 

@@ -182,9 +182,10 @@ describe('registerBuiltInCapabilities', () => {
     const spy = vi.spyOn(capabilityDispatcher, 'register');
     registerBuiltInCapabilities();
     registerBuiltInCapabilities();
-    // 13 built-ins, from the first call only. The app seam is stubbed at the
-    // top of this file, so this counts core and nothing else.
-    expect(spy).toHaveBeenCalledTimes(13);
+    // 27 built-ins, from the first call only (13 base + 14 document-cleanup
+    // capabilities). The app seam is stubbed at the top of this file, so this
+    // counts core and nothing else.
+    expect(spy).toHaveBeenCalledTimes(27);
     spy.mockRestore();
   });
 

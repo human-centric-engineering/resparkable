@@ -85,6 +85,7 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/knowledge/documents/:id`                | GET, DELETE        | Read / delete document                                                                                                                                                                                                     | 3.3     |
 | `/knowledge/documents/:id/rechunk`        | POST               | Rechunk + re-embed                                                                                                                                                                                                         | 3.3     |
 | `/knowledge/documents/:id/agents`         | GET                | List active agents that can search this document, with access paths (full / direct / tag / system)                                                                                                                         | —       |
+| `/knowledge/documents/:id/download`       | GET                | Download the document's text as Markdown. `?variant=cleaned\|original\|chunks`; omitted takes the best available for the document's state                                                                                  | —       |
 | `/knowledge/seed`                         | POST               | Seed chunks (no embeddings) for design patterns                                                                                                                                                                            | 3.3     |
 | `/knowledge/embed`                        | POST               | Generate embeddings for unembedded chunks                                                                                                                                                                                  | 3.3     |
 | `/knowledge/documents/:id/retry`          | POST               | Retry failed document ingestion                                                                                                                                                                                            | 5.1     |
@@ -190,7 +191,13 @@ These resource families are scoped to the caller. Another admin's own rows retur
 
 The rest are admin-global: every admin sees the same data.
 
-**Rows nobody owns are visible to every admin.** Schedule- and inbound-triggered runs, and the conversations inbound messages create, carry `userId = null` — the data on them belongs to a third party with no account here, not to the operator who configured the schedule or channel ([#502](https://github.com/human-centric-engineering/sunrise/issues/502)). Access to them is granted on a `'system'` basis by [`lib/orchestration/access/execution-access.ts`](../../lib/orchestration/access/execution-access.ts) and [`conversation-access.ts`](../../lib/orchestration/access/conversation-access.ts). Without it a scheduled run would be invisible in the executions list and a run paused at an approval gate could never be cleared. Conversation accesses on this basis are audit-logged.
+**Rows nobody owns are visible to every admin on a default install.** Schedule- and inbound-triggered runs, and the conversations inbound messages create, carry `userId = null` — the data on them belongs to a third party with no account here, not to the operator who configured the schedule or channel ([#502](https://github.com/human-centric-engineering/sunrise/issues/502)). Access to them is granted on a `'system'` basis by [`lib/orchestration/access/execution-access.ts`](../../lib/orchestration/access/execution-access.ts) and [`conversation-access.ts`](../../lib/orchestration/access/conversation-access.ts). Without it a scheduled run would be invisible in the executions list and a run paused at an approval gate could never be cleared. Conversation accesses on this basis are audit-logged.
+
+For executions that grant is the **authorization policy's** answer, not a fixed rule: a fork registering a `canRead` that refuses `'unattributed'` reads narrows every execution read surface that goes through the helper, and its admins see only runs they started. (`/approvals/history` does **not** go through it — it hard-codes `userId = caller`, so system-owned runs are absent from approval history on every install, including decisions the caller made themselves — [#773](https://github.com/human-centric-engineering/sunrise/issues/773).) Conversations ask the same question through `conversationVisibilityWhere` and `adminCanViewConversation`, so the list, search and detail routes narrow together. **Only their ownerless arm asks** — an active share still admits its holder whatever the policy says, because a share is consent about one row rather than a rule about a class of them. See [`.context/auth/authorization.md`](../auth/authorization.md).
+
+**One exception, and it is act-only.** `approve`, `reject` and `cancel` still admit an admin the run's own trace names in `approverUserIds` — a per-run nomination, not an answer to the ownerless question (`cancel` only while the run is `paused_for_approval`). The read surfaces have no such arm, on any install: a delegated approver who is neither the owner nor admitted by the policy can clear a gate but cannot **find** it in the queue (`GET /executions?status=paused_for_approval`), the badge (`/executions/counts`) or the detail route — the notification link the engine emits is their route, as [`orchestration-approvals.md`](../admin/orchestration-approvals.md#what-admins-cannot-do-from-the-ui-api-only) has always said. Under a narrowing policy that extends to system-owned runs, and it is settled rather than pending (t-690): the read routes keep no approver arm, and **a fork's policy must admit some principal to ownerless `execution` rows** or its scheduled workflows' approval gates wait for the 7-day reap. `checkOwnerlessReachability` in `lib/auth/orphan-reads.ts` is the test that says so before the policy ships; the operator principal that should hold that reach under a customer tier is the identity work's (§106) to define.
+
+**The same answer decides the writes over rows nobody owns, and the two conversation write routes now agree on it.** `PATCH` / `DELETE /conversations/:id` gate an inbound thread on `adminCanViewConversation`, and `POST /conversations/clear` with `allUsers` reaches ownerless threads only where `session.unattributedReads.conversation` is `true` — the same policy answer, read directly. A narrowed caller's bulk clear leaves inbound threads in place exactly as their list omits them — and still reaches other users' owned rows, as before: only the ownerless arm is policy-gated, and `subjectScope` is the seam that would narrow the rest. A default install's is unchanged. Deleting an inbound thread is the only Art. 17 route its sender has (`eraseUser()` cannot reach someone with no account), so a policy that admits nobody to ownerless conversations has closed it for the whole install — which is the other consequence the reachability check names (t-691).
 
 ---
 
@@ -801,6 +808,35 @@ Returns `201` with the created `AiKnowledgeDocument`. Files over 50 MB → `413 
 
 Read / delete. Chunks cascade via the FK relation.
 
+### `GET /knowledge/documents/:id/download`
+
+Returns the document's text as a `text/markdown` attachment named after its
+slug. Which text exists depends on lifecycle stage:
+
+| Status           | `cleaned`          | `original`         | `chunks`                |
+| ---------------- | ------------------ | ------------------ | ----------------------- |
+| `pending_review` | —                  | extracted PDF text | —                       |
+| `cleaning`       | `processedContent` | `originalContent`  | —                       |
+| `ready`          | —                  | —                  | rebuilt from chunk rows |
+
+`originalContent` and `processedContent` are **both cleared on finalise** to
+reclaim storage — a cleanup document otherwise holds two full copies of itself
+forever — so for a finished document the chunk rows are the only surviving copy
+of the text. `rebuildTextFromChunks`
+(`lib/orchestration/knowledge/document-text.ts`) orders them by the numeric
+suffix of `chunkKey`, NOT the lexicographic `chunkKey` sort used everywhere
+else: that sorts by the section slug first and puts `-10` before `-2`, which
+would scramble the document.
+
+The rebuild is the **ingested** text, not the source file — the chunker can
+drop a fragment that fits no chunk, which is what the Coverage column reports.
+The UI labels it "Download text (from chunks)" for that reason.
+
+Omitting `variant` takes the best available (cleaned → original → chunks). The
+variant actually served comes back in `X-Document-Variant`. A variant with no
+text 404s with `NO_TEXT_AVAILABLE` and reports both the variant and the
+document's status, since the two together explain the emptiness.
+
 ### `POST /knowledge/documents/:id/rechunk`
 
 Re-runs the chunker + embedder. Blocked with `409 CONFLICT` when the document is already in `status: 'processing'` to prevent races.
@@ -916,11 +952,11 @@ The shared authorization helper is `adminCanViewConversation` at [`lib/orchestra
 
 ### `GET /conversations`
 
-Paginated list of the caller's conversations **plus conversations actively shared with admins and system-owned inbound threads**. Query: `page`, `limit`, `agentId`, `isActive`, `q`, `messageSearch` (`listConversationsQuerySchema`). The visibility clause is `OR: [{userId: caller}, {userId: null}, {share: active}]`; filters are AND'd alongside.
+Paginated list of the caller's conversations **plus conversations actively shared with admins and system-owned inbound threads**. Query: `page`, `limit`, `agentId`, `isActive`, `q`, `messageSearch` (`listConversationsQuerySchema`). The visibility clause comes from `conversationVisibilityWhere(session)` — `OR: [{userId: caller}, {userId: null}, {share: active}]`, with the middle arm present only where the authorization policy permits an unattributed read; filters are AND'd alongside. The detail route derives the same three arms from the same answer, so the list and the rows it links to cannot disagree.
 
 ### `DELETE /conversations/:id`
 
-Owner or system-owned. Gated by `adminCanViewConversation`; a `'shared'` basis is refused, so missing, another admin's, or merely-shared → `404`. Messages cascade. PATCH follows the same posture. Deleting a system-owned thread writes a `conversation.deleted` audit row.
+Owner or system-owned. Gated by `adminCanViewConversation`; a `'shared'` basis is refused, so missing, another admin's, or merely-shared → `404`. Messages cascade. PATCH follows the same posture. Deleting a system-owned thread writes a `conversation.deleted` audit row. **Note this is a read predicate gating a write**, deliberately — there is no separate write question for ownerless rows (`lib/auth/orphan-reads.ts` says why). A fork whose policy refuses a caller unattributed reads refuses them this route too, so the policy must admit _some_ principal to ownerless conversations or the per-thread erasure route — the only one a data subject with no account has — is closed to everyone; `checkOwnerlessReachability` reports exactly that.
 
 ### `GET /conversations/:id/messages`
 
@@ -996,7 +1032,7 @@ Scope:
 
 - default → caller's own conversations (`userId = session.user.id`)
 - `userId` → a specific user
-- `allUsers: true` → across all users (mutually exclusive with `userId`)
+- `allUsers: true` → across all users (mutually exclusive with `userId`), **plus the threads nobody owns** — inbound SMS / email / Slack conversations, `userId = null` — where the authorization policy permits this caller an unattributed read of conversations. A default install does; a fork's narrowing policy may not, in which case those rows are left in place (`where.userId = { not: null }`) exactly as they are absent from that caller's list — other users' owned rows stay in `allUsers` whatever the policy says, as before; only the ownerless arm is policy-gated — and both the route log and the `conversation.bulk_clear` audit row carry `ownerlessExcluded: true`. That is the same rule `DELETE /conversations/:id` applies to one thread; the two used to disagree (t-691).
 
 Cross-user deletions emit an `AiAdminAuditLog` entry (`conversation.bulk_clear`). Returns `{ deletedCount }`.
 

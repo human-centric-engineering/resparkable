@@ -6,7 +6,7 @@
  * @see app/api/v1/admin/orchestration/experiments/[id]/run/route.ts
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/v1/admin/orchestration/experiments/[id]/run/route';
 import {
@@ -14,6 +14,12 @@ import {
   mockAuthenticatedUser,
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
+import { ownerScopedFindFirst } from '@/tests/helpers/owner-scoped-prisma';
+import {
+  registerAuthorizationPolicy,
+  __resetAuthorizationPolicyForTests,
+  DEFAULT_AUTHORIZATION_POLICY,
+} from '@/lib/auth/authorization';
 
 // ─── Mock dependencies ───────────────────────────────────────────────────────
 
@@ -137,8 +143,14 @@ async function parseJson<T>(response: Response): Promise<T> {
 describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // Outer findUnique: 404 check (select: { id: true })
-    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue({ id: EXPERIMENT_ID } as never);
+    // Outer findFirst: the 404 check, which also settles the audit basis, so it
+    // selects `createdBy` too. Omitting the column here is not "owned by
+    // nobody" — it is "owner unknown", which the basis helper answers with a
+    // 404. The fixture has to say.
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue({
+      id: EXPERIMENT_ID,
+      createdBy: ADMIN_ID,
+    } as never);
     // Inner tx findUnique: full experiment with variants
     mockTxFindUnique.mockResolvedValue(makeExperiment());
     mockTxUpdate.mockResolvedValue(makeExperimentWithAgent({ status: 'running' }));
@@ -222,14 +234,19 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       expect(data.data.status).toBe('running');
     });
 
-    it('calls tx.aiExperiment.update with status "running"', async () => {
+    it('pins the status write to the ownership its read saw', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
 
       await POST(makePostRequest(), makeContext());
 
+      // `createdBy` in the `where`, not just `id`. An orphan can be claimed, so
+      // `createdBy` has a null -> someone transition; without the pin an admin
+      // could flip an experiment another admin claimed mid-run to `running` and
+      // hang their own eval runs off it. Matches PATCH, DELETE and verdicts —
+      // `run` was the last write in the family not pinned.
       expect(mockTxUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: EXPERIMENT_ID },
+          where: { id: EXPERIMENT_ID, createdBy: ADMIN_ID },
           data: { status: 'running' },
         })
       );
@@ -293,23 +310,30 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
 
       await POST(makePostRequest(), makeContext());
 
-      // tx.aiExperiment.findFirst is called inside the transaction with
-      // a userId-scoped where clause (cross-user 404, matching the
-      // posture every other Phase 2 evaluation route uses).
+      // tx.aiExperiment.findFirst is called inside the transaction under the
+      // caller's visible clause — theirs, or unowned where the policy allows —
+      // so a foreign row is a 404 there as well as at the outer check.
       expect(mockTxFindUnique).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: EXPERIMENT_ID, createdBy: ADMIN_ID },
+          where: {
+            AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+          },
           include: expect.objectContaining({ variants: true }),
         })
       );
-      // The outer prisma.aiExperiment.findFirst applies the same
-      // userId scope at the pre-transaction 404 check.
+      // The pre-transaction 404 check uses the SAME clause object, so the two
+      // reads cannot disagree about who the caller is.
       expect(vi.mocked(prisma.aiExperiment.findFirst)).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: EXPERIMENT_ID, createdBy: ADMIN_ID },
-          select: { id: true },
+          where: {
+            AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+          },
+          select: { id: true, createdBy: true },
         })
       );
+      const outerWhere = vi.mocked(prisma.aiExperiment.findFirst).mock.calls[0][0]?.where;
+      const innerWhere = mockTxFindUnique.mock.calls[0][0]?.where;
+      expect(innerWhere).toEqual(outerWhere);
     });
   });
 
@@ -394,13 +418,26 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
   describe('Cross-user isolation', () => {
     it('returns 404 when the experiment belongs to a different admin (existence does not leak)', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      // Outer findFirst returns null because the where clause includes
-      // createdBy = caller.id, and the foreign experiment doesn't match.
-      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
+      // Owner-aware fake rather than `mockResolvedValue(null)`: a mock that
+      // returns null unconditionally gives a 404 whether or not the route's
+      // `where` carries `createdBy`, so the assertion below could not fail.
+      // Here the route has to ASK for its own rows to be handed one.
+      vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+        ownerScopedFindFirst([makeExperiment({ createdBy: 'someone-else' })]) as never
+      );
 
       const response = await POST(makePostRequest(), makeContext());
 
       expect(response.status).toBe(404);
+      // The ownership clause and the id are separate AND members. Under the
+      // default policy the ownership member is the widened form — the caller,
+      // or nobody. Never another subject, which is what the fake above proves
+      // by handing back nothing.
+      expect(vi.mocked(prisma.aiExperiment.findFirst).mock.calls[0][0]).toMatchObject({
+        where: {
+          AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+        },
+      });
       // Crucially, no inserts on either path. Pre-fix, the caller's
       // userId would have ended up on AiEvaluationRun rows hash-pinned
       // to the foreign dataset, letting them exfiltrate its content
@@ -418,7 +455,10 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       // POST /experiments enforces dataset ownership at write time —
       // but the defence-in-depth check protects against a future writer
       // adding a new experiment-create path that misses it.
-      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue({ id: EXPERIMENT_ID } as never);
+      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue({
+        id: EXPERIMENT_ID,
+        createdBy: ADMIN_ID,
+      } as never);
       mockTxFindUnique.mockResolvedValue({
         id: EXPERIMENT_ID,
         name: 'Test Experiment',
@@ -444,6 +484,85 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       expect(response.status).toBe(404);
       expect(mockEvalRunCreate).not.toHaveBeenCalled();
       expect(mockTxUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * t-678. `AiDataset.userId` is `SetNull` too, so erasing an admin orphans the
+   * dataset alongside the experiment. Testing the dataset with a bare
+   * `!== session.user.id` made a claimed orphan impossible to run: the claim
+   * succeeded, the row stayed visible, and `run` answered 404 for an experiment
+   * the caller now owned. The dataset gets the same three cases the experiment
+   * does — mine, nobody's, someone else's.
+   */
+  describe('an ownerless dataset', () => {
+    function orphanDatasetExperiment() {
+      return {
+        id: EXPERIMENT_ID,
+        name: 'Test Experiment',
+        agentId: 'agent-1',
+        status: 'draft',
+        // The experiment has been claimed: the caller owns it now.
+        createdBy: ADMIN_ID,
+        datasetId: 'ds-orphan',
+        metricConfigs: [{ slug: 'judge_agent', config: { agentSlug: 'eval-judge-relevance' } }],
+        // Its dataset was orphaned by the same erasure and nobody claimed it.
+        dataset: { id: 'ds-orphan', userId: null, contentHash: 'h', caseCount: 12 },
+        variants: [
+          { id: 'v1', label: 'Control' },
+          { id: 'v2', label: 'Variant A' },
+        ],
+      };
+    }
+
+    beforeEach(() => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue({
+        id: EXPERIMENT_ID,
+        createdBy: ADMIN_ID,
+      } as never);
+      mockTxFindUnique.mockResolvedValue(orphanDatasetExperiment());
+    });
+
+    afterEach(() => {
+      __resetAuthorizationPolicyForTests();
+    });
+
+    it('runs when the policy lets the caller read unowned rows', async () => {
+      const response = await POST(makePostRequest(), makeContext());
+
+      expect(response.status).toBe(200);
+      expect(mockEvalRunCreate).toHaveBeenCalled();
+    });
+
+    it('is refused when the policy does not', async () => {
+      // A fork whose org admins may not touch another department's abandoned
+      // work. Same claimed experiment, same orphaned dataset, narrower policy.
+      registerAuthorizationPolicy({
+        ...DEFAULT_AUTHORIZATION_POLICY,
+        canRead: (viewer, target, scope) =>
+          target.kind === 'unattributed'
+            ? Promise.resolve(false)
+            : DEFAULT_AUTHORIZATION_POLICY.canRead(viewer, target, scope),
+      });
+
+      const response = await POST(makePostRequest(), makeContext());
+
+      expect(response.status).toBe(404);
+      expect(mockEvalRunCreate).not.toHaveBeenCalled();
+    });
+
+    it("still refuses a LIVE third party's dataset, on both policies", async () => {
+      // The regression guard for the widening. `null` is the only owner value
+      // the relaxation may admit; an actual foreign id must stay refused
+      // whatever the policy says about unowned rows.
+      mockTxFindUnique.mockResolvedValue({
+        ...orphanDatasetExperiment(),
+        dataset: { id: 'ds-foreign', userId: 'another-admin', contentHash: 'h', caseCount: 12 },
+      });
+
+      expect((await POST(makePostRequest(), makeContext())).status).toBe(404);
+      expect(mockEvalRunCreate).not.toHaveBeenCalled();
     });
   });
 });

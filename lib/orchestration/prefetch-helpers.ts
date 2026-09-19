@@ -11,6 +11,7 @@ import { API } from '@/lib/api/endpoints';
 import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
 import { logger } from '@/lib/logging';
 import { isApiKeyEnvVarSet } from '@/lib/orchestration/llm/provider-manager';
+import { resolveEligibleProviders } from '@/lib/orchestration/llm/provider-eligibility';
 import { getDefaultModelForTaskOrNull } from '@/lib/orchestration/llm/settings-resolver';
 import { prisma } from '@/lib/db/client';
 import type { AiProviderConfig } from '@/types/prisma';
@@ -91,7 +92,32 @@ export async function getEffectiveAgentDefaults(agent: {
         where: { isActive: true },
         orderBy: { createdAt: 'asc' },
       });
-      const candidate = rows.find((r) => r.isLocal || isApiKeyEnvVarSet(r.apiKeyEnvVar));
+      const reachable = rows.filter((r) => r.isLocal || isApiKeyEnvVarSet(r.apiKeyEnvVar));
+      // Same eligibility rule the runtime applies when IT picks the provider
+      // (`resolveAgentProviderAndModel`, source 'primary'). Without this the
+      // form previews a provider the policy forbids while every turn runs on a
+      // different one — the mirror's whole job is to show what will actually
+      // happen, so an unfiltered preview is worse than no preview.
+      const permitted = await resolveEligibleProviders(
+        reachable.map((r) => r.slug),
+        { task: 'chat', source: 'primary', primarySlug: null }
+      );
+      const candidate = reachable.find((r) => permitted.includes(r.slug));
+      // Deliberate divergence when the rule permits NOTHING: the runtime
+      // refuses with `NoEligibleProviderError`, but this must never throw — it
+      // is a form preview — so the field stays empty and inherited, which is
+      // the safe half of the disagreement. Pinned in
+      // `provider-resolution-parity.test.ts`.
+      //
+      // `(provider: '', inheritedProvider: true)` IS the "nothing to inherit"
+      // signal — the caller needs no extra field to tell it apart from a
+      // resolved value. But it only stays safe while callers propagate the
+      // empty string: the agent form used to `|| 'anthropic'` past it and
+      // write that literal as an EXPLICIT `agent.provider`, which the runtime
+      // never filters, so a denial became a permanent pinned choice (t-661).
+      // Anything consuming this must render the empty case, not substitute
+      // for it. Pinned at the form level in
+      // `tests/unit/components/admin/orchestration/agent-form-effective-defaults.test.tsx`.
       if (candidate) provider = candidate.slug;
     } catch (err) {
       logger.warn('prefetch: effective provider lookup failed', {

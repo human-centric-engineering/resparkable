@@ -129,7 +129,11 @@ curl -X POST /api/v1/admin/orchestration/agents \
   }'
 ```
 
-Validated by `createAgentSchema`. Optional fields include `rateLimitRpm` (Int, per-agent rate limit in requests/minute — null uses global default) and `runtimePromptManaged` (Boolean, default `false`) + `runtimePromptNote` (nullable String ≤ 2,000 chars) — an advisory, behaviour-neutral marker for agents whose system prompt is built in application code per call rather than read from the stored instruction fields; the runtime never reads it (see [`.context/admin/agent-form.md`](../admin/agent-form.md#runtime-built-prompt-honesty-flag)). New agents start with `systemInstructionsHistory: []` and `createdBy = session.user.id`. Slug collision → 409 `ConflictError`.
+Validated by `createAgentSchema`. **`provider` is required and has no default** — it used to default to `'anthropic'`, and that was a fail-open: the value is written to `AiAgent.provider` as an _explicit_ operator choice, and `resolveAgentProviderAndModel` never re-filters an explicit provider, so on an install whose `registerProviderEligibility` rule forbids anthropic a create that simply omitted the field pinned a forbidden provider permanently and silently. Omitting it now returns 400 `Provider is required`. `model` has always been required for the same reason.
+
+> The **column** default was dropped in the same change (`20260905093659_drop_ai_agent_provider_default`), so `provider` is now required in `AiAgentCreateInput` too — a `prisma.aiAgent.create()` that omits it is a compile error rather than a silent substitution. That is what closed the class: the form's `defaultValues`, this schema and the column were three layers each able to supply a provider nobody stated. The empty string stays meaningful and stays allowed at every layer — it is the dynamic-resolution contract system-seeded agents use, the same one `model` uses.
+
+Optional fields include `rateLimitRpm` (Int, per-agent rate limit in requests/minute — null uses global default) and `runtimePromptManaged` (Boolean, default `false`) + `runtimePromptNote` (nullable String ≤ 2,000 chars) — an advisory, behaviour-neutral marker for agents whose system prompt is built in application code per call rather than read from the stored instruction fields; the runtime never reads it (see [`.context/admin/agent-form.md`](../admin/agent-form.md#runtime-built-prompt-honesty-flag)). New agents start with `systemInstructionsHistory: []` and `createdBy = session.user.id`. Slug collision → 409 `ConflictError`.
 
 ### Update agent — `systemInstructions` audit push
 
@@ -635,7 +639,7 @@ Schema: `dryRunWorkflowBodySchema` in `lib/validations/orchestration.ts`.
 
 Three admin routes drive the runtime engine. The engine implementation lives in `lib/orchestration/engine/` — see [`engine.md`](./engine.md) for the event model, executor registry, context lifecycle, and error strategies. This section is the **HTTP contract**.
 
-**Ownership scoping.** Every route gates on `adminCanViewExecution` (`lib/orchestration/access/execution-access.ts`): the caller's own runs, plus **system-owned** ones — schedule- and inbound-triggered runs carry `userId = null` because nobody with an account started them ([#502](https://github.com/human-centric-engineering/sunrise/issues/502)), and without that arm they would be invisible and un-actionable here. A lookup on another admin's own run via `GET /executions/:id` or `POST /executions/:id/approve` returns **404**, not 403 — we do not confirm existence of rows outside what the caller can see. The same rule applies when resuming via `?resumeFromExecutionId=` on `/execute`.
+**Ownership scoping.** Every route gates on `adminCanViewExecution` (`lib/orchestration/access/execution-access.ts`): the caller's own runs, plus **system-owned** ones — schedule- and inbound-triggered runs carry `userId = null` because nobody with an account started them ([#502](https://github.com/human-centric-engineering/sunrise/issues/502)), and without that arm they would be invisible and un-actionable here. The system arm is the authorization policy's answer, read from `session.unattributedReads.execution`: it is open on a default install, and a fork that narrows `canRead` gets 404s here instead — except on `approve` / `reject` / `cancel`, which additionally admit an admin the run's trace names in `approverUserIds` (`cancel` only while it is `paused_for_approval`). That exception covers the act and not the discovery, on every install: the list and detail routes have no approver arm, so a delegated approver who is neither the owner nor admitted by the policy reaches their gate through the notification link, not the queue — and under a narrowing policy that is the position for system-owned runs too. Settled with t-690: the read routes stay as they are, and a fork's policy must admit some principal to ownerless executions (`checkOwnerlessReachability` in `lib/auth/orphan-reads.ts` is the test). See [`.context/auth/authorization.md`](../auth/authorization.md). A lookup on another admin's own run via `GET /executions/:id` or `POST /executions/:id/approve` returns **404**, not 403 — we do not confirm existence of rows outside what the caller can see. The same rule applies when resuming via `?resumeFromExecutionId=` on `/execute`.
 
 ### Execute workflow (SSE)
 
@@ -1063,7 +1067,7 @@ Builds a hierarchical node/link graph: central KB node → document nodes → ch
 
 ## Conversations
 
-Four routes over `AiConversation` / `AiMessage`. **Every endpoint gates on `adminCanViewConversation`** — the caller's own, actively shared with them, or system-owned (an inbound thread nobody owns).
+Four routes over `AiConversation` / `AiMessage`. **Every endpoint gates on `adminCanViewConversation`** — the caller's own, actively shared with them, or system-owned (an inbound thread nobody owns) where the authorization policy permits an unattributed read. Only that last arm asks the policy; owning a thread and holding an active share are facts about one caller and one row.
 
 ### Ownership model (read this)
 
@@ -1071,7 +1075,7 @@ Four routes over `AiConversation` / `AiMessage`. **Every endpoint gates on `admi
 >
 > **Cross-user access returns 404, not 403.** We do not confirm the existence of resources owned by another user. Every mutating route does the ownership check via `findFirst({ where: { id, userId: session.user.id } })` — a null result becomes `NotFoundError`. Don't "helpfully" switch this to 403: the information leak is the whole point 404 is avoiding.
 >
-> Every conversation route contains the literal `userId: session.user.id` pattern. This is enforced by a pre-PR grep check.
+> Conversation routes reach their owner clause through `lib/orchestration/access/conversation-access.ts` — `adminCanViewConversation` for a single row, `conversationVisibilityWhere` for a set — so the literal `userId: session.user.id` no longer appears in the list route at all. **A derived check now enforces the import, and only the import**: the always-run test `tests/unit/scripts/ci/ownerless-surfaces.test.ts` parses every source file (via `scripts/ci/ownerless-surfaces.ts`) for a read of `AiConversation`, `AiMessage` or `AiWorkflowExecution` and its always-run test fails unless the file imports the helper for that model or is declared as an exception with a reason (t-692, from #775). It cannot see whether the helper was applied to _every_ query in the file — the coupling itself is what keeps the two faces from disagreeing: both read the same policy answer.
 
 ### List conversations
 
@@ -1079,7 +1083,7 @@ Four routes over `AiConversation` / `AiMessage`. **Every endpoint gates on `admi
 curl '/api/v1/admin/orchestration/conversations?page=1&limit=20&agentId=<cuid>&isActive=true&q=support'
 ```
 
-Validated by `listConversationsQuerySchema`. Filters: `agentId` (CUID), `isActive` (coerced bool), `q` (case-insensitive `contains` on `title`). Response includes `_count.messages`. Always scoped to `userId: session.user.id` — the filter is non-negotiable.
+Validated by `listConversationsQuerySchema`. Filters: `agentId` (CUID), `isActive` (coerced bool), `q` (case-insensitive `contains` on `title`). Response includes `_count.messages`. Scoped by `conversationVisibilityWhere(session)`: the caller's own rows, actively-shared ones, and ownerless inbound threads where the authorization policy permits an unattributed read. The owner arm is non-negotiable — it is emitted unconditionally, so no combination of policy answers can widen the clause to every row.
 
 ### Read messages
 
@@ -1116,7 +1120,7 @@ curl -X POST /api/v1/admin/orchestration/conversations/clear \
 
 - default → `userId = session.user.id` (caller's own conversations)
 - `{ userId: "<cuid>" }` → that specific user's conversations
-- `{ allUsers: true }` → across all users — still narrowed by the `olderThan` / `agentId` filters
+- `{ allUsers: true }` → across all users — still narrowed by the `olderThan` / `agentId` filters — plus the threads nobody owns (inbound, `userId = null`) where the authorization policy permits this caller an unattributed read of conversations; a caller it refuses gets `userId: { not: null }` added, the same rule `DELETE /conversations/:id` applies (t-691). A default install reaches them.
 
 `userId` and `allUsers` are mutually exclusive. `allUsers: true` alone (no narrowing filter) is rejected by the same `.refine()` safety rail. Cross-user deletions (`userId` or `allUsers`) append an `AiAdminAuditLog` entry (`conversation.bulk_clear`). Returns `{ deletedCount }`. `AiMessage` rows cascade.
 

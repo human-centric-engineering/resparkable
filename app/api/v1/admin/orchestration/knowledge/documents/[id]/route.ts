@@ -35,6 +35,11 @@ export const GET = withAdminAuth<{ id: string }>(async (request, _session, { par
     include: {
       _count: { select: { chunks: true } },
       tags: { select: { tagId: true } },
+      // Pending LLM-rewrite proposals are deliberately NOT included: each
+      // carries a full before + after copy of the document text, and the
+      // cleanup view re-fetches this route after every chat turn, capability
+      // result, section save and restore. The diff modal reads the one
+      // proposal it needs from GET .../cleanup/changes/:changeId instead.
     },
   });
   if (!document) throw new NotFoundError(`Document ${id} not found`);

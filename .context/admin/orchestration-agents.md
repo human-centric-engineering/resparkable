@@ -57,7 +57,7 @@ The helper is fire-and-forget and swallows both async rejections and synchronous
 ### Name cell enrichments
 
 - **Visibility badge** — `public` and `invite_only` agents show an outline badge (`Public` with Eye icon, `Invite` with Link2 icon) next to the name. `internal` agents show no badge (default).
-- **System badge** — `isSystem: true` agents (mcp-system, pattern-advisor, the six seeded evaluation judges, etc.) show a `Shield`-iconed secondary badge. Cannot be deleted or deactivated.
+- **System badge** — `isSystem: true` agents (mcp-system, pattern-advisor, cleanup-agent, the six seeded evaluation judges, etc.) show a `Shield`-iconed secondary badge. Cannot be deleted or deactivated. The `cleanup-agent` powers the Document Clean Up flow — see [`document-cleanup.md`](./document-cleanup.md).
 - **Judge badge** — `kind: 'judge'` agents show an amber outline badge with the `Scale` icon. Judge agents are driven by the evaluation worker (and the manual-session scorer) to score AI responses. Their `systemInstructions` IS the rubric. See `.context/orchestration/evaluations.md` for the agents-as-judges architecture.
 - **Description subtitle** — when `agent.description` is set, a truncated muted line appears below the name.
 

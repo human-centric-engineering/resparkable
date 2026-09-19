@@ -195,11 +195,13 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(handleKnowledgeSearch).toHaveBeenCalledWith('resparkable://knowledge/search', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
     expect(result).not.toBeNull();
   });
@@ -209,11 +211,16 @@ describe('readMcpResource', () => {
     vi.mocked(prisma.mcpExposedResource.findUnique).mockResolvedValue(row as never);
     vi.mocked(handleAgentList).mockResolvedValue(makeResourceContent(row.uri));
 
-    await readMcpResource('resparkable://agents', { scopedAgentId: null, apiKeyId: 'key-1' });
+    await readMcpResource('resparkable://agents', {
+      scopedAgentId: null,
+      apiKeyId: 'key-1',
+      userId: null,
+    });
 
     expect(handleAgentList).toHaveBeenCalledWith('resparkable://agents', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
   });
 
@@ -228,11 +235,13 @@ describe('readMcpResource', () => {
     await readMcpResource('resparkable://knowledge/patterns/1', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(handlePatternDetail).toHaveBeenCalledWith('resparkable://knowledge/patterns/1', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
   });
 
@@ -241,11 +250,16 @@ describe('readMcpResource', () => {
     vi.mocked(prisma.mcpExposedResource.findUnique).mockResolvedValue(row as never);
     vi.mocked(handleWorkflowList).mockResolvedValue(makeResourceContent(row.uri));
 
-    await readMcpResource('resparkable://workflows', { scopedAgentId: null, apiKeyId: 'key-1' });
+    await readMcpResource('resparkable://workflows', {
+      scopedAgentId: null,
+      apiKeyId: 'key-1',
+      userId: null,
+    });
 
     expect(handleWorkflowList).toHaveBeenCalledWith('resparkable://workflows', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
   });
 
@@ -258,12 +272,13 @@ describe('readMcpResource', () => {
     await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(handleKnowledgeSearch).toHaveBeenCalledWith(
       'resparkable://knowledge/search',
       { maxResults: 5 },
-      { scopedAgentId: null, apiKeyId: 'key-1' }
+      { scopedAgentId: null, apiKeyId: 'key-1', userId: null }
     );
   });
 
@@ -274,6 +289,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -289,6 +305,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -301,6 +318,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://unknown/resource', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -320,11 +338,13 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/patterns/5', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(handlePatternDetail).toHaveBeenCalledWith('resparkable://knowledge/patterns/5', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
     expect(result).not.toBeNull();
   });
@@ -345,6 +365,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://projects/p1/plan', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toEqual(makeResourceContent('resparkable://projects/p1/plan'));
@@ -361,6 +382,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://projects/p1/nested/plan', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -380,7 +402,11 @@ describe('readMcpResource', () => {
     );
 
     expect(
-      await readMcpResource('resparkable://x/one/plan', { scopedAgentId: null, apiKeyId: 'k' })
+      await readMcpResource('resparkable://x/one/plan', {
+        scopedAgentId: null,
+        apiKeyId: 'k',
+        userId: null,
+      })
     ).toEqual(makeResourceContent('resparkable://x/one/plan'));
 
     // The pathological input returns promptly rather than backtracking.
@@ -397,6 +423,7 @@ describe('readMcpResource', () => {
     await readMcpResource(`resparkable://x/${'a'.repeat(120)}`, {
       scopedAgentId: null,
       apiKeyId: 'k',
+      userId: null,
     });
     expect(performance.now() - started).toBeLessThan(500);
   });
@@ -410,6 +437,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://completely/different/path', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -423,6 +451,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toEqual({
@@ -448,6 +477,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/patterns/5', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toEqual({
@@ -469,6 +499,7 @@ describe('readMcpResource', () => {
     await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(logger.error).toHaveBeenCalledWith(
@@ -488,6 +519,7 @@ describe('readMcpResource', () => {
     const result = await readMcpResource('resparkable://knowledge/search', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toBeNull();
@@ -498,11 +530,16 @@ describe('readMcpResource', () => {
     vi.mocked(prisma.mcpExposedResource.findUnique).mockResolvedValue(row as never);
     vi.mocked(handleAgentList).mockResolvedValue(makeResourceContent(row.uri));
 
-    await readMcpResource('resparkable://agents', { scopedAgentId: null, apiKeyId: 'key-1' });
+    await readMcpResource('resparkable://agents', {
+      scopedAgentId: null,
+      apiKeyId: 'key-1',
+      userId: null,
+    });
 
     expect(handleAgentList).toHaveBeenCalledWith(expect.any(String), null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
   });
 });
@@ -743,6 +780,7 @@ describe('app-registered resource handlers', () => {
     const result = await readMcpResource('hub://projects/p1/plan', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toEqual(makeResourceContent('hub://projects/p1/plan'));
@@ -750,7 +788,7 @@ describe('app-registered resource handlers', () => {
     expect(handler).toHaveBeenCalledWith(
       'hub://projects/p1/plan',
       { depth: 2 },
-      { scopedAgentId: null, apiKeyId: 'key-1' }
+      { scopedAgentId: null, apiKeyId: 'key-1', userId: null }
     );
   });
 
@@ -826,7 +864,11 @@ describe('app-registered resource handlers', () => {
       makeResourceRow({ uri: 'resparkable://agents', resourceType: 'agent_list' }) as never
     );
 
-    await readMcpResource('resparkable://agents', { scopedAgentId: null, apiKeyId: 'key-1' });
+    await readMcpResource('resparkable://agents', {
+      scopedAgentId: null,
+      apiKeyId: 'key-1',
+      userId: null,
+    });
 
     // The seeded core resource still answers with core's handler — otherwise a
     // fork could silently change what an external MCP client is served.
@@ -970,6 +1012,7 @@ describe('app-registered resource handlers', () => {
     const result = await readMcpResource('hub://projects/p1/plan', {
       scopedAgentId: null,
       apiKeyId: 'key-1',
+      userId: null,
     });
 
     expect(result).toEqual(makeResourceContent('hub://projects/p1/plan'));

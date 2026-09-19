@@ -21,10 +21,16 @@
  *     without subscription changes; the second lets consumers
  *     distinguish admin termination from natural failure.
  *
- * Authentication: Admin role required. Ownership: same as the cancel
- * route — the caller's own runs plus system-owned ones (`userId = null`);
- * any other admin's own run returns 404 (not 403) so admins cannot probe
- * for each other's rows.
+ * Authentication: Admin role required. Ownership: the caller's own runs plus
+ * system-owned ones (`userId = null`) where the authorization policy permits an
+ * unattributed read; any other admin's own run returns 404 (not 403) so admins
+ * cannot probe for each other's rows.
+ *
+ * **Not identical to the cancel route, despite the shared shape.** `cancel`
+ * additionally admits an admin the run's trace names in `approverUserIds` while
+ * it is `paused_for_approval`; this route never does. Under a narrowing policy a
+ * delegated approver can cancel a paused system-owned run and cannot force-fail
+ * the same row.
  */
 
 import { z } from 'zod';
@@ -83,7 +89,7 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   if (!existing) {
     throw new NotFoundError(`Execution ${id} not found`);
   }
-  if (!adminCanViewExecution(existing, session.user.id)) {
+  if (!adminCanViewExecution(existing, session)) {
     // Same scoping as the cancel route — don't leak existence of rows the
     // caller can't see. Admin role gates the endpoint; row visibility gates
     // the action. System-owned runs (`userId = null`) are visible to every

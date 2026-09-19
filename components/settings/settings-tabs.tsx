@@ -40,6 +40,7 @@ import {
 import type { TransferFormatSummary } from '@/lib/portability/format';
 import type { TransferGroupSummary } from '@/lib/portability/registry';
 import type { UserPreferences } from '@/types';
+import { DEFAULT_USER_ROLE } from '@/lib/auth/roles';
 
 /**
  * User data passed from server component
@@ -233,7 +234,7 @@ export function SettingsTabs({
                 </div>
                 <div>
                   <p className="text-muted-foreground text-sm">Role</p>
-                  <Badge variant="outline">{user.role || 'USER'}</Badge>
+                  <Badge variant="outline">{user.role || DEFAULT_USER_ROLE}</Badge>
                 </div>
                 <div>
                   <p className="text-muted-foreground text-sm">Member Since</p>

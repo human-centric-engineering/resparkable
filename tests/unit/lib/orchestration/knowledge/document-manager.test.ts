@@ -11,16 +11,39 @@
  * - deleteDocument: cascade-delete via Prisma relation
  * - rechunkDocument: load existing chunks, reconstruct content, re-process
  * - listDocuments: ordered list of all knowledge base documents
+ * - createDocumentForCleanup: create 'cleaning' doc + conversation + email
+ * - transitionToCleanup: promote pending_review doc to 'cleaning' state
+ * - commitCleanupAndChunk: finalise cleanup session via chunk + embed pipeline
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
 import { Prisma } from '@prisma/client';
 
+// --- Hoisted refs for dynamic-import mocks ----------------------------------
+// vi.hoisted() guarantees these are initialised before any vi.mock() factory
+// runs, so factories that reference them don't see undefined.
+
+const { mockSendCleanupReadyEmail, mockGetDocumentSizeReport } = vi.hoisted(() => ({
+  mockSendCleanupReadyEmail: vi.fn(),
+  mockGetDocumentSizeReport: vi.fn(),
+}));
+
 // --- Mocks (must be declared before any imports that touch the mocked modules) ---
 
-vi.mock('@/lib/db/client', () => ({
-  prisma: {
+// cleanup-email is dynamically imported inside createDocumentForCleanup /
+// transitionToCleanup — top-level vi.mock is the only way to intercept it.
+vi.mock('@/lib/orchestration/knowledge/cleanup-email', () => ({
+  sendCleanupReadyEmail: mockSendCleanupReadyEmail,
+}));
+
+// size-report is also dynamically imported inside both helpers.
+vi.mock('@/lib/orchestration/knowledge/size-report', () => ({
+  getDocumentSizeReport: mockGetDocumentSizeReport,
+}));
+
+vi.mock('@/lib/db/client', () => {
+  const prisma = {
     aiKnowledgeDocument: {
       create: vi.fn(),
       update: vi.fn(),
@@ -34,10 +57,28 @@ vi.mock('@/lib/db/client', () => ({
       upsert: vi.fn(),
     },
     aiKnowledgeChunk: { deleteMany: vi.fn() },
+    aiKnowledgeDocumentRevision: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    aiConversation: {
+      create: vi.fn(),
+    },
+    aiAgent: {
+      findUnique: vi.fn(),
+    },
     $executeRawUnsafe: vi.fn(),
-    $queryRaw: vi.fn(),
-  },
-}));
+    // The finalise checkpoint writes its revision through writeRevision,
+    // which now takes the document row lock inside an interactive
+    // transaction. Hand the callback the same client and return an empty
+    // locked-row result — nothing here asserts on the lock itself.
+    $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(prisma)),
+    $queryRaw: vi.fn().mockResolvedValue([]),
+  };
+  return { prisma };
+});
 
 vi.mock('@/lib/orchestration/knowledge/chunker', () => ({
   chunkMarkdownDocument: vi.fn(),
@@ -112,6 +153,9 @@ import {
   deleteDocument,
   rechunkDocument,
   listDocuments,
+  createDocumentForCleanup,
+  transitionToCleanup,
+  commitCleanupAndChunk,
   DEFAULT_KNOWLEDGE_BASE_ID,
   getOrCreateDefaultKnowledgeBase,
 } from '@/lib/orchestration/knowledge/document-manager';
@@ -1740,5 +1784,524 @@ describe('getOrCreateDefaultKnowledgeBase', () => {
     const id = await getOrCreateDefaultKnowledgeBase();
 
     expect(id).toBe('kb_legacy_fork_id');
+  });
+});
+
+// ─── createDocumentForCleanup ─────────────────────────────────────────────────
+
+describe('createDocumentForCleanup', () => {
+  const CLEANUP_AGENT_ID = 'agent-cleanup-001';
+  const DOCUMENT_ID = 'doc-cleanup-001';
+  const CONVERSATION_ID = 'conv-cleanup-001';
+  const USER_ID = 'user-cleanup-001';
+  const CONTENT = '# My Document\n\nSome text content here.';
+  const FILE_NAME = 'my-document.md';
+
+  const mockSizeReport = {
+    sizeClass: 'small' as const,
+    tokenCount: 120,
+    llmRewriteAllowed: true,
+  };
+
+  function setupHappyPath() {
+    mockGetDocumentSizeReport.mockReturnValue(mockSizeReport);
+    vi.mocked(prisma.aiKnowledgeBase.upsert).mockResolvedValue({
+      id: DEFAULT_KNOWLEDGE_BASE_ID,
+    } as never);
+    vi.mocked(prisma.aiKnowledgeDocument.create).mockResolvedValue({
+      id: DOCUMENT_ID,
+      name: 'my-document',
+      fileName: FILE_NAME,
+      status: 'cleaning',
+      uploadedBy: USER_ID,
+    } as never);
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+      id: CLEANUP_AGENT_ID,
+    } as never);
+    vi.mocked(prisma.aiConversation.create).mockResolvedValue({
+      id: CONVERSATION_ID,
+    } as never);
+    mockSendCleanupReadyEmail.mockResolvedValue(undefined);
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupHappyPath();
+  });
+
+  it('creates an AiKnowledgeDocument with status cleaning, originalContent, and size metadata', async () => {
+    // Arrange — happy path is already set up in beforeEach
+
+    // Act
+    await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
+
+    // Assert: the document was created with the cleanup-specific fields the route contract requires
+    expect(prisma.aiKnowledgeDocument.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'cleaning',
+          originalContent: CONTENT,
+          metadata: expect.objectContaining({
+            sizeClass: mockSizeReport.sizeClass,
+            sizeTokens: mockSizeReport.tokenCount,
+            llmRewriteAllowed: mockSizeReport.llmRewriteAllowed,
+          }),
+        }),
+      })
+    );
+  });
+
+  it('creates an AiConversation with the cleanup agent id, knowledge_document context, and the correct title', async () => {
+    // Act
+    await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
+
+    // Assert: the conversation is bound to the cleanup agent and the new doc
+    expect(prisma.aiConversation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentId: CLEANUP_AGENT_ID,
+          contextType: 'knowledge_document',
+          contextId: DOCUMENT_ID,
+          title: 'Cleanup: my-document',
+        }),
+      })
+    );
+  });
+
+  it('returns document, conversationId, and redirectTo pointing at the cleanup page', async () => {
+    // Act
+    const result = await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
+
+    // Assert: shape of the return value — the route uses all three fields
+    expect(result.document.id).toBe(DOCUMENT_ID);
+    expect(result.conversationId).toBe(CONVERSATION_ID);
+    expect(result.redirectTo).toBe(`/admin/orchestration/knowledge/${DOCUMENT_ID}/cleanup`);
+  });
+
+  it('rolls back the document when createCleanupConversation throws', async () => {
+    // Arrange: agent not found triggers the throw inside createCleanupConversation
+    const convError = new Error('agent unavailable');
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
+    vi.mocked(prisma.aiConversation.create).mockRejectedValue(convError);
+
+    // Act & Assert: the error propagates
+    await expect(createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID)).rejects.toThrow(
+      'agent unavailable'
+    );
+
+    // Assert: the document was deleted to prevent an orphan in 'cleaning' status
+    expect(prisma.aiKnowledgeDocument.delete).toHaveBeenCalledWith({
+      where: { id: DOCUMENT_ID },
+    });
+  });
+
+  it('fires sendCleanupReadyEmail with the document id, name, sizeClass, and sizeTokens', async () => {
+    // Act
+    await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
+
+    // Assert: the email helper was called with the fields it needs to build the email
+    // (called via void so we test the call, not the resolution)
+    expect(mockSendCleanupReadyEmail).toHaveBeenCalledWith({
+      userId: USER_ID,
+      documentId: DOCUMENT_ID,
+      documentName: 'my-document',
+      sizeClass: mockSizeReport.sizeClass,
+      sizeTokens: mockSizeReport.tokenCount,
+    });
+  });
+
+  it('throws when the cleanup agent row does not exist', async () => {
+    // Arrange: no cleanup agent seeded
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(null);
+
+    // Act & Assert: error message contains "not found" and "db:seed"
+    await expect(createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID)).rejects.toThrow(
+      /not found/
+    );
+    await expect(createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID)).rejects.toThrow(
+      /npm run db:seed/
+    );
+  });
+
+  it('uses displayName when provided instead of deriving the name from fileName', async () => {
+    // Act
+    await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID, 'My Custom Name');
+
+    // Assert: the document and conversation use the explicit display name
+    expect(prisma.aiKnowledgeDocument.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ name: 'My Custom Name' }),
+      })
+    );
+    expect(prisma.aiConversation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ title: 'Cleanup: My Custom Name' }),
+      })
+    );
+  });
+});
+
+// ─── transitionToCleanup ──────────────────────────────────────────────────────
+
+describe('transitionToCleanup', () => {
+  const DOCUMENT_ID = 'doc-transition-001';
+  const CONVERSATION_ID = 'conv-transition-001';
+  const USER_ID = 'user-transition-001';
+  const CONTENT = '# Transitioned doc\n\nCleaned content here.';
+  const CLEANUP_AGENT_ID = 'agent-cleanup-002';
+
+  const mockSizeReport = {
+    sizeClass: 'medium' as const,
+    tokenCount: 15000,
+    llmRewriteAllowed: true,
+  };
+
+  const existingDoc = {
+    name: 'My PDF Doc',
+    status: 'pending_review',
+    metadata: { extractedText: 'raw extracted text', format: 'pdf' },
+  };
+
+  function setupHappyPath() {
+    mockGetDocumentSizeReport.mockReturnValue(mockSizeReport);
+    vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue(existingDoc as never);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue({
+      id: DOCUMENT_ID,
+      name: existingDoc.name,
+      status: 'cleaning',
+    } as never);
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
+    vi.mocked(prisma.aiConversation.create).mockResolvedValue({ id: CONVERSATION_ID } as never);
+    mockSendCleanupReadyEmail.mockResolvedValue(undefined);
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupHappyPath();
+  });
+
+  it('throws when the document does not exist', async () => {
+    // Arrange: document not found
+    vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue(null);
+
+    // Act & Assert
+    await expect(transitionToCleanup(DOCUMENT_ID, CONTENT, USER_ID)).rejects.toThrow(
+      `Document ${DOCUMENT_ID} not found`
+    );
+  });
+
+  it('refuses a second transition once the document is already cleaning', async () => {
+    // Arrange: metadata.runCleanup survives the first transition, so a repeat
+    // POST to /confirm reaches here again. Without the status guard it would
+    // overwrite originalContent, open a second conversation for the same
+    // contextId, and send a duplicate cleanup-ready email.
+    vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue({
+      ...existingDoc,
+      status: 'cleaning',
+    } as never);
+
+    // Act & Assert
+    await expect(transitionToCleanup(DOCUMENT_ID, CONTENT, USER_ID)).rejects.toThrow(
+      /not in pending_review status \(found 'cleaning'\)/
+    );
+    expect(prisma.aiKnowledgeDocument.update).not.toHaveBeenCalled();
+    expect(prisma.aiConversation.create).not.toHaveBeenCalled();
+    expect(mockSendCleanupReadyEmail).not.toHaveBeenCalled();
+  });
+
+  it('updates status to cleaning, sets originalContent, and merges size-report metadata with runCleanup: true', async () => {
+    // Act
+    await transitionToCleanup(DOCUMENT_ID, CONTENT, USER_ID);
+
+    // Assert: the update includes the cleanup fields merged with the existing metadata
+    expect(prisma.aiKnowledgeDocument.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: DOCUMENT_ID },
+        data: expect.objectContaining({
+          status: 'cleaning',
+          originalContent: CONTENT,
+          metadata: expect.objectContaining({
+            runCleanup: true,
+            sizeClass: mockSizeReport.sizeClass,
+            sizeTokens: mockSizeReport.tokenCount,
+            llmRewriteAllowed: mockSizeReport.llmRewriteAllowed,
+            // Existing metadata should be preserved via spread
+            extractedText: 'raw extracted text',
+            format: 'pdf',
+          }),
+        }),
+      })
+    );
+  });
+
+  it('creates the cleanup conversation and returns conversationId + redirectTo', async () => {
+    // Act
+    const result = await transitionToCleanup(DOCUMENT_ID, CONTENT, USER_ID);
+
+    // Assert: conversation was created bound to the doc
+    expect(prisma.aiConversation.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          agentId: CLEANUP_AGENT_ID,
+          contextType: 'knowledge_document',
+          contextId: DOCUMENT_ID,
+        }),
+      })
+    );
+    expect(result.conversationId).toBe(CONVERSATION_ID);
+    expect(result.redirectTo).toBe(`/admin/orchestration/knowledge/${DOCUMENT_ID}/cleanup`);
+  });
+
+  it('fires sendCleanupReadyEmail with the expected args', async () => {
+    // Act
+    await transitionToCleanup(DOCUMENT_ID, CONTENT, USER_ID);
+
+    // Assert: email fired with document-level fields the email template needs
+    expect(mockSendCleanupReadyEmail).toHaveBeenCalledWith({
+      userId: USER_ID,
+      documentId: DOCUMENT_ID,
+      documentName: existingDoc.name,
+      sizeClass: mockSizeReport.sizeClass,
+      sizeTokens: mockSizeReport.tokenCount,
+    });
+  });
+});
+
+// ─── commitCleanupAndChunk ────────────────────────────────────────────────────
+
+describe('commitCleanupAndChunk', () => {
+  const DOCUMENT_ID = 'doc-commit-001';
+  const USER_ID = 'user-commit-001';
+
+  /** Base cleaning doc fixture — tests override individual fields as needed */
+  function makeCleaningDoc(overrides = {}) {
+    return {
+      id: DOCUMENT_ID,
+      name: 'Cleanup Doc',
+      fileName: 'cleanup-doc.md',
+      status: 'cleaning',
+      uploadedBy: USER_ID,
+      processedContent: '# Cleaned heading\n\nCleaned paragraph.',
+      originalContent: '# Original heading\n\nOriginal paragraph.',
+      metadata: { sizeClass: 'small', runCleanup: true },
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    // writeRevision prunes via findMany/deleteMany and takes the document row
+    // lock inside an interactive transaction — reset wipes the default impls
+    // set in the top-level mock, so re-arm them here.
+    vi.mocked(prisma.aiKnowledgeDocumentRevision.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.aiKnowledgeDocumentRevision.deleteMany).mockResolvedValue({
+      count: 0,
+    });
+    vi.mocked(prisma.$transaction).mockImplementation((async (fn: (tx: unknown) => unknown) =>
+      fn(prisma)) as never);
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([]);
+  });
+
+  it('throws when the document is not in cleaning status or not owned by the calling user', async () => {
+    // Arrange: findFirst returns null — either wrong status or wrong owner
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(null);
+
+    // Act & Assert
+    await expect(commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit')).rejects.toThrow(
+      /not found, not owned by this user, or not in cleaning status/
+    );
+  });
+
+  it('commit falls back to originalContent when the session made no edits (processedContent still NULL)', async () => {
+    // Arrange: the admin read the doc, judged it clean, and clicked "Mark
+    // cleaned" without triggering a single mutation — processedContent is
+    // never written until the first one, so it is still NULL here.
+    const cleaningDoc = makeCleaningDoc({ processedContent: null });
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(cleaningDoc as never);
+    vi.mocked(chunkMarkdownDocument).mockResolvedValue([makeChunk()]);
+    vi.mocked(embedBatch).mockResolvedValue(mockEmbedResult([[0.1, 0.2, 0.3]]));
+    vi.mocked(prisma.$executeRawUnsafe).mockResolvedValue(1);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(
+      makeDocument({ id: DOCUMENT_ID, status: 'ready', chunkCount: 1 }) as never
+    );
+
+    // Act
+    await commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit');
+
+    // Assert: the original text is chunked rather than the call throwing
+    expect(chunkMarkdownDocument).toHaveBeenCalledWith(
+      cleaningDoc.originalContent,
+      cleaningDoc.name,
+      DOCUMENT_ID
+    );
+  });
+
+  it('throws when mode is commit and both processedContent and originalContent are empty', async () => {
+    // Arrange: nothing to chunk on either column
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(
+      makeCleaningDoc({ processedContent: '   ', originalContent: '  ' }) as never
+    );
+
+    // Act & Assert
+    await expect(commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit')).rejects.toThrow(
+      /there is nothing to commit/
+    );
+  });
+
+  it('throws when mode is use-original and originalContent is empty', async () => {
+    // Arrange: doc exists but original content is blank
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(
+      makeCleaningDoc({ originalContent: '   ' }) as never
+    );
+
+    // Act & Assert: should require originalContent for use-original mode
+    await expect(commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'use-original')).rejects.toThrow(
+      /originalContent is empty/
+    );
+  });
+
+  it('happy path (commit): chunks, embeds, sets status ready, sets cleanupCommittedMode=commit, clears content fields', async () => {
+    // Arrange
+    const cleaningDoc = makeCleaningDoc();
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(cleaningDoc as never);
+    vi.mocked(chunkMarkdownDocument).mockResolvedValue([makeChunk()]);
+    vi.mocked(embedBatch).mockResolvedValue(mockEmbedResult([[0.1, 0.2, 0.3]]));
+    vi.mocked(prisma.$executeRawUnsafe).mockResolvedValue(1);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(
+      makeDocument({ id: DOCUMENT_ID, status: 'ready', chunkCount: 1 }) as never
+    );
+
+    // Act
+    await commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit');
+
+    // Assert: chunker was called with the cleaned (processed) content
+    expect(chunkMarkdownDocument).toHaveBeenCalledWith(
+      cleaningDoc.processedContent,
+      cleaningDoc.name,
+      DOCUMENT_ID
+    );
+
+    // Assert: final status update includes ready status, cleanupCommittedMode, and cleared content
+    const updateCalls = vi.mocked(prisma.aiKnowledgeDocument.update).mock.calls;
+    const readyUpdate = updateCalls.find((c) => c[0].data?.status === 'ready');
+    expect(readyUpdate).toBeDefined();
+    expect(readyUpdate![0].data).toMatchObject({
+      status: 'ready',
+      chunkCount: 1,
+      originalContent: null,
+      processedContent: null,
+      metadata: expect.objectContaining({
+        cleanupCommittedMode: 'commit',
+      }),
+    });
+  });
+
+  it('happy path (use-original): uses originalContent for chunking, sets cleanupCommittedMode=use-original', async () => {
+    // Arrange
+    const cleaningDoc = makeCleaningDoc();
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(cleaningDoc as never);
+    vi.mocked(chunkMarkdownDocument).mockResolvedValue([makeChunk()]);
+    vi.mocked(embedBatch).mockResolvedValue(mockEmbedResult([[0.1, 0.2, 0.3]]));
+    vi.mocked(prisma.$executeRawUnsafe).mockResolvedValue(1);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(
+      makeDocument({ id: DOCUMENT_ID, status: 'ready', chunkCount: 1 }) as never
+    );
+
+    // Act
+    await commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'use-original');
+
+    // Assert: chunker was called with originalContent, not processedContent
+    expect(chunkMarkdownDocument).toHaveBeenCalledWith(
+      cleaningDoc.originalContent,
+      cleaningDoc.name,
+      DOCUMENT_ID
+    );
+
+    // Assert: cleanupCommittedMode reflects the use-original choice
+    const updateCalls = vi.mocked(prisma.aiKnowledgeDocument.update).mock.calls;
+    const readyUpdate = updateCalls.find((c) => c[0].data?.status === 'ready');
+    expect(readyUpdate).toBeDefined();
+    expect(readyUpdate![0].data).toMatchObject({
+      status: 'ready',
+      metadata: expect.objectContaining({
+        cleanupCommittedMode: 'use-original',
+      }),
+      originalContent: null,
+      processedContent: null,
+    });
+  });
+
+  it('empty chunk list: sets status ready with chunkCount 0 and clears content, does not embed', async () => {
+    // Arrange: chunker returns nothing (very short or whitespace-only content)
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(makeCleaningDoc() as never);
+    vi.mocked(chunkMarkdownDocument).mockResolvedValue([]);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(
+      makeDocument({ id: DOCUMENT_ID, status: 'ready', chunkCount: 0 }) as never
+    );
+
+    // Act
+    const result = await commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit');
+
+    // Assert: embed was NOT called — no chunks means no embeddings needed
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(prisma.$executeRawUnsafe).not.toHaveBeenCalled();
+
+    // Assert: final update clears the cleanup text columns
+    const updateCalls = vi.mocked(prisma.aiKnowledgeDocument.update).mock.calls;
+    // The zero-chunk path updates in a single update (no transaction) and includes clearing fields
+    const zeroChunkUpdate = updateCalls.find((c) => c[0].data?.chunkCount === 0);
+    expect(zeroChunkUpdate).toBeDefined();
+    expect(zeroChunkUpdate![0].data).toMatchObject({
+      status: 'ready',
+      chunkCount: 0,
+      originalContent: null,
+      processedContent: null,
+    });
+    expect(result.status).toBe('ready');
+  });
+
+  it('failure path: chunking error sets status to failed with errorMessage and rethrows', async () => {
+    // Arrange: chunkMarkdownDocument throws
+    const chunkError = new Error('chunking service down');
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(makeCleaningDoc() as never);
+    vi.mocked(chunkMarkdownDocument).mockRejectedValue(chunkError);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(makeDocument() as never);
+
+    // Act & Assert: error re-throws
+    await expect(commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit')).rejects.toThrow(
+      'chunking service down'
+    );
+
+    // Assert: doc is marked failed with the error message
+    const updateCalls = vi.mocked(prisma.aiKnowledgeDocument.update).mock.calls;
+    const failUpdate = updateCalls.find((c) => c[0].data?.status === 'failed');
+    expect(failUpdate).toBeDefined();
+    expect(failUpdate![0].data).toMatchObject({
+      status: 'failed',
+      errorMessage: 'chunking service down',
+    });
+  });
+
+  it('failure path: embedding error sets status to failed with errorMessage and rethrows', async () => {
+    // Arrange: embedBatch throws
+    const embedError = new Error('embedding API unavailable');
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(makeCleaningDoc() as never);
+    vi.mocked(chunkMarkdownDocument).mockResolvedValue([makeChunk()]);
+    vi.mocked(embedBatch).mockRejectedValue(embedError);
+    vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(makeDocument() as never);
+
+    // Act & Assert
+    await expect(commitCleanupAndChunk(DOCUMENT_ID, USER_ID, 'commit')).rejects.toThrow(
+      'embedding API unavailable'
+    );
+
+    // Assert: doc is marked failed
+    const updateCalls = vi.mocked(prisma.aiKnowledgeDocument.update).mock.calls;
+    const failUpdate = updateCalls.find((c) => c[0].data?.status === 'failed');
+    expect(failUpdate).toBeDefined();
+    expect(failUpdate![0].data).toMatchObject({
+      status: 'failed',
+      errorMessage: 'embedding API unavailable',
+    });
   });
 });

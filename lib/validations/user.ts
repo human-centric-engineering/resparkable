@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { emailSchema, passwordSchema } from '@/lib/validations/auth';
 import { paginationQuerySchema, sortingQuerySchema, cuidSchema } from '@/lib/validations/common';
 import { SPARKEY_PRONOUNS, DEFAULT_SPARKEY_PRONOUN } from '@/lib/resparkable/sparkey-pronoun';
+import { USER_ROLES, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
 
 /**
  * Update user profile schema (PATCH /api/v1/users/me)
@@ -236,7 +237,7 @@ export const inviteUserSchema = z.object({
   email: emailSchema,
 
   /** User's role (defaults to USER) */
-  role: z.enum(['USER', 'ADMIN']).default('USER'),
+  role: z.enum(USER_ROLES).default(DEFAULT_USER_ROLE),
 });
 
 /**

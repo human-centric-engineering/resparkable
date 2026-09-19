@@ -21,6 +21,7 @@ import { DEFAULT_USER_PREFERENCES } from '@/lib/validations/user';
 import { isInviteOnly, isInvitedSignup, isFirstHumanBootstrap } from '@/lib/auth/signup-mode';
 import { parseEmailChangeToken, getVerificationTokenFromRequest } from '@/lib/auth/change-email';
 import { revokeUserSessions, findMostRecentSessionToken } from '@/lib/auth/sessions';
+import { isPlatformAdmin, PLATFORM_ADMIN_ROLE, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
 
 /**
  * How long an email-verification token (signup, or either leg of an email
@@ -54,6 +55,13 @@ export type UserCreateData = {
   emailVerified: boolean;
   name: string;
   image?: string | null;
+  /**
+   * The `role` additionalField. Declared explicitly because the index
+   * signature below types it `unknown`, which let `user.role === 'ADMIN'`
+   * compile while comparing an untyped value — the docblock above already
+   * claimed the field was part of this shape.
+   */
+  role?: string | null;
 } & Record<string, unknown>;
 
 /**
@@ -138,7 +146,7 @@ export async function userCreateBeforeHook(
           // signup would be silently promoted to ADMIN, overriding the inviter's
           // intent. (No record → fall through, so the bootstrap can still apply.)
           if (invitation) {
-            const invitedRole = invitation.metadata?.role ?? 'USER';
+            const invitedRole = invitation.metadata?.role ?? DEFAULT_USER_ROLE;
             logger.info('Applying invitation role to OAuth user before creation', {
               email: user.email,
               role: invitedRole,
@@ -233,7 +241,7 @@ export async function userCreateBeforeHook(
         logger.info('First user on a fresh database — assigning ADMIN role', {
           email: user.email,
         });
-        return { data: { ...user, role: 'ADMIN' } };
+        return { data: { ...user, role: PLATFORM_ADMIN_ROLE } };
       }
 
       // Humans already exist but the marker is missing — an upgraded database,
@@ -296,7 +304,7 @@ export async function userCreateAfterHook(
   // deleted and the live user count returns to zero (see issue #278). Covers
   // both bootstrap-promoted and invitation-created admins; idempotent upsert.
   // Non-blocking, like the rest of this hook.
-  if (user.role === 'ADMIN' && user.accountType !== 'SERVICE') {
+  if (isPlatformAdmin(user) && user.accountType !== 'SERVICE') {
     try {
       await prisma.authBootstrap.upsert({
         where: { id: AUTH_BOOTSTRAP_ID },
@@ -776,8 +784,32 @@ export const auth = betterAuth({
     additionalFields: {
       role: {
         type: 'string',
-        defaultValue: 'USER',
+        defaultValue: DEFAULT_USER_ROLE,
         required: false,
+        // NEVER client-settable. better-auth's sign-up handler passes every
+        // declared additional field through from the request body unless the
+        // field says `input: false` — so without this line, an unauthenticated
+        // `POST /api/auth/sign-up/email` carrying `"role": "ADMIN"` created a
+        // platform admin on any open-signup install (verified live, 2026-09-17).
+        // The same parser runs on `POST /api/auth/update-user`, so any signed-in
+        // user could also promote themselves — the second path this closes.
+        // With `input: false` + a `defaultValue`, a body value is silently
+        // replaced by the default on create; on update a truthy value is a
+        // 400 FIELD_NOT_ALLOWED (the only client caller, avatar-upload, sends
+        // `{ image }` alone).
+        //
+        // Fork note: better-auth merges a plugin's `schema.user.fields` OVER
+        // these `additionalFields` (dist/db/schema.mjs `getFields`). A fork
+        // enabling a plugin that declares its own `role` (the `admin` plugin
+        // does) replaces this declaration, `input: false` included — re-add it
+        // on the plugin's field or the hole reopens. Sunrise ships no plugins.
+        //
+        // The three legitimate writers are unaffected, because none of them go
+        // through the input parser: `userCreateBeforeHook` returns the role as
+        // hook DATA (first-human bootstrap, OAuth invitation) — database hooks
+        // run after the parse and their return wins; `accept-invite` and the
+        // admin `users/[id]` PATCH write with `prisma.user.update` directly.
+        input: false,
       },
     },
 

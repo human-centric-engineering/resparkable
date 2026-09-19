@@ -654,6 +654,33 @@ describe('ManageTab', () => {
     });
   });
 
+  it('offers a download link pointing at the document download route', async () => {
+    const user = userEvent.setup();
+    render(<ManageTab documents={[USER_DOC]} onRefresh={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /document actions/i }));
+    const link = await screen.findByRole('menuitem', { name: /download text/i });
+
+    // A real <a download>, not a fetch — the browser handles the save, and the
+    // route sets the filename via Content-Disposition.
+    expect(link).toHaveAttribute('href', expect.stringContaining('doc-user/download'));
+    expect(link).toHaveAttribute('download');
+  });
+
+  it('says the download is rebuilt from chunks once the document is ready', async () => {
+    // A finished document has had originalContent and processedContent
+    // cleared, so its download is reconstructed — the label must not imply
+    // it is the source file.
+    const user = userEvent.setup();
+    render(<ManageTab documents={[USER_DOC]} onRefresh={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: /document actions/i }));
+
+    expect(
+      await screen.findByRole('menuitem', { name: /download text \(from chunks\)/i })
+    ).toBeInTheDocument();
+  });
+
   // ── Delete action ─────────────────────────────────────────────────────────
 
   it('shows delete confirmation when Delete is chosen from the actions menu', async () => {
@@ -1343,6 +1370,27 @@ describe('ManageTab', () => {
       expect(screen.getByRole('combobox', { name: /filter by status/i })).toBeInTheDocument();
     });
 
+    it('status filter dropdown includes a "Cleaning" option that narrows the API query to ?status=cleaning', async () => {
+      // Arrange: render and clear any initial fetch calls
+      const user = userEvent.setup();
+      render(<ManageTab documents={[]} onRefresh={vi.fn()} />);
+      mockFetch.mockClear();
+
+      // Act: open the status filter Select and choose "Cleaning"
+      const filterCombobox = screen.getByRole('combobox', { name: /filter by status/i });
+      await user.click(filterCombobox);
+
+      // The Select options appear in a portal — find the "Cleaning" option
+      const cleaningOption = await screen.findByRole('option', { name: /cleaning/i });
+      await user.click(cleaningOption);
+
+      // Assert: a documents fetch was made with status=cleaning in the query
+      // string — proving the component forwarded the filter to the server
+      await waitFor(() => {
+        expect(listFetchUrls().some((u) => u.includes('status=cleaning'))).toBe(true);
+      });
+    });
+
     it('debounces the search input and fires a documents fetch with q=', async () => {
       // Use fake timers so the 300ms debounce fires deterministically without
       // wall-clock waiting. We use fireEvent (not userEvent.type) to set the
@@ -1382,6 +1430,53 @@ describe('ManageTab', () => {
         expect(listFetchUrls().some((u) => u.includes('scope=system'))).toBe(true);
       });
     });
+  });
+
+  // ── Document Clean Up (cleaning status) ───────────────────────────────────
+
+  it('renders the "Cleaning" badge with outline variant for a doc in cleaning status', () => {
+    // Arrange: document in the cleanup flow
+    const cleaningDoc = makeDocument({
+      id: 'doc-cleaning',
+      name: 'Raw Transcript',
+      fileName: 'transcript.md',
+      status: 'cleaning',
+      chunkCount: 0,
+    });
+    render(<ManageTab documents={[cleaningDoc]} onRefresh={vi.fn()} />);
+
+    // Assert: the status cell renders the "Cleaning" label. The badge variant
+    // ('outline') is expressed in the DOM via CSS classes — we verify the
+    // label text appears and that no other status text is rendered instead.
+    expect(screen.getByText('Cleaning')).toBeInTheDocument();
+    // Sanity guard: "Ready" / "Processing" must not appear for this doc
+    expect(screen.queryByText('Ready')).not.toBeInTheDocument();
+    expect(screen.queryByText('Processing')).not.toBeInTheDocument();
+  });
+
+  it('shows "Continue cleanup" link for cleaning docs and does NOT show the Rechunk button', () => {
+    // Arrange: a cleaning-status document
+    const cleaningDoc = makeDocument({
+      id: 'doc-cleanup-link',
+      name: 'Meeting Notes',
+      fileName: 'notes.txt',
+      status: 'cleaning',
+    });
+    render(<ManageTab documents={[cleaningDoc]} onRefresh={vi.fn()} />);
+
+    // Assert: the "Continue cleanup" action link appears, pointing at the
+    // cleanup chat page — proving the component uses the cleanup route, not
+    // the generic rechunk handler
+    const continueLink = screen.getByRole('link', { name: /continue cleanup/i });
+    expect(continueLink).toBeInTheDocument();
+    expect(continueLink).toHaveAttribute(
+      'href',
+      '/admin/orchestration/knowledge/doc-cleanup-link/cleanup'
+    );
+
+    // The Rechunk button must be absent — cleaning docs are not ready for
+    // rechunking until the cleanup session is finalised
+    expect(screen.queryByRole('button', { name: /rechunk/i })).not.toBeInTheDocument();
   });
 
   // ── Pagination footer ──────────────────────────────────────────────────────

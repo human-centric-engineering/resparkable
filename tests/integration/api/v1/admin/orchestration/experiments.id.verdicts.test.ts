@@ -18,13 +18,14 @@
  * @see app/api/v1/admin/orchestration/experiments/[id]/verdicts/route.ts
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import {
   mockAdminUser,
   mockAuthenticatedUser,
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
+import { ownerScopedFindFirst } from '@/tests/helpers/owner-scoped-prisma';
 
 vi.mock('@/lib/auth/config', () => ({
   auth: { api: { getSession: vi.fn() } },
@@ -36,10 +37,15 @@ vi.mock('next/headers', () => ({
 
 vi.mock('@/lib/db/client', () => ({
   prisma: {
-    aiExperiment: { findUnique: vi.fn(), update: vi.fn() },
+    aiExperiment: { findFirst: vi.fn(), update: vi.fn() },
     aiAgent: { findUnique: vi.fn() },
     aiEvaluationCaseResult: { findMany: vi.fn() },
   },
+}));
+
+vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
+  logAdminAction: vi.fn(),
+  computeChanges: vi.fn(),
 }));
 
 vi.mock('@/lib/api/context', () => ({
@@ -77,7 +83,13 @@ vi.mock('@/lib/orchestration/evaluations/graders/pairwise/judge-agent', () => ({
 
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
+import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { POST } from '@/app/api/v1/admin/orchestration/experiments/[id]/verdicts/route';
+import {
+  registerAuthorizationPolicy,
+  __resetAuthorizationPolicyForTests,
+  DEFAULT_AUTHORIZATION_POLICY,
+} from '@/lib/auth/authorization';
 
 const ADMIN_ID = 'cmjbv4i3x00003wsloputgwul';
 const EXPERIMENT_ID = 'exp-1';
@@ -117,20 +129,28 @@ function defaultBody(
 
 function makeExperiment(
   overrides: Partial<{
-    createdBy: string;
+    createdBy: string | null;
     variants: Array<{ id: string; label: string; evaluationRunId: string | null }>;
-    dataset: { caseCount: number } | null;
+    dataset: { caseCount: number; userId: string | null } | null;
   }> = {}
 ) {
   return {
     id: EXPERIMENT_ID,
-    createdBy: overrides.createdBy ?? ADMIN_ID,
+    name: 'Test Experiment',
+    // `in` rather than `??`: an explicit null is the ownerless case, and
+    // `?? ADMIN_ID` would turn it back into the caller's own id.
+    createdBy: 'createdBy' in overrides ? (overrides.createdBy ?? null) : ADMIN_ID,
     datasetId: 'ds-1',
     variants: overrides.variants ?? [
       { id: VARIANT_A, label: 'Control', evaluationRunId: 'run-a' },
       { id: VARIANT_B, label: 'Variant', evaluationRunId: 'run-b' },
     ],
-    dataset: overrides.dataset === undefined ? { caseCount: 3 } : overrides.dataset,
+    // `userId` because the route now checks the bound dataset is one the caller
+    // may read, the same defence in depth `run` has. A fixture omitting it is
+    // not an ownerless dataset but one whose owner is unknown, which the check
+    // answers with a 404 — fail-closed, so the fixture has to say.
+    dataset:
+      overrides.dataset === undefined ? { caseCount: 3, userId: ADMIN_ID } : overrides.dataset,
   };
 }
 
@@ -159,17 +179,29 @@ describe('POST /experiments/:id/verdicts — ownership + validation', () => {
   });
 
   it('returns 404 when the experiment does not exist', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
     const res = await POST(makeRequest(defaultBody()), ctx());
     expect(res.status).toBe(404);
   });
 
   it('returns 404 when another user owns the experiment (no existence leak)', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
-      makeExperiment({ createdBy: 'someone-else' }) as never
+    // Owner-aware fake, not `mockResolvedValue`: the route has to ASK for its
+    // own rows to get one back, so dropping the `createdBy` clause fails here.
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: 'someone-else' })]) as never
     );
+
     const res = await POST(makeRequest(defaultBody()), ctx());
+
     expect(res.status).toBe(404);
+    // Ownership clause and id as separate AND members; under the default
+    // policy the ownership member is the widened form — the caller, or nobody.
+    expect(vi.mocked(prisma.aiExperiment.findFirst).mock.calls[0][0]).toMatchObject({
+      where: {
+        AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+      },
+    });
+    expect(prisma.aiExperiment.update).not.toHaveBeenCalled();
   });
 
   it('returns 400 when variantAId === variantBId', async () => {
@@ -178,13 +210,13 @@ describe('POST /experiments/:id/verdicts — ownership + validation', () => {
   });
 
   it('returns 400 when a variantId does not belong to the experiment', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     const res = await POST(makeRequest(defaultBody({ variantBId: 'not-on-experiment' })), ctx());
     expect(res.status).toBe(400);
   });
 
   it('returns 400 when a variant has no evaluationRunId yet', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({
         variants: [
           { id: VARIANT_A, label: 'A', evaluationRunId: 'run-a' },
@@ -197,30 +229,102 @@ describe('POST /experiments/:id/verdicts — ownership + validation', () => {
   });
 
   it('returns 400 when the experiment has no dataset', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ dataset: null }) as never
     );
     const res = await POST(makeRequest(defaultBody()), ctx());
     expect(res.status).toBe(400);
   });
 
+  /**
+   * Defence in depth on the BOUND DATASET, not on the experiment — the `where`
+   * above settles that. `run` has carried this since t-678; `verdicts` did not
+   * until t-687, and it is the member of the family that leaks most without it:
+   * the response returns `datasetCase.input` and `expectedOutput` for every
+   * case, where `run` only reads the hash and the count.
+   *
+   * Unreachable through today's routes — `POST /experiments` is the only path
+   * that binds a dataset and it enforces `datasetVisibilityWhere`, and the
+   * update schema deliberately does not accept `datasetId`. The check exists so
+   * a future second create path cannot silently re-open it.
+   */
+  describe('the bound dataset', () => {
+    afterEach(() => {
+      __resetAuthorizationPolicyForTests();
+    });
+
+    it('404s when the dataset belongs to a different admin', async () => {
+      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+        makeExperiment({ dataset: { caseCount: 3, userId: 'someone-else' } }) as never
+      );
+
+      const res = await POST(makeRequest(defaultBody()), ctx());
+
+      expect(res.status).toBe(404);
+      // Before the case-count cap, deliberately: that 409 names how many cases
+      // the dataset has, which is a fact about a dataset this caller may not
+      // read.
+      expect(vi.mocked(prisma.aiEvaluationCaseResult.findMany)).not.toHaveBeenCalled();
+    });
+
+    it('scores an ownerless dataset when the policy permits unattributed reads', async () => {
+      // The control for the case above: same fake, same route, only the owner
+      // differs. An erasure orphans the dataset alongside the experiment, and a
+      // bare `!== session.user.id` would make a claimed orphan unscoreable
+      // (t-678).
+      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+        makeExperiment({ dataset: { caseCount: 3, userId: null } }) as never
+      );
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+        id: 'judge-1',
+        kind: 'judge',
+        isActive: true,
+      } as never);
+      vi.mocked(prisma.aiEvaluationCaseResult.findMany).mockResolvedValue([] as never);
+      vi.mocked(prisma.aiExperiment.update).mockResolvedValue({ id: EXPERIMENT_ID } as never);
+
+      const res = await POST(makeRequest(defaultBody()), ctx());
+
+      expect(res.status).toBe(200);
+    });
+
+    it('404s that same ownerless dataset under a policy that denies them', async () => {
+      // The half that was unreachable before this seam existed: no route code
+      // changes, the fork's policy does it.
+      registerAuthorizationPolicy({
+        ...DEFAULT_AUTHORIZATION_POLICY,
+        canRead: (viewer, target, scope) =>
+          target.kind === 'unattributed'
+            ? Promise.resolve(false)
+            : DEFAULT_AUTHORIZATION_POLICY.canRead(viewer, target, scope),
+      });
+      vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+        makeExperiment({ dataset: { caseCount: 3, userId: null } }) as never
+      );
+
+      const res = await POST(makeRequest(defaultBody()), ctx());
+
+      expect(res.status).toBe(404);
+    });
+  });
+
   it('returns 409 when dataset case count exceeds the 100-case cap', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
-      makeExperiment({ dataset: { caseCount: 250 } }) as never
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+      makeExperiment({ dataset: { caseCount: 250, userId: ADMIN_ID } }) as never
     );
     const res = await POST(makeRequest(defaultBody()), ctx());
     expect(res.status).toBe(409);
   });
 
   it('returns 400 when the judge agent slug does not exist', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(null);
     const res = await POST(makeRequest(defaultBody()), ctx());
     expect(res.status).toBe(400);
   });
 
   it('returns 400 when the named agent is not a judge', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
       id: 'a',
       kind: 'chat',
@@ -234,7 +338,7 @@ describe('POST /experiments/:id/verdicts — ownership + validation', () => {
 describe('POST /experiments/:id/verdicts — happy path', () => {
   beforeEach(() => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
       id: 'a',
       kind: 'judge',
@@ -394,5 +498,64 @@ describe('POST /experiments/:id/verdicts — rate limit', () => {
     limiterCheck.mockReturnValueOnce({ success: false, remaining: 0, reset: Date.now() + 1000 });
     const res = await POST(makeRequest(defaultBody()), ctx());
     expect(res.status).toBe(429);
+  });
+});
+
+/**
+ * t-687: `experiment.verdict_compute` is a new audit action — the only mutation
+ * in this family that recorded nothing at all before — and four documents
+ * promise operators will start seeing it. Nothing asserted it existed: this
+ * file mocked `logAdminAction` so the route would stop 500ing, and never looked
+ * at it, so a route that stopped calling `logExperimentAccess` stayed green
+ * while the docs kept promising the row.
+ *
+ * Unlike the two read actions, this one is `record: 'always'` — a write, logged
+ * whoever makes it — so the owner case is the positive one here rather than the
+ * silent one.
+ */
+describe('audit — a verdict overwrite leaves a record whoever made it', () => {
+  beforeEach(() => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+      id: 'a',
+      kind: 'judge',
+      isActive: true,
+    } as never);
+    vi.mocked(prisma.aiEvaluationCaseResult.findMany).mockResolvedValue([] as never);
+    vi.mocked(prisma.aiExperiment.update).mockResolvedValue({ id: EXPERIMENT_ID } as never);
+  });
+
+  it("records the owner's own verdict run, carrying the basis", async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+      makeExperiment({ createdBy: ADMIN_ID }) as never
+    );
+
+    const res = await POST(makeRequest(defaultBody()), ctx());
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'experiment.verdict_compute',
+        entityType: 'experiment',
+        entityId: EXPERIMENT_ID,
+        metadata: expect.objectContaining({ accessBasis: 'owner' }),
+      })
+    );
+  });
+
+  it('marks the same run against an orphan as such', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+      makeExperiment({ createdBy: null, dataset: { caseCount: 3, userId: null } }) as never
+    );
+
+    const res = await POST(makeRequest(defaultBody()), ctx());
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'experiment.verdict_compute',
+        metadata: expect.objectContaining({ accessBasis: 'orphan' }),
+      })
+    );
   });
 });

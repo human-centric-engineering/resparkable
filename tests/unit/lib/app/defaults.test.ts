@@ -104,6 +104,11 @@ import { appFrameSrc } from '@/lib/app/csp';
 import frameworkEslintConfig from '@/lib/framework/eslint.config.mjs';
 import { DEFAULT_PROTECTED_NAV } from '@/lib/protected-nav/types';
 import { RESPARKABLE_NAV_ITEM } from '@/lib/framework/resparkable/protected-nav';
+import {
+  appCoverageExclusions,
+  appAlwaysRunTests,
+  appOwnerlessSurfaceExceptions,
+} from '@/lib/app/ci';
 import { initAppUserCreatedHooks } from '@/lib/app/user-created';
 import { collectAppSubjectData } from '@/lib/app/data-export';
 import { appTransferPolicies } from '@/lib/app/data-transfer';
@@ -115,6 +120,10 @@ import {
 } from '@/lib/privacy/subject-source-registry';
 import { getAppJobs, __resetAppJobsForTests } from '@/lib/orchestration/maintenance/app-jobs';
 import { getEffectiveRateLimitPolicy, RATE_LIMIT_POLICY } from '@/lib/security/rate-limit-policy';
+import {
+  hasProviderEligibilityResolver,
+  resolveEligibleProviders,
+} from '@/lib/orchestration/llm/provider-eligibility';
 import { getRegisteredNavSections, __resetNavRegistryForTests } from '@/lib/admin-nav/registry';
 import {
   listAppMcpResourceTypes,
@@ -130,6 +139,13 @@ import {
   getRegisteredAccountSections,
   __resetAccountSectionRegistryForTests,
 } from '@/lib/account-sections/registry';
+import { initAppAuthorizationPolicy } from '@/lib/app/authorization';
+import {
+  DEFAULT_AUTHORIZATION_POLICY,
+  getAuthorizationPolicy,
+  hasAppAuthorizationPolicy,
+  __resetAuthorizationPolicyForTests,
+} from '@/lib/auth/authorization';
 
 /**
  * One row per `lib/app/*` seam.
@@ -162,6 +178,42 @@ const UNASSERTED_SEAMS = new Set([
 ]);
 
 const SEAM_DEFAULTS: SeamDefault[] = [
+  {
+    seam: 'lib/app/authorization.ts',
+    risk: 'a stray policy would replace the authorization decision at every guarded request and every admin page — the one seam whose default registration would change who can reach what, on every install',
+    assert: () => {
+      initAppAuthorizationPolicy();
+      expect(hasAppAuthorizationPolicy()).toBe(false);
+      // BY IDENTITY: what runs must be Sunrise's own object, not something
+      // equivalent-looking. `getAuthorizationPolicy()` also runs the fork gate,
+      // so this covers the wiring as well as the value.
+      expect(getAuthorizationPolicy()).toBe(DEFAULT_AUTHORIZATION_POLICY);
+    },
+  },
+  {
+    seam: 'lib/app/llm-providers.ts',
+    risk: 'a stray eligibility rule would silently drop provider fallbacks on every install',
+    assert: async () => {
+      // `importActual`, NOT a plain import: tests/setup.ts pins this seam for
+      // every other file, and asserting the pin would prove nothing about what
+      // Sunrise actually ships. This is the file that must see the real one.
+      const seam =
+        await vi.importActual<typeof import('@/lib/app/llm-providers')>('@/lib/app/llm-providers');
+      await seam.registerAppProviderEligibility();
+      expect(hasProviderEligibilityResolver()).toBe(false);
+      // BY IDENTITY, not by deep equality: the default has to be the input
+      // array itself, which is what makes "byte-identical at single" a fact
+      // rather than a claim about equivalent-looking output.
+      const candidates = ['anthropic', 'openai'];
+      await expect(
+        resolveEligibleProviders(candidates, {
+          task: 'chat',
+          source: 'system',
+          primarySlug: 'anthropic',
+        })
+      ).resolves.toBe(candidates);
+    },
+  },
   {
     seam: 'lib/app/rate-limit.ts',
     risk: 'a stray tier or rule would re-cap every install',
@@ -632,11 +684,21 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // accidental default here is a security change, not a cosmetic one.
     assert: () => expect(appFrameSrc).toEqual([]),
   },
+  {
+    seam: 'lib/app/ci.ts',
+    risk: 'a stray coverage exclusion would switch the per-file 80% floor OFF for that path on every install, a stray always-run entry would make every scoped run load a test whose file the install may not even have, and a stray ownerless-surface exception would let a route read rows nobody owns without the policy being asked — the first silences a gate, the second breaks the gate that replaced it, the third exempts a file from the authorization seam',
+    assert: () => {
+      expect(appCoverageExclusions).toEqual([]);
+      expect(appAlwaysRunTests).toEqual([]);
+      expect(appOwnerlessSurfaceExceptions).toEqual([]);
+    },
+  },
 ];
 
 afterEach(() => {
   __resetNavRegistryForTests();
   __resetAccountSectionRegistryForTests();
+  __resetAuthorizationPolicyForTests();
 });
 
 describe('lib/app/ seams ship empty', () => {

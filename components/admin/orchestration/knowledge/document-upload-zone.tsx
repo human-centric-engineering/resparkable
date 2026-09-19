@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
-import { BookOpen, FileText, Globe, Loader2, Upload, X } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { BookOpen, FileText, Globe, Loader2, Sparkles, Upload, X } from 'lucide-react';
 
 import { z } from 'zod';
 
@@ -73,6 +74,10 @@ const uploadResponseSchema = z.object({
     .object({
       document: pdfPreviewDataSchema.shape.document.optional(),
       preview: pdfPreviewDataSchema.shape.preview.optional(),
+      // Returned when the upload was flagged runCleanup. The client navigates
+      // to this URL instead of refreshing the document list, because the doc
+      // is now in 'cleaning' status awaiting the admin in the cleanup chat.
+      redirectTo: z.string().optional(),
     })
     .optional(),
 });
@@ -106,6 +111,12 @@ export interface PdfPreviewData {
     pages?: { num: number; charCount: number; hasText: boolean }[] | null;
     requiresConfirmation: boolean;
   };
+  /**
+   * True when the upload was flagged "Clean up before chunking". PDFs still
+   * go through the extraction review first, so the modal needs this to tell
+   * the operator that confirming opens the cleanup chat instead of chunking.
+   */
+  runCleanup: boolean;
 }
 
 interface DocumentUploadZoneProps {
@@ -114,6 +125,7 @@ interface DocumentUploadZoneProps {
 }
 
 export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentUploadZoneProps) {
+  const router = useRouter();
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +133,12 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
   const [tagIds, setTagIds] = useState<string[]>([]);
   const [availableTags, setAvailableTags] = useState<TagRow[]>([]);
   const [extractTables, setExtractTables] = useState(false);
+  // Opt-in Document Clean Up. When true, the parsed text lands in
+  // status='cleaning' (or PDF metadata.runCleanup for the preview-confirm
+  // flow) and the upload returns a `redirectTo` URL pointing at the cleanup
+  // chat page. CSV uploads ignore the flag — each row is already chunked
+  // atomically and there's nothing useful for the agent to do.
+  const [runCleanup, setRunCleanup] = useState(false);
   // Operator-supplied display name for the document. Defaults to the file
   // stem so existing behaviour is preserved; only sent to the server when the
   // operator actually edits it.
@@ -218,6 +236,9 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
         if (isPdf && extractTables) {
           formData.append('extractTables', 'true');
         }
+        if (runCleanup) {
+          formData.append('runCleanup', 'true');
+        }
 
         const res = await fetch(API.ADMIN.ORCHESTRATION.KNOWLEDGE_DOCUMENTS, {
           method: 'POST',
@@ -236,12 +257,17 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
           responseBody.data.document &&
           onPdfPreview
         ) {
+          // Capture before the reset below — the modal labels its confirm
+          // button off this flag.
+          const wantsCleanup = runCleanup;
           setStagedFiles([]);
           setTagIds([]);
           setDisplayName('');
+          setRunCleanup(false);
           onPdfPreview({
             document: responseBody.data.document,
             preview: responseBody.data.preview,
+            runCleanup: wantsCleanup,
           });
           return;
         }
@@ -249,6 +275,13 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
         setStagedFiles([]);
         setTagIds([]);
         setDisplayName('');
+        setRunCleanup(false);
+        // Cleanup upload: navigate to the cleanup chat page. The doc is now in
+        // 'cleaning' status so refreshing the list view here is pointless.
+        if (responseBody.data?.redirectTo) {
+          router.push(responseBody.data.redirectTo);
+          return;
+        }
         onUploadComplete();
         return;
       }
@@ -301,7 +334,16 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
     } finally {
       setUploading(false);
     }
-  }, [stagedFiles, tagIds, displayName, extractTables, onUploadComplete, onPdfPreview]);
+  }, [
+    stagedFiles,
+    tagIds,
+    displayName,
+    extractTables,
+    runCleanup,
+    onUploadComplete,
+    onPdfPreview,
+    router,
+  ]);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -499,6 +541,57 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
             />
           </div>
 
+          {stagedFiles.length === 1 && !stagedFiles[0].name.toLowerCase().endsWith('.csv') && (
+            <div className="flex items-start gap-2">
+              <input
+                id="run-cleanup"
+                type="checkbox"
+                className="border-border mt-1 h-4 w-4 rounded"
+                checked={runCleanup}
+                onChange={(e) => setRunCleanup(e.target.checked)}
+                disabled={uploading}
+              />
+              <div className="flex-1">
+                <div className="flex items-center gap-1">
+                  <Sparkles className="text-muted-foreground h-3.5 w-3.5" aria-hidden="true" />
+                  <label htmlFor="run-cleanup" className="text-xs font-medium">
+                    Clean up before chunking
+                  </label>
+                  <FieldHelp title="Document Clean Up" ariaLabel="What does Document Clean Up do?">
+                    <p>
+                      Opens a chat with the <strong>Document Clean Up Assistant</strong> after
+                      upload. You describe what you want stripped or rewritten (timestamps, speaker
+                      labels, filler words, transcript noise) and the agent applies changes using a
+                      mix of regex-based tools and LLM rewrites.
+                    </p>
+                    <p className="mt-2">
+                      The cleaned text — not the original — is what gets chunked and embedded when
+                      you click <em>Mark cleaned</em>. The original is preserved so you can discard
+                      the cleanup and use the raw version instead.
+                    </p>
+                    <p className="mt-2">
+                      <strong>PDFs take two steps:</strong> you review the extracted text first, and
+                      the <em>Confirm &amp; Clean Up</em> button on that screen opens the cleanup
+                      chat. Every other format goes straight to the chat.
+                    </p>
+                    <p className="mt-2">
+                      <strong>When to use:</strong> raw transcripts (YouTube, meeting recordings),
+                      web-scraped articles with boilerplate, anything with repetitive noise that
+                      would dilute chunk-level search quality.
+                    </p>
+                    <p className="mt-2">
+                      <strong>Caveats:</strong> CSV uploads bypass cleanup (each row is already an
+                      atomic chunk). Very large documents (~100k+ tokens) can use deterministic
+                      strips but the whole-doc LLM rewrite refuses — use per-section rewrites
+                      instead. Cleanup sessions persist; if you navigate away, the document stays in
+                      the <em>Cleaning</em> tab until you finalise or discard.
+                    </p>
+                  </FieldHelp>
+                </div>
+              </div>
+            </div>
+          )}
+
           {stagedFiles.length === 1 && stagedFiles[0].name.toLowerCase().endsWith('.pdf') && (
             <div className="flex items-start gap-2">
               <input
@@ -554,6 +647,7 @@ export function DocumentUploadZone({ onUploadComplete, onPdfPreview }: DocumentU
                 setTagIds([]);
                 setDisplayName('');
                 setExtractTables(false);
+                setRunCleanup(false);
                 setError(null);
               }}
               disabled={uploading}

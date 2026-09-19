@@ -7,6 +7,12 @@
  */
 
 import { withAdminAuth } from '@/lib/auth/guards';
+import {
+  datasetVisibilityWhere,
+  datasetAccessBasis,
+  logDatasetAccess,
+} from '@/lib/orchestration/access/dataset-access';
+import { getClientIP } from '@/lib/security/ip';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ValidationError } from '@/lib/api/errors';
@@ -15,31 +21,55 @@ import { getRouteLogger } from '@/lib/api/context';
 import { cuidSchema } from '@/lib/validations/common';
 import { listDatasetCasesQuerySchema } from '@/lib/validations/orchestration-evaluations';
 
-export const GET = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const log = await getRouteLogger(request);
-  const { id: rawId } = await params;
-  const id = cuidSchema.safeParse(rawId);
-  if (!id.success) {
-    throw new ValidationError('Invalid dataset id', { id: ['Must be a valid CUID'] });
+export const GET = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const log = await getRouteLogger(request);
+    const { id: rawId } = await params;
+    const id = cuidSchema.safeParse(rawId);
+    if (!id.success) {
+      throw new ValidationError('Invalid dataset id', { id: ['Must be a valid CUID'] });
+    }
+    const { searchParams } = new URL(request.url);
+    const { cursor, limit } = validateQueryParams(searchParams, listDatasetCasesQuerySchema);
+
+    const dataset = await prisma.aiDataset.findFirst({
+      where: { AND: [datasetVisibilityWhere(session), { id: id.data }] },
+      select: { id: true, name: true, userId: true, caseCount: true },
+    });
+    if (!dataset) throw new NotFoundError(`Dataset ${id.data} not found`);
+    // Narrowing for the type, not re-checking the boundary: the `where` above
+    // admits only 'owner' and 'orphan' rows, so this cannot be null. It used to
+    // be `?? 'orphan'` at the log site, which filed a null — the state a
+    // widening regression produces — as an ordinary orphan read. A 404 keeps
+    // the signal; `loadDataset` in the detail route has always done this.
+    const basis = datasetAccessBasis(dataset, session.user.id);
+    if (!basis) throw new NotFoundError(`Dataset ${id.data} not found`);
+
+    const cases = await prisma.aiDatasetCase.findMany({
+      where: { datasetId: id.data, ...(cursor !== undefined ? { position: { gt: cursor } } : {}) },
+      orderBy: { position: 'asc' },
+      take: limit + 1,
+    });
+    const hasMore = cases.length > limit;
+    const items = hasMore ? cases.slice(0, limit) : cases;
+    const nextCursor = hasMore ? items[items.length - 1].position : null;
+
+    logDatasetAccess({
+      adminUserId: session.user.id,
+      datasetId: id.data,
+      datasetName: dataset.name,
+      basis,
+      action: 'dataset.cases_view',
+      clientIp: getClientIP(request),
+    });
+    log.info('Listed dataset cases', { datasetId: id.data, returned: items.length });
+    return successResponse({ items, nextCursor, total: dataset.caseCount });
+  },
+  {
+    ownership: {
+      decidedBy: 'self',
+      because:
+        'Resolves the dataset under the visible clause for this caller — rows they own, or rows nobody owns where canRead permits an unattributed read — before touching it. Never a row belonging to another subject.',
+    },
   }
-  const { searchParams } = new URL(request.url);
-  const { cursor, limit } = validateQueryParams(searchParams, listDatasetCasesQuerySchema);
-
-  const dataset = await prisma.aiDataset.findFirst({
-    where: { id: id.data, userId: session.user.id },
-    select: { id: true, caseCount: true },
-  });
-  if (!dataset) throw new NotFoundError(`Dataset ${id.data} not found`);
-
-  const cases = await prisma.aiDatasetCase.findMany({
-    where: { datasetId: id.data, ...(cursor !== undefined ? { position: { gt: cursor } } : {}) },
-    orderBy: { position: 'asc' },
-    take: limit + 1,
-  });
-  const hasMore = cases.length > limit;
-  const items = hasMore ? cases.slice(0, limit) : cases;
-  const nextCursor = hasMore ? items[items.length - 1].position : null;
-
-  log.info('Listed dataset cases', { datasetId: id.data, returned: items.length });
-  return successResponse({ items, nextCursor, total: dataset.caseCount });
-});
+);

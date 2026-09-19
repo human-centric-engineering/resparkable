@@ -10,8 +10,10 @@
  * Includes the supervisor verdict block when present.
  *
  * Ownership: the caller's own runs, plus system-owned runs (`userId = null`
- * — schedule- and inbound-triggered). Another admin's own run returns 404
- * (not 403) — we never confirm existence of a row the caller cannot see.
+ * — schedule- and inbound-triggered) where the authorization policy permits
+ * an unattributed read, which a default install does. Another admin's own run
+ * returns 404 (not 403) — we never confirm existence of a row the caller
+ * cannot see.
  *
  * Authentication: Admin role required.
  */
@@ -53,7 +55,7 @@ export const GET = withAdminAuth<{ id: string }>(async (_request, session, { par
     where: { id },
     include: { workflow: { select: { name: true } } },
   });
-  if (!execution || !adminCanViewExecution(execution, session.user.id)) {
+  if (!execution || !adminCanViewExecution(execution, session)) {
     throw new NotFoundError(`Execution ${id} not found`);
   }
 
