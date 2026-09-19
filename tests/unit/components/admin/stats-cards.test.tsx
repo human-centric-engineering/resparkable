@@ -35,7 +35,7 @@ function stats(overrides: Partial<SystemStats['users']> = {}): SystemStats {
     system: {
       nodeVersion: 'v24.0.0',
       appVersion: '1.0.0',
-      sunriseVersion: '0.11.2',
+      resparkableVersion: '0.11.2',
       environment: 'test',
       uptime: 120,
       databaseStatus: 'connected',
