@@ -27,7 +27,7 @@
 
 import { prisma } from '@/lib/db/client';
 import { eraseUser } from '@/lib/privacy/erase-user';
-import { PLATFORM_ADMIN_ROLE } from '@/lib/auth/roles';
+import { PLATFORM_ADMIN_ROLE, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
 
 const PREFIX = 'smoke-test-erasure';
 const stamp = Date.now();
@@ -222,7 +222,7 @@ async function main(): Promise<void> {
       data: {
         name: `${PREFIX} other`,
         email: `${PREFIX}-other-${Date.now()}@smoke.local`,
-        role: 'USER',
+        role: DEFAULT_USER_ROLE,
       },
     });
     otherSubjectId = otherSubject.id;

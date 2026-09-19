@@ -106,6 +106,7 @@ covered by the version contract.
   - `lib/app/context-contributors.ts` → `initAppContextContributors()` — chat context contributors (primitive: `registerContextContributor()` in `lib/orchestration/chat/context-builder.ts`)
   - `lib/app/csp.ts` → `appFrameSrc` — extra CSP `frame-src` origins
   - `lib/app/data-export.ts` → `initAppSubjectSources()` / `collectAppSubjectData()` — Art. 15 export sources
+  - `lib/app/data-transfer.ts` → `appTransferPolicies` — the fork's tables in an account export/import
   - `lib/app/db-drift.ts` → `registerAppDriftProbes()` — drift-probe registry (primitives in `lib/db/drift-probes.ts`)
   - `lib/app/emails.ts` → `emailOverrides` — transactional-email template overrides
   - `lib/app/env.ts` → `appEnvSchema` — app env registry
@@ -116,6 +117,7 @@ covered by the version contract.
   - `lib/app/guard-floor-contributors.ts` → `initAppGuardFloorContributors()` — output-guard floor contributors
   - `lib/app/jobs.ts` → `initAppJobs()` — maintenance-tick job registry
   - `lib/app/knowledge-access-contributors.ts` → `initAppKnowledgeAccessContributors()` — knowledge document access
+  - `lib/app/leaf-bootstrap.ts` → `initLeafApp()` — a leaf fork's own one-time boot work
   - `lib/app/llm-providers.ts` → `registerAppProviderEligibility()` — provider-eligibility seam (primitive: `registerProviderEligibility()`, resolved through `lib/orchestration/llm/provider-eligibility.ts`)
   - `lib/app/mcp-resources.ts` → `initAppMcpResources()` — MCP resource-type registry
   - `lib/app/protected-nav.ts` → `protectedNavItems` — authenticated-area nav
@@ -123,6 +125,7 @@ covered by the version contract.
   - `lib/app/public-nav.ts` → `publicNavItems` / `footerNavItems` / `footerLegalItems` — public nav and footer
   - `lib/app/rate-limit.ts` → `registerAppRateLimits()` — rate-limit registry (`registerRateLimitTier()` / `registerRateLimitRule()` / `registerRateLimitKeyResolver()`)
   - `lib/app/reserved-tiers.ts` → `occupiedTiers` — which reserved namespace tiers this fork occupies
+  - `lib/app/robots.ts` → `appDisallowedPaths` — extra `Disallow` paths in robots.txt
   - `lib/app/surface.ts` → `classifySurface()` / `DEFAULT_SURFACE` — per-surface theming classifier
   - `lib/app/user-created.ts` → `initAppUserCreatedHooks()` — post-signup hook registry
 

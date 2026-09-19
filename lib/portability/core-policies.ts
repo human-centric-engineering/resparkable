@@ -417,6 +417,25 @@ export const corePolicies: TransferPolicySet = {
     },
     {
       ...AUTOMATION,
+      model: 'AiKnowledgeDocumentRevision',
+      disposition: 'skip',
+      note:
+        'Versions of a shared knowledge-base document, attributed to whoever ran the ' +
+        'edit. The content is the installation’s document rather than the editor’s, so ' +
+        'it does not travel with a person; the Art. 15 export lists the edits they made ' +
+        'without the content, for the same reason.',
+    },
+    {
+      ...AUTOMATION,
+      model: 'AiKnowledgeDocumentPendingChange',
+      disposition: 'skip',
+      note:
+        'Unapplied rewrite proposals against a shared document: an editing session ' +
+        'nobody accepted yet. Transferring one would carry a draft of somebody else’s ' +
+        'document into an account that has neither the document nor the session.',
+    },
+    {
+      ...AUTOMATION,
       model: 'KnowledgeTag',
       disposition: 'export-only',
       note: 'Tags scoping which agents may read which documents.',

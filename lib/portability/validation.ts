@@ -79,7 +79,8 @@ export const accountExportQuerySchema = z.object({
    * them says so rather than resembling an account that has none.
    */
   originals: z
-    .union([z.literal('true'), z.literal('false'), z.undefined()])
+    .union([z.literal('true'), z.literal('false')])
+    .optional()
     .transform((value) => value === 'true'),
 });
 
@@ -102,7 +103,8 @@ export const accountImportSchema = z.object({
    * free, so the safe reading of silence is "show me".
    */
   apply: z
-    .union([z.literal('true'), z.literal('false'), z.undefined()])
+    .union([z.literal('true'), z.literal('false')])
+    .optional()
     .transform((value) => value === 'true'),
 
   /**
@@ -118,7 +120,8 @@ export const accountImportSchema = z.object({
    * `overwrite` produces is data that used to be there and now is not.
    */
   conflictMode: z
-    .union([z.literal('skip'), z.literal('overwrite'), z.undefined()])
+    .union([z.literal('skip'), z.literal('overwrite')])
+    .optional()
     .transform((value) => value ?? 'skip'),
 });
 

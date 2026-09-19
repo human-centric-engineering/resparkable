@@ -115,6 +115,38 @@ const ALLOWLIST: ReadonlyArray<{ file: string; calls: number; why: string }> = [
     calls: 2,
     why: 'SELECT 1 health checks — no tenant data (the playbook’s exempt row)',
   },
+  // FORK (Resparkable): the tier's own raw SQL. Sunrise offers no app-owned
+  // list here, so these sit alongside core's until it does.
+  {
+    file: 'lib/framework/resparkable/db-drift.ts',
+    calls: 5,
+    why: 'probes pg_catalog for the objects Prisma does not model',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/billing.ts',
+    calls: 1,
+    why: 'unbilled terminal executions, cursored in one statement',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/embeddings.ts',
+    calls: 4,
+    why: 'pgvector similarity search and the vector write Prisma cannot express',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/events.ts',
+    calls: 1,
+    why: 'timezone-aware day bucketing in SQL',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/groups.ts',
+    calls: 1,
+    why: 'sole-admin detection as one aggregate rather than a per-group query',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/jobs.ts',
+    calls: 9,
+    why: 'the queue: SKIP LOCKED claim, leases and due counts',
+  },
   {
     file: 'lib/orchestration/chat/message-embedder.ts',
     calls: 2,
