@@ -70,6 +70,8 @@ vi.mock('@/lib/framework/resparkable/repo/subject-export', async (importOriginal
 }));
 vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
   collectResparkableCrossSubjectData: vi.fn().mockResolvedValue({ crossSection: [] }),
+  GROUP_CONTRIBUTIONS_SCOPE_NOTE: 'Only rows you created in each group workspace.',
+  RESPARKABLE_GROUP_CONTRIBUTION_MODEL: 'ResparkableGroup',
 }));
 
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
@@ -508,9 +510,11 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     seam: 'lib/app/jobs.ts',
     risk: 'a stray job would run on every install\u2019s maintenance tick',
     // FORK (Resparkable): Sunrise asserts this is empty. Resparkable fills it
-    // with exactly one job — the tick that bills completed runs and drains its
-    // own job queue, which is the shape `registerAppJob({ intervalMs })` was
-    // argued for upstream (#469).
+    // with two jobs. The tick that bills completed runs and drains its own job
+    // queue, which is the shape `registerAppJob({ intervalMs })` was argued for
+    // upstream (#469). And the hourly group-succession pass: the backstop for
+    // succession when the erasure hook is missing (Sunrise ask #44), and the
+    // one-time email to a group's sole admin.
     //
     // It was `resparkable:connection-sweep` until phase 56, when the sweep
     // stopped being a rotation with a cursor and became one kind of row in
@@ -520,7 +524,10 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     assert: () => {
       __resetAppJobsForTests();
       // getAppJobs() triggers the lazy init, so this exercises the REAL seam.
-      expect(getAppJobs().map((job) => job.name)).toEqual(['resparkable:job-queue']);
+      expect(getAppJobs().map((job) => job.name)).toEqual([
+        'resparkable:job-queue',
+        'resparkable:group-succession',
+      ]);
     },
   },
   {

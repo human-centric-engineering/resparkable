@@ -24,9 +24,16 @@
  *    somebody else's row: retained personal data belonging to an erased person,
  *    on a row they cannot reach. That is the Art. 17 violation §13 names, and
  *    {@link scrubGranteeEmail} is the whole of the fix.
+ *    Group invitations (`ResparkableGroupInvite.email`) are the same shape and
+ *    get the same treatment.
  * 2. **Stored document originals.** Object storage cannot enlist in a database
  *    transaction, so blobs under `framework-resparkable/<userId>/` need deleting
  *    by hand. `ResparkableDocument` rows cascade; the bytes do not.
+ * 3. **Group succession** (§23.6, phase 48). Erasing a group's last admin
+ *    promotes the longest-standing remaining member, and erasing its last
+ *    member deletes the group. Both are decisions about other people's rows, so
+ *    no cascade can make them. The rule is `settleGroupsAfterErasure` in
+ *    `services/membership.ts`, and this file only calls it.
  *
  * ## The registration hazard, stated plainly
  *
@@ -43,6 +50,15 @@
  * than the braces. The braces are B1, B8 and B9, which are database
  * constraints and cannot fail to run.
  *
+ * **Succession raises the stakes of that caveat.** If the hook is missing when
+ * erasure runs, a group whose only member was erased is left behind with no
+ * members. No route can open it and no subject-access request reaches it. The
+ * membership row still cascades (B13) and `createdByUserId` still nulls out
+ * (B11), so the erased person's identity leaves either way, but their content
+ * stays in a workspace that nothing can reach any more. `settleStrandedGroups`
+ * in `services/membership.ts` is the backstop: an hourly job that finds groups
+ * left with no admin, or with nobody, and applies the same succession rule late.
+ *
  * ## What must NOT be done here
  *
  * **Never `prisma.user.delete()`, and never a second cascade.** This hook runs
@@ -51,6 +67,7 @@
  * definition of what erasure means, and the two drift.
  */
 
+import { settleGroupsAfterErasure } from '@/lib/framework/resparkable/services/membership';
 import { logger } from '@/lib/logging';
 import {
   registerErasureCleanupHook,
@@ -144,10 +161,37 @@ export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
   // second definition of what erasure means.
   const grants = await ctx.tx.resparkableGrant.deleteMany({ where: { granteeEmail: email } });
 
+  // Group invitations, by the same reasoning and the same lower-cased match.
+  // Accepted ones as well as outstanding: once accepted, the row is the group's
+  // record that this address was invited, and the membership it created has
+  // already cascaded. Keeping the row would keep the erased person's address on
+  // a group they are no longer in.
+  const groupInvites = await ctx.tx.resparkableGroupInvite.deleteMany({ where: { email } });
+
   logger.info('Resparkable grantee-email scrub', {
     userId: ctx.userId,
     grantsRemoved: grants.count,
+    groupInvitesRemoved: groupInvites.count,
   });
+}
+
+/**
+ * Everything the tier does inside the erasure transaction, in one function.
+ *
+ * Succession runs first. Nothing it does depends on the email scrub, but a
+ * reader tracing "what happens to my group when an admin closes their account"
+ * should find it before the address-matching detail.
+ */
+export async function scrubResparkableInTransaction(ctx: ErasureTxContext): Promise<void> {
+  const settlement = await settleGroupsAfterErasure(ctx.userId, ctx.tx);
+  if (settlement.promoted > 0 || settlement.deleted > 0 || settlement.leftWithoutAdmin > 0) {
+    logger.info('Resparkable groups settled for erased user', {
+      userId: ctx.userId,
+      ...settlement,
+    });
+  }
+
+  await scrubGranteeEmail(ctx);
 }
 
 /**
@@ -164,6 +208,6 @@ export function registerResparkableErasureHook(): void {
   registerErasureCleanupHook({
     name: 'resparkable',
     cleanupExternal: cleanupResparkableBlobs,
-    scrubInTransaction: scrubGranteeEmail,
+    scrubInTransaction: scrubResparkableInTransaction,
   });
 }

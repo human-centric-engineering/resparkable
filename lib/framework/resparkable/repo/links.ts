@@ -18,7 +18,11 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -260,7 +264,7 @@ export async function createLink(
   scope: SpaceScope,
   data: LinkCreateData
 ): Promise<ResparkableLink> {
-  return prisma.resparkableLink.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableLink.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 /**
@@ -283,7 +287,7 @@ export async function createSuggestedLinks(
   if (rows.length === 0) return 0;
 
   const { count } = await prisma.resparkableLink.createMany({
-    data: rows.map((row) => ({ ...row, ...spaceWhere(scope) })),
+    data: rows.map((row) => ({ ...row, ...authoredBy(scope) })),
     skipDuplicates: true,
   });
 

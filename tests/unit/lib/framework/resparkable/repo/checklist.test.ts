@@ -146,6 +146,7 @@ describe('createChecklistItem', () => {
     const call = mockedCreate.mock.calls[0]?.[0];
     expect(call?.data).toEqual({
       spaceId: 'user_a',
+      createdByUserId: 'user_a',
       taskId: 'task_1',
       text: 'Buy milk',
       position: 1000,

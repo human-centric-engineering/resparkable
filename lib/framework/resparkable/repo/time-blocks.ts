@@ -12,7 +12,11 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
   pageArgs,
@@ -78,7 +82,7 @@ export async function createTimeBlock(
   scope: SpaceScope,
   data: TimeBlockCreateData
 ): Promise<ResparkableTimeBlock> {
-  return prisma.resparkableTimeBlock.create({ data: { ...data, ...spaceWhere(scope) } });
+  return prisma.resparkableTimeBlock.create({ data: { ...data, ...authoredBy(scope) } });
 }
 
 export async function updateTimeBlock(

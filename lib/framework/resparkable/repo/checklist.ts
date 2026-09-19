@@ -22,7 +22,11 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { nullOnMiss, type WithoutOwner } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableChecklistItem, Prisma } from '@prisma/client';
 
@@ -89,7 +93,7 @@ export async function createChecklistItem(
     // the ordering rule in `repo/space-scope.ts`, and here it is what keeps the
     // ownership check above meaningful — a `taskId` arriving in `data` would
     // otherwise replace the one just verified.
-    data: { ...data, taskId, ...spaceWhere(scope) },
+    data: { ...data, taskId, ...authoredBy(scope) },
   });
 }
 

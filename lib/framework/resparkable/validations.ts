@@ -2063,10 +2063,32 @@ export const updateGroupSchema = z
      * would be nonsense when it IS enforced cannot be written in the meantime.
      */
     maxMembers: z.number().int().min(1).max(500).optional(),
+    /**
+     * Whether a viewer may inherit admin when the last admin's account is
+     * erased. Off means a group left with only viewers keeps no admin at all.
+     * See `services/succession.ts`.
+     */
+    viewersCanInheritAdmin: z.boolean().optional(),
   })
   .strict();
 
 export type UpdateGroupInput = z.infer<typeof updateGroupSchema>;
+
+/**
+ * Delete a group: the typed confirmation §23.6 asks for.
+ *
+ * Whether it matches is the service's question (`confirmationMatches`), not
+ * this schema's, because the answer depends on the group's current name. This
+ * only insists the field is there, so a `DELETE` with no body is a 400 that
+ * says what is missing rather than a deletion.
+ */
+export const deleteGroupSchema = z
+  .object({
+    confirmName: z.string().min(1).max(200),
+  })
+  .strict();
+
+export type DeleteGroupInput = z.infer<typeof deleteGroupSchema>;
 
 /** Change one member's role. The last-admin rules are the service's, not this. */
 export const updateGroupMemberSchema = z.object({ role: groupRoleSchema }).strict();

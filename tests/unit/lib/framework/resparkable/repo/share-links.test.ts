@@ -129,8 +129,12 @@ describe('minting', () => {
       expiresAt: null,
     });
 
-    const [args] = db.resparkableShareLink.create.mock.calls[0] as [{ data: { spaceId: string } }];
+    const [args] = db.resparkableShareLink.create.mock.calls[0] as [
+      { data: { spaceId: string; createdByUserId: string | null } },
+    ];
     expect(args.data.spaceId).toBe('user_a');
+    // Who minted it (§23.5). In a group space that is a member, not the space.
+    expect(args.data.createdByUserId).toBe('user_a');
   });
 });
 

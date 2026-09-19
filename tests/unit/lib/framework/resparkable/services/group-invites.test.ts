@@ -66,6 +66,7 @@ function group() {
     description: null,
     spaceId: SPACE,
     maxMembers: 50,
+    viewersCanInheritAdmin: true,
     createdAt: NOW,
     updatedAt: NOW,
   };
@@ -79,6 +80,7 @@ function asAdmin(): void {
       userId: 'user_a',
       role: 'admin',
       invitedByUserId: null,
+      soleAdminNotifiedAt: null,
       joinedAt: NOW,
       createdAt: NOW,
       updatedAt: NOW,

@@ -52,8 +52,25 @@ vi.mock('@/lib/framework/resparkable/queue/drain', () => ({
 vi.mock('@/lib/framework/resparkable/queue/enqueue', () => ({
   backfillMissingResparkableJobs: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/membership', () => ({
+  settleStrandedGroups: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/services/sole-admin-notice', () => ({
+  notifySoleAdmins: vi.fn(),
+}));
+vi.mock('@/lib/orchestration/maintenance/app-jobs', () => ({
+  registerAppJob: vi.fn(),
+}));
 
-import { runResparkableTick } from '@/lib/framework/resparkable/jobs';
+import {
+  RESPARKABLE_GROUP_SUCCESSION_JOB_NAME,
+  RESPARKABLE_QUEUE_JOB_NAME,
+  registerResparkableJobs,
+  runResparkableTick,
+} from '@/lib/framework/resparkable/jobs';
+import { settleStrandedGroups } from '@/lib/framework/resparkable/services/membership';
+import { notifySoleAdmins } from '@/lib/framework/resparkable/services/sole-admin-notice';
+import { registerAppJob, type AppJob } from '@/lib/orchestration/maintenance/app-jobs';
 import { drainResparkableJobs } from '@/lib/framework/resparkable/queue/drain';
 import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { findUnbilledTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
@@ -262,5 +279,48 @@ describe('composition', () => {
       executionsBilled: 0,
     });
     expect(result.outcome.executionsQueued).toBe(2);
+  });
+});
+
+describe('registerResparkableJobs', () => {
+  function registered(name: string): AppJob {
+    const job = vi.mocked(registerAppJob).mock.calls.find(([candidate]) => candidate.name === name);
+    if (!job) throw new Error(`${name} was not registered`);
+    return job[0];
+  }
+
+  it('registers the queue tick every minute and the group-succession pass hourly', () => {
+    registerResparkableJobs();
+
+    expect(registered(RESPARKABLE_QUEUE_JOB_NAME).intervalMs).toBe(60_000);
+    // The backstop for group succession when the erasure hook was missing
+    // (Sunrise ask #44), plus the sole-admin notice. Hourly: two queries that
+    // almost always match nothing.
+    expect(registered(RESPARKABLE_GROUP_SUCCESSION_JOB_NAME).intervalMs).toBe(3_600_000);
+  });
+
+  it('settles stranded groups before telling sole admins, and reports both', async () => {
+    const order: string[] = [];
+    vi.mocked(settleStrandedGroups).mockImplementation(async () => {
+      order.push('settle');
+      return { promoted: 1, deleted: 2, leftWithoutAdmin: 0 };
+    });
+    vi.mocked(notifySoleAdmins).mockImplementation(async () => {
+      order.push('notify');
+      return { notified: 3, notifyFailed: 1 };
+    });
+    registerResparkableJobs();
+
+    const summary = await registered(RESPARKABLE_GROUP_SUCCESSION_JOB_NAME).run();
+
+    // Settling first: a member the sweep promotes can be told in the same pass.
+    expect(order).toEqual(['settle', 'notify']);
+    expect(summary).toEqual({
+      promoted: 1,
+      deleted: 2,
+      leftWithoutAdmin: 0,
+      notified: 3,
+      notifyFailed: 1,
+    });
   });
 });

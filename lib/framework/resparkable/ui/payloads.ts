@@ -979,6 +979,7 @@ export const groupDetailSchema = z.object({
     description: z.string().nullable(),
     spaceId: z.string(),
     maxMembers: z.number(),
+    viewersCanInheritAdmin: z.boolean(),
   }),
   yourRole: z.string(),
   members: z.array(groupMemberSchema),

@@ -18,6 +18,46 @@ release process.
 
 ### Added
 
+- **Group erasure, deletion and export (Release 9, phase 48).** Erasing a
+  member now settles every group they had joined, inside `eraseUser`'s
+  transaction: the last admin's role passes to the longest-standing joined
+  member, and a group with no joined member left is deleted with its space.
+  The rule is `planErasureSuccession()` (pure) and `settleGroupsAfterErasure()`
+  in `services/membership.ts`, called only from the erasure hook.
+
+  `services/group-deletion.ts` is new: `deleteGroupConfirmed()` checks the
+  typed group name and emails every other joined member afterwards
+  (`components/resparkable/emails/group-deleted.tsx`). The group page gains a
+  separate admin-only "Delete this group" section.
+
+  The subject-access export gains a `groupContributions` section, declared
+  under `ResparkableGroup`: one entry per group the subject wrote in, holding
+  only the rows they created there, under the personal export's section names
+  and without the space key. `ResparkableGroup` is no longer in
+  `RESPARKABLE_EXCLUDED_MODELS`.
+
+- **Group succession: the admin's choice, a backstop, and a notice.**
+  `ResparkableGroup.viewersCanInheritAdmin` (default `true`, settable through
+  `PATCH /groups/[id]`) lets an admin keep a viewer from inheriting the role;
+  with only viewers left, the group keeps no admin. The rule moves to
+  `services/succession.ts` (pure, re-exported from `services/membership.ts`)
+  and `planErasureSuccession()` now takes the policy as a required third
+  argument and can answer `no_admin`. `ErasureSettlement` gains
+  `leftWithoutAdmin`.
+
+  A new hourly app job, `resparkable:group-succession`, runs
+  `settleStrandedGroups()` (the backstop when the erasure hook did not run,
+  Sunrise ask #44) and then `notifySoleAdmins()`, which emails a group's only
+  admin once (`components/resparkable/emails/sole-admin.tsx`) and records it in
+  the new `ResparkableGroupMember.soleAdminNotifiedAt`. The group page shows
+  admins who would inherit today, beside the setting.
+
+- **`authoredBy(scope)` in `repo/space-scope.ts`.** `spaceWhere` plus
+  `createdByUserId` from the scope's actor, for create `data` only. Every
+  scoped create in `repo/**` uses it, and `isolation.test.ts` fails one that
+  does not. A fork adding a table or a create path needs it, or the row never
+  appears in the export's group section.
+
 - **The workspace switcher, and `?space=` (Release 9, phase 47).** A person can
   now open a group's workspace, and which workspace a request is for travels as
   **one search param on the URL** — `?space=<spaceId>`, with **absence meaning
@@ -628,6 +668,15 @@ release process.
 
 ### Changed
 
+
+- **`DELETE /api/v1/resparkable/groups/[id]` requires `{ confirmName }`**
+  (phase 48). A bare `DELETE` is now a 400, and a name that does not match the
+  group's is a 400 naming the field. Surrounding whitespace is forgiven, case
+  is not. The response adds `notified` and `notifyFailed`.
+
+- **`listGroupMembers`, `updateMemberRole` and `deleteGroupSpace` take an
+  optional transaction client** (`repo/groups.ts`), so erasure can write through
+  `eraseUser`'s transaction. Existing callers are unchanged.
 
 - **`readResparkable()` takes a required third argument, the workspace**
   (phase 47). Every Resparkable server page passes it, threaded from the page's
@@ -1371,6 +1420,12 @@ release process.
 
 ### Removed
 
+- **`deleteGroup()` and `transferAdminAfterErasure()`** from
+  `services/membership.ts` (phase 48). The first deleted a group without the
+  confirmation or the notice §23.6 requires; use `deleteGroupConfirmed()`. The
+  second wrote outside the erasure transaction and could not tell "another
+  admin is here" from "nobody is left"; use `settleGroupsAfterErasure()`.
+
 - **The share and comment count helpers nothing rendered.**
   `countGrantsForItems` (`services/grants.ts`), `countCommentsFor`
   (`services/comments.ts`), and the two repo queries behind them,
@@ -1472,6 +1527,14 @@ release process.
 
 
 ### Fixed
+
+- **`createdByUserId` is written.** Phase 45 added it to every satellite and no
+  create path set it, so every row in a group space recorded no author. Rows
+  created before this release stay `null`.
+
+- **An erased person's address no longer survives on group invitations.**
+  `ResparkableGroupInvite.email` has no foreign key, and the erasure hook
+  scrubbed grants by address but not group invitations, accepted ones included.
 
 - **Sharing an item with yourself is refused rather than half-working.**
   `POST /api/v1/resparkable/grants` accepted the owner's own address and wrote a

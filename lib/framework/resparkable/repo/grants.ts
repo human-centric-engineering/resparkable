@@ -30,7 +30,11 @@
  */
 
 import { prisma } from '@/lib/db/client';
-import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  authoredBy,
+  spaceWhere,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableGrant } from '@prisma/client';
@@ -102,7 +106,7 @@ export async function upsertGrant(
       },
     },
     create: {
-      ...spaceWhere(scope),
+      ...authoredBy(scope),
       entityType: data.entityType,
       entityId: data.entityId,
       granteeEmail: data.granteeEmail,

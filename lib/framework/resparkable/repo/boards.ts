@@ -25,10 +25,11 @@
 
 import { prisma } from '@/lib/db/client';
 import {
+  authoredBy,
   liveSpaceWhere,
   spaceWhere,
-  type SpaceScope,
   type ArchiveVisibility,
+  type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   nullOnMiss,
@@ -115,7 +116,7 @@ export async function createBoard(
       // Scope spreads LAST so it beats anything the caller sent — see the rule
       // in `repo/space-scope.ts`. `WithoutOwner<…>` already keeps `userId` out
       // of the create types, so this is the second line of defence, not the first.
-      ...spaceWhere(scope),
+      ...authoredBy(scope),
     },
   });
 }
@@ -272,7 +273,7 @@ export async function addBoardCard(
     }
 
     return tx.resparkableBoardCard.create({
-      data: { ...spaceWhere(scope), boardId, taskId, position },
+      data: { ...authoredBy(scope), boardId, taskId, position },
     });
   });
 }
@@ -367,7 +368,7 @@ export async function snapshotBoardMembership(
     if (cards.length > 0) {
       await tx.resparkableBoardCard.createMany({
         data: cards.map((card) => ({
-          ...spaceWhere(scope),
+          ...authoredBy(scope),
           boardId,
           taskId: card.taskId,
           position: card.position,

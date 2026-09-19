@@ -50,9 +50,11 @@ vi.mock('@/lib/db/client', () => {
   const resparkableSpace = {
     create: vi.fn(),
     delete: vi.fn(),
+    deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
   const resparkableGroup = {
     create: vi.fn(),
+    findMany: vi.fn().mockResolvedValue([]),
     findUnique: vi.fn().mockResolvedValue(null),
     update: vi.fn(),
   };
@@ -75,6 +77,8 @@ vi.mock('@/lib/db/client', () => {
   const tx = { resparkableSpace, resparkableGroup, resparkableGroupMember, resparkableGroupInvite };
   const client = {
     ...tx,
+    user: { findMany: vi.fn().mockResolvedValue([]) },
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $transaction: vi.fn(async (arg: unknown) => {
       if (typeof arg === 'function') {
         return (arg as (tx: unknown) => Promise<unknown>)(tx);
@@ -92,6 +96,7 @@ import {
   countAdmins,
   createGroupWithSpace,
   deleteGroupSpace,
+  deleteGroupSpaceIfMemberless,
   deleteMember,
   findGroupById,
   findGroupBySlug,
@@ -100,7 +105,12 @@ import {
   findMembershipBySpace,
   listGroupInvites,
   listGroupMembers,
+  listGroupsWithoutAdmin,
+  listJoinedGroupsForErasure,
+  listMemberContacts,
   listMembershipsForActor,
+  listUnnotifiedSoleAdmins,
+  markSoleAdminNotified,
   markInviteAccepted,
   revokeInvite,
   updateGroup,
@@ -127,6 +137,7 @@ function memberRow(overrides: Record<string, unknown> = {}) {
     userId: 'user_a',
     role: 'member',
     invitedByUserId: null,
+    soleAdminNotifiedAt: null,
     joinedAt: NOW,
     createdAt: NOW,
     updatedAt: NOW,
@@ -143,6 +154,7 @@ beforeEach(() => {
     description: CREATE_DATA.description,
     spaceId: CREATE_DATA.spaceId,
     maxMembers: 50,
+    viewersCanInheritAdmin: true,
     createdAt: NOW,
   } as never);
   vi.mocked(prisma.resparkableGroupMember.create).mockResolvedValue({
@@ -325,6 +337,170 @@ describe('deleteGroupSpace', () => {
     expect(prisma.resparkableGroup.update).not.toHaveBeenCalled();
     // Nothing in this file calls resparkableGroup.delete at all: the space
     // cascade is the entire deletion path.
+  });
+});
+
+describe('listJoinedGroupsForErasure', () => {
+  it('reads joined memberships only, through the client it is given', async () => {
+    const db = {
+      resparkableGroupMember: {
+        findMany: vi.fn().mockResolvedValue([
+          {
+            groupId: 'group_1',
+            group: { spaceId: 'grp_space_1', viewersCanInheritAdmin: false },
+          },
+        ]),
+      },
+    };
+
+    const groups = await listJoinedGroupsForErasure('user_a', db as never);
+
+    // The group's succession setting travels with it, so erasure honours it.
+    expect(groups).toEqual([
+      { groupId: 'group_1', spaceId: 'grp_space_1', viewersCanInheritAdmin: false },
+    ]);
+    // Through the erasure transaction, never the global client, and a pending
+    // row is left out: a request to join has no bearing on succession.
+    expect(prisma.resparkableGroupMember.findMany).not.toHaveBeenCalled();
+    expect(db.resparkableGroupMember.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 'user_a', joinedAt: { not: null } } })
+    );
+  });
+});
+
+describe('listMemberContacts', () => {
+  it('returns the addresses of joined members and drops a user with no email', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      { userId: 'user_a' },
+      { userId: 'user_b' },
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: 'user_a', email: 'a@example.com', name: null },
+      { id: 'user_b', email: '', name: 'B' },
+    ] as never);
+
+    const contacts = await listMemberContacts('group_1');
+
+    expect(contacts).toEqual([{ userId: 'user_a', email: 'a@example.com', name: null }]);
+    expect(prisma.resparkableGroupMember.findMany).toHaveBeenCalledWith({
+      where: { groupId: 'group_1', joinedAt: { not: null } },
+      select: { userId: true },
+    });
+    expect(prisma.user.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ['user_a', 'user_b'] } },
+      select: { id: true, email: true, name: true },
+    });
+  });
+
+  it('skips the user read when nobody is joined', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([]);
+
+    expect(await listMemberContacts('group_1')).toEqual([]);
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('listGroupsWithoutAdmin', () => {
+  it('matches groups with no JOINED admin that the rule can act on, oldest first, bounded', async () => {
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValue([
+      { id: 'group_1', spaceId: 'grp_space_1', viewersCanInheritAdmin: true },
+    ] as never);
+
+    const groups = await listGroupsWithoutAdmin(25);
+
+    expect(groups).toEqual([
+      { groupId: 'group_1', spaceId: 'grp_space_1', viewersCanInheritAdmin: true },
+    ]);
+    // A pending admin row is a request to join, not an admin: it must not
+    // hide a stranded group from the sweep. The OR leaves out a group that is
+    // admin-less by its own choice (viewers may not inherit, only viewers
+    // joined), which would otherwise match forever and starve the batch, while
+    // still matching one with nobody joined at all, which must be deleted.
+    expect(prisma.resparkableGroup.findMany).toHaveBeenCalledWith({
+      where: {
+        members: { none: { role: 'admin', joinedAt: { not: null } } },
+        OR: [
+          { viewersCanInheritAdmin: true },
+          { members: { some: { joinedAt: { not: null }, role: { not: 'viewer' } } } },
+          { members: { none: { joinedAt: { not: null } } } },
+        ],
+      },
+      select: { id: true, spaceId: true, viewersCanInheritAdmin: true },
+      orderBy: { createdAt: 'asc' },
+      take: 25,
+    });
+  });
+});
+
+describe('listUnnotifiedSoleAdmins', () => {
+  it('asks the database with the limit as a bound parameter', async () => {
+    const row = {
+      memberId: 'member_1',
+      groupId: 'group_1',
+      groupName: 'Study Group',
+      viewersCanInheritAdmin: true,
+      email: 'a@example.com',
+      name: null,
+    };
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([row] as never);
+
+    expect(await listUnnotifiedSoleAdmins(10)).toEqual([row]);
+
+    const [strings, ...values] = vi.mocked(prisma.$queryRaw).mock.calls[0] as unknown as [
+      TemplateStringsArray,
+      ...unknown[],
+    ];
+    const sql = strings.join('?');
+    // The shape of "sole admin, not yet told, somebody else joined". The real
+    // query is exercised against Postgres by the group-erasure smoke.
+    expect(sql).toContain('"soleAdminNotifiedAt" IS NULL');
+    expect(sql).toMatch(/NOT EXISTS[\s\S]*"role" = 'admin'/);
+    expect(sql).toContain('m."joinedAt" IS NOT NULL');
+    expect(values).toEqual([10]);
+  });
+
+  it('does not query for a non-positive limit', async () => {
+    expect(await listUnnotifiedSoleAdmins(0)).toEqual([]);
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('markSoleAdminNotified', () => {
+  it('stamps the one membership row', async () => {
+    await markSoleAdminNotified('member_1', NOW);
+
+    expect(prisma.resparkableGroupMember.update).toHaveBeenCalledWith({
+      where: { id: 'member_1' },
+      data: { soleAdminNotifiedAt: NOW },
+    });
+  });
+});
+
+describe('deleteGroupSpaceIfMemberless', () => {
+  it('re-checks for joined members inside the delete, and only on a group space', async () => {
+    vi.mocked(prisma.resparkableSpace.deleteMany).mockResolvedValue({ count: 1 });
+
+    expect(await deleteGroupSpaceIfMemberless('group_1', 'grp_space_1')).toBe(true);
+
+    // The condition lives in the statement, so a member who joined after the
+    // sweep read the group keeps it. `kind: 'group'` means no argument can
+    // reach a personal brain through this path.
+    expect(prisma.resparkableSpace.deleteMany).toHaveBeenCalledWith({
+      where: {
+        spaceId: 'grp_space_1',
+        kind: 'group',
+        groups: {
+          some: { id: 'group_1', members: { none: { joinedAt: { not: null } } } },
+        },
+      },
+    });
+    expect(prisma.resparkableSpace.delete).not.toHaveBeenCalled();
+  });
+
+  it('reports false when the condition no longer holds', async () => {
+    vi.mocked(prisma.resparkableSpace.deleteMany).mockResolvedValue({ count: 0 });
+
+    expect(await deleteGroupSpaceIfMemberless('group_1', 'grp_space_1')).toBe(false);
   });
 });
 

@@ -51,7 +51,11 @@
 
 import { registerAppSubjectSources } from '@/lib/privacy/subject-source-registry';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
-import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
+import {
+  collectResparkableCrossSubjectData,
+  GROUP_CONTRIBUTIONS_SCOPE_NOTE,
+  RESPARKABLE_GROUP_CONTRIBUTION_MODEL,
+} from '@/lib/framework/resparkable/access/subject-export';
 import {
   collectResparkableSubjectData,
   RESPARKABLE_SUBJECT_SOURCES,
@@ -86,12 +90,14 @@ export type AppSubjectData = Record<string, unknown>;
  * `tier: 'framework'` because Resparkable sits between Sunrise and its own leaf
  * forks. That leaves the `'app'` slot free for a host project's own tables.
  *
- * Four models are declared here rather than derived, because they are not in
+ * Five models are declared here rather than derived, because they are not in
  * the owner-scoped manifest:
  *
  * - `ResparkableGroupMember` / `ResparkableGroupInvite` are keyed on a person
  *   and an address rather than on a space, so they are answered by
  *   `access/subject-export.ts` and named in `RESPARKABLE_CROSS_SUBJECT_MODELS`.
+ * - `ResparkableGroup` names the `groupContributions` section: the rows the
+ *   subject wrote in group workspaces, by group (§23.6, phase 48).
  * - `ResparkableSettings` / `ResparkableBillingSettings` are deployment
  *   configuration keyed by slug, holding no column that names a person. The
  *   owner-scoped guard never asks about them because it scans for `spaceId`;
@@ -121,6 +127,16 @@ export function initAppSubjectSources(): void {
         disposition: 'export' as const,
         description:
           'Invitations to a group addressed to the subject, including ones never accepted.',
+      },
+      {
+        // The first source in the tier that returns SOME of a table's rows.
+        // Core's `scopeNote` is not available to a tier declaration (Sunrise ask
+        // #47), so the narrowing is the description: core prints it in the
+        // export's `meta.app`, beside the count of groups.
+        model: RESPARKABLE_GROUP_CONTRIBUTION_MODEL,
+        section: 'groupContributions',
+        disposition: 'export' as const,
+        description: `What you wrote in each group workspace, one entry per group. ${GROUP_CONTRIBUTIONS_SCOPE_NOTE}`,
       },
     ],
     excluded: [

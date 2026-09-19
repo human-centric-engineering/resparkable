@@ -21,6 +21,11 @@
  *      transaction, before its own delete.
  *   5. **Blob cleanup does not block erasure.** Storage being unreachable must
  *      not stop a person's account being deleted.
+ *   6. **Group invitations are scrubbed by address too** (phase 48). Same shape
+ *      as a grant invite, and the first version of this hook missed them.
+ *   7. **Group succession runs inside the erasure transaction** (phase 48), so
+ *      it commits or rolls back with the erasure. The rule itself is tested in
+ *      `services/membership.test.ts`.
  *
  * @see lib/framework/resparkable/privacy/erasure.ts
  */
@@ -29,6 +34,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const deleteByPrefix = vi.fn();
 const isStorageEnabled = vi.fn();
+
+const settleGroupsAfterErasure = vi.fn();
+
+vi.mock('@/lib/framework/resparkable/services/membership', () => ({
+  settleGroupsAfterErasure: (...args: unknown[]) => settleGroupsAfterErasure(...args),
+}));
 
 vi.mock('@/lib/storage/upload', () => ({
   deleteByPrefix: (...args: unknown[]) => deleteByPrefix(...args),
@@ -40,6 +51,7 @@ import {
   registerResparkableErasureHook,
   resparkableBlobPrefix,
   scrubGranteeEmail,
+  scrubResparkableInTransaction,
 } from '@/lib/framework/resparkable/privacy/erasure';
 import {
   __resetErasureCleanupHooksForTests,
@@ -54,6 +66,7 @@ function tx(email: string | null) {
       delete: vi.fn(),
     },
     resparkableGrant: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    resparkableGroupInvite: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
     resparkableComment: { deleteMany: vi.fn() },
     resparkableSpace: { delete: vi.fn() },
   };
@@ -64,6 +77,7 @@ beforeEach(() => {
   __resetErasureCleanupHooksForTests();
   isStorageEnabled.mockReturnValue(true);
   deleteByPrefix.mockResolvedValue({ success: true, key: 'x' });
+  settleGroupsAfterErasure.mockResolvedValue({ promoted: 0, deleted: 0 });
 });
 
 describe('registerResparkableErasureHook', () => {
@@ -125,6 +139,19 @@ describe('scrubGranteeEmail', () => {
     });
   });
 
+  it('deletes group invitations addressed to the same email, lower-cased', async () => {
+    const client = tx('B@Example.COM');
+
+    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+
+    // `ResparkableGroupInvite.email` has no foreign key either, and an accepted
+    // invitation keeps its address after the membership it created has
+    // cascaded. Either way the row holds an erased person's address.
+    expect(client.resparkableGroupInvite.deleteMany).toHaveBeenCalledWith({
+      where: { email: 'b@example.com' },
+    });
+  });
+
   it('does nothing when the user row is already gone', async () => {
     const client = tx(null);
 
@@ -134,6 +161,7 @@ describe('scrubGranteeEmail', () => {
     // undefined email would match on `undefined`, which Prisma reads as "no
     // filter" — every grant in the installation.
     expect(client.resparkableGrant.deleteMany).not.toHaveBeenCalled();
+    expect(client.resparkableGroupInvite.deleteMany).not.toHaveBeenCalled();
   });
 
   it('does not re-delete what the cascade already takes', async () => {
@@ -156,6 +184,47 @@ describe('scrubGranteeEmail', () => {
     // The hook runs inside `eraseUser`'s transaction and before its own
     // delete. Deleting the user here would run the whole erasure twice.
     expect(client.user.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('scrubResparkableInTransaction', () => {
+  it('settles the erased person’s groups through the erasure transaction', async () => {
+    const client = tx('b@example.com');
+
+    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+
+    // The transaction client, not the global one: a promotion must not survive
+    // an erasure that rolls back.
+    expect(settleGroupsAfterErasure).toHaveBeenCalledWith('user_b', client);
+  });
+
+  it('still scrubs addresses', async () => {
+    const client = tx('b@example.com');
+
+    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+
+    expect(client.resparkableGrant.deleteMany).toHaveBeenCalledWith({
+      where: { granteeEmail: 'b@example.com' },
+    });
+  });
+
+  it('lets a succession failure roll the erasure back rather than swallowing it', async () => {
+    settleGroupsAfterErasure.mockRejectedValue(new Error('deadlock'));
+
+    // A swallowed failure here would commit an erasure that left a group with
+    // no admin. Throwing rolls back `eraseUser`'s transaction, and the subject
+    // can retry: a failed request is recoverable, an adminless group is not.
+    await expect(
+      scrubResparkableInTransaction({ tx: tx('b@example.com') as never, userId: 'user_b' })
+    ).rejects.toThrow('deadlock');
+  });
+});
+
+describe('registered hook', () => {
+  it('runs the full in-transaction scrub, not only the email half', () => {
+    registerResparkableErasureHook();
+
+    expect(getErasureCleanupHooks()[0].scrubInTransaction).toBe(scrubResparkableInTransaction);
   });
 });
 

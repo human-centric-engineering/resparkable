@@ -62,6 +62,11 @@ export async function insertEvent(
   return prisma.resparkableEvent.create({
     data: {
       ...spaceWhere(scope),
+      // On an event, the person who DID the thing, not the item's author
+      // (plan.md "Attribution"). A task Sam created and Priya completed gives
+      // one event for each of them. A `system` event has no actor: the
+      // workspace did it, not whoever's scope the job happened to run under.
+      createdByUserId: input.source === 'system' ? null : scope.actorUserId,
       kind: input.kind,
       entityType: input.entityType,
       entityId: input.entityId,

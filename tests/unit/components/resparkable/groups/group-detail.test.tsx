@@ -46,6 +46,7 @@ const DETAIL = {
     description: 'Thursday evenings',
     spaceId: 'spc_group_1',
     maxMembers: 50,
+    viewersCanInheritAdmin: true,
   },
   yourRole: 'admin',
   members: [

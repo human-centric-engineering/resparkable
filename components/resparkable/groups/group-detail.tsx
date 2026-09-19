@@ -20,12 +20,12 @@
  * grant nothing until accepted, because membership is write access to an entire
  * brain. Two objects, two lifetimes, two lists.
  *
- * ## What is not here yet
+ * ## Deleting the group
  *
- * Deleting a group, and admin succession when the last admin is erased. Both
- * are phase 48's, and both need more than a button: a typed confirmation and a
- * notification to every member, because deleting a group destroys a workspace
- * several people were writing into.
+ * Its own section at the bottom, admins only, and never beside "leave": see
+ * `delete-group.tsx`. Admin succession itself happens in the erasure hook, but
+ * what it would do, and the one setting that changes it, are shown to admins in
+ * `group-succession.tsx`.
  *
  * ## Not on the space-carrying client
  *
@@ -37,6 +37,8 @@ import * as React from 'react';
 import { useRouter } from 'next/navigation';
 import { Mail, UserMinus, X } from 'lucide-react';
 
+import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
+import { GroupSuccession } from '@/components/resparkable/groups/group-succession';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -293,6 +295,26 @@ export function GroupDetail({
       )}
 
       <SaveStatus state={state} message={message} />
+
+      {isAdmin && (
+        <GroupSuccession
+          groupId={groupId}
+          members={members}
+          viewerUserId={viewerUserId}
+          viewersCanInheritAdmin={detail.group.viewersCanInheritAdmin}
+        />
+      )}
+
+      {isAdmin && (
+        <DeleteGroup
+          groupId={groupId}
+          groupName={detail.group.name}
+          otherMemberCount={
+            members.filter((member) => member.userId !== viewerUserId && member.joinedAt !== null)
+              .length
+          }
+        />
+      )}
     </div>
   );
 }

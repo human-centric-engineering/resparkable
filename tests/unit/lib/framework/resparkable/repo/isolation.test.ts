@@ -356,6 +356,39 @@ describe('every repo call is owner-scoped', () => {
     }
   });
 
+  it.each(SCOPED_CALLS)('%s stamps who wrote any row it creates', async (_name, call) => {
+    // §23.5, and phase 48's Art. 15 source depends on it: "the rows you wrote
+    // in a group" is a filter on `createdByUserId`, and a create that forgets
+    // it produces a row that export can never find. Phase 45 added the column
+    // and nothing wrote it until phase 48, with every test green, because no
+    // test asked. This one does.
+    //
+    // Two tables are exempt, both because nobody authored the row. Embeddings
+    // are derived from content by the indexer. Settings are a deployment
+    // singleton. A `system` event carries `null` on purpose (plan.md,
+    // "Attribution"), and none of the calls swept here writes one.
+    const EXEMPT = new Set(['resparkableEmbedding', 'resparkableSettings']);
+    await call();
+
+    for (const args of recordedArgs()) {
+      if (EXEMPT.has(String(args.delegateName))) continue;
+
+      let rows: unknown[] = [];
+      if (args.methodName === 'create' || args.methodName === 'createMany') {
+        rows = Array.isArray(args.data) ? args.data : [args.data];
+      } else if (args.methodName === 'upsert') {
+        rows = [args.create];
+      }
+
+      for (const row of rows) {
+        expect(
+          (row as Record<string, unknown> | undefined)?.createdByUserId,
+          `a create with no author: ${String(args.delegateName)}.${String(args.methodName)}`
+        ).toBe('user_a');
+      }
+    }
+  });
+
   it.each(SCOPED_CALLS)('%s never filters on the ACTOR', async (_name, call) => {
     // D5, restated by §23.2. `SpaceScope` carries `actorUserId` for attribution
     // and role checks, and the moment it appears in a `where` a group space has

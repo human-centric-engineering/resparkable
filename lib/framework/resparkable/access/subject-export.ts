@@ -59,6 +59,31 @@
  * group's content.** That is the group's, it sits behind a live membership, and
  * the same reasoning applies as for a grant: an export bundle is a file that
  * gets emailed around.
+ *
+ * ## Phase 48: what they wrote in a group IS theirs
+ *
+ * "Not the group's content" has one exception, and §23.6 names it: rows in a
+ * group space whose `createdByUserId` is the subject. What a person wrote is
+ * their personal data wherever they wrote it, and the owner-scoped manifest
+ * cannot see it, because a group space is not theirs.
+ *
+ * This is the first source in the tier whose answer is **some** of a table's
+ * rows rather than all of them, and saying so is the whole obligation. Core's
+ * `scopeNote` would be the place, but that field exists only on core's own
+ * manifest; the registry this tier declares through carries a `description`
+ * and nothing else (Sunrise ask #47). So the narrowing is stated in the
+ * section's description in `lib/app/data-export.ts`, which core surfaces in the
+ * export's own `meta.app` beside the section's row count. The text is
+ * {@link GROUP_CONTRIBUTIONS_SCOPE_NOTE}.
+ *
+ * The section is an array of groups rather than an object carrying the note,
+ * because core counts an object section as one row, and a count that always
+ * reads "1" would be a small lie in the one place a reader checks.
+ *
+ * Organised by group, one entry per group the subject wrote in, because "the
+ * tasks you wrote" means nothing without "in which group". Groups they have
+ * since left are included: leaving does not make what they wrote any less
+ * theirs, and rows they wrote in a deleted group are gone with it.
  */
 
 import { prisma } from '@/lib/db/client';
@@ -129,6 +154,30 @@ export interface GroupInviteRecord {
   revokedAt: Date | null;
 }
 
+/**
+ * What `groupContributions` withholds, and why. Declared as the section's
+ * description, which core prints in the export's `meta.app` beside its count.
+ */
+export const GROUP_CONTRIBUTIONS_SCOPE_NOTE =
+  'Only rows you created in each group workspace. Rows other members created are theirs and ' +
+  'are not included, even where you later edited them. Each row is shown as it is now, which ' +
+  'may include later edits by other members. Comments you wrote in a group are in ' +
+  'commentsIWrote. Your personal workspace is exported in full in its own sections.';
+
+/** The rows the subject wrote in one group's workspace. */
+export interface GroupContributionRecord {
+  groupId: string;
+  groupName: string;
+  /** False when they have since left, or their membership is still pending. */
+  currentMember: boolean;
+  /**
+   * Their rows, by the same section names the personal export uses, with
+   * `spaceId` removed: it is the partition key of other people's content, and
+   * the group's name says which workspace a row is from.
+   */
+  rows: Record<string, Array<Record<string, unknown>>>;
+}
+
 export interface ResparkableCrossSubjectData {
   /** Grants addressed to this person, by anybody. */
   sharedWithMe: SharedWithMeRecord[];
@@ -138,6 +187,8 @@ export interface ResparkableCrossSubjectData {
   groupMemberships: GroupMembershipRecord[];
   /** Group invitations addressed to them, and ones they sent. */
   groupInvites: GroupInviteRecord[];
+  /** What they wrote in each group workspace. See {@link GROUP_CONTRIBUTIONS_SCOPE_NOTE}. */
+  groupContributions: GroupContributionRecord[];
 }
 
 /**
@@ -160,6 +211,187 @@ export const RESPARKABLE_CROSS_SUBJECT_MODELS = [
   'ResparkableGroupMember',
   'ResparkableGroupInvite',
 ] as const;
+
+/**
+ * The model the `groupContributions` section is declared under.
+ *
+ * A declaration needs one real model, and the section spans eighteen tables,
+ * every one of which the owner-scoped manifest already claims. The group is
+ * what the section is organised by, so it is the honest name for it. The group
+ * ROW is still not exported: only its id and name, as labels on the subject's
+ * own rows. `subject-export.test.ts` accepts this as the third way a scoped
+ * model can be accounted for, beside exported and excluded.
+ */
+export const RESPARKABLE_GROUP_CONTRIBUTION_MODEL = 'ResparkableGroup';
+
+/** The predicate, in one place: rows this person wrote, in any group space. */
+function contributedBy(userId: string) {
+  return { createdByUserId: userId, space: { kind: 'group' } };
+}
+
+const OLDEST_FIRST = { createdAt: 'asc' } as const;
+
+/**
+ * Every table a member can write into, by the section name the personal export
+ * gives it.
+ *
+ * Absent, each for a reason: the space row (the group's, not theirs), credit
+ * rows (a group has no account until phase 50), embeddings and jobs (derived,
+ * excluded from the personal export on the same grounds), and comments (already
+ * complete in `commentsIWrote`, which matches on `authorUserId` in every space).
+ * `subject-export.test.ts` asserts this list against the owner-scoped manifest,
+ * so a table added there and not here fails by name.
+ */
+export const GROUP_CONTRIBUTION_SOURCES: Record<
+  string,
+  { section: string; fetch: (userId: string) => Promise<Array<Record<string, unknown>>> }
+> = {
+  ResparkableArea: {
+    section: 'areas',
+    fetch: (userId) =>
+      prisma.resparkableArea.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableGoal: {
+    section: 'goals',
+    fetch: (userId) =>
+      prisma.resparkableGoal.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableProject: {
+    section: 'projects',
+    fetch: (userId) =>
+      prisma.resparkableProject.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableTask: {
+    section: 'tasks',
+    fetch: (userId) =>
+      prisma.resparkableTask.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableThought: {
+    section: 'thoughts',
+    fetch: (userId) =>
+      prisma.resparkableThought.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableLink: {
+    section: 'links',
+    fetch: (userId) =>
+      prisma.resparkableLink.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableBoard: {
+    section: 'boards',
+    fetch: (userId) =>
+      prisma.resparkableBoard.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableBoardCard: {
+    section: 'boardCards',
+    fetch: (userId) =>
+      prisma.resparkableBoardCard.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableTag: {
+    section: 'tags',
+    fetch: (userId) =>
+      prisma.resparkableTag.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableTaskTag: {
+    section: 'taskTags',
+    fetch: (userId) =>
+      prisma.resparkableTaskTag.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableChecklistItem: {
+    section: 'checklistItems',
+    fetch: (userId) =>
+      prisma.resparkableChecklistItem.findMany({
+        where: contributedBy(userId),
+        orderBy: OLDEST_FIRST,
+      }),
+  },
+  ResparkableEntity: {
+    section: 'people',
+    fetch: (userId) =>
+      prisma.resparkableEntity.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableDocument: {
+    section: 'documents',
+    fetch: (userId) =>
+      prisma.resparkableDocument.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableTimeBlock: {
+    section: 'timeBlocks',
+    fetch: (userId) =>
+      prisma.resparkableTimeBlock.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableReview: {
+    section: 'reviews',
+    fetch: (userId) =>
+      prisma.resparkableReview.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableEvent: {
+    section: 'activity',
+    fetch: (userId) =>
+      prisma.resparkableEvent.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableGrant: {
+    section: 'sharedByMe',
+    // The same omission the personal export makes: the digest of a credential.
+    fetch: (userId) =>
+      prisma.resparkableGrant.findMany({
+        where: contributedBy(userId),
+        omit: { inviteTokenHash: true },
+        orderBy: OLDEST_FIRST,
+      }),
+  },
+  ResparkableShareLink: {
+    section: 'shareLinks',
+    // And again: `tokenHash` is the credential.
+    fetch: (userId) =>
+      prisma.resparkableShareLink.findMany({
+        where: contributedBy(userId),
+        omit: { tokenHash: true },
+        orderBy: OLDEST_FIRST,
+      }),
+  },
+};
+
+/**
+ * Collect what one person wrote in group workspaces, grouped by group.
+ *
+ * Reads each table once for the person, not once per group, then labels the
+ * rows. A person in many groups gets eighteen queries, not eighteen per group.
+ */
+export async function collectGroupContributions(
+  userId: string,
+  memberships: ReadonlyArray<{ groupId: string; joinedAt: Date | null }>
+): Promise<GroupContributionRecord[]> {
+  const entries = Object.values(GROUP_CONTRIBUTION_SOURCES);
+  const results = await Promise.all(entries.map((source) => source.fetch(userId)));
+
+  const bySpace = new Map<string, Record<string, Array<Record<string, unknown>>>>();
+  entries.forEach((source, i) => {
+    for (const row of results[i]) {
+      const { spaceId, ...rest } = row;
+      if (typeof spaceId !== 'string') continue;
+      const sections = bySpace.get(spaceId) ?? {};
+      (sections[source.section] ??= []).push(rest);
+      bySpace.set(spaceId, sections);
+    }
+  });
+  if (bySpace.size === 0) return [];
+
+  const groups = await prisma.resparkableGroup.findMany({
+    where: { spaceId: { in: [...bySpace.keys()] } },
+    select: { id: true, name: true, spaceId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  const joined = new Set(
+    memberships.filter((member) => member.joinedAt !== null).map((member) => member.groupId)
+  );
+
+  return groups.map((group) => ({
+    groupId: group.id,
+    groupName: group.name,
+    currentMember: joined.has(group.id),
+    rows: bySpace.get(group.spaceId) ?? {},
+  }));
+}
 
 /**
  * Everything about this subject that lives on somebody else's rows.
@@ -186,7 +418,13 @@ export async function collectResparkableCrossSubjectData(
   // every grant in the installation, which is the one failure mode here worth
   // spending a branch on.
   if (clauses.length === 0 || !viewer.userId) {
-    return { sharedWithMe: [], commentsIWrote: [], groupMemberships: [], groupInvites: [] };
+    return {
+      sharedWithMe: [],
+      commentsIWrote: [],
+      groupMemberships: [],
+      groupInvites: [],
+      groupContributions: [],
+    };
   }
   const actorUserId = viewer.userId;
   const address = viewer.email?.toLowerCase() ?? null;
@@ -227,6 +465,9 @@ export async function collectResparkableCrossSubjectData(
         groupId: true,
         role: true,
         joinedAt: true,
+        // When they were emailed that they are the group's only admin: a
+        // record of something done with their address, so theirs to see.
+        soleAdminNotifiedAt: true,
         createdAt: true,
         group: { select: { name: true } },
       },
@@ -255,6 +496,8 @@ export async function collectResparkableCrossSubjectData(
       orderBy: { createdAt: 'asc' },
     }),
   ]);
+
+  const contributions = await collectGroupContributions(actorUserId, memberships);
 
   return {
     // An allowlisted `select` rather than an `omit`, unlike every owner-scoped
@@ -294,5 +537,6 @@ export async function collectResparkableCrossSubjectData(
       expiresAt: invite.expiresAt,
       revokedAt: invite.revokedAt,
     })),
+    groupContributions: contributions,
   };
 }

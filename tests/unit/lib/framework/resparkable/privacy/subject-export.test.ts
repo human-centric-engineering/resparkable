@@ -52,7 +52,11 @@ import {
   RESPARKABLE_EXCLUDED_MODELS,
   RESPARKABLE_EXPORT_SECTIONS,
 } from '@/lib/framework/resparkable/repo/subject-export';
-import { RESPARKABLE_CROSS_SUBJECT_MODELS } from '@/lib/framework/resparkable/access/subject-export';
+import {
+  GROUP_CONTRIBUTION_SOURCES,
+  RESPARKABLE_CROSS_SUBJECT_MODELS,
+  RESPARKABLE_GROUP_CONTRIBUTION_MODEL,
+} from '@/lib/framework/resparkable/access/subject-export';
 
 const SCHEMA_PATH = path.join(process.cwd(), 'prisma/schema/framework-resparkable.prisma');
 
@@ -170,7 +174,14 @@ describe('the schema scan itself', () => {
 
 describe('coverage', () => {
   it('exports or excludes every table holding a user id', () => {
-    const missing = [...scoped].filter((model) => !exported.has(model) && !excluded.has(model));
+    // Three ways to be accounted for. The third is phase 48's: the group row
+    // names the section holding what the subject wrote in group workspaces.
+    const missing = [...scoped].filter(
+      (model) =>
+        !exported.has(model) &&
+        !excluded.has(model) &&
+        model !== RESPARKABLE_GROUP_CONTRIBUTION_MODEL
+    );
 
     expect(
       missing.sort(),
@@ -237,30 +248,55 @@ describe('exclusions', () => {
     expect(unexplained).toEqual([]);
   });
 
-  it('excludes three tables, each for a reason a reader can check', () => {
+  it('excludes two tables, each for a reason a reader can check', () => {
     // Kept tight on purpose: the moment "excluded" becomes a habit, the export
     // starts shrinking without anyone deciding that it should. So the list is
     // pinned, and growing it means editing this line and saying why.
     //
-    // The first two are derived state: vectors computed from exported text, and
-    // worker scheduling computed from an exported timezone and an exported event
-    // log. Neither is a table somebody chose not to think about.
+    // Both are derived state: vectors computed from exported text, and worker
+    // scheduling computed from an exported timezone and an exported event log.
     //
-    // `ResparkableGroup` (phase 46) is a different kind of entry and the one
-    // worth reading carefully. It is not derived and it is not empty. It is
-    // excluded from the SPACE-SCOPED manifest because a subject's export runs
-    // under `spaceScope(subject.userId)`, their personal space, which no group
-    // ever points at — so this source could only ever return an empty section
-    // while reading as a complete answer. The subject's actual relationship to
-    // the group IS exported, by name and role, through the cross-subject
-    // collector, and the test above asserts that collector claims the tables it
-    // has to. Nothing is withheld here; it is answered somewhere the manifest
-    // can reach.
-    expect([...excluded].sort()).toEqual([
-      'ResparkableEmbedding',
-      'ResparkableGroup',
-      'ResparkableJob',
-    ]);
+    // `ResparkableGroup` was a third until phase 48. It now names the
+    // `groupContributions` section instead: see the describe block below.
+    expect([...excluded].sort()).toEqual(['ResparkableEmbedding', 'ResparkableJob']);
+  });
+});
+
+describe('group contributions (phase 48, §23.6)', () => {
+  // The owner-scoped manifest tables a member can NOT write into a group, or
+  // whose group rows are answered elsewhere. Pinned, so adding a table to the
+  // personal export forces a decision about its group half.
+  const NOT_A_CONTRIBUTION = [
+    // The group's own space row, not the member's.
+    'ResparkableSpace',
+    // A group has no credit account until phase 50.
+    'ResparkableCreditAccount',
+    'ResparkableCreditLedgerEntry',
+    // Already complete in `commentsIWrote`, which matches on `authorUserId` in
+    // every space, group spaces included. Listing it here too would export
+    // each comment twice.
+    'ResparkableComment',
+  ];
+
+  it('reads every table a member can write into a group', () => {
+    const expected = Object.keys(RESPARKABLE_SUBJECT_SOURCES)
+      .filter((model) => !NOT_A_CONTRIBUTION.includes(model))
+      .sort();
+
+    expect(Object.keys(GROUP_CONTRIBUTION_SOURCES).sort()).toEqual(expected);
+  });
+
+  it('uses the personal export’s section name for each table', () => {
+    // So a reader who knows what `tasks` means in one place knows it in the other.
+    for (const [model, source] of Object.entries(GROUP_CONTRIBUTION_SOURCES)) {
+      expect(source.section, model).toBe(RESPARKABLE_SUBJECT_SOURCES[model]?.section);
+    }
+  });
+
+  it('is declared under a model that exists and that nothing else claims', () => {
+    expect(allModels.has(RESPARKABLE_GROUP_CONTRIBUTION_MODEL)).toBe(true);
+    expect(exported.has(RESPARKABLE_GROUP_CONTRIBUTION_MODEL)).toBe(false);
+    expect(excluded.has(RESPARKABLE_GROUP_CONTRIBUTION_MODEL)).toBe(false);
   });
 });
 
