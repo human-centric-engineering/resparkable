@@ -727,6 +727,39 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.12.1 (101 commits, v0.11.2..v0.12.1).** Two upstream
+  releases. The security fix in 0.12.1 is the one to read first: a sign-up
+  request could name its own `role`, and cannot any more.
+
+  **`withAuth()` and `withAdminAuth()` take a second argument.** A route now
+  declares who decides whose rows it may touch (`ownership: { decidedBy, because }`),
+  and the guard hands the handler the principal it resolved. Undeclared routes
+  log rather than refuse unless a fork registers a scoped authorization policy
+  in `lib/app/authorization.ts`, which ships empty here, so this tier's own
+  routes are unaffected until it fills that seam.
+
+  **`AiCostLog` gains `userId`** (`SetNull`, so an erasure de-attributes the
+  spend rather than deleting the books). This tier's three `logCost` sites do
+  not pass one yet: voice capture, photo capture and ideation record spend
+  against no user, and the FK-attribution roster says so rather than implying
+  otherwise.
+
+  **`Account.issuer` is gone**, undoing the column 0.11.2 added for
+  better-auth 1.7.1. 1.7.3 restored the 1.6 account identity, so the column is
+  dropped by `20260915180000_drop_account_issuer`, which is written to be a
+  no-op for an operator who already ran better-auth's own recipe.
+
+  **Two dependency bumps needed work here.** Zod 4.6.5 no longer reads
+  `z.undefined()` inside a union as an optional key, which 400'd every account
+  export that omitted `?originals=`; the three affected fields in
+  `lib/portability/validation.ts` now use `.optional()` and parse identically.
+  Vitest 4 to 5 needed no config change.
+
+  **Two new always-run guards ask something of this tier**, both admitted by an
+  edit to a Sunrise-owned test for want of a seam: the raw-SQL allowlist (6
+  files, 21 calls) and the `logCost` call-site roster. See Sunrise ask #48 and
+  upstream [#799](https://github.com/human-centric-engineering/sunrise/issues/799).
+
 - **Merged Sunrise 0.11.2 (75 commits, v0.9.0..v0.11.2).** Four upstream
   releases in one sync, and three of them change a surface this fork publishes.
 
