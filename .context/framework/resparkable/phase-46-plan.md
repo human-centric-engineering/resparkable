@@ -504,6 +504,60 @@ Tests 13b to 13e. **13b is the single most important assertion in the release**:
 a non-member's request for a group space's content returns nothing, on every
 list endpoint, by scope resolution and not by filtering.
 
+### Landed
+
+Landed on the branch `feature/resparkable-group-erasure`, 2026-09-18. Six
+departures from the text above, again found by building it.
+
+**1. `createdByUserId` had never been written.** Phase 45 added the column to
+all 23 satellites and nothing set it, which stayed invisible through phase 47
+because nothing read it either. The Art. 15 predicate this phase adds is its
+first reader, and against an unwritten column it matches nothing and reports an
+empty section that looks like a true answer. `authoredBy(scope)` in
+`repo/space-scope.ts` now stamps it at every scoped create, and
+`isolation.test.ts` asserts it. Events take the actor who did the thing and a
+`system` event takes `null`; comments take `authorUserId`.
+
+**2. `SubjectDataSource.scopeNote` is not reachable from this tier.** It
+exists on core's own manifest, and this tier declares through
+`registerAppSubjectSources()`, whose rows carry a `description` and nothing
+else. The narrowing is stated in the section's description instead, which core
+prints in `meta.app` beside the count. Sunrise ask #47.
+
+**3. The predicate lands under `ResparkableGroup`, as a section of groups.**
+Core's registry holds one source per model and every content table is already
+claimed by the personal export, so `groupContributions` is declared under the
+group, which is what it is organised by. It is an array of groups rather than
+an object carrying a note, because core counts an object section as one row.
+`ResparkableGroup` moves from excluded to naming this section, and the tier
+guard gains a third way to account for a model.
+
+**4. Group invitations were not scrubbed on erasure.** `ResparkableGroupInvite.email`
+has no foreign key, and the hook deleted grants by address but not these, so an
+erased person's address stayed on every invitation sent to it, accepted ones
+included. Fixed in the same hook, by the same lower-cased match.
+
+**5. `transferAdminAfterErasure` wrote outside the transaction.** It used the
+global client, so a promotion would survive an erasure that rolled back, and it
+returned `null` both for "another admin is here" and for "nobody is left".
+Replaced by `planErasureSuccession`, which is pure and has three distinguishable
+answers, and `settleGroupsAfterErasure`, which applies it through `tx`.
+
+**6. The unconfirmed `deleteGroup` is gone.** Keeping it beside the confirmed
+path would have left a way to delete a group that skipped both §23.6
+obligations. Deletion now lives in `services/group-deletion.ts`, which keeps
+`services/membership.ts` free of an email import.
+
+**What did not change: the B12 half.** `repo/groups.test.ts` already asserted
+`createGroupWithSpace` writes `ownerUserId: null` from phase 46.
+
+**13b is two tests, because the two plans define it differently.** This file's
+version (a non-member gets nothing from any route) is
+`tests/unit/app/api/v1/resparkable/group-isolation.test.ts`, a sweep over all
+74 workspace routes against a recording database. plan.md's version (erase a
+member and check what survives) needs a real database and is
+`npm run framework:resparkable:smoke-group-erasure`.
+
 ---
 
 ## What this branch deliberately does not do
