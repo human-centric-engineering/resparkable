@@ -163,7 +163,9 @@ past `expiresAt`. MCP auth rejects both. If the member surface only checks one,
 the card shows a key that cannot connect, and Regenerate writes fresh secret
 material onto a dead row and reports success.
 
-So one predicate, `liveKeyWhere()` / `isLiveKey()`, is used by all four readers:
+So one expression of the rule, `liveKeyWhere()`, is used by all four readers
+(as built: the plan proposed an `isLiveKey()` predicate beside it, and nothing
+called the predicate, so two encodings of one rule became one):
 the one-per-workspace cap, the list, regenerate and revoke. And:
 
 - **Regenerate does not reactivate** a deactivated key and **does not clear**

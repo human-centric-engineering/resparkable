@@ -68,7 +68,9 @@
  */
 
 import { classifyStoredKeyScope } from '@/lib/framework/resparkable/mcp/key-scope';
+import { readResparkableScheduleSpaceId } from '@/lib/framework/resparkable/repo/space-scope';
 import { settleGroupsAfterErasure } from '@/lib/framework/resparkable/services/membership';
+import { mcpKeyScopeSchema } from '@/lib/validations/mcp';
 import { logger } from '@/lib/logging';
 import {
   registerErasureCleanupHook,
@@ -177,36 +179,51 @@ export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
 }
 
 /**
- * Delete the workspace MCP keys this person minted for themselves.
+ * Delete every MCP key of this person's that names a workspace.
  *
  * ## Why the cascade cannot do this one
  *
  * `McpApiKey.createdBy` is `onDelete: SetNull` in core, and core's schema is
  * not ours to change. So after erasure the key **survives** with
- * `createdBy: null`. It reaches nothing, because every Resparkable capability
- * refuses to run without a user and `requireResparkableSpace()` throws on a
- * null one. But it still authenticates, still lists tools, and still writes
- * audit rows: a live credential belonging to a person who asked to be erased.
+ * `createdBy: null`: a live credential belonging to a person who asked to be
+ * erased. It still authenticates, still lists tools, and still writes audit
+ * rows.
  *
- * ## Why only the scoped ones
+ * ## An orphaned key that names a workspace is not harmless, and this is the
+ * part worth reading
  *
- * A key whose scope classifies as **scoped** is one this tier minted from the
- * person's own settings page. It is theirs, they made it, and it goes.
+ * The obvious reassurance is that a null creator reaches nothing, because every
+ * Resparkable capability refuses to run without a user. **That is false for any
+ * carrier `readResparkableScheduleSpaceId` can read**, and an earlier version of
+ * this comment asserted it.
  *
- * An unscoped or unusable carrier means an administrator typed it at
- * `/admin/orchestration/mcp/keys`. That is the organisation's service
- * credential that happens to record who created it, and `SetNull` is exactly
- * the right fate for it: the person's identity leaves, the operational thing
- * the organisation depends on stays. Deleting an install's service keys because
- * the admin who minted them left would be an outage dressed as compliance.
+ * `requireResparkableSpace()` has two routes. Route 1 needs `context.userId`
+ * and re-resolves the space through membership. A null creator skips it and
+ * falls to **route 2**, the scheduled-run path, which reads the carrier and
+ * returns `spaceScope(carried)` with **no membership check at all** and the
+ * `owner` role. That is correct for a cron, whose carrier is admin-written and
+ * has no actor to check against. It is not correct for an orphaned credential
+ * somebody may still be holding.
  *
- * `classifyResparkableKeyScope` draws that line, and it is the same function
- * the dispatch guard uses, so "a key this tier considers its own" has one
- * definition rather than two.
+ * So the test is not "did this tier mint it" but **"does it name a workspace"**,
+ * which is the question route 2 actually asks. Both spellings count: the
+ * canonical `resparkableSpaceId` and the legacy `resparkableUserId` that
+ * `readResparkableScheduleSpaceId` still accepts for pre-migration rows.
  *
- * Hook caveat applies, as everywhere in this file: if the registry is missing
- * at erasure time this does not run, and the key is left to `SetNull`. That is
- * the honest residue, and it is a key that reaches no data.
+ * ## What is still left to core, and why
+ *
+ * A key carrying **no** workspace at all, `NULL` or `{}`. Route 2 finds nothing
+ * in it and throws, so it genuinely does reach no brain. That is an
+ * administrator's service credential which happens to record who created it,
+ * and `SetNull` is the right fate: the person's identity leaves, the
+ * operational thing the organisation depends on stays. Deleting an install's
+ * service keys because the admin who minted them left would be an outage
+ * dressed as compliance.
+ *
+ * Hook caveat applies, as everywhere in this file: if the registry is missing at
+ * erasure time none of this runs. That residue is exactly why the test widened
+ * from "ours" to "names a workspace" rather than staying narrow and trusting the
+ * hook.
  */
 export async function dropResparkableConnectionKeys(ctx: ErasureTxContext): Promise<void> {
   const keys = await ctx.tx.mcpApiKey.findMany({
@@ -214,22 +231,42 @@ export async function dropResparkableConnectionKeys(ctx: ErasureTxContext): Prom
     select: { id: true, scope: true },
   });
 
-  const ours = keys
-    .filter((key) => classifyStoredKeyScope(key.scope).kind === 'scoped')
-    .map((key) => key.id);
+  const reachesABrain = keys.filter((key) => namesAWorkspace(key.scope)).map((key) => key.id);
 
-  if (ours.length === 0) return;
+  if (reachesABrain.length === 0) return;
 
-  const removed = await ctx.tx.mcpApiKey.deleteMany({ where: { id: { in: ours } } });
+  const removed = await ctx.tx.mcpApiKey.deleteMany({
+    where: { id: { in: reachesABrain } },
+  });
 
   logger.info('Resparkable connection keys removed for erased user', {
     userId: ctx.userId,
     removed: removed.count,
-    // The difference is the admin-minted keys deliberately left behind. Logged
-    // so an operator reading this line can see the decision was made rather
-    // than wonder whether the sweep missed some.
-    leftToCore: keys.length - ours.length,
+    // The difference is the workspace-less service keys deliberately left
+    // behind. Logged so an operator reading this line can see the decision was
+    // made rather than wonder whether the sweep missed some.
+    leftToCore: keys.length - reachesABrain.length,
   });
+}
+
+/**
+ * Would `requireResparkableSpace()` route 2 get a workspace out of this carrier?
+ *
+ * Asks the reader's own question rather than re-deriving it: the carrier is
+ * validated the way the tier validates one, then handed to the same function
+ * route 2 calls. A carrier this returns true for is one an orphaned key could
+ * act on, whatever `classifyResparkableKeyScope` would call it, and that includes
+ * shapes the dispatch guard rejects as unusable.
+ */
+function namesAWorkspace(stored: unknown): boolean {
+  const classification = classifyStoredKeyScope(stored);
+  if (classification.kind === 'scoped') return true;
+  if (classification.kind === 'unscoped') return false;
+
+  // Unusable to the dispatch guard, which refuses it. Route 2 is a different
+  // reader and is not behind that guard, so ask it directly.
+  const parsed = mcpKeyScopeSchema.safeParse(stored);
+  return parsed.success && readResparkableScheduleSpaceId(parsed.data) !== undefined;
 }
 
 /**

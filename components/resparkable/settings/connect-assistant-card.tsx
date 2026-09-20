@@ -88,8 +88,14 @@ export function ConnectAssistantCard({
     void load();
   }, [load]);
 
+  // Neither of these clears `minted` when the request fails, and that is the
+  // point rather than an omission. `setMinted` only ever runs after a response
+  // arrives, so a failure leaves whatever was already on screen: a key the
+  // person has not copied yet, which a failed **rotate** did not replace and
+  // which is therefore still the working credential. Clearing it would destroy
+  // a live secret nothing can show again, in response to a network blip.
   const generate = async (): Promise<void> => {
-    const ok = await run(
+    await run(
       async () => {
         const key = await apiClient.post<MintedKey>(RESPARKABLE_API.spaceMcpKeys(spaceId));
         setMinted(key);
@@ -97,12 +103,10 @@ export function ConnectAssistantCard({
       },
       (error) => message(error, 'Could not create a key.')
     );
-
-    if (!ok) setMinted(null);
   };
 
   const regenerate = async (keyId: string): Promise<void> => {
-    const ok = await run(
+    await run(
       async () => {
         const key = await apiClient.post<MintedKey>(
           RESPARKABLE_API.spaceMcpKeyRotate(spaceId, keyId)
@@ -112,8 +116,6 @@ export function ConnectAssistantCard({
       },
       (error) => message(error, 'Could not regenerate this key.')
     );
-
-    if (!ok) setMinted(null);
   };
 
   const revoke = async (keyId: string): Promise<void> => {
@@ -150,22 +152,31 @@ export function ConnectAssistantCard({
           </p>
         ) : view === null ? (
           <p className="text-muted-foreground text-sm">Checking this workspace…</p>
-        ) : !view.serverEnabled ? (
-          <ServerOffNotice />
         ) : (
           <>
+            {/* The notice sits ABOVE the keys rather than replacing them.
+                Revoking does not depend on the server being on, and a key you
+                cannot see is a key you cannot revoke: a person who learns their
+                key has leaked, on a day an administrator happens to have the
+                server switched off, would otherwise be shown an explanation and
+                no way to act. The key is inert while the server is off, but it
+                comes back the moment the switch does. */}
+            {!view.serverEnabled ? <ServerOffNotice /> : null}
+
             {view.keys.length === 0 ? (
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <p className="text-sm font-medium">No assistant is connected yet.</p>
-                  <p className="text-muted-foreground text-sm">
-                    You will see the key once, when it is made.
-                  </p>
+              view.serverEnabled ? (
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-medium">No assistant is connected yet.</p>
+                    <p className="text-muted-foreground text-sm">
+                      You will see the key once, when it is made.
+                    </p>
+                  </div>
+                  <Button onClick={() => void generate()} disabled={state === 'saving'}>
+                    Generate a key
+                  </Button>
                 </div>
-                <Button onClick={() => void generate()} disabled={state === 'saving'}>
-                  Generate a key
-                </Button>
-              </div>
+              ) : null
             ) : (
               <ul className="space-y-3">
                 {/* Every live key, not the first. One per workspace is a rule

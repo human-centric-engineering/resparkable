@@ -31,6 +31,25 @@ describe('URL builders', () => {
       RESPARKABLE_API.documentDownload('doc_1'),
       '/api/v1/resparkable/documents/doc_1/download',
     ],
+    // Connect-an-assistant (Phase 60). A space id and a key id, in that order —
+    // the id most likely to swap is the second one, since `spaceMcpKey` and
+    // `spaceMcpKeyRotate` share the same two-id shape and differ only in the
+    // trailing segment.
+    [
+      'spaceMcpKeys',
+      RESPARKABLE_API.spaceMcpKeys('spc_1'),
+      '/api/v1/resparkable/spaces/spc_1/mcp-keys',
+    ],
+    [
+      'spaceMcpKey',
+      RESPARKABLE_API.spaceMcpKey('spc_1', 'key_1'),
+      '/api/v1/resparkable/spaces/spc_1/mcp-keys/key_1',
+    ],
+    [
+      'spaceMcpKeyRotate',
+      RESPARKABLE_API.spaceMcpKeyRotate('spc_1', 'key_1'),
+      '/api/v1/resparkable/spaces/spc_1/mcp-keys/key_1/rotate',
+    ],
     // Groups (phase 46). Two nested ids on the last three, which is where a
     // builder most easily puts the segments in the wrong order and produces a
     // 404 nothing type-checks.

@@ -64,19 +64,30 @@ export async function requireConnectionSpace(
 }
 
 /**
- * Refuse a credential-authenticated caller on the verbs that make key material.
+ * Refuse a credential-authenticated caller on every verb that changes a key.
  *
  * Minting a credential over a credential is privilege laundering: an API key
  * reaching this route could mint an MCP key acting as its owner, and the narrow
  * scope the API key was issued with would then bound nothing. Rotation is the
- * same act with an extra step, so it is refused too.
+ * same act with an extra step.
  *
- * Same refusal, and the same reasoning, as `POST /api/v1/user/api-keys`. The
- * read is deliberately not refused: listing your own key prefixes escalates
- * nothing.
+ * **Revoking is refused too, and that is a correction.** The first draft
+ * allowed it, reasoning that revoking makes no credential and that tooling
+ * noticing a compromised key should be able to retire it. Core's own
+ * `DELETE /api/v1/user/api-keys/:keyId` refuses it, and its comment answers
+ * both halves of that argument: guarding minting while leaving revocation open
+ * is half a rule, a `chat`-scoped key could list its owner's keys and destroy
+ * every one of them, and "a rule that holds on one verb is the kind nobody
+ * remembers". The tooling case does not hold either, because a
+ * rotate-and-revoke script needs the rotate, which already requires a browser.
+ *
+ * **The read is still not refused**, and that asymmetry is deliberate rather
+ * than an oversight: listing shows `id`, `keyPrefix` and timestamps, the same
+ * prefix already on screen, and no hash ever leaves the service. Nothing is
+ * escalated or destroyed by reading it.
  *
  * @param verb Used in the message, so the caller is told which act was refused
- *   rather than being left to guess ("Creating", "Regenerating").
+ *   rather than being left to guess ("Creating", "Regenerating", "Revoking").
  */
 export async function requireBrowserSession(
   request: Request,
@@ -86,7 +97,7 @@ export async function requireBrowserSession(
   if (!isApiKeySession(session)) return;
 
   const log = await getRouteLogger(request);
-  log.warn('Rejected API-key attempt to make MCP connection key material', {
+  log.warn('Rejected API-key attempt to change an MCP connection key', {
     userId: session.user.id,
     verb,
   });

@@ -258,30 +258,63 @@ describe('dropResparkableConnectionKeys', () => {
     expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('leaves a key whose carrier this tier cannot read', async () => {
-    // A carrier nobody can classify was typed by an admin, not minted by the
-    // Connect card, so it gets an admin key's fate.
+  it('leaves a key whose carrier names no workspace at all', async () => {
+    // `{ }` reaches nothing: route 2 of `requireResparkableSpace` finds no
+    // space in it and throws, so it is genuinely a workspace-less service key
+    // and `SetNull` is the right fate.
     const client = tx('b@example.com');
-    client.mcpApiKey.findMany.mockResolvedValue([key('key_odd', { spaceId: 'spc_x' })]);
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_odd', {})]);
 
     await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
 
     expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('takes only the scoped ones out of a mixed set', async () => {
+  it('deletes a key carrying the LEGACY spelling, which the dispatch guard calls unusable', async () => {
+    // The security fix, and the reason the test is "does it name a workspace"
+    // rather than "did we mint it". `classifyStoredKeyScope` calls this
+    // unusable and the dispatch guard refuses it, but route 2 of
+    // `requireResparkableSpace` is a different reader sitting outside that
+    // guard: it accepts the legacy key and returns a scope with the `owner`
+    // role and NO membership check. An orphaned key like this, left behind by
+    // `SetNull`, would still reach that workspace.
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([
+      key('key_legacy', { resparkableUserId: 'user_b' }),
+    ]);
+    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['key_legacy'] } },
+    });
+  });
+
+  it('leaves a carrier that fails validation outright', async () => {
+    // Not a flat string map, so neither reader can get a workspace out of it.
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_junk', { nested: { a: 1 } })]);
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('takes every workspace-naming key out of a mixed set, and only those', async () => {
     const client = tx('b@example.com');
     client.mcpApiKey.findMany.mockResolvedValue([
       key('key_personal', { [SPACE_KEY]: 'user_b' }),
       key('key_service', null),
       key('key_group', { [SPACE_KEY]: 'spc_x' }),
+      key('key_legacy', { resparkableUserId: 'user_b' }),
     ]);
-    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 2 });
+    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 3 });
 
     await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
 
     expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({
-      where: { id: { in: ['key_personal', 'key_group'] } },
+      where: { id: { in: ['key_personal', 'key_group', 'key_legacy'] } },
     });
   });
 

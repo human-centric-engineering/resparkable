@@ -342,6 +342,29 @@ function settingsReads(settings: unknown, spaces: unknown[] = [SPACE_ROW]) {
 
 const SPACE_ROW = { spaceId: 'user_a', name: 'Personal' };
 
+/**
+ * Find a React element by its component's name, anywhere in a server
+ * component's returned tree. Used to read a `key`, which is consumed by
+ * reconciliation and never appears in the DOM.
+ */
+function findByTestName(node: unknown, name: string): { key: string | null } | null {
+  if (!node || typeof node !== 'object') return null;
+  const element = node as {
+    type?: { name?: string };
+    key?: string | null;
+    props?: { children?: unknown };
+  };
+  if (typeof element.type === 'function' && element.type.name === name) {
+    return { key: element.key ?? null };
+  }
+  const children = element.props?.children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const found = findByTestName(child, name);
+    if (found) return found;
+  }
+  return null;
+}
+
 describe('ResparkableSettingsPage', () => {
   it('reads the space settings endpoint, and the workspaces the Connect card needs', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
@@ -372,6 +395,31 @@ describe('ResparkableSettingsPage', () => {
       spaceId: 'spc_group',
       spaceName: 'Study Group B',
     });
+  });
+
+  it('keys the Connect card on the workspace, so switching remounts it', async () => {
+    // Load-bearing rather than tidiness. The switcher changes workspace with
+    // `router.push` on this same route, a soft navigation: React keeps the
+    // client component instance and only the props change. The card holds a
+    // minted plaintext in state, so without the key it would go on showing
+    // workspace A's secret and A's paste-ready snippets under a heading naming
+    // B, and somebody would paste a key believing it reaches the workspace in
+    // front of them.
+    settingsReads({ timezone: 'UTC' }, [
+      { spaceId: 'user_a', name: 'Personal' },
+      { spaceId: 'spc_group', name: 'Study Group B' },
+    ]);
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(resparkable)/resparkable/settings/page');
+
+    const tree = await ResparkableSettingsPage({
+      searchParams: Promise.resolve({ space: 'spc_group' }),
+    });
+
+    // Read the element's key off the rendered tree rather than asserting on
+    // the DOM: a `key` is a React reconciliation hint and never reaches it.
+    const card = findByTestName(tree, 'ConnectAssistantCard');
+    expect(card?.key).toBe('spc_group');
   });
 
   it('falls back to the personal workspace when no space is named', async () => {

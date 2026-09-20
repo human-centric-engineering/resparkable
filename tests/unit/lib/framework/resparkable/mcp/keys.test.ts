@@ -51,7 +51,6 @@ vi.mock('@/lib/framework/resparkable/services/spaces', () => ({ listOpenableSpac
 import {
   CONNECTION_KEY_SCOPES,
   connectionKeyName,
-  isLiveKey,
   mintConnectionKey,
   readConnectionKeys,
   revokeConnectionKey,
@@ -100,28 +99,6 @@ beforeEach(() => {
   mcpApiKey.delete.mockResolvedValue(keyRow());
 });
 
-describe('isLiveKey', () => {
-  const now = new Date('2026-09-20T12:00:00.000Z');
-
-  it('accepts an active key with no expiry', () => {
-    expect(isLiveKey({ isActive: true, expiresAt: null }, now)).toBe(true);
-  });
-
-  it('accepts an active key whose expiry is still ahead', () => {
-    expect(isLiveKey({ isActive: true, expiresAt: new Date('2026-12-01') }, now)).toBe(true);
-  });
-
-  it('rejects a deactivated key', () => {
-    expect(isLiveKey({ isActive: false, expiresAt: null }, now)).toBe(false);
-  });
-
-  it('rejects an expired key even though it is still active', () => {
-    // The half a one-sided check misses. MCP auth rejects this key; a surface
-    // that called it live would offer Regenerate on a credential that is gone.
-    expect(isLiveKey({ isActive: true, expiresAt: new Date('2026-01-01') }, now)).toBe(false);
-  });
-});
-
 describe('readConnectionKeys', () => {
   it('reports the server switch even when there are no keys', async () => {
     vi.mocked(getMcpServerConfig).mockResolvedValue({ isEnabled: false } as never);
@@ -131,11 +108,16 @@ describe('readConnectionKeys', () => {
     await expect(readConnectionKeys(SCOPE)).resolves.toEqual({ serverEnabled: false, keys: [] });
   });
 
-  it('asks the database only for this person’s live keys', async () => {
+  it('asks the database only for this person’s live keys, on both halves of the rule', async () => {
     await readConnectionKeys(SCOPE);
 
     const where = mcpApiKey.findMany.mock.calls[0][0].where;
     expect(where.createdBy).toBe(ACTOR);
+
+    // Both halves, asserted together, because this fragment is now the only
+    // expression of "live" in the tier. An admin revokes two ways and MCP auth
+    // rejects both; a reader that checked `isActive` alone would offer
+    // Regenerate on a key that expired last week.
     expect(where.isActive).toBe(true);
     expect(where.OR).toEqual([{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }]);
   });

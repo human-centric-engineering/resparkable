@@ -84,8 +84,20 @@ export default async function ResparkableSettingsPage({
           introduces the assistant. Rendered off its own read for the same
           reason `<AboutSparkey>` is: a failure fetching timezone and priority
           data has no bearing on it. */}
+      {/* `key` on the workspace, and it is load-bearing rather than tidiness.
+          The switcher changes workspace with `router.push` on this same route,
+          which is a soft navigation: React keeps the client component instance
+          and only the props change. The card holds a minted plaintext in state,
+          so without this it would go on showing workspace A's secret and A's
+          paste-ready snippets under a heading that now names B, and somebody
+          would paste a key believing it reaches the workspace they are looking
+          at. Remounting drops that state with the workspace it belonged to. */}
       {openSpace ? (
-        <ConnectAssistantCard spaceId={openSpace.spaceId} spaceName={openSpace.name} />
+        <ConnectAssistantCard
+          key={openSpace.spaceId}
+          spaceId={openSpace.spaceId}
+          spaceName={openSpace.name}
+        />
       ) : null}
 
       {result.ok ? (

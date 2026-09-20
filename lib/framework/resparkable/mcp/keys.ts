@@ -138,23 +138,22 @@ export type ConnectionKeyResult<T> =
   { ok: true; value: T } | { ok: false; reason: ConnectionKeyRefusal };
 
 /**
- * Is this key usable right now?
+ * Which keys are usable right now, as a `where` fragment.
  *
- * **One predicate, every reader**, and that is the whole point of it existing.
+ * **One expression of the rule, every reader**, and that is the whole point.
  * An admin revokes two ways, `isActive: false` or a past `expiresAt`, and MCP
  * auth rejects both. A member surface that checked only one would show a key
  * that cannot connect, and would let Regenerate write fresh secret material
- * onto a dead row and report success.
+ * onto a dead row and report success. All four readers here (the cap, the list,
+ * rotate and revoke) reach the database through `liveKeysFor`, so they get this
+ * fragment and cannot disagree about what "live" means.
+ *
+ * A `where` fragment rather than a predicate, because the narrowing belongs in
+ * the query: nothing here ever holds a dead row to ask about. An earlier draft
+ * had both, an exported `isLiveKey()` beside this, and nothing called the
+ * predicate. Two encodings of one rule is precisely the drift this rule exists
+ * to prevent, so the unused one went.
  */
-export function isLiveKey(
-  key: { isActive: boolean; expiresAt: Date | null },
-  now: Date = new Date()
-): boolean {
-  if (!key.isActive) return false;
-  return key.expiresAt === null || key.expiresAt > now;
-}
-
-/** The same rule as a `where` fragment, so the database does the narrowing. */
 function liveKeyWhere(now: Date): { isActive: true; OR: Array<Record<string, unknown>> } {
   return { isActive: true, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] };
 }

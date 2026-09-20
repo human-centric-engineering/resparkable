@@ -215,6 +215,17 @@ describe('an API-key session', () => {
     );
   });
 
+  it('cannot revoke one either', async () => {
+    // The correction. Revoking makes no credential, which is why the first
+    // draft allowed it, but core's own revoke route refuses for the reason
+    // that matters more: guarding minting while leaving revocation open lets a
+    // narrowly-scoped key list its owner's keys and destroy every one of them.
+    const response = await invoke(DELETE, request(), API_KEY_SESSION, keyParams());
+
+    expect(response.status).toBe(403);
+    expect(revokeConnectionKey).not.toHaveBeenCalled();
+  });
+
   it('may still read its own key list', async () => {
     // Listing prefixes escalates nothing, and refusing it would break a
     // legitimate scripted check of "is my assistant still connected".
@@ -336,12 +347,11 @@ describe('DELETE', () => {
     expect(response.status).toBe(404);
   });
 
-  it('does not require a browser session', async () => {
-    // Revoking is the one credential verb that makes nothing: refusing it to a
-    // key-authenticated caller would mean a compromised session could not be
-    // cleaned up by the tooling that noticed it.
+  it('requires a browser session, like the two verbs that make key material', async () => {
+    // Asserted here as well as in the API-key block above, so deleting either
+    // test still leaves the rule pinned on the verb it applies to.
     const response = await invoke(DELETE, request(), API_KEY_SESSION, keyParams());
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(403);
   });
 });
