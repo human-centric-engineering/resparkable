@@ -117,7 +117,7 @@ describe('handleKnowledgeSearch', () => {
     // export. `AiApiKey.createdBy` is a `user` FK, so it is a real row.
     vi.mocked(searchKnowledge).mockResolvedValue([]);
 
-    await handleKnowledgeSearch('sunrise://knowledge/search?q=patterns', null, {
+    await handleKnowledgeSearch('resparkable://knowledge/search?q=patterns', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
       userId: 'user-42',
@@ -137,7 +137,7 @@ describe('handleKnowledgeSearch', () => {
     // Null must reach the cost row as an absent column, not as a fabricated id.
     vi.mocked(searchKnowledge).mockResolvedValue([]);
 
-    await handleKnowledgeSearch('sunrise://knowledge/search?q=patterns', null, {
+    await handleKnowledgeSearch('resparkable://knowledge/search?q=patterns', null, {
       scopedAgentId: null,
       apiKeyId: 'key-1',
       userId: null,
