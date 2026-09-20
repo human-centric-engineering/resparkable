@@ -30,7 +30,6 @@
  *   npx tsx --env-file=.env.local scripts/smoke/export.ts
  */
 
-import { CREDENTIAL_ACCOUNT_ISSUER } from '@/lib/auth/constants';
 import { prisma } from '@/lib/db/client';
 import { exportUserData, SubjectNotFoundError } from '@/lib/privacy/export-user';
 import { SUBJECT_DATA_SOURCES } from '@/lib/privacy/export-sources';
@@ -39,6 +38,7 @@ import {
   getAppExcludedSubjectSources,
 } from '@/lib/privacy/subject-source-registry';
 import { isEmptySection } from '@/scripts/smoke/export-assertions';
+import { PLATFORM_ADMIN_ROLE } from '@/lib/auth/roles';
 
 const PREFIX = 'smoke-test-export';
 const stamp = Date.now();
@@ -92,13 +92,14 @@ async function main(): Promise<void> {
   let agentId: string | null = null;
   let contactId: string | null = null;
   let workflowId: string | null = null;
+  let costLogId: string | null = null;
 
   try {
     const email = `${PREFIX}-subject-${stamp}@example.com`;
 
     // ADMIN so the export also covers an attribution source (a created agent).
     const subject = await prisma.user.create({
-      data: { name: `${PREFIX} subject`, email, role: 'ADMIN' },
+      data: { name: `${PREFIX} subject`, email, role: PLATFORM_ADMIN_ROLE },
     });
     subjectUserId = subject.id;
 
@@ -108,6 +109,11 @@ async function main(): Promise<void> {
         slug: `${PREFIX}-agent-${stamp}`,
         description: 'smoke',
         systemInstructions: 'smoke',
+        // Both empty: the dynamic-resolution contract. These fixtures never
+        // make an LLM call — they exist to be erased/exported — and `provider`
+        // used to be filled with 'anthropic' by a column default, which made
+        // them inconsistent (model inherited, provider pinned) for no reason.
+        provider: '',
         model: '',
         createdBy: subject.id,
       },
@@ -119,6 +125,42 @@ async function main(): Promise<void> {
     });
     await prisma.aiMessage.create({
       data: { conversationId: conversation.id, role: 'user', content: 'remember my postcode' },
+    });
+
+    // Two cost rows: one the subject caused, one caused by nobody (ingestion,
+    // a scheduled run, an embed visitor — all land NULL). The export must
+    // return exactly the first. Without the second the `where` clause could be
+    // dropped entirely and this smoke would still pass.
+    const costLog = await prisma.aiCostLog.create({
+      data: {
+        agentId: agent.id,
+        conversationId: conversation.id,
+        userId: subject.id,
+        model: 'smoke-model',
+        provider: 'smoke-provider',
+        inputTokens: 3,
+        outputTokens: 4,
+        inputCostUsd: 0.1,
+        outputCostUsd: 0.2,
+        totalCostUsd: 0.3,
+        operation: 'chat',
+      },
+    });
+    costLogId = costLog.id;
+    await prisma.aiCostLog.create({
+      data: {
+        agentId: agent.id,
+        userId: null,
+        model: 'smoke-model',
+        provider: 'smoke-provider',
+        inputTokens: 1,
+        outputTokens: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+        totalCostUsd: 0,
+        operation: 'embedding',
+        metadata: { kind: 'smoke_unattributed' },
+      },
     });
 
     // A third party's inbound traffic, written the way the inbound route writes
@@ -157,9 +199,8 @@ async function main(): Promise<void> {
     await prisma.account.create({
       data: {
         userId: subject.id,
-        // better-auth >= 1.7 keys identity on (issuer, accountId); a credential
-        // row must carry this issuer and the owning user's id.
-        issuer: CREDENTIAL_ACCOUNT_ISSUER,
+        // A credential row's accountId is the owning user's id — better-auth
+        // asserts it on sign-in.
         accountId: subject.id,
         providerId: 'credential',
         password: PASSWORD_HASH,
@@ -257,6 +298,18 @@ async function main(): Promise<void> {
     check(
       bundle.personalData.workflowExecutions?.length === 1,
       'first-party workflow run exported, inbound-triggered run excluded'
+    );
+
+    // The section this branch added. Asserting the row's identity, not just a
+    // count: a count of 1 would also pass if the fetch returned the
+    // unattributed row instead of the subject's own.
+    const costs = bundle.personalData.usageCosts as Array<Record<string, unknown>> | undefined;
+    check(costs?.length === 1, "usage cost row exported (the subject's own)");
+    check(costs?.[0]?.id === costLog.id, 'the exported cost row is the attributed one');
+    check(costs?.[0]?.totalCostUsd === 0.3, 'cost amount round-trips into the export');
+    check(
+      !costs?.some((c) => c.userId === null),
+      'unattributed cost rows are not handed to a subject'
     );
 
     check(bundle.personalData.sessions?.length === 1, 'session exported');
@@ -479,6 +532,13 @@ async function main(): Promise<void> {
       await prisma.contactSubmission
         .deleteMany({ where: { id: contactId } })
         .catch(() => undefined);
+    // Both cost rows: the attributed one is SetNull (survives the user delete)
+    // and the unattributed one was never linked, so neither cascades away.
+    if (costLogId)
+      await prisma.aiCostLog.deleteMany({ where: { id: costLogId } }).catch(() => undefined);
+    await prisma.aiCostLog
+      .deleteMany({ where: { model: 'smoke-model', provider: 'smoke-provider' } })
+      .catch(() => undefined);
     if (subjectUserId)
       await prisma.user.deleteMany({ where: { id: subjectUserId } }).catch(() => undefined);
     if (workflowId) {

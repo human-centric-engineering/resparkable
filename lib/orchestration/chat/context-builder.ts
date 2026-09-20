@@ -33,6 +33,7 @@
 
 import { logger } from '@/lib/logging';
 import { createAppInitGate, restoreMap } from '@/lib/fork-init';
+import { prisma } from '@/lib/db/client';
 import { getPatternDetail } from '@/lib/orchestration/knowledge/search';
 import { initAppContextContributors } from '@/lib/app/context-contributors';
 
@@ -158,6 +159,12 @@ export function __resetContextContributorsForTests(): void {
  * omitting it — or passing an empty `userId` — is the shared-cache behaviour
  * from before the per-user widening.
  */
+// Cleanup excerpt size. Big enough that the agent can see the document's shape
+// (headings, wrapping, table debris) without spending the turn's budget on it —
+// `read_document` is there for everything else.
+const CLEANUP_EXCERPT_LINES = 40;
+const CLEANUP_EXCERPT_CHARS = 4_000;
+
 export async function buildContext(
   type: string,
   id: string,
@@ -192,6 +199,49 @@ export async function buildContext(
           .join('\n\n');
         body = `Pattern #${num}: ${detail.patternName ?? 'unnamed'}\n\n${joined}`;
       }
+      break;
+    }
+    case 'knowledge_document': {
+      // Document Clean Up sessions. Without this the agent is editing a
+      // document it has never seen: every cleanup capability reports counts,
+      // not content, so the model was choosing transforms (and regexes) blind
+      // and could not tell whether one had done anything. The excerpt is the
+      // starting sample; `read_document` pages through the rest.
+      //
+      // Deliberately NOT cached: the document changes on almost every turn, so
+      // a 60-second cache would hand the model a stale copy of the thing it is
+      // actively editing. The read is one indexed row.
+      cacheable = false;
+      const doc = await prisma.aiKnowledgeDocument.findUnique({
+        where: { id },
+        select: {
+          name: true,
+          fileName: true,
+          status: true,
+          originalContent: true,
+          processedContent: true,
+        },
+      });
+      if (!doc) {
+        body = `Knowledge document '${id}' not found.`;
+        break;
+      }
+      const content = doc.processedContent ?? doc.originalContent ?? '';
+      const lines = content.split('\n');
+      const excerptLines = lines.slice(0, CLEANUP_EXCERPT_LINES);
+      let excerpt = excerptLines.map((line, i) => `${i + 1}: ${line}`).join('\n');
+      if (excerpt.length > CLEANUP_EXCERPT_CHARS) {
+        excerpt = `${excerpt.slice(0, CLEANUP_EXCERPT_CHARS)}…`;
+      }
+      const edited = doc.processedContent !== null;
+      body = [
+        `Document being cleaned: "${doc.name}" (file: ${doc.fileName}, status: ${doc.status}).`,
+        `Working text: ${content.length.toLocaleString()} characters across ${lines.length.toLocaleString()} lines` +
+          `${edited ? ' (already modified this session)' : ' (unmodified since upload)'}.`,
+        '',
+        `First ${Math.min(CLEANUP_EXCERPT_LINES, lines.length)} lines, numbered — this is a SAMPLE, not the whole document. Use read_document to see any other range and find_in_document to locate a pattern:`,
+        excerpt,
+      ].join('\n');
       break;
     }
     default: {

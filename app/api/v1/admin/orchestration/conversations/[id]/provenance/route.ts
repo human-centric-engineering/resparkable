@@ -41,7 +41,7 @@ export const GET = withAdminAuth<{ id: string }>(async (request, session, { para
 
   // Consent-gated access: owner OR active share. Cross-user without
   // a share returns 404 — never confirms the row's existence.
-  const access = await adminCanViewConversation(id, session.user.id);
+  const access = await adminCanViewConversation(id, session);
   if (!access.ok) throw new NotFoundError(`Conversation ${id} not found`);
 
   const conversation = await prisma.aiConversation.findUnique({
@@ -103,7 +103,7 @@ export const GET = withAdminAuth<{ id: string }>(async (request, session, { para
     conversationId: id,
     conversationTitle: conversation.title,
     conversationOwnerId: conversation.userId,
-    accessBasis: access.basis ?? 'owner',
+    accessBasis: access.basis,
     action: 'conversation.provenance_export',
     extra: { format: 'json', messageCount: messages.length },
     clientIp: getClientIP(request),

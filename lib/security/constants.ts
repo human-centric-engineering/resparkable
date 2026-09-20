@@ -21,7 +21,8 @@
  *     `RATE_LIMIT_ACCEPT_INVITE` (5), `RATE_LIMIT_UPLOAD` (10),
  *     `RATE_LIMIT_INVITE` (10), `RATE_LIMIT_CSP_REPORT` (20),
  *     `RATE_LIMIT_CHAT` (20), `RATE_LIMIT_CONSUMER_CHAT` (10),
- *     `RATE_LIMIT_AUDIO` (10), `RATE_LIMIT_EXPORT` (10), `RATE_LIMIT_IMAGE` (20)
+ *     `RATE_LIMIT_AUDIO` (10), `RATE_LIMIT_EXPORT` (10), `RATE_LIMIT_IMAGE` (20),
+ *     `RATE_LIMIT_CLEANUP_REFINE` (12)
  *
  * The `*_INTERVAL` windows are intentionally NOT env-tunable — they encode
  * OWASP-aligned brute-force/abuse windows that shouldn't drift per deployment.
@@ -101,6 +102,15 @@ export const SECURITY_CONSTANTS = {
       EXPORT: envInt('RATE_LIMIT_EXPORT', 10),
       /** Image / PDF attachment chat turn: 20 requests per minute per user/session (override with `RATE_LIMIT_IMAGE`) */
       IMAGE: envInt('RATE_LIMIT_IMAGE', 20),
+      /**
+       * Document Clean Up section-refine (direct editor, not chat): 12
+       * requests per minute per user (override with `RATE_LIMIT_CLEANUP_REFINE`).
+       * Mirrors the `rewrite_section_with_llm` capability's own rate limit
+       * (see `prisma/seeds/019-cleanup-capabilities.ts`) so the inline editor
+       * path — which calls the LLM provider directly, bypassing the
+       * capability dispatcher — gets the same protection.
+       */
+      CLEANUP_REFINE: envInt('RATE_LIMIT_CLEANUP_REFINE', 12),
     },
   },
 

@@ -72,6 +72,320 @@ export async function getOrCreateDefaultKnowledgeBase(): Promise<string> {
   return kb.id;
 }
 
+// ─── Document Clean Up kickoff ────────────────────────────────────────────────
+// See `.context/admin/document-cleanup.md` for the end-to-end flow. These two
+// helpers exist so the upload route and the PDF-confirm route share a single
+// path for "promote this doc into the cleanup state": create a 'cleaning' doc
+// with originalContent populated and spin up an AiConversation bound to the
+// Cleanup Agent. The cleanup page reads both via /knowledge/[id]/cleanup.
+
+export interface CleanupKickoff {
+  document: AiKnowledgeDocument;
+  conversationId: string;
+  redirectTo: string;
+}
+
+const CLEANUP_AGENT_SLUG = 'cleanup-agent';
+const CLEANUP_REDIRECT = (id: string): string => `/admin/orchestration/knowledge/${id}/cleanup`;
+
+async function getCleanupAgentId(): Promise<string> {
+  const agent = await prisma.aiAgent.findUnique({
+    where: { slug: CLEANUP_AGENT_SLUG },
+    select: { id: true },
+  });
+  if (!agent) {
+    throw new Error(
+      `Cleanup agent "${CLEANUP_AGENT_SLUG}" not found — run \`npm run db:seed\` (seed 020-cleanup-agent).`
+    );
+  }
+  return agent.id;
+}
+
+async function createCleanupConversation(
+  documentId: string,
+  documentName: string,
+  userId: string
+): Promise<string> {
+  const agentId = await getCleanupAgentId();
+  const conv = await prisma.aiConversation.create({
+    data: {
+      userId,
+      agentId,
+      contextType: 'knowledge_document',
+      contextId: documentId,
+      title: `Cleanup: ${documentName}`,
+    },
+    select: { id: true },
+  });
+  return conv.id;
+}
+
+// Create a fresh document in 'cleaning' status from already-parsed text. Used
+// for text uploads (.md/.txt) and parsed binary uploads (EPUB/DOCX). PDF takes
+// the transitionToCleanup path because the doc already exists in
+// 'pending_review' by the time we know the admin wants cleanup.
+export async function createDocumentForCleanup(
+  content: string,
+  fileName: string,
+  userId: string,
+  displayName?: string,
+  sourceUrl?: string
+): Promise<CleanupKickoff> {
+  const { getDocumentSizeReport } = await import('@/lib/orchestration/knowledge/size-report');
+
+  const fileHash = createHash('sha256').update(content).digest('hex');
+  const name = displayName?.trim() || fileName.replace(/\.[^.]+$/, '');
+  const knowledgeBaseId = await getOrCreateDefaultKnowledgeBase();
+  const sizeReport = getDocumentSizeReport(content);
+  const slug = await generateUniqueDocumentSlug(prisma, name, fileHash);
+
+  const document = await prisma.aiKnowledgeDocument.create({
+    data: {
+      slug,
+      name,
+      fileName,
+      fileHash,
+      scope: 'app',
+      sourceUrl: sourceUrl ?? null,
+      status: 'cleaning',
+      uploadedBy: userId,
+      knowledgeBaseId,
+      originalContent: content,
+      metadata: {
+        sizeClass: sizeReport.sizeClass,
+        sizeTokens: sizeReport.tokenCount,
+        llmRewriteAllowed: sizeReport.llmRewriteAllowed,
+      },
+    },
+  });
+
+  let conversationId: string;
+  try {
+    conversationId = await createCleanupConversation(document.id, name, userId);
+  } catch (err) {
+    // Roll back the doc so the admin doesn't end up with an orphan in
+    // 'cleaning' with no chat session.
+    await prisma.aiKnowledgeDocument.delete({ where: { id: document.id } });
+    throw err;
+  }
+
+  logger.info('Document Clean Up session created', {
+    documentId: document.id,
+    sizeClass: sizeReport.sizeClass,
+    sizeTokens: sizeReport.tokenCount,
+    conversationId,
+  });
+
+  // Fire-and-forget bookmark email — the admin gets a link back to the
+  // cleanup chat in case they close the tab or come back to it later.
+  const { sendCleanupReadyEmail } = await import('@/lib/orchestration/knowledge/cleanup-email');
+  void sendCleanupReadyEmail({
+    userId,
+    documentId: document.id,
+    documentName: name,
+    sizeClass: sizeReport.sizeClass,
+    sizeTokens: sizeReport.tokenCount,
+  });
+
+  return { document, conversationId, redirectTo: CLEANUP_REDIRECT(document.id) };
+}
+
+// Promote an existing pending_review doc (created by previewDocument) into
+// 'cleaning' state with originalContent populated. Used by the PDF confirm
+// route when the upload was flagged runCleanup. Reuses any tag grants the
+// admin attached during preview.
+export async function transitionToCleanup(
+  documentId: string,
+  content: string,
+  userId: string
+): Promise<CleanupKickoff> {
+  const { getDocumentSizeReport } = await import('@/lib/orchestration/knowledge/size-report');
+
+  const existing = await prisma.aiKnowledgeDocument.findUnique({
+    where: { id: documentId },
+    select: { name: true, status: true, metadata: true },
+  });
+  if (!existing) throw new Error(`Document ${documentId} not found`);
+  // Mirrors confirmPreview's guard. metadata.runCleanup survives the
+  // transition (it is re-written below), so without this a second POST to
+  // /confirm would overwrite originalContent, open a *second* cleanup
+  // conversation for the same contextId — which the "latest conversation"
+  // lookups in resolveCleanupAgentContextWindow and /section/refine would
+  // then bind to — and send a duplicate cleanup-ready email.
+  if (existing.status !== 'pending_review') {
+    throw new Error(
+      `Document ${documentId} is not in pending_review status (found '${existing.status}')`
+    );
+  }
+
+  const sizeReport = getDocumentSizeReport(content);
+  const existingMeta = parseDocumentMetadata(existing.metadata) ?? {};
+
+  const document = await prisma.aiKnowledgeDocument.update({
+    where: { id: documentId },
+    data: {
+      status: 'cleaning',
+      originalContent: content,
+      metadata: {
+        ...existingMeta,
+        runCleanup: true,
+        sizeClass: sizeReport.sizeClass,
+        sizeTokens: sizeReport.tokenCount,
+        llmRewriteAllowed: sizeReport.llmRewriteAllowed,
+      },
+    },
+  });
+
+  const conversationId = await createCleanupConversation(document.id, document.name, userId);
+
+  logger.info('Document transitioned into cleanup', {
+    documentId,
+    fromStatus: existing.status,
+    sizeClass: sizeReport.sizeClass,
+    conversationId,
+  });
+
+  const { sendCleanupReadyEmail } = await import('@/lib/orchestration/knowledge/cleanup-email');
+  void sendCleanupReadyEmail({
+    userId,
+    documentId: document.id,
+    documentName: document.name,
+    sizeClass: sizeReport.sizeClass,
+    sizeTokens: sizeReport.tokenCount,
+  });
+
+  return { document, conversationId, redirectTo: CLEANUP_REDIRECT(document.id) };
+}
+
+export type CleanupFinaliseMode = 'commit' | 'use-original';
+
+// Finalise a Document Clean Up session: chunk and embed either the cleaned
+// content (mode='commit') or the original parsed text (mode='use-original'),
+// flip status cleaning → ready, and clear the cleanup Text columns to
+// reclaim storage. Mirrors the chunk+embed+insert sequence in confirmPreview
+// so cleanup docs land in the same shape as PDF-confirmed docs.
+//
+// On chunk/embed failure: status flips to 'failed' and originalContent is
+// preserved so the admin can retry from the KB list (existing retry path
+// works because originalContent is still populated until the transaction
+// completes).
+export async function commitCleanupAndChunk(
+  documentId: string,
+  userId: string,
+  mode: CleanupFinaliseMode
+): Promise<AiKnowledgeDocument> {
+  const doc = await prisma.aiKnowledgeDocument.findFirst({
+    where: { id: documentId, uploadedBy: userId, status: 'cleaning' },
+  });
+  if (!doc) {
+    throw new Error(
+      `Document ${documentId} not found, not owned by this user, or not in cleaning status`
+    );
+  }
+
+  // processedContent stays NULL until the first mutation, so an admin who
+  // reads the document, decides it needs no changes and clicks "Mark cleaned"
+  // has nothing in that column. Committing then means committing the original
+  // text — the same bytes the 'use-original' path would chunk.
+  const content =
+    mode === 'commit'
+      ? (doc.processedContent ?? doc.originalContent ?? '')
+      : (doc.originalContent ?? '');
+  if (!content.trim()) {
+    throw new Error(
+      mode === 'commit'
+        ? 'Both processedContent and originalContent are empty — there is nothing to commit'
+        : 'originalContent is empty — nothing to fall back to'
+    );
+  }
+
+  logger.info('Committing cleanup', {
+    documentId,
+    mode,
+    contentLength: content.length,
+  });
+
+  // Terminal revision marking the finalise state — the revision drawer's
+  // history is now complete (it shows every intermediate mutation + this
+  // closing checkpoint with source 'finalise:commit' or 'finalise:use-original').
+  // Written BEFORE chunking so a chunker failure doesn't lose the audit trail.
+  const { writeRevision } = await import('@/lib/orchestration/knowledge/revisions');
+  await writeRevision({
+    documentId,
+    content,
+    source: `finalise:${mode}`,
+    actorId: userId,
+  });
+
+  await prisma.aiKnowledgeDocument.update({
+    where: { id: documentId },
+    data: { status: 'processing' },
+  });
+
+  try {
+    const chunks = await chunkMarkdownDocument(content, doc.name, documentId);
+
+    if (chunks.length === 0) {
+      return await prisma.aiKnowledgeDocument.update({
+        where: { id: documentId },
+        data: {
+          status: 'ready',
+          chunkCount: 0,
+          originalContent: null,
+          processedContent: null,
+        },
+      });
+    }
+
+    const texts = chunks.map((c) => c.content);
+    const { embeddings, provenance } = await embedBatch(texts);
+
+    const coverage = computeCoverage(content, texts);
+    const coverageWarning = buildCoverageWarning(coverage);
+    const prevMeta = parseDocumentMetadata(doc.metadata) ?? {};
+    const warnings = coverageWarning ? [coverageWarning] : [];
+
+    const updated = await executeTransaction(async (tx) => {
+      await insertChunks(tx, documentId, chunks, embeddings, provenance);
+      return await tx.aiKnowledgeDocument.update({
+        where: { id: documentId },
+        data: {
+          status: 'ready',
+          chunkCount: chunks.length,
+          metadata: {
+            ...prevMeta,
+            rawContent: content,
+            coverage,
+            warnings,
+            cleanupCommittedMode: mode,
+          },
+          // Reclaim storage — the cleanup Text columns are no longer needed
+          // once the doc has been chunked.
+          originalContent: null,
+          processedContent: null,
+        },
+      });
+    });
+
+    logger.info('Cleanup committed', {
+      documentId,
+      mode,
+      chunkCount: chunks.length,
+      coveragePct: coverage.coveragePct,
+    });
+
+    return updated;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    logger.error('Cleanup commit failed', { documentId, error: message });
+    await prisma.aiKnowledgeDocument.update({
+      where: { id: documentId },
+      data: { status: 'failed', errorMessage: message },
+    });
+    throw error;
+  }
+}
+
 /** A single CSV row persisted on the document for lossless re-chunking. */
 const csvSectionSchema = z.object({
   title: z.string(),
@@ -125,6 +439,16 @@ const documentMetadataSchema = z
         coveragePct: z.number(),
       })
       .optional(),
+    /**
+     * Document Clean Up fields, written at upload-with-cleanup time and
+     * read by both the cleanup agent (sizeClass → self-restrict on LLM
+     * rewrites) and the PDF confirm endpoint (runCleanup → branch into
+     * cleanup instead of chunking).
+     */
+    runCleanup: z.boolean().optional(),
+    sizeClass: z.enum(['small', 'medium', 'large', 'too-large']).optional(),
+    sizeTokens: z.number().optional(),
+    llmRewriteAllowed: z.boolean().optional(),
   })
   .passthrough()
   .nullable();

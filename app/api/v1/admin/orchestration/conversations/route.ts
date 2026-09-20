@@ -3,11 +3,17 @@
  *
  * GET /api/v1/admin/orchestration/conversations
  *
- * Returns the calling admin's own conversations, plus actively-shared ones
- * and system-owned inbound threads (`userId IS NULL`). Matches the scoping
- * used by the detail, PATCH, and DELETE endpoints. Supports filtering by
- * agent, date range, and text search. Any `userId` query parameter is
- * ignored — callers never see another admin's own conversations.
+ * Returns the calling admin's own conversations, plus actively-shared ones and
+ * system-owned inbound threads (`userId IS NULL`) where the authorization
+ * policy permits an unattributed read.
+ *
+ * Matches the scoping used by the **detail** endpoint, which reads the same
+ * answer through `adminCanViewConversation`. **PATCH and DELETE are narrower**
+ * and always were: they refuse a `'shared'` basis, because a view grant is not
+ * a destroy grant. Saying they match was never true.
+ *
+ * Supports filtering by agent, date range, and text search. Any `userId` query
+ * parameter is ignored — callers never see another admin's own conversations.
  *
  * Authentication: Admin role required.
  */
@@ -15,6 +21,7 @@
 import type { Prisma } from '@prisma/client';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
+import { conversationVisibilityWhere } from '@/lib/orchestration/access/conversation-access';
 import { paginatedResponse } from '@/lib/api/responses';
 import { validateQueryParams } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
@@ -27,25 +34,11 @@ export const GET = withAdminAuth(async (request, session) => {
     validateQueryParams(searchParams, listConversationsQuerySchema);
   const skip = (page - 1) * limit;
 
-  // Caller can see conversations they own, conversations the owner has
-  // actively shared with admins, and system-owned inbound threads
-  // (`userId IS NULL` — nobody's personal data, the deployment's record of
-  // an SMS / WhatsApp / email exchange). The three arms mirror the three
-  // bases in `adminCanViewConversation`; the "active share" predicate
-  // repeats `isShareActive` inline because Prisma's where-clause query
-  // builder doesn't accept a function predicate.
-  const visibilityClause: Prisma.AiConversationWhereInput = {
-    OR: [
-      { userId: session.user.id },
-      { userId: null },
-      {
-        share: {
-          revokedAt: null,
-          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
-        },
-      },
-    ],
-  };
+  // One definition, shared with the detail route's `adminCanViewConversation`
+  // so this list and the rows it links to cannot disagree. It used to be spelled
+  // out here as well, which is how the list came to admit inbound threads a
+  // narrowing policy would refuse on the detail route.
+  const visibilityClause = conversationVisibilityWhere(session);
 
   const filterClauses: Prisma.AiConversationWhereInput[] = [];
   if (agentId) filterClauses.push({ agentId });

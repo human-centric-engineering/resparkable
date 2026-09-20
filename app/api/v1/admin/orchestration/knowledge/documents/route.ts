@@ -28,8 +28,9 @@ import {
   uploadDocumentFromBuffer,
   previewDocument,
   parseDocumentMetadata,
+  createDocumentForCleanup,
 } from '@/lib/orchestration/knowledge/document-manager';
-import { requiresPreview } from '@/lib/orchestration/knowledge/parsers';
+import { parseDocument, requiresPreview } from '@/lib/orchestration/knowledge/parsers';
 import { listDocumentsQuerySchema } from '@/lib/validations/orchestration';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { invalidateAllAgentAccess } from '@/lib/orchestration/knowledge/resolveAgentDocumentAccess';
@@ -134,6 +135,17 @@ export const GET = withAdminAuth(async (request, _session) => {
       orderBy: { createdAt: 'desc' },
       skip,
       take: limit,
+      // Cleanup Text columns and lock bookkeeping are per-document detail,
+      // not list data — a page of cleaning documents would otherwise carry
+      // the full original + processed text of each one. `omit` keeps the
+      // payload in step with KnowledgeDocumentListItem, which declares them
+      // absent.
+      omit: {
+        originalContent: true,
+        processedContent: true,
+        editLockHolder: true,
+        editLockAcquiredAt: true,
+      },
       include: {
         _count: { select: { chunks: true } },
         tags: { include: { tag: { select: { id: true, slug: true, name: true } } } },
@@ -277,6 +289,15 @@ export const POST = withAdminAuth(async (request, session) => {
 
   const tagIds = parseTagIdsFromForm(formData);
 
+  // Opt-in interactive cleanup. When true, parsed text lands in
+  // status='cleaning' (or PDF preview metadata.runCleanup, picked up by the
+  // confirm endpoint) and the response carries a `redirectTo` URL pointing
+  // at the cleanup chat page instead of chunking immediately.
+  const runCleanupField = formData.get('runCleanup');
+  const runCleanup =
+    typeof runCleanupField === 'string' &&
+    ['true', '1', 'on', 'yes'].includes(runCleanupField.toLowerCase());
+
   const ext = getExtension(file.name);
 
   // Text-based formats: read as string, apply line-length guards
@@ -293,6 +314,39 @@ export const POST = withAdminAuth(async (request, session) => {
       throw new ValidationError('Document contains excessively long lines', {
         file: [`Maximum ${MAX_LINE_LENGTH.toLocaleString()} characters per line`],
       });
+    }
+
+    if (runCleanup) {
+      const kickoff = await createDocumentForCleanup(
+        content,
+        file.name,
+        session.user.id,
+        displayName
+      );
+      const tagsApplied = await applyDocumentTags(kickoff.document.id, tagIds);
+
+      log.info('Document Clean Up session opened (text)', {
+        documentId: kickoff.document.id,
+        fileName: file.name,
+        sizeBytes: file.size,
+        tagsApplied,
+        adminId: session.user.id,
+      });
+
+      logAdminAction({
+        userId: session.user.id,
+        action: 'knowledge_document.cleanup_start',
+        entityType: 'knowledge_document',
+        entityId: kickoff.document.id,
+        entityName: file.name,
+        clientIp: clientIP,
+      });
+
+      return successResponse(
+        { document: kickoff.document, redirectTo: kickoff.redirectTo },
+        undefined,
+        { status: 201 }
+      );
     }
 
     const document = await uploadDocument(
@@ -343,6 +397,19 @@ export const POST = withAdminAuth(async (request, session) => {
     // deleted via the existing reject flow.
     const tagsApplied = await applyDocumentTags(preview.document.id, tagIds);
 
+    // When the admin asked for cleanup, persist a flag on the doc's metadata
+    // so the confirm endpoint can branch into transitionToCleanup() rather
+    // than chunking. The admin still reviews extracted text in the PDF
+    // preview modal first (low-coverage warnings show there) — they then
+    // confirm INTO the cleanup chat rather than INTO immediate chunking.
+    if (runCleanup) {
+      const existingMeta = parseDocumentMetadata(preview.document.metadata) ?? {};
+      await prisma.aiKnowledgeDocument.update({
+        where: { id: preview.document.id },
+        data: { metadata: { ...existingMeta, runCleanup: true } },
+      });
+    }
+
     log.info('Document preview created (PDF)', {
       documentId: preview.document.id,
       fileName: file.name,
@@ -382,6 +449,52 @@ export const POST = withAdminAuth(async (request, session) => {
   }
 
   // EPUB, DOCX: direct buffer upload
+  if (runCleanup) {
+    // CSV cleanup is a degenerate case — each row is already its own chunk,
+    // so there's nothing useful for the cleanup agent to do at the doc level.
+    // Refuse politely instead of silently bypassing cleanup.
+    const parsed = await parseDocument(buffer, file.name);
+    if (parsed.metadata.format === 'csv') {
+      return errorResponse('Document Clean Up is not supported for CSV files', {
+        code: 'CLEANUP_UNSUPPORTED_FORMAT',
+        status: 400,
+        details: { format: ['CSV rows are chunked atomically and bypass cleanup'] },
+      });
+    }
+    const content = ext === '.md' ? buffer.toString('utf-8') : parsed.fullText;
+    const kickoff = await createDocumentForCleanup(
+      content,
+      file.name,
+      session.user.id,
+      displayName?.trim() || parsed.title
+    );
+    const tagsApplied = await applyDocumentTags(kickoff.document.id, tagIds);
+
+    log.info('Document Clean Up session opened (binary)', {
+      documentId: kickoff.document.id,
+      fileName: file.name,
+      format: ext,
+      sizeBytes: file.size,
+      tagsApplied,
+      adminId: session.user.id,
+    });
+
+    logAdminAction({
+      userId: session.user.id,
+      action: 'knowledge_document.cleanup_start',
+      entityType: 'knowledge_document',
+      entityId: kickoff.document.id,
+      entityName: file.name,
+      clientIp: clientIP,
+    });
+
+    return successResponse(
+      { document: kickoff.document, redirectTo: kickoff.redirectTo },
+      undefined,
+      { status: 201 }
+    );
+  }
+
   const document = await uploadDocumentFromBuffer(
     buffer,
     file.name,

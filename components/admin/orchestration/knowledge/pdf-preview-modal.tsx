@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CheckCircle, CheckCircle2, FileText } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { AlertTriangle, CheckCircle, CheckCircle2, FileText, Sparkles } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -27,6 +28,7 @@ interface PdfPreviewModalProps {
 }
 
 export function PdfPreviewModal({ data, open, onOpenChange, onConfirmed }: PdfPreviewModalProps) {
+  const router = useRouter();
   const [correctedContent, setCorrectedContent] = useState('');
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,15 +64,27 @@ export function PdfPreviewModal({ data, open, onOpenChange, onConfirmed }: PdfPr
         throw new Error(resBody?.error?.message ?? `Confirmation failed (${res.status})`);
       }
 
+      const okBody = (await res.json().catch(() => null)) as {
+        data?: { redirectTo?: string };
+      } | null;
+
       setCorrectedContent('');
       onOpenChange(false);
+      // When the upload was flagged runCleanup, the server returns a
+      // redirectTo URL pointing at the cleanup chat page instead of
+      // chunking. Navigate there; the list-refresh callback isn't useful
+      // because the doc is now in 'cleaning', not 'ready'.
+      if (okBody?.data?.redirectTo) {
+        router.push(okBody.data.redirectTo);
+        return;
+      }
       onConfirmed();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Confirmation failed');
     } finally {
       setConfirming(false);
     }
-  }, [data, correctedContent, onOpenChange, onConfirmed]);
+  }, [data, correctedContent, onOpenChange, onConfirmed, router]);
 
   const handleDiscard = useCallback(async () => {
     if (!data) return;
@@ -98,6 +112,10 @@ export function PdfPreviewModal({ data, open, onOpenChange, onConfirmed }: PdfPr
 
   const { preview } = data;
   const hasWarnings = preview.warnings.length > 0;
+  // Upload was flagged "Clean up before chunking". The extraction review
+  // still happens first, so say so here — otherwise this dialog looks
+  // identical to the plain PDF flow and the checkbox appears ignored.
+  const wantsCleanup = data.runCleanup;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -115,6 +133,17 @@ export function PdfPreviewModal({ data, open, onOpenChange, onConfirmed }: PdfPr
         </DialogHeader>
 
         <div className="space-y-4">
+          {/* Cleanup pending notice */}
+          {wantsCleanup && (
+            <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/30 dark:text-blue-200">
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <p>
+                <span className="font-medium">Clean up before chunking is on.</span> Confirming
+                opens the Document Clean Up chat with this text — nothing is chunked or embedded
+                until you finish there.
+              </p>
+            </div>
+          )}
           {/* Metadata */}
           <div className="flex flex-wrap gap-3 text-sm">
             {preview.title && (
@@ -191,8 +220,12 @@ export function PdfPreviewModal({ data, open, onOpenChange, onConfirmed }: PdfPr
             {discarding ? 'Discarding...' : 'Discard'}
           </Button>
           <Button onClick={() => void handleConfirm()} disabled={confirming}>
-            <CheckCircle className="mr-1.5 h-4 w-4" />
-            {confirming ? 'Confirming...' : 'Confirm & Chunk'}
+            {wantsCleanup ? (
+              <Sparkles className="mr-1.5 h-4 w-4" />
+            ) : (
+              <CheckCircle className="mr-1.5 h-4 w-4" />
+            )}
+            {confirming ? 'Confirming...' : wantsCleanup ? 'Confirm & Clean Up' : 'Confirm & Chunk'}
           </Button>
         </DialogFooter>
       </DialogContent>

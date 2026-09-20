@@ -16,6 +16,7 @@ import {
   mockAuthenticatedUser,
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
+import { ownerScopedFindFirst } from '@/tests/helpers/owner-scoped-prisma';
 
 // ─── Mock dependencies ───────────────────────────────────────────────────────
 
@@ -30,7 +31,7 @@ vi.mock('next/headers', () => ({
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiExperiment: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
@@ -121,7 +122,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 describe('GET /api/v1/admin/orchestration/experiments/:id', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -142,7 +143,7 @@ describe('GET /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('returns 404 when experiment not found', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
 
     const response = await GET(makeGetRequest(), makeContext('unknown-id'));
 
@@ -165,7 +166,7 @@ describe('GET /api/v1/admin/orchestration/experiments/:id', () => {
 describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     vi.mocked(prisma.aiExperiment.update).mockResolvedValue(makeExperiment() as never);
   });
 
@@ -195,7 +196,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('returns 404 when experiment not found', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
 
     const response = await PATCH(makePatchRequest({ name: 'New Name' }), makeContext());
 
@@ -224,7 +225,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('allows valid status transition draft → completed', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'draft' }) as never
     );
     vi.mocked(prisma.aiExperiment.update).mockResolvedValue(
@@ -238,7 +239,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('allows valid status transition running → completed', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'running' }) as never
     );
     vi.mocked(prisma.aiExperiment.update).mockResolvedValue(
@@ -252,7 +253,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('rejects invalid status transition completed → draft', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'completed' }) as never
     );
 
@@ -263,7 +264,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('rejects invalid status transition running → draft', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'running' }) as never
     );
 
@@ -274,7 +275,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('rejects invalid status transition completed → running', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'completed' }) as never
     );
 
@@ -285,7 +286,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('rejects status transition draft → running (must use /run endpoint)', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'draft' }) as never
     );
 
@@ -372,7 +373,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
     // must produce a 400. If the `?? []` guard is removed the access returns
     // `undefined` and `undefined.includes(...)` throws a 500 instead.
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'archived' }) as never
     );
 
@@ -393,7 +394,7 @@ describe('PATCH /api/v1/admin/orchestration/experiments/:id', () => {
 describe('DELETE /api/v1/admin/orchestration/experiments/:id', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
     vi.mocked(prisma.aiExperiment.delete).mockResolvedValue(makeExperiment() as never);
   });
 
@@ -418,7 +419,7 @@ describe('DELETE /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('returns 404 when experiment not found', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
 
     const response = await DELETE(makeDeleteRequest(), makeContext());
 
@@ -427,7 +428,7 @@ describe('DELETE /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('returns 400 when deleting a running experiment', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'running' }) as never
     );
 
@@ -455,7 +456,7 @@ describe('DELETE /api/v1/admin/orchestration/experiments/:id', () => {
 
   it('deletes completed experiment and returns { deleted: true }', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({ status: 'completed' }) as never
     );
 
@@ -465,5 +466,211 @@ describe('DELETE /api/v1/admin/orchestration/experiments/:id', () => {
     const data = await parseJson<{ success: boolean; data: { deleted: boolean } }>(response);
     // test-review:accept tobe_true — structural boolean assertion on API response field
     expect(data.data.deleted).toBe(true);
+  });
+});
+
+/**
+ * #741: the list and detail routes read every admin's experiments while
+ * `run` / `compare` / `verdicts` 404'd across users. These pin the posture the
+ * whole family now shares.
+ *
+ * The owner-aware fake is what makes them able to fail: with
+ * `mockResolvedValue(foreignRow)` the route gets its row back whether or not it
+ * asked for its own, so the 404 assertions would pass against an unscoped
+ * `findUnique({ where: { id } })` too.
+ */
+describe('ownership — a cross-user read, edit or delete is a 404', () => {
+  const FOREIGN = [makeExperiment({ createdBy: 'someone-else' })];
+  const OWN = [makeExperiment({ createdBy: ADMIN_ID })];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiExperiment.update).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.delete).mockResolvedValue(makeExperiment() as never);
+  });
+
+  it('GET returns 404 for another admin’s experiment, and asks for its own', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst(FOREIGN) as never
+    );
+
+    const response = await GET(makeGetRequest(), makeContext());
+
+    expect(response.status).toBe(404);
+    // The ownership clause and the id are separate AND members. Under the
+    // default policy the ownership member is the widened form — the caller, or
+    // nobody. Never another subject, which is what the fake proves above.
+    expect(vi.mocked(prisma.aiExperiment.findFirst).mock.calls[0][0]).toMatchObject({
+      where: {
+        AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+      },
+    });
+  });
+
+  it('PATCH returns 404 for another admin’s experiment and writes nothing', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst(FOREIGN) as never
+    );
+
+    const response = await PATCH(makePatchRequest({ name: 'Hijacked' }), makeContext());
+
+    expect(response.status).toBe(404);
+    expect(vi.mocked(prisma.aiExperiment.update)).not.toHaveBeenCalled();
+  });
+
+  it('DELETE returns 404 for another admin’s experiment and deletes nothing', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst(FOREIGN) as never
+    );
+
+    const response = await DELETE(makeDeleteRequest(), makeContext());
+
+    expect(response.status).toBe(404);
+    expect(vi.mocked(prisma.aiExperiment.delete)).not.toHaveBeenCalled();
+  });
+
+  // The control for all three: same fake, same fixture, only `createdBy`
+  // differs. Without it a fake that returned null unconditionally would make
+  // the three cases above green while proving nothing.
+  it('GET returns 200 when the caller owns it', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(ownerScopedFindFirst(OWN) as never);
+
+    const response = await GET(makeGetRequest(), makeContext());
+
+    expect(response.status).toBe(200);
+  });
+
+  it('DELETE returns 200 when the caller owns it', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(ownerScopedFindFirst(OWN) as never);
+
+    const response = await DELETE(makeDeleteRequest(), makeContext());
+
+    expect(response.status).toBe(200);
+    // Deliberately not an exact match on `{ where: { id } }`. The owner test
+    // is the `findFirst` above, matching how the webhooks family does it; a
+    // later hardening to `deleteMany({ where: { id, createdBy } })` should not
+    // have to fight this route's own ownership test to land.
+    expect(vi.mocked(prisma.aiExperiment.delete)).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: EXPERIMENT_ID }) })
+    );
+  });
+});
+
+/**
+ * t-687: an admin reaching an experiment that is not their own leaves a trace.
+ *
+ * Before this, experiments recorded config changes and nothing about *whose*
+ * row had been touched — so an admin reading, editing or deleting a row whose
+ * creator had been erased under Art. 17 was indistinguishable in the audit log
+ * from one working on their own. Datasets had carried the basis since t-679;
+ * experiments were the model with the same `SetNull` column and none of it.
+ *
+ * Both directions are asserted, and the negative one is the reason the positive
+ * one is here: `expect(logAdminAction).not.toHaveBeenCalled()` also passes when
+ * the logger is unreachable — mis-mocked, or a route that stopped calling it —
+ * so the orphan case immediately below pins that it fires at all.
+ *
+ * The owner-aware fake is what makes the basis assertions able to fail: with
+ * `mockResolvedValue` the route gets its row whatever it asked for, so the
+ * basis would be read off whichever fixture the test happened to hand back.
+ */
+describe('audit — who reached a row that was not theirs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiExperiment.update).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.delete).mockResolvedValue(makeExperiment() as never);
+  });
+
+  it('writes no access row when an admin reads their own experiment', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID })]) as never
+    );
+
+    const response = await GET(makeGetRequest(), makeContext());
+
+    expect(response.status).toBe(200);
+    // Routine self-access. One row per page view of your own work would bury
+    // the reads that matter.
+    expect(vi.mocked(logAdminAction)).not.toHaveBeenCalled();
+  });
+
+  it('writes exactly one access row, carrying the basis, when the row is an orphan', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: null })]) as never
+    );
+
+    const response = await GET(makeGetRequest(), makeContext());
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: ADMIN_ID,
+        action: 'experiment.view',
+        entityType: 'experiment',
+        entityId: EXPERIMENT_ID,
+        // `'orphan'`, not `'system'`: `createdBy` is `SetNull`, so a null here
+        // can only mean an erasure detached a real owner.
+        metadata: { accessBasis: 'orphan' },
+      })
+    );
+  });
+
+  it('still records the owner’s own write, now saying so', async () => {
+    // The rule that differs from datasets, deliberately: every mutation of an
+    // experiment wrote an audit row before t-687, including the owner's, and
+    // narrowing that to match `logDatasetAccess` would delete rows an operator
+    // can read today.
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID })]) as never
+    );
+
+    const response = await PATCH(makePatchRequest({ name: 'Renamed' }), makeContext());
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'experiment.update',
+        metadata: { changedKeys: ['name'], accessBasis: 'owner' },
+      })
+    );
+  });
+
+  it('404s rather than filing a foreign row as an orphan, if the clause ever regresses', async () => {
+    // The one place `mockResolvedValue` is the RIGHT tool: it simulates the
+    // thing the filtering fake cannot, a visibility clause that has stopped
+    // narrowing and hands back a row it should have excluded.
+    //
+    // This is what the `?? 'orphan'` fallback used to swallow. A null basis
+    // means "not admitted by the clause" — exactly the state a widening
+    // regression produces — and defaulting it to 'orphan' filed a cross-user
+    // read as an ordinary orphan access, in the audit log an operator would be
+    // reading to notice the regression. Now it 404s and writes nothing.
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
+      makeExperiment({ createdBy: 'someone-else' }) as never
+    );
+
+    const response = await GET(makeGetRequest(), makeContext());
+
+    expect(response.status).toBe(404);
+    expect(vi.mocked(logAdminAction)).not.toHaveBeenCalled();
+  });
+
+  it('marks a write to an orphan as such', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: null })]) as never
+    );
+
+    const response = await DELETE(makeDeleteRequest(), makeContext());
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'experiment.delete',
+        metadata: { accessBasis: 'orphan' },
+      })
+    );
   });
 });

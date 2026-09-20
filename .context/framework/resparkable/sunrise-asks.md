@@ -636,3 +636,30 @@ The hook covers exactly two things a cascade cannot reach — an **unaccepted
 invite**, which is addressed by email and has no foreign key to hang off, and
 **stored document originals**, which are object storage. Both are worth having;
 neither is the bulk of Art. 17.
+
+### Found by the Sunrise 0.12.1 merge (2026-09-19)
+
+One ask, and it was already filed by another fork the week before: Daybreak's
+[#799](https://github.com/human-centric-engineering/sunrise/issues/799), from its
+own 0.12.0 sync. Resparkable's use case went on that thread rather than into a
+duplicate, per §1 of [The process](#the-process). The row is here because the
+local patches it describes are carried in this tree and need a "keep mine" on
+every sync until the seam lands.
+
+| #   | Ask                                                                                                                                                                                                            | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Priority                                                                                                                                                                                                          | Issue                                                                   |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 48  | **Three literal rosters in core guards have no fork seam.** Two are named in #799 (the `logCost` call sites, the raw-SQL allowlist); the third is `ORACLE_SKIPPED_FILES` in `scripts/ci/ownerless-surfaces.ts` | 0.12.0 added two always-run guards that scan a fork's files, as they should, and check them against a literal list inside a Sunrise-owned test. Resparkable admits 6 files and 21 raw-SQL calls there, plus 3 `logCost` sites. The raw-SQL list also asserts its own sorted order, so the fork's rows interleave with core's and the conflict surface is the whole list rather than its tail. The third roster is a different shape and not in #799: the ownerless oracle scans string literals, and `lib/portability/model-graph.generated.ts` is regenerated from the schema on every `prisma generate` carrying `"delegate": "aiConversation"` for every model while reading none of them. `appOwnerlessSurfaceExceptions` feeds the detector, not the oracle, so there is nowhere to declare it | Low effort each, and two of the three already have an agreed shape in #799. A generated schema description is the general case rather than a Resparkable quirk: anything that emits one names every model as data | [#799](https://github.com/human-centric-engineering/sunrise/issues/799) |
+
+**Downstream status (#48):** patched locally, all three marked. The raw-SQL rows
+carry a `FORK (Resparkable)` comment in
+`tests/unit/db-raw-sql-allowlist.test.ts`; the `logCost` rows are in a marked
+`── FORK (Resparkable) ──` block in
+`tests/unit/lib/orchestration/llm/cost-log-fk-attribution.test.ts`; the oracle
+skip is one line in `scripts/ci/ownerless-surfaces.ts`. Revert each to
+upstream's version when the seam lands.
+
+[Commented on #799](https://github.com/human-centric-engineering/sunrise/issues/799#issuecomment-5745595912)
+with the counts, the third roster, and one failure mode the issue does not name:
+a fork that resolves the raw-SQL conflict by taking upstream's list wholesale
+loses every fork row at once, and the guard then reports those files as _new_
+raw SQL, which reads like a finding rather than a lost resolution.

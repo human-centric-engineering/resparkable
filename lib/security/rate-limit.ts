@@ -434,6 +434,23 @@ export const exportLimiter = createRateLimiter({
 });
 
 /**
+ * Rate limiter for the Document Clean Up section-refine endpoint (the
+ * inline editor's "refine with AI" action).
+ * Limit: 12 requests per minute per user.
+ *
+ * This route calls the LLM provider directly rather than going through the
+ * capability dispatcher, so it doesn't inherit the `rewrite_section_with_llm`
+ * capability's own 12/min limit (see `prisma/seeds/019-cleanup-capabilities.ts`).
+ * This sub-cap gives the two paths parity. Keyed on the admin user ID via
+ * `cleanup-refine:user:${session.user.id}`.
+ */
+export const cleanupRefineLimiter = createRateLimiter({
+  interval: SECURITY_CONSTANTS.RATE_LIMIT.DEFAULT_INTERVAL,
+  maxRequests: SECURITY_CONSTANTS.RATE_LIMIT.LIMITS.CLEANUP_REFINE,
+  uniqueTokenPerInterval: SECURITY_CONSTANTS.RATE_LIMIT.MAX_UNIQUE_TOKENS,
+});
+
+/**
  * Inbound trigger limiter — 60 requests per minute per (channel + remote IP).
  * Slack can burst on app-mention storms; Postmark inbound is steadier. The
  * limit lives above expected steady traffic but caps runaway loops or

@@ -3,7 +3,21 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import { availableParallelism } from 'node:os';
 import { nextFontStub } from './tests/mocks/next-font-plugin';
+// Relative, not `@/` — the alias below is what THIS file defines for the test
+// runtime; vite's own config loading does not apply it to the config itself.
+import { appCoverageExclusions } from './lib/app/ci';
 
+// Vite 8 prints, on every vitest invocation, that this file (and the two `.ts`
+// modules it imports: `tests/mocks/next-font-plugin.ts`, `lib/app/ci.ts`) is
+// "ESM syntax in a file loaded as CommonJS", ahead of its native config loader
+// becoming the default in a future Vite major. Nothing fails today: vitest 5
+// still loads the config through Vite's bundling loader. The real fixes are a
+// `.mts` rename — which renames the `lib/app/ci.ts` fork seam, a conflict for
+// every fork carrying an edit there — or `"type": "module"` on the package,
+// which is a repo-wide decision. Both are deliberately NOT taken in the vitest
+// 5 bump; do not silence the warning with `VITE_CONFIG_NATIVE_IGNORE_WARNING`
+// either, because the warning is the reminder that one of them is due before
+// the Vite major that flips the default.
 export default defineConfig({
   // `nextFontStub` stands in for `next/font/*`, which the Next compiler strips
   // at build time and Vitest therefore cannot execute. See the plugin's header.
@@ -42,9 +56,9 @@ export default defineConfig({
     // without one can. See `.context/testing/environments.md`.
     //
     // WHY A DOCBLOCK AND NOT A GLOB. `environmentMatchGlobs` was removed in
-    // vitest 3 and is absent from 4. Its replacement, `test.projects`, would
-    // work — but a projects config makes `vitest list --filesOnly` prefix every
-    // line with `[name] `, and `scripts/ci/run-scoped-tests.ts` (the
+    // vitest 3 and is absent from 4 and 5. Its replacement, `test.projects`,
+    // would work — but a projects config makes `vitest list --filesOnly` prefix
+    // every line with `[name] ` (re-checked on 5.0.1), and `scripts/ci/run-scoped-tests.ts` (the
     // `npm run test:changed` gate) resolves its selection from exactly that
     // output and refuses a line it cannot resolve to a file. Choosing projects
     // here would have broken the gate that shipped one PR earlier.
@@ -195,6 +209,14 @@ export default defineConfig({
         // hand against a real database, that vitest never executes. Structurally
         // 0%, so the per-file gate would fail on any edit to it.
         'scripts/spikes/**',
+        // The fourth of that same family, and the one the directory globs above
+        // cannot reach because it sits at the root of `scripts/` rather than in
+        // a subdirectory of it. `npx tsx scripts/test-knowledge-base.ts`,
+        // documented in its own header as requiring a running Postgres and an
+        // embedding provider; nothing imports it. It surfaced the way #671's
+        // did — invisible to a full run, forced to 0% by a scoped run when a
+        // one-line edit dragged it in.
+        'scripts/test-knowledge-base.ts',
         '**/types/**',
         '.next/',
         'coverage/',
@@ -212,6 +234,17 @@ export default defineConfig({
         // tests/unit/app/route-module-distinctness.test.ts.
         'app/\\(public\\)/page.tsx', // parens are picomatch syntax — escape or it matches nothing
         'lib/env.ts', // Exclude env validation
+        // The fork-owned tail (#759). Everything above is Sunrise's; a fork's
+        // own `tsx` CLI entry point is structurally 0% for exactly the reasons
+        // the entries above are, and had nowhere to be declared but here — a
+        // merge conflict on a platform file, once per fork, forever.
+        //
+        // Read by `tests/unit/scripts/ci/missing-tests.test.ts`, which RESOLVES
+        // this config rather than parsing it as text, so a spread is visible to
+        // the drift guard where a `...` in a text parse contributed nothing.
+        // That is why this list is spread here rather than concatenated
+        // somewhere less obvious: the config's evaluated value is the authority.
+        ...appCoverageExclusions.map((entry) => entry.pattern),
       ],
       // Coverage thresholds
       thresholds: {

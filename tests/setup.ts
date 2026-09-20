@@ -36,7 +36,13 @@ process.env.EMAIL_FROM = 'test@example.com';
 // must clear this in their own `beforeEach` and reset bucket state per test.
 process.env.RATE_LIMIT_BYPASS = 'true';
 
-import '@testing-library/jest-dom';
+// The `/vitest` entry, not the bare package. The bare one registers the
+// matchers on the global `expect` and types them by augmenting the `jest`
+// namespace — which vitest ≤ 4 merged into its own `Assertion` for
+// compatibility and vitest 5 does not, so on 5 every `toBeInTheDocument`
+// fails type-check (7,419 errors when this was bumped). `/vitest` extends
+// vitest's `expect` directly and augments `vitest`'s `Assertion`.
+import '@testing-library/jest-dom/vitest';
 import { expect, vi, afterEach } from 'vitest';
 
 /**
@@ -247,6 +253,31 @@ vi.mock('next/headers', () => ({
     getAll: vi.fn(() => []),
   })),
   headers: vi.fn(() => new Map()),
+}));
+
+/**
+ * Pin the provider-eligibility seam to "registers nothing", for every test file.
+ *
+ * Same class as the brand pin below, and it arrived the same way: the seam's
+ * auto-wire is lazy (`ensureWired` in `provider-eligibility.ts` imports this
+ * scaffold on the first `resolveEligibleProviders`), so a fork that fills
+ * `lib/app/llm-providers.ts` has its live rule applied inside the CORE suite.
+ * Measured on a fork-shaped fill: 23 failures across four files that had done
+ * nothing wrong — identity-default assertions get the fork's filtered copy, and
+ * a test registering its own rule hits "a different resolver is already
+ * registered" when the lazy wire runs the fork's registrar underneath it.
+ *
+ * Global rather than per-file for the reason spelled out under the brand pin:
+ * enumerating call sites fixes the files a review named and does nothing about
+ * the next one written. The two wiring tests that need the real thing override
+ * this with their own `vi.mock`, and `defaults.test.ts` reads the genuine
+ * scaffold with `vi.importActual` — which is what keeps "seams ship empty" able
+ * to FAIL in a fork rather than being mocked into always passing.
+ */
+vi.mock('@/lib/app/llm-providers', () => ({
+  registerAppProviderEligibility: () => {
+    // Registers nothing, which is precisely Sunrise's shipped default.
+  },
 }));
 
 /**

@@ -58,6 +58,15 @@
  * @see .context/testing/scoped-runs.md — the operator-facing version of this
  */
 
+// FORK NOTE: this module reads `lib/app/ci.ts` for real — no mock — so what
+// your fork declares there becomes part of `ALWAYS_RUN_TESTS` in this checkout,
+// and every guard written over that list judges your entries alongside
+// Sunrise's. Expect a rejected entry to name YOUR file: the path has to exist,
+// carry a reason of at least 20 characters, be a test file vitest would
+// actually collect, and be something the runner can pass to `vitest` as an
+// argument. Nothing here needs pinning when you fill the seam.
+import { appAlwaysRunTests } from '@/lib/app/ci';
+
 /** One test that must run regardless of what the module graph says. */
 export interface AlwaysRunEntry {
   /** Repo-relative path, forward slashes. */
@@ -74,16 +83,35 @@ export interface AlwaysRunEntry {
  * `prisma/schema/*.prisma`" is — because the reason is what tells the next
  * person whether their new test belongs here.
  *
- * A fork adding its own whole-tree invariant appends to this list. Nothing
- * upstream removes entries, so the merge is additive.
+ * A fork adding its own whole-tree invariant declares it in `lib/app/ci.ts`
+ * instead, and the tail below folds it in — so a fork's list and Sunrise's stay
+ * in different files and never conflict (#759). Nothing upstream removes
+ * entries, so the merge is additive either way.
  */
 export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
+  {
+    path: 'tests/unit/db-raw-sql-allowlist.test.ts',
+    reason:
+      'greps lib/** and app/** for `.$queryRaw*`/`.$executeRaw*` call sites ' +
+      'against an exact allowlist. A new raw call in some far-off module is ' +
+      'exactly the change whose import graph never reaches this test — and it ' +
+      'is the class of query only RLS covers under TENANCY_MODE=multi.',
+  },
   {
     path: 'tests/unit/lib/privacy/export-sources.test.ts',
     reason:
       'parses `prisma/schema/*.prisma` and fails until every model with a ' +
       'user FK appears in `SUBJECT_DATA_SOURCES`. Adding a model is exactly ' +
       'the change no import chain connects to this test.',
+  },
+  {
+    path: 'tests/unit/scripts/ci/ownerless-surfaces.test.ts',
+    reason:
+      'lists every source file under app/, lib/ and components/ that reads ' +
+      '`AiWorkflowExecution`, `AiConversation` or `AiMessage` and fails unless it ' +
+      'imports the access helper or is declared in OWNERLESS_SURFACE_EXCEPTIONS. A ' +
+      'new route querying the table directly is exactly the change no import chain ' +
+      'connects to this test.',
   },
   {
     path: 'tests/unit/prisma/auth-schema-parity.test.ts',
@@ -122,6 +150,25 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
     reason:
       'reads `lib/app/*` off disk to check every seam still ships its ' +
       'documented empty default. A new seam file changes the answer.',
+  },
+  {
+    path: 'tests/unit/auth-role-literals.test.ts',
+    reason:
+      'greps every tracked source file for a bare `User.role` literal against ' +
+      'an allowlist, so the vocabulary stays in `lib/auth/roles.ts`. A new bare ' +
+      'role comparison in some far-off component is exactly the change whose ' +
+      'import graph never reaches this test. (Worded without the literal on ' +
+      'purpose — this string is code, and the guard rightly flagged an earlier ' +
+      'version of it.)',
+  },
+  {
+    path: 'tests/unit/versioning-seam-coverage.test.ts',
+    reason:
+      "reads `lib/app/*` off disk and checks it against VERSIONING.md's " +
+      'public-surface list. Both of its inputs — a scaffold file and a ' +
+      'markdown document — are outside every module graph, so adding a seam ' +
+      'and forgetting the contract entry is precisely the change no import ' +
+      'chain connects to a test (#732).',
   },
   {
     path: 'tests/unit/lib/security/outbound-fetch-redirects.test.ts',
@@ -208,6 +255,16 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'own version of the guard, rather than carry a red suite about a file it ' +
       'no longer shares.',
   },
+  // The fork-owned tail. Sunrise ships it empty; everything above is core's.
+  //
+  // Spread rather than left as a second list every caller must remember to
+  // union, so every guard already written over `ALWAYS_RUN_TESTS` covers a
+  // fork's entries too: `validateAlwaysRun` below rejects a non-test path or a
+  // bare reason, and `tests/unit/scripts/ci/scoped-tests.test.ts` fails on an
+  // entry whose file does not exist, a reason under 20 characters, or a
+  // duplicate path. A fork's declaration gets the checks core's gets, in the
+  // fork, without a line of its own.
+  ...appAlwaysRunTests,
 ];
 
 /** Just the paths, for argv building and set arithmetic. */
@@ -316,7 +373,7 @@ function hasControlCharacter(value: string): boolean {
  * declarations. Everything else — layouts, `lib/env.ts`, `types/**`,
  * `emails/**` — is left to `vitest.config.ts`'s own `coverage.exclude`, which
  * still applies over a CLI `--coverage.include` (verified against vitest
- * 4.1.10). One source of truth for what coverage ignores, so this cannot drift
+ * 4.1.10 and again against 5.0.1 on vite 8). One source of truth for what coverage ignores, so this cannot drift
  * away from the config the way a second copied exclusion list would.
  *
  * **`.mjs` counts, and used not to.** This filter read `.ts`/`.tsx` only, so
@@ -443,8 +500,34 @@ export function validateAlwaysRun(entries: readonly AlwaysRunEntry[]): string | 
     return 'ALWAYS_RUN_TESTS is empty — a scoped run would skip every whole-tree invariant.';
   }
   for (const entry of entries) {
-    if (!entry.path.startsWith('tests/') || !entry.path.endsWith('.test.ts')) {
+    // WHERE a test lives is not this validator's business; what it IS, is.
+    //
+    // The rule used to be `tests/` prefix AND `.test.ts` suffix, and both halves
+    // contradicted `coverageTargets` below, which says in as many words that the
+    // selection side was widened for a fork that colocates (`lib/foo.test.ts`)
+    // or writes `.spec.ts` — "so this side has to agree about where tests live".
+    // This one did not. And the cost of disagreeing is not a skipped entry:
+    // this runs inside `selfTestFailure`, so a rejection stops the WHOLE scoped
+    // gate. A fork declaring its own colocated whole-tree test in
+    // `lib/app/ci.ts` would have had a seam entry that refuses to run the
+    // runner — the seam handing back a worse failure than the edit it replaced.
+    //
+    // `tests/a.ts` is still rejected, which is the case the old prefix check was
+    // really buying: the suffix is what says "test file", and it says it
+    // wherever the file sits.
+    if (!/\.(test|spec)\.[cm]?[jt]sx?$/.test(entry.path)) {
       return `ALWAYS_RUN_TESTS holds "${entry.path}", which is not a test path.`;
+    }
+    // Dropping the prefix dropped a property something else was leaning on.
+    // These paths become POSITIONAL ARGV for the spawned `vitest run`
+    // (`run-scoped-tests.ts` filters `selection.files` and `coverage` through
+    // `unsafeArgvPaths`, but never the always-run union), and `startsWith
+    // ('tests/')` was structurally why an entry could not present as an option —
+    // a security review named exactly that as the reason the unfiltered path was
+    // safe. So the check moves here, where it is stated rather than implied, and
+    // it now covers the quote and control-character shapes a prefix never did.
+    if (unsafeArgvPaths([entry.path]).length > 0) {
+      return `ALWAYS_RUN_TESTS holds "${entry.path}", which cannot be passed as an argument.`;
     }
     if (entry.reason.trim() === '') {
       return `ALWAYS_RUN_TESTS entry "${entry.path}" has no reason.`;

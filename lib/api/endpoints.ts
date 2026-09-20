@@ -197,6 +197,15 @@ export const API = {
         `/api/v1/admin/orchestration/knowledge/documents/${id}`,
       knowledgeDocumentRechunk: (id: string): string =>
         `/api/v1/admin/orchestration/knowledge/documents/${id}/rechunk`,
+      // `variant` picks cleaned / original / chunks; omitted takes the best
+      // available for the document's state.
+      knowledgeDocumentDownload: (
+        id: string,
+        variant?: 'cleaned' | 'original' | 'chunks'
+      ): string =>
+        `/api/v1/admin/orchestration/knowledge/documents/${id}/download${
+          variant ? `?variant=${variant}` : ''
+        }`,
       knowledgeDocumentEnrichKeywords: (id: string): string =>
         `/api/v1/admin/orchestration/knowledge/documents/${id}/enrich-keywords`,
       knowledgeDocumentRetry: (id: string): string =>

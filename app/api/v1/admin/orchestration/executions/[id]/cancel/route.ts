@@ -8,8 +8,10 @@
  * status between steps and will stop when it sees `cancelled`.
  *
  * Ownership: the caller's own runs, plus system-owned runs (`userId = null`
- * — schedule- and inbound-triggered). Another admin's own run returns 404
- * (not 403) — we never confirm existence of a row the caller cannot see.
+ * — schedule- and inbound-triggered) where the authorization policy permits
+ * an unattributed read, which a default install does. Another admin's own run
+ * returns 404 (not 403) — we never confirm existence of a row the caller
+ * cannot see.
  *
  * Authentication: Admin role required.
  */
@@ -47,7 +49,7 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   // executions only. `adminCanViewExecution` also admits system-owned runs
   // (`userId = null`), so a runaway scheduled or inbound run stays
   // cancellable by any admin (#502).
-  const canAct = adminCanViewExecution(execution, session.user.id);
+  const canAct = adminCanViewExecution(execution, session);
   const isApprover =
     !canAct &&
     execution.status === WorkflowStatus.PAUSED_FOR_APPROVAL &&

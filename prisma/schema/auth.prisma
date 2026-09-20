@@ -42,29 +42,32 @@ model User {
   accounts Account[]
 
   // Agent Orchestration relations
-  aiAgents               AiAgent[]               @relation("AiAgentCreator")
-  aiAgentProfiles        AiAgentProfile[]        @relation("AiAgentProfileCreator")
-  aiWorkflows            AiWorkflow[]            @relation("AiWorkflowCreator")
-  aiWorkflowExecutions   AiWorkflowExecution[]   @relation("AiWorkflowExecutionUser")
-  aiWorkflowSchedules    AiWorkflowSchedule[]    @relation("AiWorkflowScheduleCreator")
-  aiWorkflowTriggers     AiWorkflowTrigger[]     @relation("AiWorkflowTriggerCreator")
-  aiConversations        AiConversation[]        @relation("AiConversationUser")
-  aiUserMemories         AiUserMemory[]          @relation("AiUserMemoryUser")
-  aiKnowledgeDocuments   AiKnowledgeDocument[]   @relation("AiKnowledgeDocumentUploader")
-  aiEvaluationSessions   AiEvaluationSession[]   @relation("AiEvaluationSessionUser")
-  aiDatasets             AiDataset[]             @relation("AiDatasetUser")
-  aiEvaluationRuns       AiEvaluationRun[]       @relation("AiEvaluationRunUser")
-  aiProviderConfigs      AiProviderConfig[]      @relation("AiProviderConfigCreator")
-  aiWebhookSubscriptions AiWebhookSubscription[] @relation("AiWebhookUser")
-  aiInviteTokens         AiAgentInviteToken[]    @relation("InviteTokenCreator")
-  aiAgentVersions        AiAgentVersion[]        @relation("AgentVersionCreator")
-  aiWorkflowVersions     AiWorkflowVersion[]     @relation("WorkflowVersionCreator")
-  aiApiKeys              AiApiKey[]              @relation("AiApiKeyUser")
-  aiEventHooks           AiEventHook[]           @relation("AiEventHookCreator")
-  aiProviderModels       AiProviderModel[]       @relation("AiProviderModelCreator")
-  aiAdminAuditLogs       AiAdminAuditLog[]       @relation("AiAdminAuditLogUser")
-  aiEmbedTokens          AiAgentEmbedToken[]     @relation("EmbedTokenCreator")
-  aiExperiments          AiExperiment[]          @relation("AiExperimentCreator")
+  aiAgents                          AiAgent[]                          @relation("AiAgentCreator")
+  aiAgentProfiles                   AiAgentProfile[]                   @relation("AiAgentProfileCreator")
+  aiWorkflows                       AiWorkflow[]                       @relation("AiWorkflowCreator")
+  aiWorkflowExecutions              AiWorkflowExecution[]              @relation("AiWorkflowExecutionUser")
+  aiWorkflowSchedules               AiWorkflowSchedule[]               @relation("AiWorkflowScheduleCreator")
+  aiWorkflowTriggers                AiWorkflowTrigger[]                @relation("AiWorkflowTriggerCreator")
+  aiConversations                   AiConversation[]                   @relation("AiConversationUser")
+  aiUserMemories                    AiUserMemory[]                     @relation("AiUserMemoryUser")
+  aiKnowledgeDocuments              AiKnowledgeDocument[]              @relation("AiKnowledgeDocumentUploader")
+  aiEvaluationSessions              AiEvaluationSession[]              @relation("AiEvaluationSessionUser")
+  aiDatasets                        AiDataset[]                        @relation("AiDatasetUser")
+  aiEvaluationRuns                  AiEvaluationRun[]                  @relation("AiEvaluationRunUser")
+  aiProviderConfigs                 AiProviderConfig[]                 @relation("AiProviderConfigCreator")
+  aiWebhookSubscriptions            AiWebhookSubscription[]            @relation("AiWebhookUser")
+  aiInviteTokens                    AiAgentInviteToken[]               @relation("InviteTokenCreator")
+  aiAgentVersions                   AiAgentVersion[]                   @relation("AgentVersionCreator")
+  aiWorkflowVersions                AiWorkflowVersion[]                @relation("WorkflowVersionCreator")
+  aiApiKeys                         AiApiKey[]                         @relation("AiApiKeyUser")
+  aiEventHooks                      AiEventHook[]                      @relation("AiEventHookCreator")
+  aiProviderModels                  AiProviderModel[]                  @relation("AiProviderModelCreator")
+  aiCostLogs                        AiCostLog[]                        @relation("AiCostLogUser")
+  aiAdminAuditLogs                  AiAdminAuditLog[]                  @relation("AiAdminAuditLogUser")
+  aiEmbedTokens                     AiAgentEmbedToken[]                @relation("EmbedTokenCreator")
+  aiExperiments                     AiExperiment[]                     @relation("AiExperimentCreator")
+  aiKnowledgeDocumentRevisions      AiKnowledgeDocumentRevision[]      @relation("AiKnowledgeDocumentRevisionActor")
+  aiKnowledgeDocumentPendingChanges AiKnowledgeDocumentPendingChange[] @relation("AiKnowledgeDocumentPendingChangeActor")
 
   // MCP Server relations
   mcpApiKeys        McpApiKey[]        @relation("McpApiKeyCreator")
@@ -110,14 +113,12 @@ model Session {
 model Account {
   id String @id @default(cuid())
 
-  // better-auth >= 1.7 identifies an external account by (issuer, accountId),
-  // not by (providerId, accountId). `issuer` names the authority that minted
-  // the subject: the verified OIDC issuer for OIDC providers
-  // ("https://accounts.google.com"), "local:credential" for email/password,
-  // and the synthetic "local:oauth:<encoded providerId>" for OAuth providers
-  // that have no issuer of their own. `providerId` is now local config only —
-  // never an identity key. See .context/auth/oauth.md.
-  issuer                String
+  // Identity is (providerId, accountId), as in better-auth 1.6. 1.7.0–1.7.2
+  // re-keyed it on an `issuer` column (added here by #672, dropped again by
+  // `20260915180000_drop_account_issuer`); 1.7.3 reverted that, and upstream
+  // has said the core schema stays stable for the rest of v1. The parity
+  // test derives both directions from better-auth's own tables, so if it ever
+  // comes back it comes back through that test, with a backfill.
   accountId             String
   providerId            String
   userId                String
@@ -133,7 +134,6 @@ model Account {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([issuer, accountId])
   @@index([userId])
   @@map("account")
 }

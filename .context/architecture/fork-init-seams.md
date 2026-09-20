@@ -1,9 +1,9 @@
 # Fork Init Seams
 
-Eleven of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
+Twelve of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
 core registry runs the fork's `initApp*()` function **once, lazily, before its
 first read**. (Most of `lib/app/` is not this — the majority of those files are
-value and config scaffolds with no init function at all, and two of the thirteen
+value and config scaffolds with no init function at all, and two of the fourteen
 `initApp*` exports are different shapes; see below.)
 That lets a fork accumulate registrations at module-import time without a startup
 hook, and without core needing to know which bundle realm got there first.
@@ -17,7 +17,10 @@ Sunrise does and does not promise about it.
 > ran. The log line saying the feature is disabled is literally true.
 
 That guarantee is implemented once, in [`lib/fork-init.ts`](../../lib/fork-init.ts),
-and every seam below runs through it. It was not always true: **seven of the
+and every seam below runs through it. **One of them then goes further** — see
+"the ones that do more than degrade" below: rolling back an _authorization_
+policy leaves the platform's own, and for a fork whose policy narrows it that is
+a silent widening rather than a degradation. It was not always true: **seven of the
 eleven did not provide it** (#633). Six caught the throw, logged "disabled", and
 kept every registration the init had already made. The seventh, `capabilities`,
 did not catch at all — it propagated, and latched _after_ the call, so a throwing
@@ -49,6 +52,7 @@ Three properties come with it:
 | Seam file (`lib/app/`)             | Init function                        | Registry                                                    | On a throw                     |
 | ---------------------------------- | ------------------------------------ | ----------------------------------------------------------- | ------------------------------ |
 | `account-sections.ts`              | `initAppAccountSections`             | `lib/account-sections/registry.ts`                          | roll back, log, degrade        |
+| `authorization.ts`                 | `initAppAuthorizationPolicy`         | `lib/auth/authorization.ts`                                 | roll back, log, **safe mode**  |
 | `capabilities.ts`                  | `initAppCapabilities`                | `lib/orchestration/capabilities/registry.ts`                | roll back, log, **re-raise**   |
 | `context-contributors.ts`          | `initAppContextContributors`         | `lib/orchestration/chat/context-builder.ts`                 | roll back, log, degrade        |
 | `data-export.ts`                   | `initAppSubjectSources`              | `lib/privacy/subject-source-registry.ts`                    | roll back, log, **remembered** |
@@ -59,6 +63,34 @@ Three properties come with it:
 | `knowledge-access-contributors.ts` | `initAppKnowledgeAccessContributors` | `lib/orchestration/knowledge/resolveAgentDocumentAccess.ts` | roll back, log, degrade        |
 | `mcp-resources.ts`                 | `initAppMcpResources`                | `lib/orchestration/mcp/resource-registry.ts`                | roll back, log, degrade        |
 | `user-created.ts`                  | `initAppUserCreatedHooks`            | `lib/auth/user-created-hooks.ts`                            | roll back, log, degrade        |
+
+## The other family: `registerApp*`
+
+Three scaffolds are reached by a **direct call from the one core module that
+needs them**, not through `createAppInitGate`. Different mechanism, identical
+failure if the wiring is lost — a scaffold nothing imports is dead wiring, and
+every fork's registrations in it silently never run. `fork-init-seams.test.ts`
+guards them by import detection and pins the count at **three**, so adding a
+fourth is a deliberate edit rather than a silent one.
+
+| Edit this file     | Export                           | Called by                                                                               |
+| ------------------ | -------------------------------- | --------------------------------------------------------------------------------------- |
+| `db-drift.ts`      | `registerAppDriftProbes`         | `scripts/db/check-drift.ts` (a CLI, not a runtime module)                               |
+| `rate-limit.ts`    | `registerAppRateLimits`          | the rate-limit middleware, at module scope                                              |
+| `llm-providers.ts` | `registerAppProviderEligibility` | `ensureWired()` in `lib/orchestration/llm/provider-eligibility.ts`, lazily on first use |
+
+The third is the one to read if you are adding a fourth. It was originally wired
+as a module-load side effect of its consumer, which made registration depend on
+**who imported what**: a second consumer that did not import the first ran with
+no rule registered and silently got an unfiltered answer. Wiring from the module
+that owns the state removes the question, and is the shape to copy — the guard's
+count exists partly so that decision gets made again consciously.
+
+Unlike the `initApp*` family there is no shared gate, so this doc's
+throw-behaviour contract below does not apply to them: each registrar's consumer
+decides what a failure means. For provider eligibility a failure denies (a
+restriction that cannot be established must not be read as permission), which is
+deliberately stricter than the roll-back-and-degrade default opposite.
 
 Two `initApp*` exports are **not** in this family, and
 `tests/unit/fork-init-seams.test.ts` pins both exemptions with their reasons
@@ -76,7 +108,7 @@ module registries do not cross Next's bundle boundaries. A throw there fails the
 module's evaluation, so nothing reads the partial registry — loud, and a
 different shape.
 
-### The two that do more than degrade
+### The three that do more than degrade
 
 **`subject-sources` remembers.** Degrading is right for a seam whose absence is
 visible — a missing nav section is missing. It is wrong for a subject-access
@@ -84,6 +116,19 @@ export: `collectAppSubjectData()` is a separate static import unaffected by the
 throw, so the bundle would still carry the tier's rows while `meta.app` described
 none of them. `exportUserData()` refuses rather than shipping a bundle whose own
 manifest contradicts its contents.
+
+**`authorization` closes the door.** Every other seam on this list rolls back to
+"Sunrise's own behaviour", and for every other seam that is the safe answer. It
+is not here. A fork's policy typically _narrows_ the platform default — an org
+admin must not see another org's rows — so falling back to the default would
+**widen** access under a log line saying the feature was disabled. Instead the
+registry latches a flag and `getAuthorizationPolicy()` serves `SAFE_MODE_POLICY`
+for the life of the process: nobody administers anything, every declared read
+narrows to the reader's own rows, and a second log line says so in those words.
+That is an outage, deliberately preferred to a quiet widening. Reads the route
+declared **no subject** for are still allowed, because core declares none and
+denying those would take the whole application down over a seam that is not yet
+load-bearing for them.
 
 **`capabilities` re-raises.** Rollback means an init throw costs the fork its
 _entire_ capability set, not one entry. The other seams degrade to something a
@@ -142,7 +187,7 @@ inside its own `try`:
 registerAppCapability('order_status', () => new OrderStatus());
 ```
 
-That is a fork-visible contract change across eleven seams and is tracked
+That is a fork-visible contract change across every seam on the roster and is tracked
 separately. Until it lands, an init that can fail should guard itself.
 
 ### Where isolation already exists

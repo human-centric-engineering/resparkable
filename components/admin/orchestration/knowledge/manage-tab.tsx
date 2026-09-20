@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import {
   CheckCircle2,
   ChevronDown,
@@ -8,6 +9,7 @@ import {
   ChevronRight,
   Cpu,
   Eye,
+  Download,
   MoreHorizontal,
   Pencil,
   RefreshCw,
@@ -70,6 +72,7 @@ const embeddingStatusResponseSchema = z.object({
       embedded: z.number(),
       pending: z.number(),
       hasActiveProvider: z.boolean(),
+      providerState: z.enum(['ok', 'none_configured', 'none_permitted', 'unknown']).optional(),
     })
     .optional(),
 });
@@ -104,6 +107,7 @@ const STATUS_STYLES: Record<
   processing: { variant: 'secondary', label: 'Processing' },
   ready: { variant: 'default', label: 'Ready' },
   failed: { variant: 'destructive', label: 'Failed' },
+  cleaning: { variant: 'outline', label: 'Cleaning' },
 };
 
 interface EmbeddingStatus {
@@ -111,6 +115,7 @@ interface EmbeddingStatus {
   embedded: number;
   pending: number;
   hasActiveProvider: boolean;
+  providerState?: 'ok' | 'none_configured' | 'none_permitted' | 'unknown';
 }
 
 /**
@@ -141,13 +146,20 @@ interface ManageTabProps {
 
 const STATUS_FILTER_ALL = '__all__';
 type StatusFilter =
-  typeof STATUS_FILTER_ALL | 'pending' | 'processing' | 'ready' | 'failed' | 'pending_review';
+  | typeof STATUS_FILTER_ALL
+  | 'pending'
+  | 'processing'
+  | 'ready'
+  | 'failed'
+  | 'pending_review'
+  | 'cleaning';
 const STATUS_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: STATUS_FILTER_ALL, label: 'All statuses' },
   { value: 'ready', label: 'Ready' },
   { value: 'processing', label: 'Processing' },
   { value: 'pending', label: 'Pending' },
   { value: 'pending_review', label: 'Needs review' },
+  { value: 'cleaning', label: 'Cleaning' },
   { value: 'failed', label: 'Failed' },
 ];
 
@@ -403,6 +415,10 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
 
   const hasChunks = embeddingStatus !== null && embeddingStatus.total > 0;
   const hasProvider = embeddingStatus?.hasActiveProvider ?? false;
+  // A status fetch that never landed is not the same as "no provider". Without
+  // this the banner prints "add an embedding provider" whenever the endpoint is
+  // briefly unreachable, which is the wrong remedy for a working install.
+  const providerState = embeddingStatus === null ? 'unknown' : embeddingStatus.providerState;
   const allEmbedded =
     embeddingStatus !== null && embeddingStatus.total > 0 && embeddingStatus.pending === 0;
   const embedDisabled = embedding || !hasChunks || !hasProvider || allEmbedded;
@@ -571,6 +587,7 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
           {embedError && <p className="text-destructive text-sm">{embedError}</p>}
           {embeddingStatus && hasChunks && !allEmbedded && embeddingStatus.embedded > 0 && (
             <EmbeddingStatusBanner
+              providerState={providerState}
               total={embeddingStatus.total}
               embedded={embeddingStatus.embedded}
               hasActiveProvider={hasProvider}
@@ -1116,6 +1133,17 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
                                     <Eye className="mr-1 h-3 w-3" />
                                     Review
                                   </Button>
+                                ) : doc.status === 'cleaning' ? (
+                                  <Tip label="Re-open the Document Clean Up chat where you left off. The document stays in this state until you Mark cleaned, Use original, or Discard from the cleanup page.">
+                                    <Button variant="ghost" size="sm" asChild>
+                                      <Link
+                                        href={`/admin/orchestration/knowledge/${doc.id}/cleanup`}
+                                      >
+                                        <Sparkles className="mr-1 h-3 w-3" />
+                                        Continue cleanup
+                                      </Link>
+                                    </Button>
+                                  </Tip>
                                 ) : (
                                   <Tip label="Re-splits the document into chunks and re-embeds them from scratch. Useful after switching embedding provider (so the new vectors are used), to retry a document with low coverage, or after a code-level chunker upgrade. Existing chunks and embeddings are replaced — agents will use the new ones immediately.">
                                     <Button
@@ -1180,6 +1208,27 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
                                       >
                                         <TagIcon className="mr-2 h-4 w-4" />
                                         Edit tags
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      {/* A finished document no longer stores
+                                          its own text — originalContent and
+                                          processedContent are cleared on
+                                          finalise — so the download is rebuilt
+                                          from its chunks. Say so in the label
+                                          rather than implying it is the source
+                                          file. */}
+                                      <DropdownMenuItem asChild>
+                                        <a
+                                          href={API.ADMIN.ORCHESTRATION.knowledgeDocumentDownload(
+                                            doc.id
+                                          )}
+                                          download
+                                        >
+                                          <Download className="mr-2 h-4 w-4" />
+                                          {doc.status === 'ready'
+                                            ? 'Download text (from chunks)'
+                                            : 'Download text'}
+                                        </a>
                                       </DropdownMenuItem>
                                       <DropdownMenuSeparator />
                                       <DropdownMenuItem

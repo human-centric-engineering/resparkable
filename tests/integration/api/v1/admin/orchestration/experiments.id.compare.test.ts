@@ -20,6 +20,7 @@ import {
   mockAuthenticatedUser,
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
+import { ownerScopedFindFirst } from '@/tests/helpers/owner-scoped-prisma';
 
 vi.mock('@/lib/auth/config', () => ({
   auth: { api: { getSession: vi.fn() } },
@@ -30,7 +31,12 @@ vi.mock('next/headers', () => ({
 }));
 
 vi.mock('@/lib/db/client', () => ({
-  prisma: { aiExperiment: { findUnique: vi.fn() } },
+  prisma: { aiExperiment: { findFirst: vi.fn() } },
+}));
+
+vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
+  logAdminAction: vi.fn(),
+  computeChanges: vi.fn(),
 }));
 
 vi.mock('@/lib/api/context', () => ({
@@ -43,6 +49,7 @@ vi.mock('@/lib/security/ip', () => ({ getClientIP: vi.fn(() => '127.0.0.1') }));
 
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
+import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { GET } from '@/app/api/v1/admin/orchestration/experiments/[id]/compare/route';
 
 const ADMIN_ID = 'cmjbv4i3x00003wsloputgwul';
@@ -64,7 +71,12 @@ async function parseJson<T>(response: Response): Promise<T> {
 
 function makeExperiment(
   overrides: Partial<{
-    createdBy: string;
+    // `string | null`, and read with `in` rather than `??` below: an ownerless
+    // experiment is the whole third case this family exists to handle, and
+    // `overrides.createdBy ?? ADMIN_ID` silently turns an explicit null back
+    // into the caller's own id — a fixture that cannot express the state under
+    // test, passing for the wrong reason.
+    createdBy: string | null;
     name: string;
     variants: Array<{
       id: string;
@@ -76,12 +88,21 @@ function makeExperiment(
         summary: Record<string, unknown> | null;
       } | null;
     }>;
+    /**
+     * The bound dataset. Absent by default, which is what every case here
+     * needed before t-687 — and the reason the field gate below shipped
+     * untested for a round: with no dataset on the fixture, `caseCount` is null
+     * whether or not the route gates it, so removing the gate changed nothing
+     * and the control run said "confirmed" about a mutation nothing observed.
+     */
+    dataset: { caseCount: number; userId: string | null } | null;
   }> = {}
 ) {
   return {
     id: EXPERIMENT_ID,
     name: overrides.name ?? 'A/B refund prompts',
-    createdBy: overrides.createdBy ?? ADMIN_ID,
+    createdBy: 'createdBy' in overrides ? (overrides.createdBy ?? null) : ADMIN_ID,
+    dataset: overrides.dataset ?? null,
     variants: overrides.variants ?? [
       {
         id: 'v1',
@@ -143,17 +164,40 @@ describe('GET /experiments/:id/compare — ownership + not-found', () => {
   });
 
   it('returns 404 when the experiment does not exist', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(null);
     const res = await GET(makeRequest(), ctx());
     expect(res.status).toBe(404);
   });
 
   it('returns 404 when another user owns the experiment (no existence leak)', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
-      makeExperiment({ createdBy: 'someone-else' }) as never
+    // Owner-aware fake, not `mockResolvedValue`: the route has to ASK for its
+    // own rows to get one back, so dropping the `createdBy` clause fails here.
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: 'someone-else' })]) as never
     );
+
     const res = await GET(makeRequest(), ctx());
+
     expect(res.status).toBe(404);
+    // Ownership clause and id as separate AND members; under the default
+    // policy the ownership member is the widened form — the caller, or nobody.
+    expect(vi.mocked(prisma.aiExperiment.findFirst).mock.calls[0][0]).toMatchObject({
+      where: {
+        AND: [{ OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] }, { id: EXPERIMENT_ID }],
+      },
+    });
+  });
+
+  it('serves the experiment when the caller owns it — the same fake, same query', async () => {
+    // The control for the case above: with only `createdBy` differing, the
+    // 404 is the filter working rather than the fake refusing everything.
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID })]) as never
+    );
+
+    const res = await GET(makeRequest(), ctx());
+
+    expect(res.status).toBe(200);
   });
 });
 
@@ -163,7 +207,7 @@ describe('GET /experiments/:id/compare — happy path', () => {
   });
 
   it('projects rawScores + means and unions metric slugs across variants', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(makeExperiment() as never);
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(makeExperiment() as never);
 
     const res = await GET(makeRequest(), ctx());
 
@@ -189,7 +233,7 @@ describe('GET /experiments/:id/compare — happy path', () => {
   });
 
   it('falls back to computed mean when summary.stats is missing', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({
         variants: [
           {
@@ -225,7 +269,7 @@ describe('GET /experiments/:id/compare — happy path', () => {
   });
 
   it('drops non-numeric and non-array score entries defensively', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({
         variants: [
           {
@@ -268,7 +312,7 @@ describe('GET /experiments/:id/compare — happy path', () => {
   });
 
   it('returns empty rawScores when a variant has no eval run yet', async () => {
-    vi.mocked(prisma.aiExperiment.findUnique).mockResolvedValue(
+    vi.mocked(prisma.aiExperiment.findFirst).mockResolvedValue(
       makeExperiment({
         variants: [
           {
@@ -297,5 +341,121 @@ describe('GET /experiments/:id/compare — happy path', () => {
     expect(body.data.metricSlugs).toEqual([]);
     expect(body.data.variants[0].rawScores).toEqual({});
     expect(body.data.variants[0].runStatus).toBeNull();
+  });
+});
+
+/**
+ * t-687: `experiment.compare_view` is a new audit action, and four documents
+ * promise operators will start seeing it. Nothing asserted it existed — this
+ * file mocked `logAdminAction` and never looked at it, so a route that stopped
+ * calling `logExperimentAccess`, or a mis-mocked logger, stayed green while the
+ * docs kept promising the row.
+ *
+ * Both directions, because the negative one cannot fail alone.
+ */
+describe('audit — reading someone else’s abandoned comparison', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  it('writes no row when the caller compares their own experiment', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID })]) as never
+    );
+
+    const res = await GET(makeRequest(), ctx());
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).not.toHaveBeenCalled();
+  });
+
+  it('writes exactly one row, carrying the basis, for an orphan', async () => {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: null })]) as never
+    );
+
+    const res = await GET(makeRequest(), ctx());
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logAdminAction)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'experiment.compare_view',
+        entityType: 'experiment',
+        entityId: EXPERIMENT_ID,
+        metadata: { accessBasis: 'orphan' },
+      })
+    );
+  });
+});
+
+/**
+ * Defence in depth on the BOUND DATASET, the third of three in this family.
+ *
+ * Round 3 of this PR gated the `caseCount` field instead of refusing, so the
+ * caller kept their own variants' scores. Round 4 killed that: the consumer,
+ * `pairwise-verdict-card.tsx`, reads `caseCount === null` as `noDataset` and
+ * tells the operator "This experiment has no dataset" — so withholding the
+ * count made the page state something false about an experiment that has one.
+ * Refusing is honest and matches `run` and `verdicts`.
+ *
+ * The distinction these cases exist to keep is therefore between a 404 and a
+ * 200-with-null: "bound but not yours" and "nothing bound" must not be the same
+ * response, which is the conflation that produced the lie.
+ *
+ * Unreachable through today's routes — `POST /experiments` is the only path
+ * that binds a dataset and it enforces `datasetVisibilityWhere`, and the update
+ * schema refuses `datasetId`. The check is there so a future second create path
+ * cannot silently re-open it.
+ */
+describe('the bound dataset', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  async function compareWith(dataset: { caseCount: number; userId: string | null } | null) {
+    vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
+      ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID, dataset })]) as never
+    );
+    return GET(makeRequest(), ctx());
+  }
+
+  async function caseCountOf(res: Response) {
+    const body = (await res.json()) as { data: { caseCount: number | null } };
+    return body.data.caseCount;
+  }
+
+  it('reports the count when the caller owns the dataset', async () => {
+    // The control for the 404 below. Without it that refusal would pass against
+    // a route that refuses everything — which is what this fixture effectively
+    // did before it could carry a dataset at all.
+    const res = await compareWith({ caseCount: 42, userId: ADMIN_ID });
+
+    expect(res.status).toBe(200);
+    expect(await caseCountOf(res)).toBe(42);
+  });
+
+  it('reports it for an ownerless dataset the policy admits', async () => {
+    const res = await compareWith({ caseCount: 42, userId: null });
+
+    expect(res.status).toBe(200);
+    expect(await caseCountOf(res)).toBe(42);
+  });
+
+  it('404s when the dataset belongs to another admin', async () => {
+    const res = await compareWith({ caseCount: 42, userId: 'someone-else' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('still answers 200 with a null count when no dataset is bound', async () => {
+    // The case that must NOT become a 404: "nothing bound" is a legitimate
+    // state of a legacy experiment, and the card renders it correctly.
+    const res = await compareWith(null);
+
+    expect(res.status).toBe(200);
+    expect(await caseCountOf(res)).toBeNull();
   });
 });

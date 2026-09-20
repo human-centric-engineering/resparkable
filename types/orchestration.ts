@@ -1399,8 +1399,16 @@ export interface DocumentTagRef {
  * Shape returned by `GET /admin/orchestration/knowledge/documents` for each
  * row. Same as the Prisma row plus inline tags (flattened from the join
  * table) so the admin table can render tag chips without a per-row fetch.
+ *
+ * Excludes the fat `originalContent` / `processedContent` Text columns —
+ * those exist only for the Document Clean Up flow and the list endpoint
+ * deliberately omits them to keep payload small. The cleanup page reads
+ * them via its own per-document fetch.
  */
-export type KnowledgeDocumentListItem = AiKnowledgeDocument & {
+export type KnowledgeDocumentListItem = Omit<
+  AiKnowledgeDocument,
+  'originalContent' | 'processedContent' | 'editLockHolder' | 'editLockAcquiredAt'
+> & {
   tags?: DocumentTagRef[];
   /**
    * Distinct BM25 keyword count across this document's chunks. Computed

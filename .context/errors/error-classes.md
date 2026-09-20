@@ -83,7 +83,7 @@ Used when user is authenticated but lacks permission.
 ```typescript
 import { ForbiddenError } from '@/lib/api/errors';
 
-if (session.user.role !== 'ADMIN') {
+if (!isPlatformAdmin(session.user)) {
   throw new ForbiddenError('Admin access required');
 }
 ```
@@ -303,11 +303,15 @@ Auth guards automatically handle errors:
 ```typescript
 import { withAuth, withAdminAuth } from '@/lib/auth/guards';
 
-// Returns 401 if not authenticated
-export const GET = withAuth(async (request, session) => {
-  // session is guaranteed to exist
-  return successResponse({ user: session.user });
-});
+// Returns 401 if not authenticated. `ownership` says how the route decides
+// whose rows it reads — see RouteOwnership in lib/auth/guards.ts.
+export const GET = withAuth(
+  async (request, session) => {
+    // session is guaranteed to exist
+    return successResponse({ user: session.user });
+  },
+  { ownership: { decidedBy: 'self', because: 'Returns only the caller’s own session user.' } }
+);
 
 // Returns 403 if not admin
 export const DELETE = withAdminAuth(async (request, session) => {

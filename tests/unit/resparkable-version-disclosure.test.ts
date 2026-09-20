@@ -114,12 +114,12 @@ const RESOLVABLE_EXEMPT: ReadonlyArray<{ test: (spec: string) => boolean; why: s
  *
  * ## Why every entry below is safe
  *
- * Twenty-one are under `app/api/v1/admin/`, which is admin-only — **measured,
- * not assumed: 186 of 186 route files under that prefix wrap in
+ * Twenty-two are under `app/api/v1/admin/`, which is admin-only — **measured,
+ * not assumed: 197 of 197 route files under that prefix wrap in
  * `withAdminAuth`**. Note that is a convention this repo keeps, not a control
  * something enforces: `proxy.ts`'s `protectedRoutes` covers `/dashboard`,
  * `/settings` and `/profile`, and API routes are guarded by the in-handler
- * wrapper alone. The twenty-second is the MCP transport, which authenticates a
+ * wrapper alone. The twenty-third is the MCP transport, which authenticates a
  * bearer API key via `authenticateMcpRequest` and answers JSON-RPC 401 before
  * it reads any config.
  *
@@ -130,6 +130,7 @@ const ALLOWED_ROUTES: readonly string[] = [
   'app/api/v1/admin/orchestration/agents/[id]/route.ts',
   'app/api/v1/admin/orchestration/agents/route.ts',
   'app/api/v1/admin/orchestration/capabilities/[id]/route.ts',
+  'app/api/v1/admin/orchestration/knowledge/documents/[id]/cleanup/finalise/route.ts',
   'app/api/v1/admin/orchestration/knowledge/documents/[id]/confirm/route.ts',
   'app/api/v1/admin/orchestration/knowledge/documents/[id]/route.ts',
   'app/api/v1/admin/orchestration/knowledge/documents/route.ts',

@@ -727,6 +727,39 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.12.1 (101 commits, v0.11.2..v0.12.1).** Two upstream
+  releases. The security fix in 0.12.1 is the one to read first: a sign-up
+  request could name its own `role`, and cannot any more.
+
+  **`withAuth()` and `withAdminAuth()` take a second argument.** A route now
+  declares who decides whose rows it may touch (`ownership: { decidedBy, because }`),
+  and the guard hands the handler the principal it resolved. Undeclared routes
+  log rather than refuse unless a fork registers a scoped authorization policy
+  in `lib/app/authorization.ts`, which ships empty here, so this tier's own
+  routes are unaffected until it fills that seam.
+
+  **`AiCostLog` gains `userId`** (`SetNull`, so an erasure de-attributes the
+  spend rather than deleting the books). This tier's three `logCost` sites do
+  not pass one yet: voice capture, photo capture and ideation record spend
+  against no user, and the FK-attribution roster says so rather than implying
+  otherwise.
+
+  **`Account.issuer` is gone**, undoing the column 0.11.2 added for
+  better-auth 1.7.1. 1.7.3 restored the 1.6 account identity, so the column is
+  dropped by `20260915180000_drop_account_issuer`, which is written to be a
+  no-op for an operator who already ran better-auth's own recipe.
+
+  **Two dependency bumps needed work here.** Zod 4.6.5 no longer reads
+  `z.undefined()` inside a union as an optional key, which 400'd every account
+  export that omitted `?originals=`; the three affected fields in
+  `lib/portability/validation.ts` now use `.optional()` and parse identically.
+  Vitest 4 to 5 needed no config change.
+
+  **Two new always-run guards ask something of this tier**, both admitted by an
+  edit to a Sunrise-owned test for want of a seam: the raw-SQL allowlist (6
+  files, 21 calls) and the `logCost` call-site roster. See Sunrise ask #48 and
+  upstream [#799](https://github.com/human-centric-engineering/sunrise/issues/799).
+
 - **Merged Sunrise 0.11.2 (75 commits, v0.9.0..v0.11.2).** Four upstream
   releases in one sync, and three of them change a surface this fork publishes.
 
@@ -2456,6 +2489,1596 @@ release process.
 - **`GET /api/v1/resparkable/search` does not log the query text.** It is the most
   sensitive string a user sends this product, and a log line outlives the search;
   the route logs its length and the hit count instead.
+
+## [0.12.1] — 2026-09-17
+
+> **Alpha release.** Eighteenth tagged Sunrise release. **PATCH bump** — one
+> security fix and nothing else, cut from `main` at #804 so that it carries
+> exactly that change. **Every fork should take it**: on any install with
+> `SIGNUP_MODE=open` (the default), a sign-up request could choose its own
+> platform role, and a signed-in user could promote themselves through
+> `update-user`. The sign-up path was verified live before the fix. Until you
+> have merged it, look for `user` rows with `role = 'ADMIN'` you did not
+> create. The merge is one `input: false` line plus its comment block in
+> `lib/auth/config.ts`, a test, and a matching note in
+> `.context/auth/overview.md` — no migration, no dependency change, no
+> public-surface addition.
+
+### Security
+
+- **A sign-up request can no longer choose its own role.** The `role` field on
+  better-auth's user model was declared without `input: false`, and better-auth
+  passes every declared additional field through from the request body unless a
+  field says so — so on any install with `SIGNUP_MODE=open` (the default), an
+  unauthenticated `POST /api/auth/sign-up/email` carrying `"role": "ADMIN"`
+  created a platform admin, and any signed-in user could promote themselves
+  the same way through `POST /api/auth/update-user`. The sign-up path was
+  verified live before the fix; the update path is the same parser
+  (`update-user.mjs:54`). The field is now `input: false`: on sign-up a body
+  value is replaced by the default, on update a non-empty value is a `400 FIELD_NOT_ALLOWED`
+  (Sunrise's only `updateUser` caller sends `{ image }` alone). The first-human
+  bootstrap and invitation promotions are unaffected — they happen in the
+  database hooks, which run after the input parse and whose return wins — as are
+  `accept-invite` and the admin user PATCH, which write with Prisma directly.
+  `tests/unit/lib/auth/config-role-input.test.ts` runs better-auth's own parser
+  over the real options, with a control that removes the guard. **Every fork
+  should take this release**; until then, check `user` rows with `role = 'ADMIN'`
+  you did not create. Fork note: better-auth merges a plugin's `schema.user.fields`
+  over `additionalFields`, so a fork enabling a plugin that declares `role`
+  (better-auth's `admin` plugin does) must set `input: false` on the plugin's
+  field too.
+
+## [0.12.0] — 2026-09-16
+
+> **Alpha release.** Seventeenth tagged Sunrise release. **MINOR bump** — the
+> first two features of the multi-tenancy programme (tenancy groundwork and the
+> authorization policy seam), Document Clean Up for knowledge documents, and the
+> dependency sweep that cleared every open dependabot PR: better-auth 1.7.4 and
+> vitest 5. Measured against `v0.11.2`: 45 PRs merged (12 of them dependabot) and
+> 54 direct commits; 14 issues closed; the suite is 1,186 files and 24,089 tests.
+>
+> ## What a fork has to do
+>
+> **Nine migrations across five schema files.** Four of them —
+> `20260531113833_add_document_cleanup_fields`, `20260601122127_add_document_edit_lock`,
+> `20260601123924_add_document_revisions`, `20260601131930_add_document_pending_changes`
+> — carry May/June names and sort *between* migrations your database applied
+> months ago. `prisma migrate deploy` applies pending migrations whatever their
+> names, and that is measured, not assumed: a database in exactly this state (five
+> pending, four out of order) took all five cleanly and passed the drift probes.
+> `20260915180000_drop_account_issuer` removes the column 0.11.1 added; if you
+> already ran better-auth's own cleanup by hand it is a no-op (both statements are
+> `IF EXISTS`). `20260905093659_drop_ai_agent_provider_default` is a single
+> `DROP DEFAULT` with no data movement.
+>
+> **Five things can break your build or your callers, and each announces itself:**
+>
+> 1. **`Account.issuer` is gone** (better-auth 1.7.3 reverted the identity model
+>    it existed for). A seed, smoke or importer of yours that writes `issuer` on
+>    an `Account` row fails type-check at that line — delete the field. Do not
+>    re-add the column; the parity test now fails on a required column better-auth
+>    never writes.
+> 2. **A new always-run test names every file that reads `AiWorkflowExecution`,
+>    `AiConversation` or `AiMessage` outside the access helpers** — including
+>    yours, the moment they exist. The merge goes red on each such file. Import
+>    the helper if it is an admin surface; otherwise declare it in
+>    `appOwnerlessSurfaceExceptions` in `lib/app/ci.ts`, with a reason.
+> 3. **`hasRole()` / `requireRole()` take `UserRole`, not `string`.** A call
+>    with a literal that was never a role used to compile and misbehave forever;
+>    it is now a type error, and the error is the fix.
+> 4. **`POST /api/v1/admin/orchestration/agents` requires `provider`.** An API
+>    client or seed that relied on the `'anthropic'` default gets a 400.
+> 5. **The five analytics query functions take the guard's session** as their
+>    second argument, after the query — `getPopularTopics(query, session)`. A
+>    direct caller of any of the five fails to compile until it passes one.
+>
+> **Three new seam rows** in `tests/unit/lib/app/defaults.test.ts` —
+> `lib/app/authorization.ts`, `lib/app/llm-providers.ts`, `lib/app/ci.ts`. A fork
+> that fills one fails that row; pin the new value rather than deleting the row,
+> as the file's header says. **A rebrand-only fork that fills no seam and reads
+> none of the three models directly has nothing to do beyond the migrations.**
+>
+> **Toolchain, if you run the suite:** vitest 5 on vite 8. A setup file of your
+> own imports `@testing-library/jest-dom/vitest`, not the bare package (the bare
+> entry no longer type-checks on 5 — 7,419 errors here). `clearMocks` now
+> defaults to `true`; a test relying on call history from a previous test starts
+> failing, which is the setting working. Vite 8 prints a loader-deprecation
+> warning naming `lib/app/ci.ts` on every run — a notice, not a failure.
+> `next dev` 16.3.5 writes an agent-rules block into `CLAUDE.md`; commit it.
+>
+> ## What the release is
+>
+> **The authorization decision is a seam.** `lib/auth/authorization.ts` ships a
+> policy with three faces, `lib/app/authorization.ts` is where a fork replaces it,
+> and the guards hand handlers the principal and a declared `ownership`. One
+> vocabulary for rows nobody owns — inbound threads, scheduled runs, datasets and
+> experiments an erasure de-attributed — asked once per request by the guard, and
+> a fork can finally narrow who reads a stranger's inbound messages or a run
+> nobody started. `checkOwnerlessReachability()` is the test a fork runs to prove
+> its narrowing left someone a key. The default policy reproduces the previous
+> role checks with the exceptions listed under Changed — the visible ones on a
+> default install are that an admin no longer sees, edits or deletes another
+> admin's experiments, and that an admin reaching an experiment that is not
+> their own now leaves a trace. The design it implements is
+> [`.context/architecture/multi-tenancy-design.md`](./.context/architecture/multi-tenancy-design.md).
+>
+> **Document Clean Up.** A knowledge document can be cleaned before chunking by
+> an agent that can now see the document it edits, with an edit lock, a revision
+> history any two points of which can be diffed, and a review card showing what
+> actually changed — plus the fixes that made the LLM half work on a default
+> install at all.
+>
+> **Dependencies.** better-auth 1.7.4 with the `issuer` column retired; vitest 5,
+> vite 8, plugin-react 6; `zod` declared (it had 145 importers and no
+> `package.json` line); 30 minor/patch bumps in one pass. Zero open dependabot
+> PRs at the cut.
+>
+> **Three Dependabot alerts are open at the cut, and your fork will see the same
+> three.** `mysql2` (GHSA-3f6p-5ww8-9rcr high, GHSA-rgwj-5xj2-c3m3 moderate) and
+> `deepmerge-ts` (GHSA-ggr8-5vv4-36mx high) — both pinned exactly by the Prisma
+> 7 CLI (`prisma@7.10.0` → `mysql2@3.15.3`; `@prisma/config@7.10.0` →
+> `deepmerge-ts@7.1.5`). Neither is reachable on a Postgres-only install:
+> `mysql2` only runs when the CLI connects to a MySQL server, and `deepmerge-ts`
+> merges `prisma.config.ts`, which is your own file. 7.10.0 is the newest stable
+> Prisma 7; the only upstream fix is Prisma 8, which drops both dependencies and
+> is at release-candidate as of this cut. The `dependency-audit` workflow reports
+> them as "needing a major bump" and does not fail — that is its documented
+> behaviour, not an oversight. The Prisma 8 move is on the Sunrise board.
+
+
+### Added
+
+- **A test now fails when a source file reads `AiWorkflowExecution`,
+  `AiConversation` or `AiMessage` outside the access helpers — and forks
+  inherit it.** The always-run test `tests/unit/scripts/ci/ownerless-surfaces.test.ts`
+  lists every file under `app/`, `lib/` and `components/` and, through the
+  library `scripts/ci/ownerless-surfaces.ts` (a library, not a `check:*` CLI),
+  parses each with the TypeScript compiler and finds each
+  read of the three models — a property or element access on any receiver, a
+  destructured client, a table name in SQL text — and the always-run test names
+  any file that neither value-imports the helper for that model nor appears in
+  `OWNERLESS_SURFACE_EXCEPTIONS` (`lib/orchestration/access/ownerless-surfaces.ts`,
+  beside the helpers) with a reason. Coverage is an import of one of the
+  helper's **decisions** — the exported functions that take the
+  `AuthenticatedSession`, read off the helper's own source — so an interface
+  imported with or without the `type` keyword covers nothing, `isShareActive`
+  covers nothing, a namespace reached only for a type covers nothing, and an
+  import nothing uses is reported by name. Exceptions are
+  `'by-design'` (no caller to scope to) or `'known-gap'` (must name the issue or
+  task that closes it, and is reported as stale once the file goes through the
+  helper); reasons under 20 characters, duplicate paths and a by-design entry
+  claiming to be tracked all fail. The first pass measured 54 files: 23 through
+  the helpers, 29 by design, and two known gaps — `approvals/history` (#773) and
+  the analytics service, which t-694 closed in this same release (see Changed),
+  so the roster ships with **one**. **A fork's own routes and jobs are in the
+  roster the moment they exist, so the merge that brings this in goes red on any
+  fork file that reads these models directly** — that is the check working.
+  Import the helper if it is an admin surface; otherwise declare it in
+  **`appOwnerlessSurfaceExceptions`, the third list in `lib/app/ci.ts`**
+  (`AppOwnerlessSurfaceException`), which is spread into the core roster and
+  validated identically, with no platform file to edit. **It raises the floor;
+  it is not a proof** — a file that imports the helper and runs an unscoped
+  query beside it passes. Closes #775 as t-692.
+
+- **`checkOwnerlessReachability()` in `lib/auth/orphan-reads.ts` — the test a
+  fork runs to prove its authorization policy has not closed a door nobody else
+  has a key to.** `canRead`'s `'unattributed'` arm decides the writes over
+  ownerless rows as well as the reads, deliberately — there is no `canWrite`
+  face (that file says why, and what would change it). So a policy that admits
+  _no_ principal to a kind of ownerless row has closed two routes with no other
+  door: `DELETE /conversations/:id` on an inbound thread, the only Art. 17 remedy
+  a sender with no account has; and the approvals queue for a scheduled run
+  paused at a `human_approval` gate, which then waits for the 7-day reap. The
+  companion to `checkAuthorizationParity`, run over the same roster of
+  principals: pure, no test-framework import, checks the policy it is handed
+  rather than the registered one, reports a setup fault (zero principals) as a
+  violation, and names each unreachable kind with its consequence. **Name the
+  operator principal on the roster, not only the narrowed ones** — the org admin
+  your policy is for is _supposed_ to be refused. A default install passes with
+  a platform admin named; a `kinds` argument of your own says, at the call site,
+  which gaps you have accepted. Settles t-690 and t-691 (the latter moved from
+  #776): the seam gains no approver arm on the execution read routes and no
+  write face, and the decision with its costs is on the `f-mt-authz` journal.
+
+- **Knowledge documents can be downloaded as text.** New
+  `GET /knowledge/documents/:id/download` returns a Markdown attachment, from
+  the ⋯ menu on the Manage tab and from the Document Clean Up page header
+  (where it follows the visible tab — cleaned or original). `?variant=` picks
+  explicitly; omitted takes the best available for the document's state. A
+  finished document has had `originalContent` and `processedContent` cleared on
+  finalise, so its text is rebuilt from the stored chunks by
+  `rebuildTextFromChunks` — ordered by the numeric suffix of `chunkKey`, not the
+  lexicographic sort used elsewhere, which puts `-10` before `-2` and sorts by
+  section slug first. That rebuild is the ingested text rather than the source
+  file, so the menu item says "Download text (from chunks)".
+
+- **The Document Clean Up agent can now see the document it is editing.** Two
+  read-only capabilities — `read_document` (a window of numbered lines from the
+  working text or the original) and `find_in_document` (line numbers and text
+  for a regex) — plus a `knowledge_document` case in `buildContext` that puts
+  the document's name, size and a numbered opening excerpt into the system
+  prompt each turn. Before this, every cleanup tool reported counts and none
+  returned text, and the prompt carried the literal string `No context loader
+  for type 'knowledge_document'.`, so the agent chose transforms blind and could
+  not tell whether one had done anything. The excerpt is deliberately not cached
+  — the document changes almost every turn.
+
+- **`join_wrapped_lines` — the missing tool for PDF text.** Rejoins sentences a
+  fixed-width renderer wrapped across lines and words split by a trailing
+  hyphen, leaving blank lines, headings, list items and table rows alone.
+  Nothing in the toolbox could do this: `collapse_whitespace` works inside a
+  line, `strip_lines_matching` tests each line separately (so a `\n` pattern can
+  never match), and `strip_matches` can only delete a match, never replace it
+  with a space. A mid-word break with no hyphen is not decidable from the text,
+  so those line numbers come back in `suspectedSplitWords` rather than being
+  guessed at.
+
+- **The Document Clean Up page can now show what actually changed.** The
+  document-preview pane gained a **Diff** tab (original vs cleaned) and a
+  **History** tab, alongside Cleaned and Original. Both render the rewritten
+  `TextDiffViewer`, which reads like a file diff: line numbers down each gutter,
+  an added/removed summary, long unchanged runs collapsed behind an expander,
+  and a **unified / split** switch. Because split is tight beside the chat, the
+  pane header also has an expand control that spans it across the full grid.
+
+- **Any revision can be diffed, not just the newest.** New
+  `GET /cleanup/revisions/:version` returns one revision's content plus its
+  predecessor's, so the history view answers "what did this step change?" — with
+  a selector to compare against the current document instead. The predecessor is
+  the highest surviving version below the selected one, not `version - 1`, and
+  the response flags `previousPruned` when retention has removed it. The list
+  endpoint still sends metadata only; content is fetched one revision at a time.
+  The list, diff and restore now live in a shared `<RevisionHistory>` rendered
+  by both the History tab and the header's History dialog, replacing the
+  drawer's placeholder that could only preview the most recent revision.
+
+- **`lib/app/ci.ts` — a fork declares its own coverage exclusions and always-run
+  tests without editing a platform file.** Two lists, both shipped empty:
+  `appCoverageExclusions` (`{ pattern, reason }`) is spread into
+  `vitest.config.ts`'s `coverage.exclude`, and `appAlwaysRunTests`
+  (`{ path, reason }`) onto the end of `ALWAYS_RUN_TESTS` in
+  `scripts/ci/scoped-tests.ts`. Adding one `tsx` CLI script and one whole-tree
+  test previously cost edits to three Sunrise-owned files — a `tsx` entry point
+  is structurally 0% and fails the per-file floor the first time anyone edits it,
+  and a test that reads the tree is reachable by no import chain — each a "keep
+  mine" conflict on every sync (#759). A fork's entries are guarded, not merely
+  typed: a reason under 20 characters and a duplicate
+  entry fail either list, and an always-run path additionally has to exist, to be
+  something the runner can pass to `vitest` as an argument, and not to sit under
+  a directory `vitest.config.ts` excludes from collection — a file that exists
+  but is never collected is a declared test that silently never runs. A coverage
+  pattern is a glob, so nothing existence-checks it; its required `reason` is
+  what a reader has instead. `/pre-pr` step 4f still asks whether an excluded file wants
+  a test, and still only reports. Sunrise's own exclusions, including
+  `lib/app/eslint.config.mjs`, stay in `vitest.config.ts`, so no fork has to
+  re-declare a file upstream ships.
+
+- **The authorization decision is now a seam, not a role check in a guard body.**
+  `lib/auth/authorization.ts` ships a policy with three faces —
+  `canAdminister(viewer, resource, scope)`, `canRead(viewer, target, scope)` and
+  `subjectScope(viewer, scope)`,
+  the last returning a Prisma `where` fragment so that a fork's list query and
+  its single-row read cannot disagree. No core list endpoint _narrows_ by
+  `subjectScope`, since a single-tenant install has one class of admin and
+  nothing to narrow to. Both guards call it all the same — to supply
+  `session.subjectFilter` and to decide whether a route owed an ownership
+  decision (see the `ownership` entry below) — but **not on every request**: only
+  where the answer can be used, which is a route that declared no `ownership` or
+  one that declared `{ decidedBy: 'policy' }`. All 23 core `withAuth` routes
+  declare something else, so they skip it; all but nine of the 263
+  `withAdminAuth` routes declare nothing, so they do not. The policy
+  is consulted in four places, and which face each asks matters more than the
+  count: `withAdminAuth`, `app/admin/layout.tsx` and the maintenance-mode bypass
+  in `components/maintenance-wrapper.tsx` ask `canAdminister`, while `withAuth`
+  asks `canRead`. Wiring the seam changed none of the then-262 `withAdminAuth`
+  handlers — 257 under `/api/v1/admin` — nor the 23 `withAuth` ones, which is the
+  point: a fork
+  needing a second admin tier (#366) or owner-scoped visibility (#367) had to
+  shadow `lib/auth/guards.ts` or edit all of them.
+
+  A fork replaces the policy from the new fork-owned `lib/app/authorization.ts`,
+  which is listed among [`VERSIONING.md`](./VERSIONING.md#covered)'s named seams.
+  The primitives it calls are `registerAuthorizationPolicy(policy)` and
+  `DEFAULT_AUTHORIZATION_POLICY` — spread the latter to replace one face, since a
+  policy is registered whole rather than merged, which is what keeps "I overrode
+  `canRead` and forgot `subjectScope`" visible in the fork's own diff.
+  `SAFE_MODE_POLICY`, `getAuthorizationPolicy()`, `subjectFilterSelects()`,
+  `readTargetFor()`, `readSubject()` and the `AuthorizationPolicy` /
+  `AuthorizationPrincipal` / `AuthorizationResource` / `AuthorizationScope` /
+  `ReadTarget` / `SubjectFilter` / `Ownership` types are exported alongside them.
+  Both guards also gain an optional `resource` resolver
+  (`withAuth(handler, { resource })`), so a policy can see *which* resource is
+  being touched without every handler signature changing downstream; `RouteContext`,
+  `WithAdminAuthOptions` and `AuthorizationResourceResolver` are exported from
+  `lib/auth/guards.ts` for it. A resolver that throws **or names nothing** denies
+  the request — returning `null` is a refusal, not "this route is unscoped" — and
+  it runs before the authorization decision, so treat its input as reachable by
+  any authenticated caller.
+
+  The read face takes a `ReadTarget` — a three-arm discriminated union
+  (`'nothing'` · `'unattributed'` · `'subject'`), built by `readTargetFor()`,
+  `readSubject()` or `readUnattributedKind()` — rather than a nullable subject
+  id. A policy must answer all
+  three arms and **the compiler enforces it**: a `switch` that misses one
+  returns `undefined`, which does not satisfy `Promise<boolean>`. That exists
+  because a row with no single owner (an org-owned row, or a nullable
+  `createdBy` on a `SetNull` model) otherwise arrives indistinguishable from
+  "this route named nothing", and the natural line to write against a nullable
+  subject — `subject === null || subject === viewer.userId` — permits every
+  caller while reading exactly like a check. Sunrise's default narrows
+  `'unattributed'` to platform staff, and logs it once per kind **when a
+  resolver named the row** — see the ownerless-read entries under **Changed**
+  and **Fixed** for the second question that arm answers.
+
+  Every face returns a `Promise` from day one — the org input (§106) needs a
+  membership lookup, and a later sync→async conversion would be a sweep of every
+  caller — and `scope` is an open struct `{ ownership?, tier?, org? }` so a new
+  axis is an added key rather than a changed signature. `checkAuthorizationParity()`
+  is exported with no test-framework dependency so a fork can run it over its own
+  policy: `canRead` and `subjectScope` diverging is a real defect, caught in review
+  of the fork-first version of this contract, and it leaks in one direction and
+  hides rows in the other.
+
+  **Behaviour is unchanged with no policy registered**, at all four chokepoints,
+  including the arm every core route takes (no resolver ⇒ the policy is asked
+  about `{ kind: 'nothing' }` and allows it). Two failure behaviours are worth
+  knowing before you fill the seam: a policy method that throws **denies** — and
+  so does one that answers with the wrong shape, since `subjectScope` returning a
+  `userId` key that is not a usable id would otherwise widen a list to every row —
+  and a registration that throws puts the install in a **safe mode** where nobody
+  administers anything — Sunrise deliberately does not fall back to its own default
+  policy, because a fork's policy usually narrows it and falling back would widen
+  access under a log line saying the feature was disabled. The `admin` API-key
+  scope stays **platform-only** and is deliberately *not* routed through the seam.
+
+- **`withAuth()` / `withAdminAuth()` now hand the handler the principal they
+  decided with.** The second argument is an `AuthenticatedSession` —
+  `AuthSession` plus `principal` — so a handler calling `subjectScope()` uses the
+  same `AuthorizationPrincipal` the guard asked `canRead` / `canAdminister`
+  about. Additive: a handler typed `(request, session: AuthSession)` is
+  unchanged and still compiles. It matters because a handler could not previously
+  build a correct principal — the credential kind and an API key's scopes are
+  known only inside the guard — and the plausible reconstruction
+  (`credential: 'session'`) is a **widening** error: `withAuth` accepts a key of
+  any scope, so a `chat`-scoped key held by a user whose role is `ADMIN` would be
+  judged by the role, and `subjectScope` would answer `{}` (every subject) where
+  it should answer `{ userId }`. That divergence sat in the caller, so
+  `checkAuthorizationParity` could not see it.
+
+- **`GET /api/v1/users/[id]` now asks the authorization policy instead of the
+  platform role.** It is the first core route to declare a `resource` resolver,
+  so a fork's narrowing `canRead` narrows it and safe mode refuses it — neither
+  of which a decision written inline in the handler could ever do. Three
+  behaviour changes:
+
+  - **An API key is judged by its scopes, not its owner's role.** The inline
+    check read `session.user.role`, which for a key-authenticated caller is the
+    **key owner's** role, and `withAuth` accepts a key of any scope — so a
+    `chat`-scoped key belonging to an admin could read every user's profile
+    through this route. It now needs the `admin` scope, matching every other
+    surface. That cuts both ways and the second direction is **permissive**: the
+    inline check re-read the owner's role from the database on every request, so
+    demoting them stopped their key immediately, whereas an `admin`-scoped key is
+    now sufficient here even after its owner is demoted. That is already true of
+    the 257 `/api/v1/admin` routes and of `GET /api/v1/users`, so this route was
+    the inconsistent one rather than the safe one — but nothing revokes a key on
+    demotion, which is issue #746.
+  - The 403's message moves from `Forbidden` to `Access denied`, because the
+    refusal comes from the guard. Status `403` and code `FORBIDDEN` are
+    unchanged.
+  - A malformed id from a non-admin returns `403` rather than `400`: the policy
+    decides before the handler validates, so the caller can no longer tell
+    "not a valid id" from "not yours".
+
+  Self-read, admin-reads-other and non-admin-reads-other are otherwise
+  unchanged. `PATCH` and `DELETE` are untouched — they are `withAdminAuth`, whose
+  decision was already behind the seam.
+
+- **`ownership` on `withAuth` / `withAdminAuth` — a route now declares how it
+  decides whose rows it may read** (`RouteOwnership` in `lib/auth/guards.ts`).
+  This is the declarative owner-scope marker #367 asked for, and the half
+  `subjectScope` did not supply: the predicate had one name and one
+  implementation, so owner scoping could not be _inconsistent_, but nothing made
+  forgetting to call it fail. Four ways to satisfy it — `{ decidedBy: 'policy' }`
+  (the handler reads the new `session.subjectFilter`, **and the guard checks that
+  it did**), or `{ decidedBy: 'resource' | 'self' | 'nothing', because }` with a
+  required sentence. A `resource` resolver does not count on its own: `canRead`
+  decided about one row, and says nothing about a list the same handler may also
+  run.
+
+  The check is silent on a response that carried no rows, so an early
+  `return createRateLimitResponse(...)` — the shape 38 guarded routes here open
+  with — is safe. A streamed body is the shape it gets wrong: read the filter
+  before handing back the stream.
+
+  **The obligation only exists when the caller is actually narrowed.** Each guard
+  asks `subjectScope(principal)` when the answer can be used; `{}` means this caller may see
+  every subject, so there is nothing to forget. That runtime fact is the only
+  thing separating a leak from correct behaviour on this axis — in a
+  single-tenant install a route reading every row is right — which is why this is
+  a guard check and not a lint rule or a build-time scan.
+
+  `AuthenticatedSession` gains `subjectFilter`, so a handler never rebuilds a
+  principal to ask for it. On a route that declared `'policy'` it is the policy's
+  answer for this caller; on one that did not, reading it logs and yields
+  `{ userId }` — the narrowest value, never `{}`.
+
+  **Breaking for forks, in their test suite.** All 23 of Sunrise's own `withAuth`
+  handlers now declare one — 22 `'self'` or `'nothing'` with a reason, and
+  `GET /api/v1/users/[id]` `'resource'` — because a member is narrowed to their
+  own rows under the default policy. The `withAdminAuth` handlers declare
+  nothing, because a platform admin is unrestricted — except the nine
+  experiments handlers, which declare `'self'` because they scope themselves by
+  hand rather than by policy (see the experiments entry under **Changed**). A fork's route tests will fail until they declare one — that is
+  the signal, and the error message names the fix. Only the test environment
+  refuses; development and production log once per route. That reversal is
+  deliberate: the documented one-line `canAdminister` override leaves the default
+  `subjectScope`, so an org admin is narrowed and all 262 admin routes owe a
+  declaration at the same moment — a refusing dev server would mean an admin
+  console that does not start, for following the recipe. `OWNERSHIP_GAP_ACTION`
+  is a constant a fork can harden to refuse everywhere.
+
+  It cannot see past the route: a handler declaring `'nothing'` that calls a
+  library function reading the whole table is honest and still leaky. Closing
+  that needs a control at the query, which is the tenancy chokepoint in
+  `lib/db/client.ts`.
+
+- `registerProviderEligibility(resolver)` in
+  `lib/orchestration/llm/provider-eligibility.ts`, registered from the new
+  fork-owned `lib/app/llm-providers.ts` — constrains which providers Sunrise may
+  choose on a caller's behalf. Today it silently attaches up to three other
+  configured providers as automatic fallbacks whenever an agent has no explicit
+  list, and picks the primary itself whenever an agent leaves that field blank;
+  on a shared install either can send an org's prompts to a provider it never
+  approved. It is listed among
+  [`VERSIONING.md`](./VERSIONING.md#covered)'s named seams, so it sits inside the
+  version contract: that file states the list *is* the public surface, and a seam
+  absent from it is owed no breaking-change announcement.
+
+  The rule is consulted at two chokepoints: `resolveEligibleProviders` — the
+  agent-binding resolver AND the agent form's own preview, so the form cannot
+  show an operator a provider the rule forbids while the runtime uses a
+  different one — and `isProviderEligible`, its single-candidate form, at the
+  five paths that resolve a provider without ever reaching the resolver. It
+  wires itself lazily on first use rather than as a consumer's import side
+  effect, so which module reached it first cannot change whether the rule
+  applies. `.context/orchestration/llm-providers.md` carries the per-path
+  coverage table, which names the covered paths and the deliberately-uncovered
+  ones. The table is hand-derived and was short on all three occasions it was
+  checked, so **do not read the seam, or that table, as a process-wide
+  boundary.** The same file documents the Proxy every manager-built provider
+  passes through, the two routes that bypass the provider manager entirely,
+  and the limit on the whole guarantee — it binds Sunrise core, not fork code.
+  - **Covers** the auto-picked primary and both fallback lists (the agent's own
+    and the automatic fill), at **both** of the resolver's return paths — a
+    fully-configured agent exits early and never reaches the candidates block,
+    so filtering only the latter would leave the majority of agents
+    unconstrained — plus the five paths that never reach the resolver: a
+    workflow step with no `modelOverride`, knowledge keyword enrichment, a
+    retroactive review whose model came from neither a request override nor
+    `EVALUATION_JUDGE_MODEL`, audio transcription's matrix fallback, and the
+    knowledge embedder's fallback chain. The first three resolve the `chat`
+    task default and inherit whatever provider that model names; the fourth
+    walks the audio matrix in order and would otherwise send a caller's voice
+    recording to whichever row sorts first; the fifth walks a preference chain
+    and would otherwise send an org's document text and every search query to
+    whichever arm answered first.
+  - **Does not cover, by design**, an explicit `agent.provider`, an explicit
+    step or review `modelOverride`, an operator's pinned audio default, or the
+    `EVALUATION_DEFAULT_*` / `EVALUATION_JUDGE_MODEL` environment variables.
+    Each is an operator's recorded decision, and rerouting one would make a
+    request answer from a provider its own configuration does not name. Enforce
+    those at write time — do not offer a provider the org has not approved.
+  - `ctx.source` is `'primary' | 'system' | 'explicit'`, so a rule can be
+    stricter about what nobody asked for than about what an operator wrote down.
+    The four non-resolver paths reuse `'primary'` rather than adding a fourth
+    value: an unanswered source fails open, so a new one would mean every rule
+    already written silently did not cover the paths it was added for.
+    `ctx.task` separates them — audio arrives as `'audio'`, the rest as
+    `'chat'`. A rule cannot widen or reorder the candidate set.
+  - **Fail-closed, in each path's own vocabulary.** A rule that throws, or
+    permits nothing, denies every candidate — a restriction that cannot be
+    evaluated must not be read as permission. The resolver raises the new
+    `NoEligibleProviderError` (`code: no_eligible_provider`), deliberately
+    distinct from `NoProviderConfiguredError`: "configured but not permitted"
+    and "nothing is set up" are different fixes in different places. A workflow
+    step raises a **non-retriable** `ExecutorError` with code
+    `provider_not_permitted`, so its `errorStrategy` decides routing and a
+    `retry` does not spend its budget re-asking a deterministic question.
+    Keyword enrichment raises the new `ProviderNotPermittedError` before a
+    single chunk is read, and `POST …/enrich-keywords` answers **403** with code
+    `provider_not_permitted`; `POST …/executions/:id/review` answers the same
+    403 before the judge runs. Audio is the exception, deliberately:
+    `tryAudioRow` returns `null` for a barred row exactly as it already does for
+    an open breaker or a missing `transcribe()`, so the loop tries the next
+    matrix row, and only an entirely unpermitted matrix leaves
+    `getAudioProvider()` null — which every caller already reports as
+    speech-to-text unavailable. In every case the refusal happens before the
+    provider is constructed, so nothing left the deployment. An agent that names
+    its provider keeps working and loses only its fallbacks.
+  - **With nothing registered it returns its input unchanged**, so single-tenant
+    behaviour is byte-identical and there is no dormant second code path.
+
+- `AiCostLog.userId` — a nullable `User` foreign key (`onDelete: SetNull`,
+  indexed) so cost attribution survives the agent, the conversation and the user
+  it was recorded against. Threaded from every `logCost` call site that has a
+  session user **on the request paths**: chat turns and their rolling
+  summaries, per-message and knowledge-search embeddings (including the MCP
+  knowledge resource, which attributes to the API key's owner as its tool calls
+  already did), capability dispatches, workflow steps, evaluation runs and the
+  admin routes. **Document ingestion is a deliberate exception**, on the
+  same line the export manifest draws between a subject's own data and org
+  config they authored: a knowledge document is org config, so an admin
+  uploading a corpus is doing the organisation's work rather than incurring
+  personal usage. Attributing it would put org-wide corpus spend inside one
+  person's subject export. The rule is *attribute to whoever asked for the
+  work*, not *whenever a `User` id is in scope*. `EmbeddingAttribution`
+  (`lib/orchestration/knowledge/embedder.ts`) gains `userId` for the same
+  reason its other three keys exist — the embedding a chat turn causes is that
+  turn's spend, and attributing the chat row while leaving the embedding row
+  unattributed would split one turn's cost across two owners. **NULL is a correct
+  value**, not a backfill gap — knowledge ingestion, keyword enrichment,
+  scheduled and trigger-driven runs, and embed-widget traffic have no `User`
+  behind them, as do all rows written before this column. A data subject's
+  export now includes their own usage rows: `AiCostLog` moves out of
+  `EXCLUDED_SOURCES` (whose stated reason, "it carries no user link", this
+  change falsified) into `SUBJECT_DATA_SOURCES` with disposition `export`.
+- `isEmbedUserId()` and `EMBED_USER_ID_PREFIX` in `lib/embed/auth.ts` — the
+  predicate for "this id is a synthetic embed visitor, not a `User` row".
+  Applied to the cost-attribution paths, where an embed visitor id would raise
+  P2003 and — because `logCost` swallows write failures — silently discard the
+  cost row. Mirrors `isWorkflowAgentId`, which exists for the identical reason
+  on `agentId`. Two caveats worth stating plainly: the failure is not currently
+  reachable (an embed turn already fails earlier, at conversation-create, for
+  the same reason — #705), so the guard's value is that the loss cannot appear
+  unnoticed when #705 is fixed; and other `user`-FK writers reached from a
+  caller id (`AiUserMemory`, `AiWorkflowExecution` via `run-workflow`) are
+  deliberately not guarded — they fail loudly, and how a visitor should behave
+  there belongs to #705.
+
+- `registerRateLimitKeyResolver(key, resolver)` in `lib/security/rate-limit-policy.ts`
+  opens the rate-limit **key** space to forks the way `registerRateLimitTier` opens
+  the tier space: a fork can bucket requests by anything it can derive from the
+  request (an org, a workspace, a device id) instead of only the four built-in
+  strategies. `RateLimitRule.key` widens to `RateLimitKey | (string & {})` to
+  match; a rule naming a custom key with no registered resolver throws at
+  registration, and built-in strategies cannot be overridden. This closes the
+  "a registry seam is only as open as its narrowest type" gap the multi-tenancy
+  research called out — per-org quotas become expressible without editing
+  `lib/security/`. `getClientIP()` now accepts anything headers-bearing
+  (`{ headers: Headers }`, so plain `Request` too), so a resolver can reach the
+  **validated** client IP rather than parsing `x-forwarded-for` itself. Note
+  this is not a licence to bucket on unverified input: a resolver's identifier
+  must derive from something the caller cannot freely choose, because
+  compositing with the IP bounds who *shares* a bucket, not how many buckets one
+  caller can *mint*.
+- `rlsEnabled(table, { requireForced? })` and `policyExists(table, policy)` probe
+  factories in `lib/db/drift-probes.ts` (the drift-probe registry's primitives).
+  A fork running the multi-tenancy retrofit can now assert its Row-Level-Security
+  posture per table as registry one-liners instead of hand-rolled `pg_policies`
+  catalog SQL. `rlsEnabled` requires `FORCE ROW LEVEL SECURITY` by default,
+  because an unforced table fails open for its owner — waive it per table with
+  `{ requireForced: false }`.
+
+- `resolveEmbeddingAvailability()` and the `EmbeddingAvailability` type exported
+  from `lib/orchestration/knowledge/embedder.ts` — answers "can this install
+  embed right now, and if not why?" by running the resolver rather than by
+  counting provider rows. Those were the same question until the embedding chain
+  started consulting the eligibility rule (below).
+
+  `GET /api/v1/admin/orchestration/knowledge/embedding-status` gains a
+  **`providerState`** field carrying one of `'ok'`, `'none_configured'`,
+  `'none_permitted'` or `'unknown'`. `hasActiveProvider` keeps its name and
+  still gates the "Generate Embeddings" affordance, so existing consumers keep
+  working — but its **meaning has changed**: it previously meant "an active
+  provider row exists, or `OPENAI_API_KEY` is set", which on a fork whose rule
+  refuses every arm reported `true` while embedding could not run.
+
+  A boolean alone is not enough, which is why `providerState` exists. The admin
+  banner picks its remedy from it, and "nothing is set up" and "your policy
+  refuses the providers you have" need opposite remedies — telling the second
+  operator to "add an embedding provider" sends them to add rows that are
+  already there, the precise mistake `NoEligibleProviderError`'s docstring
+  exists to prevent. `'unknown'` covers a lookup that failed rather than a
+  verdict; the endpoint still returns the chunk counts in that case, because
+  500ing loses them and the client renders the same misleading banner anyway.
+
+
+- `UNCONFIGURED_OPENAI_SLUG` (`'env:openai'`) exported from
+  `lib/orchestration/knowledge/embedder.ts`. The embedder's last fallback arm
+  reaches `api.openai.com` off a bare `OPENAI_API_KEY` with no
+  `AiProviderConfig` row behind it — so until now it had no name, and a
+  provider with no name cannot be permitted or denied by a rule that works on
+  names. The escape hatch stays (it is what makes knowledge ingestion work on a
+  fresh install); it is no longer anonymous. The colon guarantees no collision
+  with a real slug, which `slugSchema` restricts to
+  `^[a-z0-9]+(?:-[a-z0-9]+)*$`.
+
+### Changed
+
+- **The five analytics query functions take the guard's session, and the
+  analytics routes now follow the authorization policy on threads nobody
+  owns.** `getPopularTopics`, `getUnansweredQuestions`, `getEngagementMetrics`,
+  `getContentGaps` and `getFeedbackSummary` (`@/lib/orchestration/analytics`)
+  each take `(query, session)`; a fork calling them directly adds the argument.
+  Every read they make now carries `deploymentWideConversationWhere(session)`,
+  a new export of `@/lib/orchestration/access/conversation-access` for a
+  reader that aggregates every user's conversations by design and asks the
+  policy only about the ownerless ones: `{}` when `canRead` admits the caller
+  an unattributed conversation read, `{ userId: { not: null } }` when it
+  refuses. On a default install nothing changes — the clause is empty and every
+  `where` is what it was. On a fork whose policy refuses an admin threads nobody
+  owns, inbound threads drop out of every analytics section, and
+  `/analytics/unanswered` stops returning the sender's question verbatim to a
+  caller the conversation routes already 404. The service leaves the
+  ownerless-surface roster (t-694). It does **not** take the per-caller
+  `conversationVisibilityWhere`: a member's chat with a public agent is outside
+  that set and inside the aggregate, and narrowing to it would have emptied the
+  dashboard on every install.
+- **`adminCanViewConversation()` returns a discriminated union on `ok`, so a
+  permitted result's `basis` is never `null`.** `AdminCanViewResult` used to be
+  one shape with `basis: AccessBasis | null` for both outcomes; a caller that
+  had already thrown on `!ok` still held a nullable basis, and four routes
+  answered that with `access.basis ?? 'owner'` — which `logConversationAccess`
+  skips, so an unclassifiable read of a stranger's inbound thread would have
+  written **no audit row at all**. The state is unrepresentable in behaviour
+  (the helper classifies the row itself and every permitted branch names its
+  basis), so the two-state type was the defect. Narrowing on `ok` now gives
+  `basis: AccessBasis`; the six evaluation-dataset handlers that wrote
+  `datasetAccessBasis(...) ?? 'orphan'` narrow a null to a 404 instead, as the
+  detail route's `loadDataset` always has — and so does `POST
+  /evaluations/datasets/:id/claim`, which answered a null with `409 Dataset
+  already has an owner`, confirming to the caller that a row they should never
+  have reached exists. **No behaviour moves on a default
+  install** — the null arm is unreachable through today's routes — so this
+  changes what _would_ be recorded once the ownership axis widens, not what is
+  recorded now. A fork reading the result: property access is unchanged and a
+  `?? 'owner'` after an `ok` check is now merely redundant; a fork
+  _constructing_ one as `{ ok: true, basis: null }` no longer compiles, which
+  is the point. The coupling — widen a visibility clause, widen its basis type
+  in the same change — is written on `DatasetAccessBasis` and
+  `ExperimentAccessBasis` (t-693).
+
+- **`POST /api/v1/admin/orchestration/conversations/clear` with `allUsers` now
+  asks the authorization policy about the threads nobody owns, as the targeted
+  `DELETE /conversations/:id` always has.** Inbound SMS / email / Slack threads
+  carry `userId = null` (#502). The targeted delete gated one of them on
+  `adminCanViewConversation`, which reads the policy's `'unattributed'` answer;
+  the bulk route consulted nothing — so a fork narrowing `canRead` refused an
+  admin a single inbound thread and let them destroy every inbound thread in the
+  deployment through the blunt instrument. The bulk route now reads the same
+  answer (`session.unattributedReads.conversation`) and, for a caller the policy
+  refuses, adds `userId: { not: null }` — ownerless rows are in their set
+  exactly when they are in their list. **Only that arm is policy-gated**: other
+  users' owned rows stay in `allUsers` whatever the policy says, as they always
+  have, because the bulk route is wider than the per-id rule by design and
+  `subjectScope` — not this seam — is what would narrow it. The route log and the
+  `conversation.bulk_clear` audit row both carry `ownerlessExcluded: true`, and
+  the response shape is unchanged. **A default
+  install is unchanged**: the built-in policy admits a platform admin, so
+  `allUsers` still clears inbound threads, and the route's existing tests prove
+  it by still passing. Pinned against both routes, in both directions, in
+  `tests/unit/app/api/v1/admin/orchestration/conversations/policy-narrowing.test.ts`
+  (t-691).
+
+- **One mechanism for "nobody owns this", and an admin reaching an experiment
+  that is not their own now leaves a trace.** Four models can hold a row nobody
+  owns, and until now they answered the question through two mechanisms: the
+  `lib/orchestration/access/` family returned a named **basis**, while
+  `lib/orchestration/experiments/visible-scope.ts` returned a **boolean**. That
+  difference was not cosmetic — a handler holding only a boolean cannot say
+  whether the row it just touched was its own, which is why experiments logged
+  nothing when an admin reached a de-attributed one while datasets and
+  conversations did.
+
+  `visible-scope.ts` is gone. `lib/orchestration/access/experiment-access.ts`
+  takes its place, and the directory is now the roster: one module per model, all
+  four returning a basis and a `where` fragment, all four reading
+  `session.unattributedReads`. `.context/auth/authorization.md` carries the table
+  — model, owner column, helper, bases — because the absence of it is how the
+  second mechanism came to be built without anyone noticing the first.
+
+  **All four readers are synchronous.** `datasetVisibilityWhere(session)` and the
+  experiments helper used to `await mayReadUnattributed`, asking the policy a
+  second time for an answer the guard had already resolved; 20 `await`s at call
+  sites across 16 route files go with them. Neither module declares a
+  `*_RESOURCE_KIND` constant any more, and that is a fix rather than a
+  deduplication: the record's keys *are* `UNATTRIBUTED_READ_KINDS`, so
+  `session.unattributedReads.dataset` cannot drift out of the list without
+  failing to compile, where an annotated constant could drift to a **sibling's**
+  value and still build — `'dataset'` and `'experiment'` are both members of the
+  union. `mayReadUnattributed` stays for a fork with an ownerless model of its
+  own.
+
+  **`'system'` and `'orphan'` stay distinct, and the schema is why.**
+  `AiConversation.userId` and `AiWorkflowExecution.userId` are
+  `onDelete: Cascade`, so a null there can only mean the row was *born*
+  ownerless; `AiDataset.userId` and `AiExperiment.createdBy` are `SetNull`, so a
+  null there can only mean an erasure *detached* it. One name for both would
+  assert something the database forbids, and would put a stranger's live
+  correspondence and a de-attributed test fixture under the same audit weight.
+  This converged the mechanism, deliberately not the vocabulary.
+
+  **Operators will see audit rows that were not there before.** Seven of the
+  eight `experiment.*` actions now carry `metadata.accessBasis`, and three are
+  new: `experiment.view` and `experiment.compare_view` (written only when the row
+  is an orphan) and `experiment.verdict_compute` (the one mutation in the family
+  that recorded nothing at all). The experiment list writes no row, as the
+  dataset list does not.
+
+  **The two `SetNull` models differ on writes, deliberately.** Datasets skip
+  `'owner'` everywhere, so an admin renaming their own dataset leaves no record.
+  Experiments skip it on **reads only**: every experiment mutation already wrote
+  a config-change row for every caller before the basis existed, and narrowing
+  that to match datasets would have deleted rows an operator can read today.
+  Which rule applies is a **required field at each call site**
+  (`ExperimentAuditRule`), with no default, so a new experiment route cannot
+  inherit the decision by accident.
+
+  **Breaking for a fork** in three ways — two that fail the build, one that only
+  lint catches.
+  `datasetVisibilityWhere(session)` returns a `where` fragment rather than a
+  promise — drop the `await`; a fork that keeps it gets a passing type-check and
+  a working query, because `await` on a non-promise is legal, so lint
+  (`@typescript-eslint/await-thenable`) rather than `tsc` is what flags the
+  leftovers. `DATASET_RESOURCE_KIND` and `EXPERIMENT_RESOURCE_KIND` are removed —
+  read `session.unattributedReads.<kind>` instead of passing a string. And
+  `@/lib/orchestration/experiments/visible-scope` no longer resolves:
+  `visibleExperimentClause` is `experimentVisibilityWhere` and `isUnowned(row)`
+  is `experimentAccessBasis(row, session.user.id) === 'orphan'`, both from
+  `@/lib/orchestration/access/experiment-access`.
+
+  **Four refusals were tightened along the way, none of them reachable through
+  today's routes.** `POST /experiments/:id/verdicts` and `GET
+  /experiments/:id/compare` gained the defence-in-depth check on their bound
+  dataset that `POST /experiments/:id/run` has carried since t-678 — the dataset
+  must be one the caller may read, and all three now answer a 404 naming the
+  **dataset** rather than claiming the experiment does not exist. `run`'s status
+  write is pinned to the ownership its read saw, matching PATCH, DELETE and
+  verdicts, so an orphan claimed mid-run can no longer be flipped to `running` by
+  the admin who no longer holds it. And `POST /experiments/:id/claim` answers a
+  row it cannot see with 404 rather than a 409 that would confirm the row exists.
+
+  Reachability is the same for all four: `POST /experiments` is the only path
+  that binds a dataset and it enforces `datasetVisibilityWhere`, and the update
+  schema refuses `datasetId`, so a fork that has **added a second
+  experiment-create path** is the one that will notice these.
+
+  A default install is unchanged across all four models. This moved no
+  visibility, only the machinery under it — plus the audit rows above, which are
+  additive, and the four refusals above, which are unreachable without a fork's
+  own second create path.
+
+- **A fork can finally narrow who reads a stranger's inbound messages.** When a
+  member of the public texts, emails or Slacks an agent, the thread is stored
+  owned by nobody (`AiConversation.userId = null`, #502) — the correspondence is
+  theirs, not the operator's who configured the channel. To keep those threads
+  reachable, `lib/orchestration/access/conversation-access.ts` hard-coded the
+  answer: every admin read every inbound thread. Correct for one company running
+  its own install; indefensible under a customer tier, where one tenant's staff
+  would read another tenant's customers' messages. It now reads
+  `session.unattributedReads.conversation`, so a policy refusing `'unattributed'`
+  reads closes the conversations list, semantic search, the detail / messages /
+  provenance routes, the observability dashboard's conversation counts, and the
+  `conversation_turn` arm of the evaluation-dataset capture route.
+
+  Of the four ownerless-capable models, this is the one holding a living third
+  party's data — someone with no account here and no way to see who read it —
+  which is why it was worth doing even though the seam it plugs into is younger
+  than the problem.
+
+  **`conversationVisibilityWhere(session)` is new**, and is the reason this was
+  more than a signature change: the module had a yes/no face and no set face, so
+  `conversations/route.ts` spelled the three arms out again and the observability
+  dashboard spelled two of them out a third time. Both now call the fragment.
+  It takes `{ excludeShared }` for a caller counting its *own* conversations,
+  where a thread merely shared with the admin would overstate the total; that
+  only ever narrows.
+
+  **Only the ownerless arm asks the policy, and a fork should know it.** Owning a
+  conversation and holding an active share are facts about one caller and one
+  row, not questions about a class of rows — so an admin handed an active share
+  still reads that thread whatever `canRead` says. Widening *that* belongs to the
+  identity work, not here. No policy value can widen the owner or share arms,
+  which is what stops "nobody owns this" being rewritten into "somebody else owns
+  this".
+
+  **Read the next paragraph before you register a narrowing policy.** `canRead`
+  is a read predicate, and `PATCH` / `DELETE /conversations/:id` gate on it —
+  so refusing a caller unattributed reads also refuses them the per-thread
+  **erasure** route for inbound threads. That route matters more than it sounds:
+  the person who sent those messages has no account, so `eraseUser()` cannot
+  reach them and deleting the thread is the only Art. 17 remedy they have. This
+  is settled, not pending: there is deliberately no separate write question for
+  ownerless rows, `POST /conversations/clear` with `allUsers` now reads the same
+  policy answer (see the entry under **Changed**), and **a fork narrowing this arm
+  must keep some principal its own policy admits for ownerless threads** —
+  `checkOwnerlessReachability` (under **Added**) is the test that fails, naming
+  this consequence, when it has not. `lib/auth/orphan-reads.ts` already warned
+  that widening this arm grants more than reading; this is the same coupling
+  seen from the other side, and that file now carries the reasoning for both.
+
+  **Breaking for a fork that calls the helper**, which
+  [`.context/privacy/data-erasure.md`](./.context/privacy/data-erasure.md) tells
+  you to rather than hand-rolling a `userId` comparison:
+  `adminCanViewConversation(id, session)` takes the `AuthenticatedSession` where
+  it took an admin user id. Pass `session`, not `session.user.id`.
+
+  Two things worth knowing about the shape. Semantic search keeps a hand-written
+  SQL predicate — a pgvector distance query is not expressible through Prisma's
+  query builder — so the rule genuinely exists twice; the copies are pinned
+  against each other in `policy-narrowing.test.ts`, including the expiry
+  boundary, where `gt` versus `gte` decides whether a share expiring exactly now
+  appears in a list that its detail route would refuse. The share arm also
+  excludes ownerless rows in both spellings, which is what keeps the set form in
+  step with the yes/no one: that decides an ownerless row on the policy alone and
+  never reaches its share check. And narrowing visibility
+  narrows the audit trail with it, in the safe direction: a thread that is no
+  longer returned is not read, so there is nothing to record. A row returned
+  *without* a log would be the defect, which is why the basis is still derived
+  from the row rather than assumed from the query.
+
+- **A fork can finally narrow who sees workflow runs nobody started.**
+  `lib/orchestration/access/execution-access.ts` decided that question itself:
+  every admin saw every schedule- and inbound-triggered run (`userId = null`,
+  #502). Correct on a single-tenant install and wrong under a customer tier,
+  where one tenant's admin would see another tenant's scheduled runs — and a
+  fork registering a narrowing `canRead` changed nothing, because the helper
+  never asked. It now reads `session.unattributedReads.execution`, so a policy
+  that refuses `'unattributed'` reads closes the executions list, the sidebar
+  status counts, the live-engine dashboard, **the execution counts on** the
+  observability dashboard (its conversation counts are not behind the policy
+  yet), the workflow-execute resume path and the `workflow_execution` arm of the
+  evaluation-dataset capture route, and turns nine of the twelve
+  `/executions/:id` routes into 404s — `rerun` among them, which is narrowed by
+  the `where` fragment rather than by the yes/no helper. Another admin's *own* run stays invisible
+  whatever the policy says: "nobody owns this" is a third case, not a softer
+  spelling of "someone else's".
+
+  **The other three are `approve`, `reject` and `cancel`, and they are
+  deliberately not fully behind the seam.** Each carries a second, independent
+  grant: an admin named as an approver in that run's own trace may act on it even
+  when they cannot otherwise see it (`cancel` only while the run is
+  `paused_for_approval`). That is a per-run nomination the workflow made rather
+  than an answer to the ownerless question, so it is left exactly as it was — the
+  same line `conversation-access.ts` draws around its `'shared'` basis.
+
+  **Know what a narrowing policy costs you before you register one — two
+  operator paths lose their manual controls.** A wedged scheduled run counts as
+  zero on the live-engine Running / Queued / Orphaned cards (the Provider
+  in-flight card is process-wide and unaffected), and `force-fail`, the escape
+  hatch for exactly that situation, is gated solely on `adminCanViewExecution`
+  with no second grant of any kind — so the run cannot be seen, drilled into, or
+  killed **by hand**. And a run paused at an approval gate is absent from the
+  approvals queue, zero in the badge, and 404 on its detail route, though a named
+  approver could still clear it if they learned the id from somewhere. Neither is
+  reachable on a default install.
+
+  **Automatic recovery is unaffected**, which is the difference between an
+  annoyance and an outage: `reapZombieExecutions` (the `zombieReaper` platform
+  job) filters on status and a time cutoff with no `userId` and no policy, so it
+  still force-fails a stuck `running` row after 30 minutes, a `pending` one after
+  an hour, and an abandoned approval after 7 days. What a narrowing fork loses is
+  **operator-initiated** recovery inside those windows, for the callers its
+  policy refuses. Keep a vendor-level operator role your own policy admits so an
+  engineer can act sooner — that is the settled answer for both halves, below.
+
+  **The approver carve-out covers the act and not the discovery, so do not read
+  it as "approvals keep working" for a caller the policy refuses.** The list,
+  detail and live routes have no approver arm — on any install: a delegated
+  approver who is neither the run's owner nor admitted to it has always reached
+  their gate by notification link, as `orchestration-approvals.md` documents.
+  Under a narrowing policy that extends to scheduled runs: absent from the
+  approvals queue, zero in the badge, 404 on the detail route, while the
+  `approve` POST would still succeed for the named approver if they learned the
+  id. **Settled with t-690 rather than fixed: the read routes keep no approver
+  arm, and a fork that narrows `canRead` must admit some principal to ownerless
+  `execution` rows** or its scheduled workflows' gates wait for the 7-day reap.
+  An approver arm on the read side would be a product change for every install
+  (a named approver would see another admin's owned paused run, which they
+  cannot today) and needs the approver set denormalised off the trace JSON; it
+  is captured separately. `checkOwnerlessReachability` (under **Added**) is the
+  test that fails, naming this consequence, when a policy admits nobody.
+
+  **A default install is unchanged** — every system-owned run stays visible to a
+  platform admin, and the helper's existing tests prove it by still passing.
+
+  **Breaking for a fork that calls these helpers**, which
+  [`.context/privacy/data-erasure.md`](./.context/privacy/data-erasure.md) tells
+  you to rather than hand-rolling a `userId` comparison.
+  `executionAccessBasis(row, session)`, `adminCanViewExecution(row, session)` and
+  `executionVisibilityWhere(session)` take the `AuthenticatedSession` where they
+  took an admin user id; pass `session`, not `session.user.id`. They stay
+  **synchronous** — that is what t-684's eager resolution bought, and why this
+  was a signature change rather than a restructuring of every call site that
+  builds a `where` fragment inline. `getLiveEngineSnapshot()`'s option moves the
+  same way: `{ session }`, not `{ userId }`.
+
+  Two smaller things ride along. `executionAccessBasis` re-asks the ownerless
+  question rather than classifying an already-admitted row, unlike its dataset
+  sibling — the detail routes fetch by id and then ask, so without that a
+  narrowing fork would get a filtered list whose rows still opened. And the
+  visibility fragment is now `AND`-composed at every call site, including the
+  rerun route and the live-engine queries that spread it: the widened fragment's
+  key is `OR`, and a boundary sitting at the same level as the next filter
+  someone adds is one edit from being flattened.
+
+- **The coverage-exclusion drift guard resolves `vitest.config.ts` instead of
+  parsing it.** `tests/unit/scripts/ci/missing-tests.test.ts` used to extract
+  single-quoted literals from the config's text, which cannot see a spread — the
+  fork tail above would have been invisible to it, leaving the guard green while
+  it silently stopped covering half the list, the same shape as #687. It imports
+  the config and reads the evaluated array now, and throws rather than reporting
+  an empty list if that read ever returns a non-array. Forks that copied the
+  parse into a check of their own should do the same.
+- **`validateAlwaysRun` accepts every test suffix `vitest.config.ts` collects**,
+  not `.test.ts` alone. It runs inside the runner's self-test, so a rejected
+  entry stopped the whole scoped gate rather than skipping one test — a fork
+  declaring a `.spec.ts` whole-tree test would have met that. `tests/a.ts` is
+  still rejected.
+
+- **"May this admin see rows nobody owns?" is now asked once per request, by the
+  guard, and the answer rides on the session.** Four core models can hold a row
+  with a null owner — `AiConversation` and `AiWorkflowExecution` born that way
+  (inbound threads, scheduled runs), `AiDataset` and `AiExperiment` left that way
+  by an Art. 17 erasure — and an owner clause keyed on the caller answers "not
+  yours" for all of them. `AuthenticatedSession` gains `unattributedReads`, a
+  total record `{ conversation, dataset, execution, experiment }` of booleans,
+  each one `canRead`'s `'unattributed'` arm answered for that kind before the
+  handler ran. Read it, do not call for it:
+
+  ```ts
+  const where = session.unattributedReads.experiment
+    ? { OR: [{ createdBy: session.user.id }, { createdBy: null }] }
+    : { createdBy: session.user.id };
+  ```
+
+  **No behaviour moved when this landed**, and a default install served exactly
+  what it served before at every stage. All four readers were converged onto the
+  record later in this same release — executions, then conversations, then
+  datasets and experiments together (the three entries at the top of
+  **Changed**, above). This paragraph used to say the other three still asked on
+  demand; they do not, and `experiments/visible-scope.ts` no longer exists.
+
+  **The cost is eager and a fork inherits it.** The policy is asked once per kind
+  on **every** guarded request, `withAuth` included, and on requests touching
+  none of these models. On a default install that is free — the built-in rule
+  does no I/O. **A fork whose `canRead` hits a database will want to cache — per
+  request, not per process.** The policy object lives for the life of the
+  process, so a `Map` keyed on `userId` hung off it serves a demoted admin their
+  old answer until the next deploy. Eager was chosen over asking on demand so the readers stay
+  synchronous: they compose `where` fragments inline inside larger objects, where
+  an `await` has nowhere clean to go, and making them async would put one at
+  every call site for a question most requests never ask.
+
+  New in `lib/auth/orphan-reads.ts`: `UNATTRIBUTED_READ_KINDS` (the canonical
+  spelling of each kind — a second spelling elsewhere splits the policy's answer
+  in two silently), `resolveUnattributedReads()`, and the `UnattributedReads` /
+  `UnattributedReadKind` types. `mayReadUnattributed(principal, kind)` stays, and
+  is what a fork with an ownerless model of its own calls: its `kind` is open,
+  while the precomputed record is closed over the core kinds the guards can
+  enumerate.
+
+  **Breaking for a fork that builds a `ReadTarget` by hand.** The
+  `'unattributed'` arm gains a required
+  `asking: 'this-row' | 'any-row-of-this-kind'` (`UnattributedQuestion`), so
+  `{ kind: 'unattributed', resource }` no longer type-checks — use
+  `readTargetFor(resource)` or the new `readUnattributedKind(kind)`, which is
+  what the docblock has always said. A fork's `canRead` still **compiles**
+  unchanged: it switches on `kind`, the arm is still called `'unattributed'`, and
+  a policy answering both questions alike can ignore the new field. **What it
+  receives did change**, so read this before assuming the upgrade is free: that
+  arm now arrives on *every* guarded request, four times, carrying a resource
+  with only a `kind` — no `id`, no `orgId`. A policy that reaches into the
+  resource was written when the arm only ever came from a resolver, and now sees
+  those fields absent. **Two outcomes, and only one of them is safe.** A policy
+  that *dereferences* — `findUnique({ where: { id: target.resource.id } })` —
+  throws, and a throwing policy is answered by safe mode, which denies. A policy
+  that *compares* — `target.resource.orgId === scope.org` — evaluates
+  `undefined === undefined` to **`true`** and grants ownerless reads it was
+  written to refuse. That is a widening, on every guarded request, from an
+  upgrade that compiles clean.
+
+  **So branch on `asking`**: answer `'any-row-of-this-kind'` from the principal
+  alone, and keep the resource-reading logic on the `'this-row'` path where a
+  resolver actually populated it. That is what the field is for. That is why this extends
+  the existing arm rather than adding a fourth `ReadTarget` shape, which would
+  have broken every exhaustive `switch` including the one
+  `lib/app/authorization.ts` ships as its worked example.
+
+- **Evaluation datasets orphaned by an erasure are reachable again, and every
+  dataset read now goes through one definition.** `AiDataset.userId` is
+  `SetNull`, so erasing an admin under Art. 17 keeps their datasets and drops
+  the link — and because every dataset route scoped to the caller, those rows
+  were invisible to everyone, deletable by nobody and pruned by nothing. The
+  visible set is now "mine, plus nobody's", with the second half gated on
+  `canRead`'s `'unattributed'` arm so a fork narrows it by registering a policy
+  rather than by editing a route. Another admin's *owned* dataset is still a
+  404, unchanged.
+
+  New: `lib/orchestration/access/dataset-access.ts` — `datasetVisibilityWhere()`,
+  `datasetAccessBasis()`, `adminCanViewDataset()` and `logDatasetAccess()`,
+  filed beside the `conversation-access` and `execution-access` helpers it
+  mirrors. Every `AiDataset` read behind an admin **route** now composes that
+  fragment, including the three outside the datasets directory — run create, run
+  estimate and experiment create — because a dataset you can see but cannot run
+  against is the incoherence this family already had once. Two library readers
+  stay unscoped by design and say so at the query
+  (`evaluations/datasets/append-cases.ts`, `cost-estimation/evaluation-cost.ts`);
+  both are reachable only through routes that resolve the dataset first, and the
+  write in the former is pinned to the owner its caller observed. The subject
+  export (`lib/privacy/export-sources.ts`) reads by subject and is unrelated.
+
+  New route `POST /api/v1/admin/orchestration/evaluations/datasets/:id/claim`
+  lets an admin adopt an ownerless dataset. Only an unowned row can be taken:
+  another admin's is a 404 indistinguishable from a missing one, and one you
+  already own is a 409.
+
+  **Non-owner access is audited.** Reading, updating, deleting or claiming an
+  ownerless dataset writes an admin-audit row carrying `accessBasis: 'orphan'`,
+  following the rule `conversation-access.ts` set for `'system'` rows. List
+  pages are deliberately not logged — burying the rows that matter under one
+  entry per page view helps nobody. The basis is `'orphan'` rather than the
+  conversations' `'system'` on purpose: same column state, different story — a
+  `'system'` row was never personal, an `'orphan'` was somebody's until an
+  erasure detached it.
+
+- **An admin no longer sees, edits or deletes another admin's experiments.**
+  `GET /api/v1/admin/orchestration/experiments` and
+  `GET` / `PATCH` / `DELETE .../experiments/:id` read every admin's rows, while
+  `run`, `compare` and `verdicts` on the same model already returned a
+  cross-user 404 — so one admin could open and **delete** an experiment they
+  could not run. All nine handlers in the family — six route files, counting the
+  new `claim` below — are now owner-scoped on `createdBy`, the list's `count`
+  included, and each declares `ownership: { decidedBy: 'self' }` so the posture
+  is readable in the route's own source. Anyone relying on the list being
+  install-wide sees fewer rows after upgrading.
+
+  **A row nobody owns is a third case, and it is handled.** `createdBy` is
+  `SetNull`, so an experiment whose creator was erased under Art. 17 is retained
+  with a null owner. Scoping purely to the caller would have made those
+  unreachable by everyone, so the visible set is "mine, plus nobody's" — the
+  second half gated on `canRead`'s `'unattributed'` arm, which the default policy
+  grants platform staff and a fork narrows by registering a policy rather than by
+  editing a route. These are the first core callers of that arm. A new
+  `POST /api/v1/admin/orchestration/experiments/:id/claim` lets an admin adopt an
+  ownerless experiment so it re-enters the ordinary rules. Only an unowned row can
+  be taken: another admin's is a 404, indistinguishable from one that does not
+  exist, so the route cannot be used to probe for other admins' experiments, and
+  one you already own is a 409. `AiDataset` has the same gap and does **not** get
+  this yet.
+
+  The posture matches `AiDataset`, `AiEvaluationSession` and `AiEvaluationRun` —
+  the models an experiment reads from and writes to, which every route under
+  `orchestration/evaluations` already scopes to their owner — rather than
+  `AiAgent` and `AiWorkflow`, which stay admin-global. `AiExperiment` also gains
+  an `@@index([createdBy, createdAt])` for the newly filtered list, matching the
+  owner-column indexes those sibling models carry. It keeps both branches of the
+  clause off a full table scan; it serves the `createdAt` sort as well only on
+  the narrow one, since the widened `OR createdBy IS NULL` branch plans as a
+  BitmapOr. It is spelled
+  as a `createdBy` clause rather than through `subjectScope`, because the default
+  policy widens that to every subject for a platform admin: routing this family
+  through the seam would have been the admin-global choice, not the owner-scoped
+  one. See `.context/auth/authorization.md`.
+
+- **`hasRole()` and `requireRole()` in `lib/auth/utils.ts` now take `UserRole`
+  rather than `string`.** `hasRole('Admin')` used to compile and silently
+  return false forever; `requireRole('admin')` used to compile and always
+  throw. Both are now type errors. **This can break a fork's build** — a call
+  passing a `string` variable, or a role name this install does not declare,
+  stops type-checking until the value is a member of `USER_ROLES` in the new
+  `lib/auth/roles.ts`. Neither function has a caller in Sunrise itself, so the
+  breakage lands only on forks that adopted them.
+
+  Listed here because it can break a build, not because these helpers are
+  inside the version contract — [`VERSIONING.md`](./VERSIONING.md#covered)'s
+  documented-public-API list names `withAuth()` / `withAdminAuth()` from
+  `lib/auth/guards.ts` and does not name `lib/auth/utils.ts`. The role
+  vocabulary itself is described in `.context/auth/overview.md`; it is
+  deliberately not promoted into the contract here, because org roles arrive
+  with multi-tenancy and that is the point at which the shape of the seam
+  should be decided rather than inherited.
+
+- **The version contract now covers every fork-owned scaffold in `lib/app/`,
+  not just the registry-based ones.** [`VERSIONING.md`](./VERSIONING.md#covered)
+  states that its Covered list _is_ the public surface and that nothing else is
+  covered — and that list named seven of the thirty files in `lib/app/`. So a
+  fork that had filled `brand.ts`, `public-nav.ts`, `emails.ts`, `csp.ts`,
+  `agent-fields.ts` or any of the other twenty-three was owed no
+  breaking-change announcement if we changed them, and had no way to learn that
+  from reading the file (#732).
+
+  All thirty are now named, each with the export a fork fills. **This widens
+  what Sunrise owes you**: a change to any of them is a CHANGELOG entry and, at
+  `1.0`, a MAJOR if it breaks. Widening is deliberate and done now because
+  `VERSIONING.md`'s own asymmetry only runs one way — the list can widen in a
+  MINOR, and can only narrow in a MAJOR.
+
+  The `lib/app/` half of the list is no longer hand-maintained.
+  `tests/unit/versioning-seam-coverage.test.ts` derives it from the directory
+  and fails in both directions — a scaffold the list does not name, and a name
+  with no file behind it. It classifies by **exclusion**, not by an extension
+  allowlist: anything in `lib/app/` that is not a dotfile, a `.d.ts` or a `.md`
+  is a scaffold, and a subdirectory counts as one. An allowlist was the first
+  attempt and it reproduced the defect one item along — it named five
+  extensions, so `lib/app/theme.mts` passed silently, and it read only
+  top-level files, so a nested `lib/app/<name>/server/` seam (the shape the
+  root ESLint config's own error message recommends) was invisible.
+  The seams outside `lib/app/` stay hand-maintained — nothing derives them —
+  and the guard says so rather than implying a completeness it does not have.
+
+  **A fork adding its own scaffold under `lib/app/` — file or directory, any
+  extension — will fail this test until it adds the entry.** That is the guard
+  working: your scaffold is public surface for whoever forks you.
+
+  Three seams **outside** `lib/app/` that were missing are now named: `components/brand/brand-mark.tsx`,
+  `app/brand-theme.css` and `prisma/schema/app.prisma`. All three are
+  documented elsewhere as fork-owned, and all three were absent from the list
+  that calls itself the public surface — so a fork that had filled them could
+  have lost its branding on a merge with nothing owed to it.
+
+- **The in-flight Proxy's method sets are now an exhaustive allowlist, and an
+  unclassified method fails closed.** `withInFlightTracking` in
+  `lib/orchestration/llm/provider-manager.ts` used two `Set`s —
+  `TRACKED_METHODS` and `STREAM_METHODS` — and silently forwarded anything in
+  neither. Adding a method to `LlmProvider` therefore created a vendor-reaching
+  operation that nothing counted, nothing could gate and nothing announced;
+  `transcribeStream` had been in exactly that state since it was added, latent
+  only because no shipped provider implements it.
+
+  They are replaced by `METHOD_DISPOSITION`, a
+  `Record<ProviderMethodName, 'track' | 'trackStream' | 'passthrough'>` whose
+  key type is derived from `LlmProvider` itself. **Adding a method to that
+  interface is now a type error until somebody classifies it** — a build
+  failure at the moment the egress surface widens, rather than a runtime hole
+  found later. `transcribeStream` is classified `trackStream` and is counted.
+  `listModels` / `testConnection` are `passthrough`, which records the decision
+  not to count them rather than leaving it indistinguishable from an oversight.
+
+  At runtime, a function property that is neither classified nor host machinery
+  (`constructor` and `Object.prototype` members are forwarded, since test
+  runners and `util.inspect` reach for them) throws `ProviderError`
+  `unclassified_provider_method` **on access**, not on call — feature detection
+  is how such a method gets invoked, so it fails there too.
+
+  **Fork impact:** if you have added a method to `LlmProvider`, `tsc` will fail
+  until you classify it. If you have a vendor-reaching method on your own
+  provider class that is *not* on the contract, a manager-built instance will
+  now refuse it — put it on `LlmProvider` and classify it.
+
+- **`registerProvider()` and `registerProviderInstance()` wrap before caching.**
+  Both wrote bare instances straight into the instance cache, so "everything
+  `getProvider` returns has been through the Proxy" was true of what the manager
+  built and false of what anyone else injected, with no way to tell the two
+  apart at the read. Wrapping at the registrars is also the only fix that
+  scales: a check at `getProvider` would have to decide whether an arbitrary
+  object is already wrapped, which a `Proxy` deliberately makes unanswerable.
+
+  **Fork impact:** `getProvider(name)` no longer returns the object you
+  injected — it returns a `Proxy` over it. Calls, spies and `instanceof` all
+  still work; object identity (`expect(retrieved).toBe(fake)`) does not. Assert
+  on behaviour.
+
+- **The knowledge embedder's fallback chain is now filtered by the
+  provider-eligibility seam.** `resolveProvider` in
+  `lib/orchestration/knowledge/embedder.ts` walked Voyage → local →
+  openai-compatible → bare `OPENAI_API_KEY` without consulting any rule, so an
+  org's document text and every search query left through the one path the seam
+  could not see. Each arm now calls `isProviderEligible(slug, { task:
+  'embeddings', source: 'primary', primarySlug: null })` — reusing `'primary'`
+  rather than a new `source`, so a rule already written in a fork covers this
+  path for free. A refused arm is skipped and the chain tries the next, the same
+  shape as the audio matrix loop. The operator's `activeEmbeddingModelId` pin is
+  **not** filtered, on the same line as an explicit `agent.provider`.
+
+  Each provider *type* in the chain is walked in full rather than sampled: a
+  refusal skips the row, not the category, so an org that approves `voyage-eu`
+  and not `voyage-us` still gets Voyage when both rows are active and the
+  refused one sorts first. Shape is checked before policy, so a row that is
+  unusable anyway (a local provider with no `baseUrl`) is not recorded as a
+  refusal and does not steer the terminal error below.
+
+  Refusing every arm now fails with "No permitted embedding provider", worded
+  apart from the pre-existing "No embedding provider configured" — the first
+  sends an operator to whoever wrote the rule, the second to the setup wizard,
+  and one message could not do both. The arm that wins is logged at `info`,
+  because the operator pin is not sticky: five checks drop it through to this
+  chain, and the move was previously invisible.
+
+  This does **not** put the embedder inside the provider-manager waist. It still
+  runs its own `fetch` and is not counted by the Proxy, because
+  `LlmProvider.embed` takes one string and no model or dimension — batching,
+  `dimensions`/`output_dimension` and per-call model selection would have to go
+  onto that published contract first. That port belongs with the call-time gate;
+  the policy half does not need it.
+
+  **Fork impact:** a `registerProviderEligibility` rule that denies everything
+  for `source: 'primary'` will now fail knowledge ingestion and search rather
+  than silently embedding at whichever provider sorted first. That is the
+  intended fail-closed behaviour, but it is a behaviour change for any fork that
+  had already registered a restrictive rule. **Read `ctx.task` before assuming
+  your rule covers this correctly** — embedding arrives as `'embeddings'`, and a
+  rule shaped `ctx.task === 'audio' ? audioRule : chatRule` will run its chat
+  allowlist against the embedding chain, refusing an embeddings-only provider
+  like Voyage that no chat allowlist would contain. `lib/app/llm-providers.ts`
+  now says so at the point a fork writes the rule.
+
+- **`POST /api/v1/admin/orchestration/agents` now requires `provider`.** It used
+  to default to `'anthropic'` (`createAgentObjectSchema` in
+  `lib/validations/orchestration.ts`), and that default was the same fail-open
+  the agent form carried, one layer down and reachable by anything that is not
+  the form: the value lands in `AiAgent.provider` as an **explicit** operator
+  choice, and `resolveAgentProviderAndModel` never re-filters an explicit
+  provider. On an install whose `registerProviderEligibility` rule forbids
+  anthropic, a scripted or CLI-authored create — the path the admin UI's own
+  `<CliAuthoringHint resource="agents" />` sends operators down — therefore
+  pinned a forbidden provider permanently and silently. The design record's Q15
+  row names this half explicitly: write-time validation must also cover "writes
+  that bypass the form". `model` never had a default, so requiring `provider`
+  also removes an asymmetry that was itself the tell.
+
+  **Fork impact:** a create payload that omitted `provider` now gets a 400 with
+  `Provider is required` instead of an agent silently bound to anthropic. Add
+  the field to any script or seed that relied on the default. `PATCH` is
+  unaffected — `updateAgentObjectSchema.provider` is a separate, optional field
+  and stays optional, so partial updates that don't mention a provider still
+  leave it alone.
+
+- **`AiAgent.provider` lost its column default** — migration
+  `20260905093659_drop_ai_agent_provider_default`, a single
+  `ALTER COLUMN … DROP DEFAULT`. No backfill, no data movement, no lock of
+  consequence; every existing row already holds a real value. This was the same
+  fail-open a third layer down, and dropping it is what closes the class: the
+  form's `defaultValues`, `createAgentObjectSchema` and the column were three
+  independent places able to supply a provider nobody stated.
+
+  The point of doing it in the schema rather than only in Zod is that
+  `provider` is now **required in `AiAgentCreateInput`**, so a
+  `prisma.aiAgent.create()` that omits it is a compile error rather than a
+  silent substitution — the guard is the type-checker, not a test that has to
+  remember to look. That immediately found two callers a manual sweep had
+  reported as clean (`scripts/smoke/erasure.ts`, `scripts/smoke/export.ts`),
+  both of which set `model: ''` while silently taking a pinned
+  `provider: 'anthropic'`; both now state `provider: ''` to match.
+
+  The empty string stays meaningful **in the database**: it is the
+  dynamic-resolution contract, and on a stock install every one of the 15 seeded
+  agents uses it. It is *not* accepted by the HTTP layer — `createAgentObjectSchema`,
+  `updateAgentObjectSchema` and `bundledAgentSchema` all require non-empty when
+  the field is present. That is deliberate rather than an oversight: the way to
+  leave an agent resolving dynamically over HTTP is to **omit** the field, not to
+  send `''`. Seeds, which write through Prisma directly, are what create such
+  agents in the first place. (One consequence worth knowing, corrected after
+  release: an **agent export** bundle containing a system-seeded agent cannot be
+  re-imported, because `bundledAgentSchema` requires the value such a row does
+  not have — filed as #721. An earlier version of this bullet said *backup*
+  bundle, which is wrong: `backup/exporter.ts` filters `isSystem: false` and
+  `backup/schema.ts` accepts an empty provider, so backup/restore round-trips
+  correctly.)
+
+  **Fork impact:** run `npm run db:migrate:deploy`. Any `prisma.aiAgent.create()`
+  in your own code that omitted `provider` will now fail `tsc` — add the field.
+  Note `prisma migrate dev` generates four spurious `DROP`s alongside this one
+  (the two pgvector HNSW indexes, the GIN/tsvector index and the `searchVector`
+  `GENERATED ALWAYS AS` expression); the committed migration has them
+  hand-folded out, as the comment block above `AiKnowledgeChunk` instructs.
+  `npm run db:drift-check` passes all 9 probes against the applied migration.
+
+### Removed
+
+- **`Account.issuer` and its `@@unique([issuer, accountId])` index, with
+  `CREDENTIAL_ACCOUNT_ISSUER` from `lib/auth/constants.ts` — because better-auth
+  1.7.3 reverted the identity model they existed for, and Sunrise now runs
+  1.7.4.** 0.11.1 added the column so 1.7.1 could sign anyone in; 1.7.3 restored
+  the 1.6 identity `(providerId, accountId)` and committed to keeping the core
+  schema stable for the rest of v1, so from 1.7.3 on better-auth never writes
+  `issuer` — and a `NOT NULL` column nothing writes fails every insert into
+  `account`: sign-up, first social sign-in and account linking, while existing
+  users keep signing in and nothing in the toolchain says why. Migration
+  `20260915180000_drop_account_issuer` drops both; each statement is
+  `IF EXISTS`, so a database on which the upstream cleanup was already run by
+  hand takes it as a no-op. (Prisma named the index
+  `account_issuer_accountId_key`; the upstream recipe's
+  `account_issuer_accountId_uidx` never existed here.)
+  `tests/unit/prisma/auth-schema-parity.test.ts` now checks the reverse
+  direction too — nothing the schema requires may be a column better-auth never
+  writes — fed from the Prisma source, because under Prisma 7's compact runtime
+  data model better-auth's own init-time check cannot see whether a column is
+  required. Closes t-695 (§112).
+
+> **Fork action.** Merging the release brings the migration; nothing to extend
+> this time. **If your own seed, smoke or importer writes `issuer` on an
+> `Account` row, the merge fails type-check at that write — delete the field.**
+> A fork that already relaxed or dropped the column by hand following the
+> upstream guide is fine: the migration is a no-op there. Do not re-add the
+> column; the parity test fails on it.
+
+### Fixed
+
+- **Editing or refining a section whose heading repeats hit the wrong section.**
+  `POST /cleanup/section` and `POST /cleanup/section/refine` took a
+  `sectionMarker` and resolved it marker-first, but markers are human-facing
+  labels and repeat within a document — two `## Introduction` headings, a
+  transcript's recurring speaker turns, the `(preamble)` label. The inline
+  editor sent the marker, so editing the second of two identically-marked
+  sections addressed the first: refine proposed a rewrite of the wrong body
+  with no fingerprint guard to catch it, and save 409'd against a different
+  section's fingerprint, after which "Keep mine" spliced the draft over that
+  other section. Both routes now take `sectionId` — the `detectSections` id,
+  which folds in the section index and is therefore unique — and no longer
+  accept a marker as an address. **Breaking for direct API callers:** send
+  `sectionId` (from the section list) instead of `sectionMarker`; the refine
+  response now carries both `sectionId` and the resolved `sectionMarker`.
+  Revision and pending-change records keep `sectionMarker` as a display label,
+  now always the resolved section's own.
+
+- **Every install logged two authorization warnings about a resolver that does
+  not exist.** `canRead`'s `'unattributed'` arm answers two questions — "a
+  resolver named this row and could not attribute it" and "may this caller read
+  rows of this kind that nobody owns at all?" — and the default policy's
+  diagnostic is written for the first: it says `"a route named a resource with no
+  ownerId"` and tells you to give the resolver an `ownerId`. Since the
+  experiments and datasets routes started asking the second, every install
+  emitted one line naming `experiment` and one naming `dataset`, pointing at a
+  fix impossible to apply. The arm now carries which question is being asked, and
+  only the resolver one is diagnosed. A resolver returning a kind with **no id**
+  still warns — narrowing the warning on that instead was tried and reverted,
+  because that is exactly the misconfiguration the diagnostic exists for.
+
+- **An imported event subscription could reach a destination nothing had
+  validated** — two ways, and the second is quieter than the first — a server-side request forgery reachable by following
+  the backup importer's own instructions. `backup/schema.ts` accepted the
+  bundle's `url` with no check at all, and `updateWebhookSchema.url` is
+  `.optional()`, so the `isSafeProviderUrl` refine only ran when a patch
+  *carried* a URL. The importer writes the row inactive with an empty secret and
+  tells the admin to "set the signing secret and re-enable manually" — a
+  `PATCH { isActive, secret }` that never reaches the refine. Import a bundle
+  naming `169.254.169.254`, do as instructed, and every subscribed event is
+  POSTed to cloud metadata from inside the deployment.
+
+  The **email** channel beside it was worse: `emailAddress` had no validation at
+  all, the importer honoured the bundle's own `isActive`, and email delivery
+  needs no secret. A bundle could therefore stand up a **live** subscription
+  mailing every matching event — full payload, from the deployment's own verified
+  sender — to an address of the bundle author's choosing, with no warning in the
+  import result and no second step required.
+
+  **The destination is now checked where the request is made**, in
+  `attemptWebhookDelivery`, rather than by guarding every write that could make a
+  bad row live. Two earlier attempts did the latter and both were walked around:
+  a lone `PATCH { secret }` armed `POST /webhooks/:id/test`, which fetches the
+  stored URL and requires no `isActive`; and the whole check sat inside a
+  `nextChannel === 'webhook'` branch, so flipping a row to the email channel,
+  activating it, and flipping back reached live dispatch without any patch ever
+  carrying `isActive: true` or a `url`. Guarding writes means guarding a list of
+  state transitions, and the list was wrong twice. A check at the point of use
+  cannot be reached around, because it does not care how the row came to look
+  like this. The write-path refines stay for fast feedback; `/test` checks too.
+
+  **Why this matters now, on installs where it grants nothing.** Today an admin
+  is the platform operator, so a webhook aimed at the deployment's own network
+  reaches infrastructure they already administer. Under multi-tenancy an org
+  admin is not the operator and the identical request crosses an isolation
+  boundary into the platform's network. This is the groundwork feature for that
+  capability, so that is the reader it is written for.
+
+  Closed at both ends. The importer validates each destination per row and skips
+  the offending subscription with a warning (per row rather than in the schema,
+  so one bad address cannot discard the agents, capabilities, workflows and
+  settings in the same restore), forces email rows inactive as webhook rows
+  already were, and warns for both. The PATCH route additionally revalidates a
+  stored URL when a patch **activates** a subscription, which covers rows
+  imported before those checks existed. Deactivating a bad subscription is
+  deliberately still permitted — a guard that blocks remediation is worse than
+  the hole it closes.
+
+  Pre-existing; found while documenting why the dispatcher deliberately has no
+  destination allowlist, in the course of writing a comment that claimed this
+  path was already closed.
+
+- **A workflow `chat_turn` step put the database's host and port on the
+  execution row.** `engine/executors/chat-turn.ts` forwarded every error out of
+  `resolveAgentProviderAndModel` verbatim, but that catch also wraps a Prisma
+  failure in `pickActiveProviderCandidates` and a throw from
+  `getDefaultModelForTask`. With the database unreachable, `Can't reach database
+  server at <host>:<port>` became the `ExecutorError` message — persisted on the
+  execution and rendered in the executions list and the trace viewer. Now
+  narrowed to `ProviderError` — the base class of the errors this call path
+  defines — matching the fix `#717` made in the sibling `agent-call.ts` executor
+  and missed here. `agent-call.ts` is widened to the same predicate in the same
+  change, so the two executors cannot disagree about one resolver call. The
+  original error is now logged before it is dropped: the generic arm hides it
+  from the execution row, and nothing else reads `ExecutorError.cause`, so
+  without a log line the diagnosis was destroyed rather than merely hidden. Both are additionally
+  prefixed with the agent slug, because in a multi-step workflow `step.id` alone
+  left an operator mapping it back to an agent by hand.
+
+  Narrow — admin-only audience, only while the database is down — but it is the
+  deployment's own infrastructure, and the neighbouring executor already had the
+  fix. The predicate is `ProviderError`, not the two resolver classes
+  specifically, so `NoDefaultModelConfiguredError` still reaches the operator
+  with its remedy ("Save one in Admin → Settings → Default models") — it is the
+  likeliest benign cause here, and suppressing it would trade a leak for a dead
+  end.
+
+
+- **The agent form no longer writes fields the operator did not author.** This is
+  the change the rest of this group turns on, and it is worth stating as a rule
+  rather than a fix: the form used **one value as both the preview of what the
+  runtime would resolve and the payload of what the operator decided**. Every
+  symptom below followed from that conflation.
+
+  `getEffectiveAgentDefaults` pre-fills `provider` / `model` with what the
+  runtime *would* pick when the row itself is empty, and that preview was then
+  submitted as an explicit choice. So an admin fixing a typo in an agent's
+  instructions silently converted it from "resolve a provider per turn" to
+  "permanently pinned to whatever was previewed" — with a policy-forbidden
+  provider under a fork's eligibility rule, and with a merely-unintended one on
+  any install at all.
+
+  **This is the normal path, not a corner.** On a stock seeded install *all 15*
+  agents ship `provider: ''`, so every one of them was one unrelated save away
+  from being pinned.
+
+  On edit the form now sends `provider` and `model` only when the operator
+  actually changed them (react-hook-form's `dirtyFields` is the authorship
+  test), and never sends `kind`, for which it renders no control. Picking a
+  provider explicitly still writes it — that is a human decision and the seam's
+  whole design is to honour those. Picking a provider does **not** implicitly
+  author a model: the form pre-selects a plausible one for display, and a value
+  the form chose is precisely what it now refuses to submit. The agent keeps
+  resolving its model per turn until someone selects one, and the Model field
+  says so when the newly-picked provider has no matrix rows. On create both are
+  required, because a new agent has no row to inherit from.
+
+  Two consequences worth calling out. An inheriting agent stays editable when
+  nothing resolves — previously the required-field check made every seeded agent
+  unsavable for an admin who had not set an API key yet. And a version restore
+  can no longer pin anything, because a restore authors nothing.
+
+- The agent form turned a provider-eligibility **denial** into a forged operator
+  decision. `components/admin/orchestration/agent-form.tsx` seeded its provider
+  field with `(agent?.provider ?? '') || effectiveDefaults?.provider ||
+  'anthropic'` and fed that into `defaultValues`, so it was **submitted, not
+  merely displayed**. When a fork's `registerProviderEligibility` rule permitted
+  nothing for `source: 'primary'` — by denying everything, or by throwing, which
+  fails closed to the same empty set — `getEffectiveAgentDefaults` returned an
+  empty provider, the empty string was falsy, and the chain fell through to the
+  literal. An admin who opened **Agents → New** and never touched the Provider
+  field saved `anthropic` as an **explicit** `agent.provider`, which
+  `resolveAgentProviderAndModel` deliberately never filters because it is meant
+  to be an operator's recorded decision. The agent was then permanently bound to
+  a forbidden provider, the seam could never correct it, and nothing errored at
+  any point — a fail-closed control converted to fail-open by a UI default. The
+  edit page had the same path for a currently-inheriting agent, differing only
+  in that it offered to "lock this agent to" the value.
+
+  **The literals are gone from both chains** — provider and model — rather than
+  the empty case being special-cased. `(provider: '', inheritedProvider: true)`
+  was already an unambiguous "nothing to inherit" signal needing no new field;
+  the defect was callers `||`-ing past it. A hardcoded vendor as a UI fallback
+  is wrong independently of tenancy: it names a specific vendor in a template
+  every fork inherits, and it fires exactly when resolution found nothing, which
+  is when guessing is least defensible. The same two literals had already been
+  retired from the setup wizard's agent draft for the same reason (the
+  `sunrise.orchestration.setup-wizard` v1 → v2 key bump). With nothing
+  resolvable the Select shows its placeholder and a hint saying the value would
+  be pinned permanently, and `agentFormSchema`'s existing `min(1)` blocks the
+  save.
+
+  Not addressed, and not a regression: the dropdown still lists every configured
+  provider, so an operator can pick a denied one by hand. **This is a different
+  thing from the `Changed` entry above** — that one makes the API *require* a
+  provider rather than choosing one for the caller; neither checks the chosen
+  value against the eligibility rule. Doing so needs a write-time `ctx.source`
+  the seam does not have, because an operator choosing is not Sunrise choosing
+  and a fork may legitimately permit one while denying the other. Validating an
+  operator's choice against per-org policy therefore stays per-org work, as the
+  Q15 row of `.context/architecture/multi-tenancy-design.md` already records.
+  What both changes do is stop a *denial* being laundered into a choice nobody
+  made.
+
+- Submitting the agent form with a required field empty was a **silent no-op**.
+  `provider` and `model` rendered no inline error and `handleSubmit` had no
+  `onInvalid` branch, so an operator on the General tab clicked Create and
+  watched nothing happen, with no indication that the blocking fields were on
+  the Model tab. The form-level banner now names them, grouped by the tab they
+  live on and labelled from the agent field registry
+  (`Cannot save — these fields need attention. Model: Provider, Model`), and
+  both fields render their own message. Pre-existing, but reachable far more
+  often once the form stopped inventing a provider.
+
+- **Restoring a version blanked an inheriting agent's provider, then demanded
+  one.** The restore `reset({...})` wrote `provider: fresh.provider` raw, but a
+  restore returns the *row's* values and a system-seeded agent's row holds `''`
+  — the dynamic-resolution contract, not an absence of configuration. So the
+  Select went blank, the new "no provider could be resolved" hint appeared
+  (false: resolution had succeeded on that same page seconds earlier), and the
+  `onInvalid` branch then blocked the save until the operator pinned a provider
+  onto an agent designed to resolve one per turn. That is the defect this
+  release fixes, reached from the other direction. The restore path now runs the
+  same resolution chain as mount.
+
+- **An agent whose `kind` was neither `chat` nor `judge` could never be saved.**
+  `AiAgent.kind` is a free `String` column and `prisma/seeds/017-case-generator-agent.ts`
+  seeds `kind: 'generator'`, but the agent form modelled it as
+  `z.enum(['chat', 'judge'])` — fewer states than the domain. The agents list
+  returns every kind when unfiltered, so an admin could open
+  `eval-case-generator` and get a form that failed validation on a field with no
+  control anywhere on screen. It failed silently before; the new banner made it
+  worse by naming a field the operator cannot find.
+
+  The form renders no control for `kind`, so it now says nothing about it: it
+  accepts whatever the row holds, and omits `kind` from the PATCH body on edit
+  under the general rule below. (An earlier draft of this entry claimed the API's
+  PATCH schema carried the same enum and would reject the echo with a 400. That
+  was wrong — `updateAgentObjectSchema` declares no `kind` key at all, and
+  `validateRequestBody` uses a non-strict `parse`, so an echoed `kind` was being
+  silently stripped, not rejected. The behaviour is right; that reason was not.)
+
+- **Restoring an agent version left the form permanently unsavable.** The
+  `reset({...})` behind the Versions tab omitted ten fields — `kind`,
+  `personaMode`, `voiceMode`, `guardrailsMode`, the three `enable*Input`
+  booleans, `profileId`, `persona` and `guardrails` — and react-hook-form's
+  `reset(values)` replaces form state wholesale rather than merging, so each
+  became `undefined`. Seven are required enums or booleans, so every save after
+  a restore failed the resolver. It went unnoticed because the failure was
+  completely silent: the button did nothing at all. Surfacing it is what the
+  `onInvalid` branch above did on its first outing. A source-parity test now
+  fails, naming the missing fields, if the schema and the restore handler drift
+  apart again — and throws rather than passing vacuously if its anchors stop
+  matching.
+
+- `VERSIONING.md`'s public-surface list named the tenancy seam as `TENANCY_MODE` +
+  `lib/tenancy/client.ts` — a file that has never existed. The covered seam is, and
+  always was, `TENANCY_MODE` + the `lib/db/client.ts` chokepoint. Forks that went
+  looking for `lib/tenancy/` were chasing a phantom module.
+
+- **Ticking "Clean up before chunking" on a PDF upload looked like it did
+  nothing.** The extraction-review modal opened exactly as it does without the
+  box, with a `Confirm & Chunk` button — the cleanup only revealed itself one
+  click later, when confirm redirected to the cleanup chat. The modal now carries
+  the flag (`PdfPreviewData.runCleanup`, a new required field on that exported
+  interface), shows a "Clean up before chunking is on" notice, and labels the
+  button `Confirm & Clean Up`. Server behaviour is unchanged.
+
+- **The LLM half of Document Clean Up had never worked on a default install.**
+  `rewrite_with_llm`, `rewrite_section_with_llm` and
+  `POST /cleanup/section/refine` all read `provider`/`model` off the agent row
+  and bailed with `agent_misconfigured` when either was empty — but the cleanup
+  agent is seeded with both empty **by design**, so it inherits whatever the
+  install is configured with. All three now resolve through
+  `resolveAgentProviderAndModel`, the same seam the chat loop uses, and the
+  refusal that remains (genuinely no provider configured) says so in words the
+  agent can relay.
+
+- **The cleanup agent is now pinned to a model chosen for the job, and its
+  prompt is kept current.** The seed pins the strongest tool-using model the
+  install can actually reach rather than inheriting the global default chat
+  model, never overwriting an admin's own binding (it fills only rows where both
+  fields are still empty). The system prompt now tells the agent to read before
+  acting and verify after, and states what each tool cannot do — the two wrong
+  tool choices seen in practice were both cases of a tool's limits being
+  invisible from its name. Re-seeding refreshes the prompt only while
+  `systemInstructionsHistory` is empty, so a prompt an admin has edited is never
+  clobbered.
+
+- **Document Clean Up applied roughly one of every N mutations the agent ran in
+  a batch, and reported errors for the rest.** The chat tool loop dispatches a
+  turn's tool calls in parallel, so an agent answering "yes, proceed" to a
+  five-step cleanup plan fired five mutating capabilities at once. Each read the
+  same `processedContent` and wrote back its own whole-document result — last
+  write wins, four mutations silently discarded — and the concurrent
+  `max(version)+1` revision allocation collided on the `(documentId, version)`
+  unique index, so two of the five also failed outright and the agent relayed
+  the raw Postgres error as "there was an error processing this step". Every
+  cleanup mutation now reads, transforms and writes inside one transaction
+  holding a `SELECT … FOR UPDATE` row lock on the document
+  (`mutateCleanupContent`), so a parallel batch queues and composes: each
+  transform sees the previous one's output. New `npm run
+  smoke:cleanup-concurrency` fires five capabilities concurrently against a real
+  database and fails if any mutation is lost or any version collides.
 
 ## [0.11.2] — 2026-08-31
 

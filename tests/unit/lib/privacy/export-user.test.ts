@@ -323,6 +323,30 @@ describe('exportUserData', () => {
       ]);
     });
 
+    it('labels Document Clean Up revisions by their source', async () => {
+      delegateFor('aiKnowledgeDocumentRevision').findMany.mockResolvedValue([
+        { id: 'rev-1', source: 'capability:strip_timestamps', createdAt: SUBJECT.createdAt },
+      ]);
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(bundle.attributions.knowledgeDocumentRevisions).toEqual([
+        { id: 'rev-1', label: 'capability:strip_timestamps', createdAt: SUBJECT.createdAt },
+      ]);
+    });
+
+    it('labels Document Clean Up pending changes by their source', async () => {
+      delegateFor('aiKnowledgeDocumentPendingChange').findMany.mockResolvedValue([
+        { id: 'pending-1', source: 'rewrite_with_llm', createdAt: SUBJECT.createdAt },
+      ]);
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(bundle.attributions.knowledgeDocumentPendingChanges).toEqual([
+        { id: 'pending-1', label: 'rewrite_with_llm', createdAt: SUBJECT.createdAt },
+      ]);
+    });
+
     it('includes erasure receipts naming the subject', async () => {
       const receipt = { id: 'receipt-1', subjectUserId: 'user-1', reason: 'self_service' };
       delegateFor('dataErasureReceipt').findMany.mockResolvedValue([receipt]);

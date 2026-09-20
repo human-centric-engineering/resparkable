@@ -16,6 +16,12 @@ vi.mock('@/lib/app/context-contributors', () => ({
   initAppContextContributors: vi.fn(),
 }));
 
+const { mockDocumentFindUnique } = vi.hoisted(() => ({ mockDocumentFindUnique: vi.fn() }));
+
+vi.mock('@/lib/db/client', () => ({
+  prisma: { aiKnowledgeDocument: { findUnique: mockDocumentFindUnique } },
+}));
+
 const { getPatternDetail } = await import('@/lib/orchestration/knowledge/search');
 const { logger } = await import('@/lib/logging');
 const { initAppContextContributors } = await import('@/lib/app/context-contributors');
@@ -379,5 +385,81 @@ describe('per-user context (#412)', () => {
     await buildContext('invoice', 'INV-1', { userId: 'user-b' }); // still cached — no call
 
     expect(contributor).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('knowledge_document context (Document Clean Up)', () => {
+  function docFixture(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      name: 'ConQuest Go to Market Plan',
+      fileName: 'plan.pdf',
+      status: 'cleaning',
+      originalContent: 'line one\nline two\nline three',
+      processedContent: null,
+      ...overrides,
+    };
+  }
+
+  it('names the document, its size, and a numbered excerpt', async () => {
+    // Without this block the cleanup agent gets "No context loader for type
+    // 'knowledge_document'" and edits a document it has never seen.
+    mockDocumentFindUnique.mockResolvedValue(docFixture());
+
+    const out = await buildContext('knowledge_document', 'doc-1');
+
+    expect(out).toContain('ConQuest Go to Market Plan');
+    expect(out).toContain('plan.pdf');
+    expect(out).toContain('3 lines');
+    // Numbered, so the agent can act on "look at line 2".
+    expect(out).toContain('1: line one');
+    expect(out).toContain('2: line two');
+  });
+
+  it('says the excerpt is a sample and names the tools that read the rest', async () => {
+    mockDocumentFindUnique.mockResolvedValue(docFixture());
+
+    const out = await buildContext('knowledge_document', 'doc-1');
+
+    expect(out).toMatch(/SAMPLE, not the whole document/i);
+    expect(out).toContain('read_document');
+    expect(out).toContain('find_in_document');
+  });
+
+  it('shows the working text once a transform has run, not the original', async () => {
+    mockDocumentFindUnique.mockResolvedValue(docFixture({ processedContent: 'cleaned line one' }));
+
+    const out = await buildContext('knowledge_document', 'doc-1');
+
+    expect(out).toContain('1: cleaned line one');
+    expect(out).not.toContain('line two');
+    expect(out).toContain('already modified this session');
+  });
+
+  it('caps the excerpt so it cannot swallow the turn budget', async () => {
+    const huge = Array.from({ length: 500 }, () => 'x'.repeat(200)).join('\n');
+    mockDocumentFindUnique.mockResolvedValue(docFixture({ originalContent: huge }));
+
+    const out = await buildContext('knowledge_document', 'doc-1');
+
+    expect(out.length).toBeLessThan(4_500);
+  });
+
+  it('is NOT cached — the document changes on almost every turn', async () => {
+    mockDocumentFindUnique.mockResolvedValue(docFixture());
+
+    await buildContext('knowledge_document', 'doc-1');
+    await buildContext('knowledge_document', 'doc-1');
+
+    // A cached excerpt would hand the model a stale copy of the thing it is
+    // actively editing.
+    expect(mockDocumentFindUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it('says so plainly when the document is gone', async () => {
+    mockDocumentFindUnique.mockResolvedValue(null);
+
+    const out = await buildContext('knowledge_document', 'missing');
+
+    expect(out).toMatch(/not found/i);
   });
 });

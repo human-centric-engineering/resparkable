@@ -14,6 +14,16 @@ import { DocumentUploadZone } from '@/components/admin/orchestration/knowledge/d
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
+// vi.hoisted ensures mockPush is available inside the vi.mock factory below,
+// because vi.mock calls are hoisted to module scope at transform time.
+const { mockPush } = vi.hoisted(() => ({
+  mockPush: vi.fn(),
+}));
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
+
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
 
@@ -63,6 +73,7 @@ describe('DocumentUploadZone', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setupDefaultMocks();
+    mockPush.mockReset();
   });
 
   it('renders the drop zone', async () => {
@@ -215,6 +226,128 @@ describe('DocumentUploadZone', () => {
         })
       );
       expect(onUploadComplete).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+    });
+  });
+
+  it('forwards the cleanup checkbox state to onPdfPreview for a PDF preview', async () => {
+    // A PDF flagged for cleanup still goes through the extraction review
+    // first, so the preview modal needs the flag to tell the operator that
+    // confirming opens the cleanup chat rather than chunking.
+    const onPdfPreview = vi.fn();
+    mockFetch.mockImplementation((url: string, options?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/meta-tags')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                app: { categories: [], keywords: [] },
+                system: { categories: [], keywords: [] },
+              },
+            }),
+        });
+      }
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                document: {
+                  id: 'doc-1',
+                  name: 'test.pdf',
+                  fileName: 'test.pdf',
+                  status: 'pending_review',
+                },
+                preview: {
+                  extractedText: 'Hello world',
+                  title: 'Test PDF',
+                  author: null,
+                  sectionCount: 3,
+                  warnings: [],
+                  requiresConfirmation: true,
+                },
+              },
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} onPdfPreview={onPdfPreview} />);
+
+    const input = screen.getByLabelText(/upload document/i);
+    fireEvent.change(input, {
+      target: { files: [new File(['content'], 'test.pdf', { type: 'application/pdf' })] },
+    });
+
+    const checkbox = await screen.findByLabelText(/clean up before chunking/i);
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+
+    await waitFor(() => {
+      expect(onPdfPreview).toHaveBeenCalledWith(expect.objectContaining({ runCleanup: true }));
+    });
+  });
+
+  it('passes runCleanup=false to onPdfPreview when the cleanup checkbox is left unchecked', async () => {
+    const onPdfPreview = vi.fn();
+    mockFetch.mockImplementation((url: string, options?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/meta-tags')) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                app: { categories: [], keywords: [] },
+                system: { categories: [], keywords: [] },
+              },
+            }),
+        });
+      }
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                document: {
+                  id: 'doc-1',
+                  name: 'test.pdf',
+                  fileName: 'test.pdf',
+                  status: 'pending_review',
+                },
+                preview: {
+                  extractedText: 'Hello world',
+                  title: 'Test PDF',
+                  author: null,
+                  sectionCount: 3,
+                  warnings: [],
+                  requiresConfirmation: true,
+                },
+              },
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const user = userEvent.setup();
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} onPdfPreview={onPdfPreview} />);
+
+    const input = screen.getByLabelText(/upload document/i);
+    fireEvent.change(input, {
+      target: { files: [new File(['content'], 'test.pdf', { type: 'application/pdf' })] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^upload$/i })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+
+    await waitFor(() => {
+      expect(onPdfPreview).toHaveBeenCalledWith(expect.objectContaining({ runCleanup: false }));
     });
   });
 
@@ -996,6 +1129,145 @@ describe('DocumentUploadZone', () => {
     await waitFor(() => {
       expect(screen.getByText('Upload failed')).toBeInTheDocument();
     });
+  });
+
+  // ── Document Clean Up checkbox ─────────────────────────────────────────────
+
+  it('renders the "Clean up before chunking" checkbox for a single non-CSV file', async () => {
+    // Arrange: stage one markdown file — checkbox should appear
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} />);
+
+    const input = screen.getByLabelText(/upload document/i);
+    const mdFile = new File(['# Hello'], 'note.md', { type: 'text/markdown' });
+
+    // Act
+    fireEvent.change(input, { target: { files: [mdFile] } });
+
+    // Assert: the "Clean up before chunking" label appears because the file is
+    // a single non-CSV file
+    await waitFor(() => {
+      expect(screen.getByLabelText(/clean up before chunking/i)).toBeInTheDocument();
+    });
+  });
+
+  it('does NOT render "Clean up before chunking" checkbox when a CSV file is staged', async () => {
+    // Arrange: CSV is excluded from the cleanup flow (each row is already an
+    // atomic chunk, so cleanup would be pointless)
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} />);
+
+    const input = screen.getByLabelText(/upload document/i);
+    const csvFile = new File(['id,name\n1,Alice'], 'data.csv', { type: 'text/csv' });
+
+    // Act
+    fireEvent.change(input, { target: { files: [csvFile] } });
+
+    // Assert: the checkbox is absent for CSV uploads
+    await waitFor(() => {
+      expect(screen.getByText('data.csv')).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/clean up before chunking/i)).not.toBeInTheDocument();
+  });
+
+  it('does NOT render "Clean up before chunking" checkbox for multi-file (bulk) uploads', async () => {
+    // Arrange: bulk mode disables cleanup — the checkbox only makes sense for
+    // single-file uploads where there's one document to redirect to
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} />);
+
+    const input = screen.getByLabelText(/upload document/i);
+    const file1 = new File(['# A'], 'a.md', { type: 'text/markdown' });
+    const file2 = new File(['# B'], 'b.md', { type: 'text/markdown' });
+
+    // Act: stage two files (triggers bulk mode)
+    fireEvent.change(input, { target: { files: [file1, file2] } });
+
+    // Assert: checkbox absent in bulk mode
+    await waitFor(() => {
+      expect(screen.getByText('a.md')).toBeInTheDocument();
+      expect(screen.getByText('b.md')).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/clean up before chunking/i)).not.toBeInTheDocument();
+  });
+
+  it('includes runCleanup=true in form data when the cleanup checkbox is checked', async () => {
+    // Arrange: stage one md file and check the cleanup checkbox
+    const user = userEvent.setup();
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} />);
+
+    const fileInput = screen.getByLabelText(/upload document/i);
+    const mdFile = new File(['# Hello'], 'transcript.md', { type: 'text/markdown' });
+    fireEvent.change(fileInput, { target: { files: [mdFile] } });
+
+    // Wait for the checkbox to appear and check it
+    const checkbox = await screen.findByLabelText(/clean up before chunking/i);
+    await user.click(checkbox);
+    expect(checkbox).toBeChecked();
+
+    // Act: click Upload
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+
+    // Assert: the upload POST included runCleanup=true in the form data —
+    // proving the component forwarded the operator's choice to the server
+    await waitFor(() => {
+      const uploadCall = mockFetch.mock.calls.find(
+        (call) =>
+          typeof call[0] === 'string' &&
+          call[0].includes('/knowledge/documents') &&
+          !call[0].includes('/bulk') &&
+          (call[1] as RequestInit)?.method === 'POST'
+      );
+      expect(uploadCall).toBeDefined();
+      const formData = (uploadCall as [string, RequestInit])[1].body as FormData;
+      expect(formData.get('runCleanup')).toBe('true');
+    });
+  });
+
+  it('calls router.push(redirectTo) and does NOT call onUploadComplete when response carries redirectTo', async () => {
+    // Arrange: server responds with a redirectTo URL (cleanup flow)
+    const redirectUrl = '/admin/orchestration/knowledge/abc123/cleanup';
+    mockFetch.mockImplementation((_url: string, options?: RequestInit) => {
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                document: {
+                  id: 'abc123',
+                  name: 'My Transcript',
+                  fileName: 'transcript.md',
+                  status: 'cleaning',
+                },
+                redirectTo: redirectUrl,
+              },
+            }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ data: {} }) });
+    });
+
+    const user = userEvent.setup();
+    render(<DocumentUploadZone onUploadComplete={onUploadComplete} />);
+
+    const fileInput = screen.getByLabelText(/upload document/i);
+    const mdFile = new File(['# Hello'], 'transcript.md', { type: 'text/markdown' });
+    fireEvent.change(fileInput, { target: { files: [mdFile] } });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /^upload$/i })).toBeInTheDocument();
+    });
+
+    // Act
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+
+    // Assert: the component navigated to the cleanup page — verifying the
+    // router.push call proves the component actually handled the redirectTo,
+    // not just that the mock returned a URL
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith(redirectUrl);
+    });
+    // onUploadComplete must NOT be called — the list-refresh is pointless
+    // when the doc is in 'cleaning' status
+    expect(onUploadComplete).not.toHaveBeenCalled();
   });
 
   it('handles dragDrop with empty file list gracefully (no files staged)', async () => {

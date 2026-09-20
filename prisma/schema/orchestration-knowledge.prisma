@@ -39,10 +39,12 @@ model AiKnowledgeBase {
 //    `(fileHash, status='ready')` rows, defeating the dedupe contract.
 //
 // 2. CHECK constraint `ai_knowledge_document_status_lowercase` pinning
-//    `status` to ('processing', 'ready', 'failed', 'pending_review'). The
-//    Prisma field is a free-form String; the CHECK catches casing drift /
-//    typos from raw-SQL or direct-DB writes before they corrupt the upload
-//    state machine.
+//    `status` to ('processing', 'ready', 'failed', 'pending_review',
+//    'cleaning'). The Prisma field is a free-form String; the CHECK catches
+//    casing drift / typos from raw-SQL or direct-DB writes before they
+//    corrupt the upload state machine. `cleaning` was added by
+//    20260531120000_add_document_cleanup_fields for the Document Clean Up
+//    interactive preprocessing flow.
 //
 // `npx prisma migrate dev` will emit DROP statements for both on schema-diff
 // runs. Always inspect generated migration SQL and remove any line touching
@@ -52,28 +54,42 @@ model AiKnowledgeBase {
 // (partial unique originally added by 20260410120000_dedupe_ready_knowledge_documents;
 // status CHECK folded by the 2026-05-29 post-squash hardening pass).
 model AiKnowledgeDocument {
-  id              String   @id @default(cuid())
-  knowledgeBaseId String
-  slug            String   @unique // stable cross-environment key (used in backup/export); deterministic: slugify(name)-<first8 of fileHash>
-  name            String
-  fileName        String
-  fileHash        String // SHA-256 for deduplication
-  chunkCount      Int      @default(0)
-  status          String // "processing", "ready", "failed"
-  scope           String   @default("app") // "system" | "app"
-  sourceUrl       String? // URL the document was fetched from (null = manual upload)
-  errorMessage    String?  @db.Text
-  metadata        Json? // format-specific metadata, preview data for pending_review docs
-  uploadedBy      String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                 String    @id @default(cuid())
+  knowledgeBaseId    String
+  slug               String    @unique // stable cross-environment key (used in backup/export); deterministic: slugify(name)-<first8 of fileHash>
+  name               String
+  fileName           String
+  fileHash           String // SHA-256 for deduplication
+  chunkCount         Int       @default(0)
+  status             String // "processing", "ready", "failed", "pending_review", "cleaning" (CHECK constraint enforced; see warning above)
+  scope              String    @default("app") // "system" | "app"
+  sourceUrl          String? // URL the document was fetched from (null = manual upload)
+  errorMessage       String?   @db.Text
+  metadata           Json? // format-specific metadata, preview data for pending_review docs, sizeClass for cleaning docs
+  // Document Clean Up flow only: original parsed text (set once on upload) + current cleaned state (mutated by cleanup capabilities).
+  // Both null for documents that bypass cleanup. Cleared after successful finalise + chunking to reclaim storage (see finalise endpoint).
+  // The cleanup chat session is reachable via AiConversation where contextType='knowledge_document' AND contextId={this.id}.
+  originalContent    String?   @db.Text
+  processedContent   String?   @db.Text
+  // Cooperative single-writer lock for the Document Clean Up co-authoring
+  // surface. Held by either an admin actively editing in the cleanup UI or
+  // by a capability about to mutate processedContent. 5-minute TTL enforced
+  // at read time (see lib/orchestration/knowledge/edit-lock.ts); no
+  // background sweeper. Both null when no admin is editing.
+  editLockHolder     String?
+  editLockAcquiredAt DateTime?
+  uploadedBy         String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   // Relations
-  knowledgeBase AiKnowledgeBase            @relation(fields: [knowledgeBaseId], references: [id])
-  uploader      User?                      @relation("AiKnowledgeDocumentUploader", fields: [uploadedBy], references: [id], onDelete: SetNull)
-  chunks        AiKnowledgeChunk[]
-  tags          AiKnowledgeDocumentTag[]
-  agentGrants   AiAgentKnowledgeDocument[]
+  knowledgeBase  AiKnowledgeBase                    @relation(fields: [knowledgeBaseId], references: [id])
+  uploader       User?                              @relation("AiKnowledgeDocumentUploader", fields: [uploadedBy], references: [id], onDelete: SetNull)
+  chunks         AiKnowledgeChunk[]
+  tags           AiKnowledgeDocumentTag[]
+  agentGrants    AiAgentKnowledgeDocument[]
+  revisions      AiKnowledgeDocumentRevision[]
+  pendingChanges AiKnowledgeDocumentPendingChange[]
 
   @@index([uploadedBy])
   @@index([status])
@@ -81,6 +97,70 @@ model AiKnowledgeDocument {
   @@index([fileHash])
   @@index([knowledgeBaseId])
   @@map("ai_knowledge_document")
+}
+
+// Immutable, append-only history of every processedContent mutation during
+// a Document Clean Up session. One row per capability or human edit. The
+// editor's history drawer (Phase 6) lists these; Restore writes a new row
+// rather than deleting old ones.
+//
+// `source` taxonomy:
+//   - 'capability:<slug>'  — e.g. 'capability:strip_timestamps'
+//   - 'human_full'         — whole-doc inline edit
+//   - 'human_section'      — per-section inline edit
+//   - 'restore'            — restored from an earlier revision
+//   - 'finalise:<mode>'    — final commit before chunking, mode ∈ {commit, use-original}
+//
+// `actorId` is the admin who triggered the change (the user in the chat
+// session for capability sources). Nullable for restores triggered by
+// system processes — they don't exist today but reserving the option — and
+// nulled by the actor's own account deletion (onDelete: SetNull below); the
+// revision row itself is retained audit history, not personal data.
+model AiKnowledgeDocumentRevision {
+  id            String   @id @default(cuid())
+  documentId    String
+  version       Int
+  content       String   @db.Text
+  source        String
+  actorId       String?
+  sectionMarker String?
+  instructions  String?  @db.Text
+  createdAt     DateTime @default(now())
+
+  document AiKnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  actor    User?               @relation("AiKnowledgeDocumentRevisionActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@unique([documentId, version])
+  @@index([documentId, createdAt])
+  @@map("ai_knowledge_document_revision")
+}
+
+// Pending LLM-rewrite proposal awaiting human Accept / Reject. Written by
+// rewrite_with_llm and rewrite_section_with_llm — they no longer mutate
+// processedContent directly (the mixed agent/human model: deterministic
+// capabilities auto-apply, LLM rewrites go through this review queue).
+//
+// Hard-deleted on Accept (after applying afterContent + writing a revision)
+// or Reject. No `status` field — the row's existence IS the pending state.
+// `sectionMarker` is null for whole-doc rewrites; populated for per-section.
+// `actorId` nulled by the actor's own account deletion (onDelete: SetNull
+// below); the proposal itself is retained until accepted/rejected.
+model AiKnowledgeDocumentPendingChange {
+  id            String   @id @default(cuid())
+  documentId    String
+  source        String // capability slug: 'rewrite_with_llm' | 'rewrite_section_with_llm'
+  beforeContent String   @db.Text
+  afterContent  String   @db.Text
+  sectionMarker String?
+  instructions  String   @db.Text
+  actorId       String? // admin who triggered the LLM call (chat session owner)
+  createdAt     DateTime @default(now())
+
+  document AiKnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  actor    User?               @relation("AiKnowledgeDocumentPendingChangeActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([documentId, createdAt])
+  @@map("ai_knowledge_document_pending_change")
 }
 
 // Vector store for knowledge base content.

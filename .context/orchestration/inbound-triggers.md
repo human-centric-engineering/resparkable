@@ -405,9 +405,14 @@ Consequences for anything you build on inbound runs:
 
 - **Admin surfaces gate on the system basis**, not an owner match — see
   `lib/orchestration/access/execution-access.ts` and `conversation-access.ts`.
-  Any admin can read, act on, and delete these rows; the access is audit-logged
-  because the person on the other end has no account and cannot check for
-  themselves. A hand-rolled `userId === session.user.id` check will show nothing.
+  Any admin can read, act on, and delete these rows on a default install; the
+  access is audit-logged because the person on the other end has no account and
+  cannot check for themselves. **Both helpers take that grant from the
+  authorization policy**, so a fork can narrow it — and for inbound
+  conversations that is the point, since the messages belong to a member of the
+  public rather than to any tenant's staff. A hand-rolled
+  `userId === session.user.id` check will show nothing, and will not follow the
+  policy either.
 - **The run has no user context.** `user_memory` returns `no_user_context`
   rather than reading one person's remembered facts from another's traffic, and
   `judge_call` refuses outright (`judge_call_requires_user_context`) rather than

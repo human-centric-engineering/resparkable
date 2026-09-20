@@ -50,12 +50,35 @@ vi.mock('@/lib/security/ip', () => ({
 
 vi.mock('@/lib/orchestration/knowledge/document-manager', () => ({
   confirmPreview: vi.fn(),
+  transitionToCleanup: vi.fn(),
+  parseDocumentMetadata: vi.fn(() => null),
+}));
+
+vi.mock('@/lib/db/client', () => ({
+  prisma: {
+    aiKnowledgeDocument: {
+      findUnique: vi.fn(),
+    },
+  },
+}));
+
+vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
+  logAdminAction: vi.fn(),
+}));
+
+vi.mock('@/lib/orchestration/mcp/resource-update-hooks', () => ({
+  notifyMcpKnowledgeChanged: vi.fn(),
 }));
 
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
 import { auth } from '@/lib/auth/config';
-import { confirmPreview } from '@/lib/orchestration/knowledge/document-manager';
+import { prisma } from '@/lib/db/client';
+import {
+  confirmPreview,
+  transitionToCleanup,
+  parseDocumentMetadata,
+} from '@/lib/orchestration/knowledge/document-manager';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -280,6 +303,99 @@ describe('POST /api/v1/admin/orchestration/knowledge/documents/:id/confirm', () 
       expect(response.status).toBe(500);
       expect(data.success).toBe(false);
       expect(data.error.code).toBe('INTERNAL_ERROR');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // runCleanup branches
+  // ---------------------------------------------------------------------------
+
+  describe('runCleanup branches', () => {
+    it('calls transitionToCleanup and returns { document, redirectTo } when metadata.runCleanup is true', async () => {
+      // Arrange — metadata indicates the upload was flagged for cleanup
+      vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue({
+        metadata: { runCleanup: true, extractedText: 'Extracted PDF text' },
+        fileName: 'report.pdf',
+      } as never);
+      vi.mocked(parseDocumentMetadata).mockReturnValue({
+        runCleanup: true,
+        extractedText: 'Extracted PDF text',
+      });
+      const admin = mockAdminUser();
+      vi.mocked(auth.api.getSession).mockResolvedValue(admin);
+
+      const cleanupDoc = { id: VALID_DOC_ID, fileName: 'report.pdf', chunkCount: 0 };
+      const redirectTo = `/admin/orchestration/knowledge/${VALID_DOC_ID}/cleanup`;
+      vi.mocked(transitionToCleanup).mockResolvedValue({
+        document: cleanupDoc as never,
+        conversationId: 'conv-123',
+        redirectTo,
+      });
+
+      // Act — provide corrected content so it takes priority over extractedText
+      const body = { documentId: VALID_DOC_ID, correctedContent: 'Corrected PDF text' };
+      const response = await POST(makeRequest(VALID_DOC_ID, body), makeContext(VALID_DOC_ID));
+
+      interface CleanupSuccessBody {
+        success: true;
+        data: { document: { id: string }; redirectTo: string };
+      }
+      const data = await parseResponse<CleanupSuccessBody>(response);
+
+      // Assert — route branched into cleanup, returned redirectTo in envelope
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.data.document.id).toBe(VALID_DOC_ID);
+      expect(data.data.redirectTo).toBe(redirectTo);
+      expect(transitionToCleanup).toHaveBeenCalledWith(
+        VALID_DOC_ID,
+        'Corrected PDF text',
+        admin.user.id
+      );
+      expect(confirmPreview).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when runCleanup is true but content is empty', async () => {
+      // Arrange — no correctedContent and no extractedText in metadata
+      vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue({
+        metadata: { runCleanup: true },
+        fileName: 'empty.pdf',
+      } as never);
+      vi.mocked(parseDocumentMetadata).mockReturnValue({ runCleanup: true });
+
+      // Act — body has no correctedContent, and metadata has no extractedText fallback
+      const body = { documentId: VALID_DOC_ID };
+      const response = await POST(makeRequest(VALID_DOC_ID, body), makeContext(VALID_DOC_ID));
+      const data = await parseResponse<ErrorBody>(response);
+
+      // Assert — validation error; cleanup helper never reached
+      expect(response.status).toBe(400);
+      expect(data.success).toBe(false);
+      expect(data.error.code).toBe('VALIDATION_ERROR');
+      expect(transitionToCleanup).not.toHaveBeenCalled();
+    });
+
+    it('calls confirmPreview (not transitionToCleanup) when runCleanup is NOT set and response has no redirectTo', async () => {
+      // Arrange — no runCleanup flag in metadata
+      vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue({
+        metadata: {},
+        fileName: 'report.pdf',
+      } as never);
+      vi.mocked(parseDocumentMetadata).mockReturnValue(null);
+      vi.mocked(confirmPreview).mockResolvedValue(makeMockDocument() as never);
+
+      // Act
+      const body = { documentId: VALID_DOC_ID };
+      const response = await POST(makeRequest(VALID_DOC_ID, body), makeContext(VALID_DOC_ID));
+      const data = await parseResponse<SuccessBody>(response);
+
+      // Assert — existing non-cleanup path; no redirectTo in response
+      expect(response.status).toBe(200);
+      expect(data.success).toBe(true);
+      expect(data.data.document.id).toBe(VALID_DOC_ID);
+      expect('redirectTo' in data.data).toBe(false);
+      expect(confirmPreview).toHaveBeenCalledOnce();
+      expect(transitionToCleanup).not.toHaveBeenCalled();
     });
   });
 });

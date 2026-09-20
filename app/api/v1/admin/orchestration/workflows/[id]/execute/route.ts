@@ -58,9 +58,11 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   // the new definition. That would defeat the publish/draft model's whole
   // point. Another admin's own run returns 404 (not 403) so existence isn't
   // leaked; a system-owned run (schedule/inbound, `userId = null`) is
-  // resumable by any admin — otherwise a scheduled run that pauses at an
-  // approval gate could be approved but never continued, and would sit in
-  // `pending` forever. See `lib/orchestration/access/execution-access.ts`.
+  // resumable by any admin the authorization policy permits an unattributed
+  // read — every admin on a default install, because otherwise a scheduled
+  // run that pauses at an approval gate could be approved but never
+  // continued, and would sit in `pending` forever. See
+  // `lib/orchestration/access/execution-access.ts`.
   let pinnedVersionId: string | null = null;
   let resumeOwnerUserId: string | null = null;
   if (resumeFromExecutionId) {
@@ -76,7 +78,7 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
     });
     if (
       !existing ||
-      !adminCanViewExecution(existing, session.user.id) ||
+      !adminCanViewExecution(existing, session) ||
       existing.workflowId !== parsedWorkflowId.data
     ) {
       throw new NotFoundError(`Execution ${resumeFromExecutionId} not found`);
