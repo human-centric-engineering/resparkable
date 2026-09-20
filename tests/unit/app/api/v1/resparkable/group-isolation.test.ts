@@ -173,6 +173,12 @@ const OTHER_ROUTES: Record<string, string> = {
   'comments/route.ts': 'Comments resolve access per item through the access layer.',
   'comments/[id]/route.ts': 'As above.',
   'spaces/route.ts': 'Lists the workspaces the caller can open, for the switcher.',
+  'spaces/[spaceId]/mcp-keys/route.ts':
+    'Takes the workspace from the path and resolves it through the membership service. ' +
+    'A credential is minted FOR a named workspace, so reading it from a query string the ' +
+    'browser can drop would be one refresh away from minting against the wrong brain.',
+  'spaces/[spaceId]/mcp-keys/[keyId]/route.ts': 'As above.',
+  'spaces/[spaceId]/mcp-keys/[keyId]/rotate/route.ts': 'As above.',
   'space/route.ts': 'The caller’s own personal space settings.',
   'capture/route.ts':
     'Takes its target from the body and ignores ?space= (phase 47). A non-member target ' +

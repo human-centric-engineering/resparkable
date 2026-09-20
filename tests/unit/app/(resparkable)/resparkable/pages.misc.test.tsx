@@ -72,6 +72,12 @@ vi.mock('@/components/resparkable/settings/space-settings-form', () => ({
   ),
 }));
 
+vi.mock('@/components/resparkable/settings/connect-assistant-card', () => ({
+  ConnectAssistantCard: (props: { spaceId: string; spaceName: string }) => (
+    <div data-testid="connect-assistant-card" data-props={JSON.stringify(props)} />
+  ),
+}));
+
 vi.mock('@/components/resparkable/search/search-controls', () => ({
   SearchControls: (props: { query: string }) => (
     <div data-testid="search-controls" data-props={JSON.stringify(props)} />
@@ -322,15 +328,128 @@ describe('ResparkablePlanPage', () => {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
+/**
+ * The page makes two reads, and they want different shapes back: the settings
+ * object, and the array of openable workspaces the Connect card is aimed at. A
+ * single `mockResolvedValue` hands the same value to both, which is what a
+ * `.find is not a function` in this suite means.
+ */
+function settingsReads(settings: unknown, spaces: unknown[] = [SPACE_ROW]) {
+  vi.mocked(readResparkable).mockImplementation(async (path) =>
+    path.startsWith(RESPARKABLE_API.SPACES) ? ok(spaces) : ok(settings)
+  );
+}
+
+const SPACE_ROW = { spaceId: 'user_a', name: 'Personal' };
+
+/**
+ * Find a React element by its component's name, anywhere in a server
+ * component's returned tree. Used to read a `key`, which is consumed by
+ * reconciliation and never appears in the DOM.
+ */
+function findByTestName(node: unknown, name: string): { key: string | null } | null {
+  if (!node || typeof node !== 'object') return null;
+  const element = node as {
+    type?: { name?: string };
+    key?: string | null;
+    props?: { children?: unknown };
+  };
+  if (typeof element.type === 'function' && element.type.name === name) {
+    return { key: element.key ?? null };
+  }
+  const children = element.props?.children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const found = findByTestName(child, name);
+    if (found) return found;
+  }
+  return null;
+}
+
 describe('ResparkableSettingsPage', () => {
-  it('reads the space settings endpoint', async () => {
+  it('reads the space settings endpoint, and the workspaces the Connect card needs', async () => {
     vi.mocked(readResparkable).mockResolvedValue(fail(500));
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
     await ResparkableSettingsPage({ searchParams: Promise.resolve({}) });
 
-    expect(callPaths()).toEqual([RESPARKABLE_API.SPACE]);
+    // `readSpaceTarget` answers null for the personal space, and a key is
+    // minted for a NAMED workspace, so the page resolves a concrete id.
+    expect(callPaths().sort()).toEqual([RESPARKABLE_API.SPACE, RESPARKABLE_API.SPACES].sort());
+  });
+
+  it('names the open workspace on the Connect card', async () => {
+    settingsReads({ timezone: 'UTC' }, [
+      { spaceId: 'user_a', name: 'Personal' },
+      { spaceId: 'spc_group', name: 'Study Group B' },
+    ]);
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(resparkable)/resparkable/settings/page');
+
+    render(
+      await ResparkableSettingsPage({ searchParams: Promise.resolve({ space: 'spc_group' }) })
+    );
+
+    const card = screen.getByTestId('connect-assistant-card');
+    expect(JSON.parse(card.getAttribute('data-props') ?? '{}')).toEqual({
+      spaceId: 'spc_group',
+      spaceName: 'Study Group B',
+    });
+  });
+
+  it('keys the Connect card on the workspace, so switching remounts it', async () => {
+    // Load-bearing rather than tidiness. The switcher changes workspace with
+    // `router.push` on this same route, a soft navigation: React keeps the
+    // client component instance and only the props change. The card holds a
+    // minted plaintext in state, so without the key it would go on showing
+    // workspace A's secret and A's paste-ready snippets under a heading naming
+    // B, and somebody would paste a key believing it reaches the workspace in
+    // front of them.
+    settingsReads({ timezone: 'UTC' }, [
+      { spaceId: 'user_a', name: 'Personal' },
+      { spaceId: 'spc_group', name: 'Study Group B' },
+    ]);
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(resparkable)/resparkable/settings/page');
+
+    const tree = await ResparkableSettingsPage({
+      searchParams: Promise.resolve({ space: 'spc_group' }),
+    });
+
+    // Read the element's key off the rendered tree rather than asserting on
+    // the DOM: a `key` is a React reconciliation hint and never reaches it.
+    const card = findByTestName(tree, 'ConnectAssistantCard');
+    expect(card?.key).toBe('spc_group');
+  });
+
+  it('falls back to the personal workspace when no space is named', async () => {
+    // `listOpenableSpaces` always puts personal first, so the fallback is the
+    // switcher's own fallback rather than an arbitrary row.
+    settingsReads({ timezone: 'UTC' }, [
+      { spaceId: 'user_a', name: 'Personal' },
+      { spaceId: 'spc_group', name: 'Study Group B' },
+    ]);
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(resparkable)/resparkable/settings/page');
+
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
+
+    const card = screen.getByTestId('connect-assistant-card');
+    expect(JSON.parse(card.getAttribute('data-props') ?? '{}').spaceId).toBe('user_a');
+  });
+
+  it('leaves the Connect card out when the workspace list cannot be read', async () => {
+    // A card that does not know which workspace it is for would mint against
+    // the wrong one, so it renders not at all rather than guessing.
+    vi.mocked(readResparkable).mockImplementation(async (path) =>
+      path.startsWith(RESPARKABLE_API.SPACES) ? fail(500, 'down') : ok({ timezone: 'UTC' })
+    );
+    const { default: ResparkableSettingsPage } =
+      await import('@/app/(resparkable)/resparkable/settings/page');
+
+    render(await ResparkableSettingsPage({ searchParams: Promise.resolve({}) }));
+
+    expect(screen.queryByTestId('connect-assistant-card')).not.toBeInTheDocument();
   });
 
   it('renders LoadError when the read fails', async () => {
@@ -345,7 +464,7 @@ describe('ResparkableSettingsPage', () => {
 
   it('forwards the settings to SpaceSettingsForm as `initial` on success', async () => {
     const settings = { timezone: 'UTC', workStyle: 'balanced' };
-    vi.mocked(readResparkable).mockResolvedValue(ok(settings));
+    settingsReads(settings);
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');
 
@@ -356,7 +475,7 @@ describe('ResparkableSettingsPage', () => {
   });
 
   it('forwards the resolved Sparkey pronoun to AboutSparkey', async () => {
-    vi.mocked(readResparkable).mockResolvedValue(ok({}));
+    settingsReads({});
     vi.mocked(getSparkeyPronoun).mockResolvedValue('he');
     const { default: ResparkableSettingsPage } =
       await import('@/app/(resparkable)/resparkable/settings/page');

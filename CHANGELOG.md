@@ -18,6 +18,44 @@ release process.
 
 ### Added
 
+- **Connect an AI assistant: self-service MCP keys (Release 9, phase 60).**
+  Minting an MCP key lived behind `withAdminAuth`, and since a key acts as its
+  creator, an admin had to sign in as a person to connect their assistant. A
+  Connect card on `/resparkable/settings`
+  (`components/resparkable/settings/connect-assistant-card.tsx`) now mints one
+  for the workspace the page is open on, through four routes under
+  `/api/v1/resparkable/spaces/:spaceId/mcp-keys` (list, generate, `…/:keyId/rotate`,
+  revoke), registered in `RESPARKABLE_API` as `spaceMcpKeys`, `spaceMcpKey` and
+  `spaceMcpKeyRotate`.
+
+  The rules live in `lib/framework/resparkable/mcp/keys.ts`, not the routes:
+  one live key per person per workspace, and every field on the row forced or
+  derived, so `POST` reads no body at all. `liveKeyWhere()` is the single
+  expression of liveness (`isActive` **and** `expiresAt`), and all four readers
+  reach the database through it, because an admin revokes two ways and a surface
+  that checked one would hand fresh secret material to a dead key and report
+  success.
+  Regenerating replaces key material only: it never reactivates a deactivated
+  key and never clears an expiry, so a person cannot undo an administrator's
+  decision from their own settings page.
+
+  `lib/framework/resparkable/mcp/client-snippets.ts` holds one setup snippet per
+  client, each built from an object and serialised so it cannot be invalid JSON.
+  Claude Code, Cursor, VS Code and Windsurf take a bearer header and work.
+  Claude Desktop does not: its remote path is Custom Connectors, which take a
+  URL and then run the server's own sign-in flow. The card names who it cannot
+  serve rather than letting them debug a config that was never going to work.
+  Sunrise ask #49 ([sunrise#820](https://github.com/human-centric-engineering/sunrise/issues/820))
+  asks for OAuth 2.1.
+
+  Org binding waits on Sunrise 0.13, which is untagged: `McpApiKey.orgId` is on
+  upstream `main` only, and is inert at `TENANCY_MODE=single`.
+
+- **`resparkableCapabilityRegistrations()` in `capabilities/index.ts`.** The
+  `(capability, options)` pairs the registration loop consumes verbatim, split
+  out so the guard below is **data a test can read** rather than an argument
+  buried in a call. `registerResparkableCapabilities()` is unchanged in effect.
+
 - **Group erasure, deletion and export (Release 9, phase 48).** Erasing a
   member now settles every group they had joined, inside `eraseUser`'s
   transaction: the last admin's role passes to the longest-standing joined
@@ -2376,6 +2414,50 @@ release process.
 
 
 ### Security
+
+- **An MCP key scope Resparkable cannot read is now refused, not ignored.**
+  `McpApiKey.scope` is an open map that core stores without reading, and a near
+  miss used to work: a key carrying `{ spaceId: … }` instead of
+  `{ resparkableSpaceId: … }` found no hint, took the no-hint path, and acted in
+  its holder's **default** workspace while looking correctly scoped in the admin
+  list. Captures went quietly into the wrong brain.
+
+  Every Resparkable capability now registers with
+  `refuseUnusableResparkableScope` (`lib/framework/resparkable/mcp/key-scope.ts`),
+  which classifies an authoritative carrier as unscoped, scoped or unusable and
+  denies the dispatch on the third with the correct key in the message.
+  `key-scope-roster.test.ts` fails if a capability is ever registered without it.
+
+  **This is a behaviour change for existing keys**: an admin-minted key whose
+  scope names anything but `resparkableSpaceId`, the legacy `resparkableUserId`
+  spelling included, stops working and must be corrected. That is the point. The
+  legacy spelling only ever worked by coincidence on a one-workspace account and
+  would have been wrong the day its owner joined a group. Scheduled runs are
+  unaffected and pass through untouched, which they must: the phase 45 migration
+  wrote both spellings onto every schedule row, so classifying them would stop
+  every scheduled run in the install.
+
+- **Erasure deletes every MCP key of an erased person's that names a
+  workspace.** `McpApiKey.createdBy` is `onDelete: SetNull` in core, so such a
+  key survives erasure with a null creator, and it is **not** inert:
+  `requireResparkableSpace()` falls to its scheduled-run route when there is no
+  user, and that route reads the carrier and returns a scope with the `owner`
+  role and no membership check. `dropResparkableConnectionKeys()` therefore
+  tests "does this carrier name a workspace", the question that route actually
+  asks, which includes the legacy `resparkableUserId` spelling the dispatch
+  guard rejects as unusable. A key carrying no workspace at all reaches nothing
+  and is left to core's `SetNull`: deleting an install's service keys because
+  the admin who minted them left would be an outage dressed as compliance.
+
+- **Changing a connection key requires a browser session.** Minting,
+  regenerating and revoking all refuse an `isApiKeySession` caller, before the
+  workspace is even resolved, for the reason `/api/v1/user/api-keys` does: a
+  credential minting a credential is privilege laundering, and the scope the
+  first was issued with would bound nothing. Revoking is included because
+  guarding minting and leaving revocation open is half a rule, and a
+  narrowly-scoped key could otherwise list its owner's keys and destroy every
+  one of them. Reading the list is not refused: it returns prefixes and
+  timestamps, never a hash.
 
 - **A cascaded item no longer hands the reader its own children.**
   `GET /api/v1/resparkable/shared/[type]/[id]` expanded children

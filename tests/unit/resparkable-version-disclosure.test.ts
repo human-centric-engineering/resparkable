@@ -123,6 +123,16 @@ const RESOLVABLE_EXEMPT: ReadonlyArray<{ test: (spec: string) => boolean; why: s
  * bearer API key via `authenticateMcpRequest` and answers JSON-RPC 401 before
  * it reads any config.
  *
+ * The last three are phase 60's connection-key routes. They are `withAuth`, so
+ * a signed-in person only, and they are in the closure for the same transitive
+ * reason as most of the list: `mcp/keys.ts` calls `getMcpServerConfig()` to
+ * find out whether the server is switched on. **What they return from it is one
+ * boolean.** `ConnectionKeysView` carries `serverEnabled` and the keys; the
+ * version is read, never forwarded, and `mcp-keys.routes.test.ts` asserts the
+ * response shape. That is worth writing down because the risk this file guards
+ * is disclosure rather than reachability, and these three reach without
+ * disclosing.
+ *
  * Most reach the constant only transitively, through
  * `lib/orchestration/mcp/config.ts`, which defaults `serverVersion` to it.
  */
@@ -150,6 +160,9 @@ const ALLOWED_ROUTES: readonly string[] = [
   'app/api/v1/admin/orchestration/workflows/route.ts',
   'app/api/v1/admin/stats/route.ts',
   'app/api/v1/mcp/route.ts',
+  'app/api/v1/resparkable/spaces/[spaceId]/mcp-keys/[keyId]/rotate/route.ts',
+  'app/api/v1/resparkable/spaces/[spaceId]/mcp-keys/[keyId]/route.ts',
+  'app/api/v1/resparkable/spaces/[spaceId]/mcp-keys/route.ts',
 ];
 
 /** Segments only reachable after signing in. */

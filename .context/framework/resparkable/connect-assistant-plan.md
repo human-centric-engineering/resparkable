@@ -1,12 +1,46 @@
 # Connect an AI assistant: self-service MCP keys
 
-**Status: PROPOSED, 2026-09-19.** Not scheduled. Suggested as phase 60 (the
-next free number after `plan.md` §23's 57–59); confirm the number before it is
-built. Extends [`mcp.md`](./mcp.md), which is the operator-facing half of the
-same feature.
+**Status: BUILT as phase 60, 2026-09-20.** Extends [`mcp.md`](./mcp.md), which
+is the operator-facing half of the same feature and now carries the
+person-facing path too.
 
-**Build after merging Sunrise 0.13.** That release binds every MCP key to an org
-(§106, below), and the mint route has to stamp it.
+## What changed between this plan and what was built
+
+Three things, and each is a place the plan was written against a world that has
+since moved.
+
+**1. It did not wait for Sunrise 0.13, because 0.13 does not exist.** The
+gate below reads "build after merging Sunrise 0.13", and it is there for D3
+alone: stamping `McpApiKey.orgId` at mint. That column is not in any released
+tag. It arrived on upstream `main` in
+[#815](https://github.com/human-centric-engineering/sunrise/pull/815), untagged,
+beside in-flight §106/§107 tenancy work including an RLS spike. Merging an
+unreleased mid-refactor branch into the fork to gain one nullable column that is
+inert at `TENANCY_MODE=single`, which is how Resparkable runs, was the worse
+trade. **D3 is deferred, not dropped**: `mcp/keys.ts` says in its own header
+where the line goes when the column lands, which is `orgId: orgForMint()` on the
+create and nothing at all on rotate.
+
+**2. Claude Desktop moved to the "cannot connect" list.** D7 says to check the
+client list at build time because it moves, and it had. Claude Desktop's remote
+path is Custom Connectors: a URL, and then the server's own sign-in flow. There
+is no header field, and its config file's server entries are local
+`command`/`args` ones. So it sits with the web chat assistants rather than with
+Claude Code. Verified against the clients' own documentation on 2026-09-20, and
+`client-snippets.ts` records the date so the next reader knows how stale it is.
+The four that do work are Claude Code, Cursor, VS Code and Windsurf.
+
+**3. The service needed an ESLint exemption the plan did not anticipate.**
+`lib/framework/eslint.config.mjs` lets only `repo/**` and `access/**` reach
+Prisma. `McpApiKey` is a core-owned table with no `spaceId` column, so no
+`SpaceScope` can filter it, and putting it in `repo/**` would have meant the
+first repo function keyed on the **actor** — which §23.2 forbids and
+`isolation.test.ts` asserts against. `mcp/keys.ts` is exempted alongside
+`db-drift.ts`, and `keys-boundary.test.ts` holds that exemption to the one
+table by reading the source.
+
+Everything else landed as designed, including the D1 guard, D2's one-predicate
+rule, D4, D5 and D6.
 
 **Modelled on HCE Hub's Connect tab.** The Hub (`human-centric-engineering/hce-hub`)
 already ships member self-service MCP keys, and has paid for several lessons
@@ -129,7 +163,9 @@ past `expiresAt`. MCP auth rejects both. If the member surface only checks one,
 the card shows a key that cannot connect, and Regenerate writes fresh secret
 material onto a dead row and reports success.
 
-So one predicate, `liveKeyWhere()` / `isLiveKey()`, is used by all four readers:
+So one expression of the rule, `liveKeyWhere()`, is used by all four readers
+(as built: the plan proposed an `isLiveKey()` predicate beside it, and nothing
+called the predicate, so two encodings of one rule became one):
 the one-per-workspace cap, the list, regenerate and revoke. And:
 
 - **Regenerate does not reactivate** a deactivated key and **does not clear**

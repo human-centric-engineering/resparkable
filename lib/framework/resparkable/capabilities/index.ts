@@ -54,8 +54,10 @@ import {
   ResparkableListTasksCapability,
   ResparkableUpsertTaskCapability,
 } from '@/lib/framework/resparkable/capabilities/tasks';
+import { refuseUnusableResparkableScope } from '@/lib/framework/resparkable/mcp/key-scope';
 import { registerAppCapability } from '@/lib/orchestration/capabilities';
 import type { BaseCapability } from '@/lib/orchestration/capabilities';
+import type { CapabilityRegisterOptions } from '@/lib/orchestration/capabilities/types';
 
 /**
  * Every Resparkable capability handler, constructed fresh.
@@ -93,9 +95,40 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
   ];
 }
 
+/**
+ * What this tier hands the registry: every handler, each with its options.
+ *
+ * Split out from the registration loop below so the options are **data a test
+ * can read** rather than an argument buried in a call. The roster test asserts
+ * over this list; the loop consumes it verbatim and adds nothing, which is what
+ * makes that assertion worth making.
+ *
+ * **Every capability carries the same guard, and this function is what makes
+ * that true** rather than a reviewer's attention.
+ * `refuseUnusableResparkableScope` refuses a dispatch whose authoritative scope
+ * carrier is a shape this tier cannot read: the difference between an MCP key
+ * that says it is scoped to a workspace and one that quietly acts in the
+ * holder's default instead. `lib/framework/resparkable/mcp/key-scope.ts` is the
+ * whole argument.
+ *
+ * Nothing here is per-capability yet, and the shape says so: the guard gates on
+ * the dispatch context, which is the same question whatever tool is being
+ * called. A capability that one day needs its own option gets it here, beside
+ * the guard, rather than by breaking out of the loop.
+ */
+export function resparkableCapabilityRegistrations(): Array<{
+  capability: BaseCapability;
+  options: CapabilityRegisterOptions;
+}> {
+  return resparkableCapabilityHandlers().map((capability) => ({
+    capability,
+    options: { guard: refuseUnusableResparkableScope },
+  }));
+}
+
 /** Register the twenty-three. Idempotent — the registry keys on slug. */
 export function registerResparkableCapabilities(): void {
-  for (const capability of resparkableCapabilityHandlers()) {
-    registerAppCapability(capability);
+  for (const { capability, options } of resparkableCapabilityRegistrations()) {
+    registerAppCapability(capability, options);
   }
 }
