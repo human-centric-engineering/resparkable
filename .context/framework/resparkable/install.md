@@ -816,24 +816,38 @@ lets you change it rather than pretending the conflict doesn't exist.
 Nothing is written to the database until you save, so a fresh install runs on the
 defaults with no settings row at all.
 
-### 4.2 Reach the brain from Claude Code — MCP _(phase 7b)_
+### 4.2 Reach the brain from an AI assistant — MCP _(phase 7b, self-service in phase 60)_
 
 Optional, and the highest value-per-effort thing in the install. Resparkable seeds
 eight `McpExposedTool` rows and three `McpExposedPrompt` rows; the rest is core's
 MCP server, which is **off by default**.
 
-1. `/admin/orchestration/mcp/settings` → enable the server.
-2. `/admin/orchestration/mcp/keys` → create a key with `tools:list`,
-   `tools:execute`, `prompts:read`. The `smcp_…` plaintext is shown **once**.
-   **Mint it as the person whose brain it is** — `CapabilityContext.userId`
-   comes from the key's creator, and that is the only thing deciding which brain
-   the key reaches.
-3. Point a client at it:
+**Step 1 is still yours, and nothing works until you do it.** Once you have,
+each person connects their own assistant without you.
+
+1. `/admin/orchestration/mcp/settings` → enable the server. Until this is on,
+   the Connect card on `/resparkable/settings` tells people so and refuses to
+   mint, which is the right failure but is still your switch to flip.
+2. Tell people the card is there. `/resparkable/settings` → **Connect an AI
+   assistant** generates a key for the workspace they have open, shows it once,
+   and gives them the snippet for their client.
+3. Mint by hand only for a **service key**, or for somebody who cannot reach the
+   card: `/admin/orchestration/mcp/keys`, with `tools:list`, `tools:execute`,
+   `prompts:read`. **Mint it as the person whose brain it is** —
+   `CapabilityContext.userId` comes from the key's creator, and that is the only
+   thing deciding which brain the key reaches. If you put anything in the scope
+   field, read `mcp.md`'s scope table first: a near miss is refused outright,
+   deliberately.
+4. Point a client at it:
 
    ```bash
    claude mcp add --transport http resparkable https://your-host/api/v1/mcp \
      --header "Authorization: Bearer smcp_..."
    ```
+
+   Claude Code, Cursor, VS Code and Windsurf take a header and work. Claude
+   Desktop and the web chat assistants only connect by signing you in, which
+   this server cannot offer yet.
 
 **Read [`mcp.md`](./mcp.md) before assuming `scopedAgentId` restricts a key.** It
 does not: tool scoping is default-allow, Resparkable's bindings work by absence, and

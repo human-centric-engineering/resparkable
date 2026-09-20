@@ -50,6 +50,7 @@ import {
   cleanupResparkableBlobs,
   registerResparkableErasureHook,
   resparkableBlobPrefix,
+  dropResparkableConnectionKeys,
   scrubGranteeEmail,
   scrubResparkableInTransaction,
 } from '@/lib/framework/resparkable/privacy/erasure';
@@ -69,6 +70,13 @@ function tx(email: string | null) {
     resparkableGroupInvite: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
     resparkableComment: { deleteMany: vi.fn() },
     resparkableSpace: { delete: vi.fn() },
+    // The one core table the hook reaches. `McpApiKey.createdBy` is
+    // `onDelete: SetNull`, so without this the key survives erasure with a null
+    // creator: a live credential belonging to a person who asked to be erased.
+    mcpApiKey: {
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
   };
 }
 
@@ -217,6 +225,87 @@ describe('scrubResparkableInTransaction', () => {
     await expect(
       scrubResparkableInTransaction({ tx: tx('b@example.com') as never, userId: 'user_b' })
     ).rejects.toThrow('deadlock');
+  });
+});
+
+describe('dropResparkableConnectionKeys', () => {
+  const SPACE_KEY = 'resparkableSpaceId';
+
+  /** A key row as the transaction would hand it back. */
+  function key(id: string, scope: unknown) {
+    return { id, scope };
+  }
+
+  it('deletes the workspace keys this person minted for themselves', async () => {
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
+    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['key_1'] } } });
+  });
+
+  it('leaves an administrator’s unscoped service key to core’s SetNull', async () => {
+    // Deleting an install's service keys because the admin who minted them left
+    // would be an outage dressed up as compliance. The person's identity leaves
+    // via `SetNull`; the operational credential stays.
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_service', null)]);
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('leaves a key whose carrier this tier cannot read', async () => {
+    // A carrier nobody can classify was typed by an admin, not minted by the
+    // Connect card, so it gets an admin key's fate.
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_odd', { spaceId: 'spc_x' })]);
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('takes only the scoped ones out of a mixed set', async () => {
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([
+      key('key_personal', { [SPACE_KEY]: 'user_b' }),
+      key('key_service', null),
+      key('key_group', { [SPACE_KEY]: 'spc_x' }),
+    ]);
+    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 2 });
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['key_personal', 'key_group'] } },
+    });
+  });
+
+  it('reads only this person’s keys', async () => {
+    const client = tx('b@example.com');
+
+    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.findMany).toHaveBeenCalledWith({
+      where: { createdBy: 'user_b' },
+      select: { id: true, scope: true },
+    });
+  });
+
+  it('runs inside the erasure transaction, as part of the scrub', async () => {
+    // Through `ctx.tx`, so a key deletion cannot survive an erasure that rolls
+    // back, and cannot be forgotten by a caller that skips this function.
+    const client = tx('b@example.com');
+    client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
+    client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
+
+    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+
+    expect(client.mcpApiKey.deleteMany).toHaveBeenCalled();
   });
 });
 

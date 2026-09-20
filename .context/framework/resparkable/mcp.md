@@ -93,17 +93,52 @@ post-create, because a rename breaks every client that bookmarked the command.
 
 ## Setting it up
 
-Three steps, all in the admin UI, none of them Resparkable-specific.
+There are two paths now, and for one person connecting their own assistant the
+first one is the whole answer.
+
+### For a person: the Connect card _(phase 60)_
+
+`/resparkable/settings` → **Connect an AI assistant**. Generate, copy the key,
+paste the snippet for your client. Nothing to choose: the key is minted for the
+workspace the page is open on, with the three scopes below, acting as you.
+
+One live key per person per workspace. Regenerate replaces the secret on the
+same key; Revoke deletes it. An operator still has to have switched the server
+on first, and the card says so plainly when they have not.
+
+The routes behind it are
+`/api/v1/resparkable/spaces/:spaceId/mcp-keys`; the rules are in
+[`lib/framework/resparkable/mcp/keys.ts`](../../../lib/framework/resparkable/mcp/keys.ts).
+
+**Which assistants can use one of these.** Core's MCP server is bearer-only, so
+the dividing line is whether a client has somewhere to put a header. Claude
+Code, Cursor, VS Code and Windsurf do, and the card gives each its own snippet.
+**Claude Desktop does not**: its remote-server path is Custom Connectors, which
+take a URL and then run the server's own sign-in flow, and there is no header
+field. It sits with the web chat assistants, which the card names. OAuth 2.1
+would fix all of them at once and is a core change (ask #49).
+
+### For an operator: minting by hand
+
+Still the right path for a service key, or for a key on behalf of someone who
+cannot reach the card.
 
 1. **Turn the server on** — `/admin/orchestration/mcp/settings`, set
-   `isEnabled`. Off by default.
+   `isEnabled`. Off by default, and nothing else works until it is on.
 2. **Mint a key** — `/admin/orchestration/mcp/keys`. Scopes: `tools:list`,
    `tools:execute`, `prompts:read`. The plaintext (`smcp_…`) is shown **once**.
-   Set `scopedAgentId` to `resparkable-companion` for cost attribution — but read
-   [the gotcha](#the-gotcha-first) before treating it as a restriction.
    The key's **creator is the brain it reaches**, so mint it as the person whose
    brain it is.
-3. **Point a client at it:**
+
+   There is **no `scopedAgentId` field on this form**, and that is fine: it
+   narrows nothing ([the gotcha](#the-gotcha-first)). It buys cost attribution
+   and knowledge-grant resolution, and if you want those, set the column
+   directly.
+
+3. **Scope it to a workspace, or leave it empty.** See the next section, which
+   is the part worth reading before typing into the scope field.
+
+4. **Point a client at it:**
 
    ```bash
    claude mcp add --transport http resparkable https://your-host/api/v1/mcp \
@@ -111,6 +146,36 @@ Three steps, all in the admin UI, none of them Resparkable-specific.
    ```
 
    Then `what should I work on today?` and `capture that` work in the editor.
+
+## The scope field: one shape, and everything else is refused
+
+`McpApiKey.scope` is an open JSON map. Core names no keys in it and reads none,
+so the admin form will store whatever you type. Resparkable reads exactly one
+key, and since phase 60 it **refuses** a carrier it cannot read rather than
+ignoring it.
+
+| What you type                      | What happens                                            |
+| ---------------------------------- | ------------------------------------------------------- |
+| empty                              | The key acts in its creator's **default** workspace     |
+| `{ "resparkableSpaceId": "<id>" }` | The key acts in that workspace, membership permitting   |
+| anything else                      | Every tool call is refused, with the fix in the message |
+
+The middle row wants the **canonical space id**, not a slug and not a group id.
+Membership is re-checked on every call, so a key stops reaching a group
+workspace the moment its owner leaves it, with no cleanup job.
+
+**Why the third row is a refusal rather than a shrug.** A near miss such as
+`{ "spaceId": "…" }` used to work: the reader found no `resparkableSpaceId`,
+took the no-hint path, and the key acted in the creator's default workspace. It
+looked correctly scoped in the admin list and quietly wrote captures into the
+wrong brain. That is the failure the refusal exists to make impossible, and it
+is why the legacy `resparkableUserId` spelling is refused here too even though
+it appears to work on a one-workspace account.
+
+Scheduled runs are unaffected: their scope carrier is a different shape and is
+passed through untouched.
+[`key-scope.ts`](../../../lib/framework/resparkable/mcp/key-scope.ts) is the
+whole argument.
 
 A running server caches both lists for five minutes. After a re-seed, restart or
 wait before expecting `tools/list` to change.

@@ -67,6 +67,7 @@
  * definition of what erasure means, and the two drift.
  */
 
+import { classifyStoredKeyScope } from '@/lib/framework/resparkable/mcp/key-scope';
 import { settleGroupsAfterErasure } from '@/lib/framework/resparkable/services/membership';
 import { logger } from '@/lib/logging';
 import {
@@ -176,6 +177,62 @@ export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
 }
 
 /**
+ * Delete the workspace MCP keys this person minted for themselves.
+ *
+ * ## Why the cascade cannot do this one
+ *
+ * `McpApiKey.createdBy` is `onDelete: SetNull` in core, and core's schema is
+ * not ours to change. So after erasure the key **survives** with
+ * `createdBy: null`. It reaches nothing, because every Resparkable capability
+ * refuses to run without a user and `requireResparkableSpace()` throws on a
+ * null one. But it still authenticates, still lists tools, and still writes
+ * audit rows: a live credential belonging to a person who asked to be erased.
+ *
+ * ## Why only the scoped ones
+ *
+ * A key whose scope classifies as **scoped** is one this tier minted from the
+ * person's own settings page. It is theirs, they made it, and it goes.
+ *
+ * An unscoped or unusable carrier means an administrator typed it at
+ * `/admin/orchestration/mcp/keys`. That is the organisation's service
+ * credential that happens to record who created it, and `SetNull` is exactly
+ * the right fate for it: the person's identity leaves, the operational thing
+ * the organisation depends on stays. Deleting an install's service keys because
+ * the admin who minted them left would be an outage dressed as compliance.
+ *
+ * `classifyResparkableKeyScope` draws that line, and it is the same function
+ * the dispatch guard uses, so "a key this tier considers its own" has one
+ * definition rather than two.
+ *
+ * Hook caveat applies, as everywhere in this file: if the registry is missing
+ * at erasure time this does not run, and the key is left to `SetNull`. That is
+ * the honest residue, and it is a key that reaches no data.
+ */
+export async function dropResparkableConnectionKeys(ctx: ErasureTxContext): Promise<void> {
+  const keys = await ctx.tx.mcpApiKey.findMany({
+    where: { createdBy: ctx.userId },
+    select: { id: true, scope: true },
+  });
+
+  const ours = keys
+    .filter((key) => classifyStoredKeyScope(key.scope).kind === 'scoped')
+    .map((key) => key.id);
+
+  if (ours.length === 0) return;
+
+  const removed = await ctx.tx.mcpApiKey.deleteMany({ where: { id: { in: ours } } });
+
+  logger.info('Resparkable connection keys removed for erased user', {
+    userId: ctx.userId,
+    removed: removed.count,
+    // The difference is the admin-minted keys deliberately left behind. Logged
+    // so an operator reading this line can see the decision was made rather
+    // than wonder whether the sweep missed some.
+    leftToCore: keys.length - ours.length,
+  });
+}
+
+/**
  * Everything the tier does inside the erasure transaction, in one function.
  *
  * Succession runs first. Nothing it does depends on the email scrub, but a
@@ -192,6 +249,7 @@ export async function scrubResparkableInTransaction(ctx: ErasureTxContext): Prom
   }
 
   await scrubGranteeEmail(ctx);
+  await dropResparkableConnectionKeys(ctx);
 }
 
 /**

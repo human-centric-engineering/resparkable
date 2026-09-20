@@ -21,6 +21,20 @@ export const RESPARKABLE_API = {
    * of them would be circular.
    */
   SPACES: '/api/v1/resparkable/spaces',
+  /**
+   * A person's own MCP key for one workspace, for the Connect card.
+   *
+   * Builders rather than static paths, because the workspace is a path segment
+   * here rather than the usual `?space=`. It has to be: a key is minted *for* a
+   * named workspace, and a credential route that read the workspace from a
+   * query string the browser can drop would be one refresh away from minting
+   * against the wrong brain.
+   */
+  spaceMcpKeys: (spaceId: string): string => `/api/v1/resparkable/spaces/${spaceId}/mcp-keys`,
+  spaceMcpKey: (spaceId: string, keyId: string): string =>
+    `/api/v1/resparkable/spaces/${spaceId}/mcp-keys/${keyId}`,
+  spaceMcpKeyRotate: (spaceId: string, keyId: string): string =>
+    `/api/v1/resparkable/spaces/${spaceId}/mcp-keys/${keyId}/rotate`,
   /** Badge numbers for the shell — cheap enough to read on every navigation. */
   COUNTS: '/api/v1/resparkable/counts',
 
