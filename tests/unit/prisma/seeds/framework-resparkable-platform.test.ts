@@ -26,6 +26,8 @@
  * - `idempotentHint` is left null so the capability's own value governs
  * - A missing `AiCapability` throws rather than warns
  * - Prompt re-seed refreshes the description and nothing else
+ * - One `McpExposedResource` row per manifest entry, created enabled
+ * - A resource's `uri` and `resourceType` are never rewritten on re-seed
  * - The dataset name carries the content hash; cases are written once
  * - An unreferenced superseded revision is deleted; one with runs is kept
  *
@@ -37,6 +39,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   RESPARKABLE_MCP_PROMPTS,
+  RESPARKABLE_MCP_RESOURCES,
   RESPARKABLE_MCP_TOOLS,
 } from '@/lib/framework/resparkable/mcp/exposure';
 import { RESPARKABLE_TRIAGE_CASES } from '@/lib/framework/resparkable/evaluations/triage-cases';
@@ -56,6 +59,7 @@ function mcpCtx(capabilityRow: { id: string } | null = { id: 'cap-1' }) {
   const calls = {
     toolUpsert: vi.fn().mockResolvedValue({}),
     promptUpsert: vi.fn().mockResolvedValue({}),
+    resourceUpsert: vi.fn().mockResolvedValue({}),
     capabilityFind: vi.fn().mockResolvedValue(capabilityRow),
   };
 
@@ -64,6 +68,7 @@ function mcpCtx(capabilityRow: { id: string } | null = { id: 'cap-1' }) {
       aiCapability: { findUnique: calls.capabilityFind },
       mcpExposedTool: { upsert: calls.toolUpsert },
       mcpExposedPrompt: { upsert: calls.promptUpsert },
+      mcpExposedResource: { upsert: calls.resourceUpsert },
     },
     logger: logger(),
   } as unknown as SeedContext;
@@ -147,6 +152,30 @@ describe('framework-resparkable/006-mcp', () => {
     for (const [arg] of calls.promptUpsert.mock.calls as [UpsertCall][]) {
       expect(Object.keys(arg.update)).toEqual(['description']);
       expect(arg.create.isEnabled).toBe(true);
+    }
+  });
+
+  it('writes one resource row per manifest entry, keyed by its URI', async () => {
+    const { ctx, calls } = mcpCtx();
+
+    await mcpSeed.run(ctx);
+
+    expect(calls.resourceUpsert).toHaveBeenCalledTimes(RESPARKABLE_MCP_RESOURCES.length);
+    const uris = (calls.resourceUpsert.mock.calls as [UpsertCall][]).map(([arg]) => arg.where.uri);
+    expect(uris).toEqual(RESPARKABLE_MCP_RESOURCES.map((r) => r.uri));
+  });
+
+  it('never rewrites a resource’s join to its handler, or its isEnabled', async () => {
+    // `uri` and `resourceType` together are what ties a row to a registered
+    // handler. Rewriting either on an existing row would repoint it without
+    // the operator asking, and `isEnabled` is the same decision a tool's is.
+    const { ctx, calls } = mcpCtx();
+
+    await mcpSeed.run(ctx);
+
+    for (const [arg] of calls.resourceUpsert.mock.calls as [UpsertCall][]) {
+      expect(arg.create.isEnabled).toBe(true);
+      expect(Object.keys(arg.update).sort()).toEqual(['description', 'mimeType', 'name']);
     }
   });
 });

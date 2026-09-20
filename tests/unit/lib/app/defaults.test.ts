@@ -79,6 +79,7 @@ import { registerAppCapabilities } from '@/lib/orchestration/capabilities';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import { buildContext } from '@/lib/orchestration/chat/context-builder';
 import { RESPARKABLE_CAPABILITIES } from '@/lib/framework/resparkable/capabilities/catalogue';
+import { RESPARKABLE_MCP_RESOURCES } from '@/lib/framework/resparkable/mcp/exposure';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
 import { initAppCapabilities } from '@/lib/app/capabilities';
 import { initAppContextContributors } from '@/lib/app/context-contributors';
@@ -601,13 +602,19 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/mcp-resources.ts',
     risk: 'a stray handler would expose app data over MCP to every install\u2019s connected clients',
+    // FORK (Resparkable): Sunrise asserts an empty registry. Resparkable fills
+    // this seam with the two brain resources, so the row pins the set instead:
+    // a third registration fails here, which is the point in the seam whose
+    // stray handler is readable by every connected client. The scheme
+    // assertion is unchanged and is doing more work than it looks: these
+    // register under core's own `resparkable` scheme rather than inventing
+    // one, so the allowed list must still be exactly one entry.
     assert: () => {
       __resetAppMcpResourcesForTests();
       // Both readers trigger the lazy init, so this exercises the REAL seam.
-      expect(listAppMcpResourceTypes()).toEqual([]);
-      // FORK (Resparkable): the core scheme constant is `resparkable`, not
-      // `sunrise` — `CORE_URI_SCHEME` in lib/orchestration/mcp/resource-registry.ts.
-      // The row's intent is unchanged: core's own scheme, and nothing else.
+      expect(listAppMcpResourceTypes().sort()).toEqual(
+        RESPARKABLE_MCP_RESOURCES.map((r) => r.resourceType).sort()
+      );
       expect(listAllowedMcpResourceUriSchemes()).toEqual(['resparkable']);
     },
   },

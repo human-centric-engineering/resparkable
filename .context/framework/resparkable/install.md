@@ -819,8 +819,9 @@ defaults with no settings row at all.
 ### 4.2 Reach the brain from an AI assistant — MCP _(phase 7b, self-service in phase 60)_
 
 Optional, and the highest value-per-effort thing in the install. Resparkable seeds
-eight `McpExposedTool` rows and three `McpExposedPrompt` rows; the rest is core's
-MCP server, which is **off by default**.
+eight `McpExposedTool` rows, three `McpExposedPrompt` rows and two
+`McpExposedResource` rows; the rest is core's MCP server, which is **off by
+default**.
 
 **Step 1 is still yours, and nothing works until you do it.** Once you have,
 each person connects their own assistant without you.
@@ -831,9 +832,10 @@ each person connects their own assistant without you.
 2. Tell people the card is there. `/resparkable/settings` → **Connect an AI
    assistant** generates a key for the workspace they have open, shows it once,
    and gives them the snippet for their client.
-3. Mint by hand only for a **service key**, or for somebody who cannot reach the
-   card: `/admin/orchestration/mcp/keys`, with `tools:list`, `tools:execute`,
-   `prompts:read`. **Mint it as the person whose brain it is** —
+3. Mint by hand only for a **service key**, for somebody who cannot reach the
+   card, or to add `resources:read`: `/admin/orchestration/mcp/keys`, with
+   `tools:list`, `tools:execute`, `prompts:read`. **Mint it as the person whose
+   brain it is** —
    `CapabilityContext.userId` comes from the key's creator, and that is the only
    thing deciding which brain the key reaches. If you put anything in the scope
    field, read `mcp.md`'s scope table first: a near miss is refused outright,
@@ -855,7 +857,17 @@ every enabled tool is callable by every key. The seeded list — seven reads plu
 `resparkable_capture` — is the access control, and nothing that creates structure is
 on it.
 
-Both lists are cached for five minutes on a running server. Re-seed then
+**The two resources need a scope the card does not mint.**
+`resparkable://today` and `resparkable://project/{slug}` are read through
+`resources/read`, which core gates on `resources:read`, and a card key carries
+`tools:list`, `tools:execute` and `prompts:read` only. That is deliberate: the
+same scope grants core's own resources, and an unscoped key runs
+`resparkable://knowledge/search` system-wide. Add it to a hand-minted key when
+you want the cheaper reads, and see
+[`mcp.md`](./mcp.md#they-need-a-scope-the-connect-card-does-not-mint) for the
+rest of the trade.
+
+These lists are cached for five minutes on a running server. Re-seed then
 restart, or wait.
 
 ### 4.3 Two-second capture from a phone — iOS Shortcut _(phase 7b)_

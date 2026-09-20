@@ -18,6 +18,40 @@ release process.
 
 ### Added
 
+- **The brain as two MCP resources: `resparkable://today` and
+  `resparkable://project/{slug}`.** A client reads a resource without spending a
+  tool call: it attaches the content to the conversation, where a tool call
+  costs a round trip and a decision by the model to make it. Both were planned
+  in phase 7b and deferred, because a fork could not register a resource handler
+  (Sunrise ask #32). That seam landed in `v0.10.0`
+  ([sunrise#563](https://github.com/human-centric-engineering/sunrise/issues/563)),
+  so these now ship: rows seeded by `framework-resparkable/006-mcp` from
+  `RESPARKABLE_MCP_RESOURCES` in `mcp/exposure.ts`, handlers in
+  `lib/framework/resparkable/mcp/resources.ts`, registered through
+  `registerResparkableMcpResources()` from `lib/app/mcp-resources.ts`. Reads go
+  through `buildToday()` and `buildProjectView()`, the same functions the Today
+  page and the project page serve, so an assistant and a person see one ranking
+  rather than two implementations of it.
+
+  **This is the tier's first MCP code, and the reason is the guard gap.**
+  `tools/call` arrives with the key's owner and scope carrier folded into
+  `CapabilityContext`, runs `refuseUnusableResparkableScope` and resolves a
+  workspace through membership. `resources/read` runs no guards and is handed no
+  carrier, so `resources.ts` repeats all three answers itself: no owner, no
+  read; a carrier this tier cannot read is refused rather than ignored; the
+  workspace is re-resolved through membership on every call. It reads
+  `McpApiKey.scope` back off the row to do the middle one, and refuses a key
+  revoked mid-request rather than reading a missing row as unscoped and
+  answering about the default workspace.
+
+  **A Connect-card key cannot read them.** Core gates `resources/read` on
+  `resources:read`, which `CONNECTION_KEY_SCOPES` deliberately omits: the same
+  scope grants core's own resources, and an unscoped key runs
+  `resparkable://knowledge/search` system-wide. Until a resource type can name
+  its own governing scope upstream, these are for a key minted at
+  `/admin/orchestration/mcp/keys` with `resources:read` added. Nothing is lost
+  either way: `resparkable_get_snapshot` covers the same ground as a tool.
+
 - **Connect an AI assistant: self-service MCP keys (Release 9, phase 60).**
   Minting an MCP key lived behind `withAdminAuth`, and since a key acts as its
   creator, an admin had to sign in as a person to connect their assistant. A

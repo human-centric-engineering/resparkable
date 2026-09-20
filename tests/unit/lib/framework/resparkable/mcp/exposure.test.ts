@@ -35,8 +35,10 @@ import {
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import {
   RESPARKABLE_MCP_PROMPTS,
+  RESPARKABLE_MCP_RESOURCES,
   RESPARKABLE_MCP_TOOLS,
 } from '@/lib/framework/resparkable/mcp/exposure';
+import { McpResourceType } from '@/types/mcp';
 
 const exposedSlugs = RESPARKABLE_MCP_TOOLS.map((t) => t.slug);
 const exposed = new Set<string>(exposedSlugs);
@@ -96,6 +98,50 @@ describe('Resparkable MCP tool exposure', () => {
     for (const tool of RESPARKABLE_MCP_TOOLS) {
       expect(tool.title.length).toBeGreaterThan(0);
       expect(tool.rationale.length).toBeGreaterThan(20);
+    }
+  });
+});
+
+describe('Resparkable MCP resources', () => {
+  it('writes rows core will accept, uniquely', () => {
+    // Same limits as `createExposedResourceSchema`, which the admin route
+    // enforces and the seed bypasses. A row over one of these would seed fine
+    // and then be uneditable in the admin UI.
+    const uris = RESPARKABLE_MCP_RESOURCES.map((r) => r.uri);
+    for (const resource of RESPARKABLE_MCP_RESOURCES) {
+      expect(resource.uri).toMatch(/^[a-z][a-z0-9+.-]*:\/\/.+/);
+      expect(resource.uri.length).toBeLessThanOrEqual(500);
+      expect(resource.uri).toBe(resource.uri.toLowerCase());
+      expect(resource.name.length).toBeGreaterThan(0);
+      expect(resource.name.length).toBeLessThanOrEqual(100);
+      expect(resource.description.length).toBeGreaterThan(0);
+      expect(resource.description.length).toBeLessThanOrEqual(5000);
+      expect(resource.mimeType.length).toBeGreaterThan(0);
+      expect(resource.rationale.length).toBeGreaterThan(20);
+    }
+    expect(new Set(uris).size).toBe(uris.length);
+  });
+
+  it('files each row under a type of its own, never one of core’s', () => {
+    // `registerMcpResourceHandler` refuses to override a built-in and logs
+    // rather than throwing, so a collision here would leave the row seeded,
+    // listed, and answering with core's data instead of the brain's.
+    const builtIn = new Set<string>(Object.values(McpResourceType));
+    const types = RESPARKABLE_MCP_RESOURCES.map((r) => r.resourceType);
+
+    for (const type of types) {
+      expect(type).toMatch(/^[a-z][a-z0-9_]{0,63}$/);
+      expect(builtIn.has(type), `${type} shadows a core resource type`).toBe(false);
+    }
+    expect(new Set(types).size).toBe(types.length);
+  });
+
+  it('keeps every URI under the platform’s own scheme', () => {
+    // Registered as `resparkable` in `mcp/resources.ts`, and core checks the
+    // scheme against the type as a pair. A row under any other scheme is one
+    // the registry will not dispatch.
+    for (const resource of RESPARKABLE_MCP_RESOURCES) {
+      expect(resource.uri.startsWith('resparkable://')).toBe(true);
     }
   });
 });

@@ -1,16 +1,22 @@
 # MCP — the brain, from inside your editor
 
-Eight tools and three prompts, and **not one line of Resparkable MCP code**. The
-whole feature is two kinds of database row seeded by
+Eight tools, three prompts and two resources, seeded by
 [`prisma/seeds/framework-resparkable/006-mcp.ts`](../../../prisma/seeds/framework-resparkable/006-mcp.ts)
 from the manifest at
 [`lib/framework/resparkable/mcp/exposure.ts`](../../../lib/framework/resparkable/mcp/exposure.ts).
 
-That is not a happy accident. `protocol-handler.ts` sets
+**The tools and prompts are rows and nothing else: not one line of Resparkable
+code.** That is not a happy accident. `protocol-handler.ts` sets
 `CapabilityContext.userId` from the key's creator, and every Resparkable capability
 already refuses to run without a `userId` — so per-user isolation over MCP is
 the same owner-scope guard as everywhere else, reached by a different door.
 Phase 6 paid for this without knowing it.
+
+**The two resources are the exception**, because core's resource path is not the
+tool path: it runs no capability guards and hands a handler no scope carrier. So
+[`mcp/resources.ts`](../../../lib/framework/resparkable/mcp/resources.ts) does
+that work itself, and [its section below](#resources-two-and-how-they-are-scoped)
+is about how it reaches the same three answers.
 
 ## The gotcha, first
 
@@ -106,6 +112,10 @@ One live key per person per workspace. Regenerate replaces the secret on the
 same key; Revoke deletes it. An operator still has to have switched the server
 on first, and the card says so plainly when they have not.
 
+A card key reaches the eight tools and the three prompts. It does **not** reach
+the two resources, which need `resources:read`:
+[why](#they-need-a-scope-the-connect-card-does-not-mint).
+
 The routes behind it are
 `/api/v1/resparkable/spaces/:spaceId/mcp-keys`; the rules are in
 [`lib/framework/resparkable/mcp/keys.ts`](../../../lib/framework/resparkable/mcp/keys.ts).
@@ -126,7 +136,14 @@ cannot reach the card.
 1. **Turn the server on** — `/admin/orchestration/mcp/settings`, set
    `isEnabled`. Off by default, and nothing else works until it is on.
 2. **Mint a key** — `/admin/orchestration/mcp/keys`. Scopes: `tools:list`,
-   `tools:execute`, `prompts:read`. The plaintext (`smcp_…`) is shown **once**.
+   `tools:execute`, `prompts:read`, and `resources:read` if you want
+   `resparkable://today` and `resparkable://project/{slug}` as well. The
+   plaintext (`smcp_…`) is shown **once**.
+
+   `resources:read` is the one scope worth a moment's thought: it also grants
+   core's own resources, and an unscoped key runs `resparkable://knowledge/search`
+   system-wide. Add it to your own key freely; think before adding it to one you
+   mint for somebody else.
    The key's **creator is the brain it reaches**, so mint it as the person whose
    brain it is.
 
@@ -177,24 +194,89 @@ passed through untouched.
 [`key-scope.ts`](../../../lib/framework/resparkable/mcp/key-scope.ts) is the
 whole argument.
 
-A running server caches both lists for five minutes. After a re-seed, restart or
-wait before expecting `tools/list` to change.
+A running server caches these lists for five minutes. After a re-seed, restart or
+wait before expecting `tools/list` or `resources/list` to change.
 
-## Resources: deferred, and why
+## Resources: two, and how they are scoped
 
-The plan wanted `resparkable://today` and `resparkable://project/{slug}` as MCP
-**resources** — a client can read a resource without spending a tool call, which
-is the cheaper shape for a read.
+A client can read a resource without spending a tool call: it attaches the
+content to the conversation itself, where a tool call costs a round trip and a
+decision by the model to make it. That is the cheaper shape for a read, and
+these are the two reads a person opens a session already wanting.
 
-They are not built. `resource-registry.ts` dispatches on `resourceType` through
-a module-local `HANDLERS` map of core's four, which is neither exported nor
-merged into, so a fork can insert the row and the registry logs "no handler for
-type" and returns null. Filed as ask #32 in
-[`resparkable-asks.md`](./resparkable-asks.md) →
-[resparkable#540](https://github.com/human-centric-engineering/sunrise/issues/540).
+| Resource                       | What comes back                                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `resparkable://today`          | `buildToday()`, the same payload the Today page renders: ranked tasks, time blocks, inbox count, goals at risk |
+| `resparkable://project/{slug}` | `buildProjectView()`, by the slug in the project's own `/resparkable/projects` URL: status, area, tasks, links |
 
-Nothing is missing as a result — every read path is exposed as a tool and works.
-The cost is one tool call where a resource read would have been free.
+Everything else stays a tool, and the split is not "cheap reads become
+resources". `resparkable_search` takes a query the model composes,
+`resparkable_ideate` spends money, and `resparkable_find_connections` answers a
+question nobody asked at the top of a session. Neither resource takes a read
+away from anybody either: `resparkable_get_snapshot` covers the same ground as
+`resparkable://today`, so a client with no `resources:read` loses the cheaper
+door and keeps every answer.
+
+### They need a scope the Connect card does not mint
+
+Core gates `resources/read` on `resources:read`, and the card's keys carry
+`tools:list`, `tools:execute` and `prompts:read` only. That omission is
+deliberate and is
+[`keys.ts`](../../../lib/framework/resparkable/mcp/keys.ts)'s own written
+reason: core's resources include `resparkable://knowledge/search`, which an
+unscoped key runs system-wide, and a key minted from a settings page should not
+carry a grant nobody asked for.
+
+So **these two resources are reachable by an admin-minted key that carries
+`resources:read`, and not by a card key.** Closing that gap without widening the
+card needs a core seam letting a resource type name its own governing scope
+(sunrise#678, the shape the Hub already uses). Until then the honest summary is:
+the resources are built, and the audience they were built for reaches them by
+minting a key at `/admin/orchestration/mcp/keys`.
+
+### The guard work, which the resource path does not do
+
+`tools/call` arrives with the key's owner and its scope carrier folded into
+`CapabilityContext`, runs `refuseUnusableResparkableScope`, and resolves a
+workspace through `requireResparkableSpace()`. `resources/read` does none of
+that: it hands a handler `ResourceCallContext`, which carries the owner and the
+key id but **not** the carrier, and calls it.
+
+[`mcp/resources.ts`](../../../lib/framework/resparkable/mcp/resources.ts)
+therefore repeats the three answers in the same order, which is what stops the
+second door having its own opinion about which brain it opens:
+
+1. no owner, no read (a key whose creator was erased reaches nothing);
+2. a carrier this tier cannot read is **refused**, by
+   [the same classifier](#the-scope-field-one-shape-and-everything-else-is-refused)
+   the tool path uses;
+3. the workspace is re-resolved through membership on every call.
+
+It reads `McpApiKey.scope` back from the row to do step 2, because core drops
+the carrier on the way to a resource handler. A revoked key is refused rather
+than read as unscoped: a missing row would otherwise classify as "no hint" and
+answer about the person's default workspace.
+
+Refusals come back as resource **content**, not as throws. `readMcpResource`
+catches a throw and returns "Resource handler error" with no detail, which is
+the opposite of what somebody holding a mis-scoped key needs.
+
+### The seam this needed, and when it landed
+
+`resource-registry.ts` used to dispatch through a module-local map of core's
+four handlers that was neither exported nor merged into, so a fork could insert
+a row and the registry would log "no handler for type" and return null. That was
+ask #32 in [`sunrise-asks.md`](./sunrise-asks.md) →
+[sunrise#540](https://github.com/human-centric-engineering/sunrise/issues/540),
+and it is fixed: `registerMcpResourceHandler` exists, and
+[`lib/app/mcp-resources.ts`](../../../lib/app/mcp-resources.ts) is where
+Resparkable calls it.
+
+Core pins its own resources to the `resparkable://` scheme and makes a fork name
+its scheme explicitly, so that fork data cannot quietly list under the
+platform's identity. These two pass `'resparkable'` on purpose: here the
+platform and the tier are the same product, so naming it is a statement rather
+than an inheritance.
 
 ## See also
 

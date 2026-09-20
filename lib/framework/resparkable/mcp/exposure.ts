@@ -166,6 +166,96 @@ export const RESPARKABLE_MCP_TOOLS: readonly ResparkableMcpToolExposure[] = [
   },
 ] as const;
 
+/**
+ * The `resourceType` each Resparkable resource row is filed under.
+ *
+ * Named here rather than in `resources.ts` because `resourceType` is the only
+ * thing tying a seeded row to its handler, and the seed reads this file. A
+ * constant in the handler module and a string literal in the manifest would be
+ * two spellings of one join key, and the failure when they drift is a row that
+ * lists to every client and then answers "no handler for type".
+ */
+export const RESPARKABLE_MCP_RESOURCE_TYPES = {
+  today: 'resparkable_today',
+  project: 'resparkable_project',
+} as const;
+
+export type ResparkableMcpResourceType =
+  (typeof RESPARKABLE_MCP_RESOURCE_TYPES)[keyof typeof RESPARKABLE_MCP_RESOURCE_TYPES];
+
+/** One `McpExposedResource` row, plus the reason it is a resource and not a tool. */
+export interface ResparkableMcpResourceExposure {
+  resourceType: ResparkableMcpResourceType;
+  /**
+   * The stored URI, `{slug}` placeholders and all. Matched **case-sensitively**
+   * by `readMcpResource`, so it is lowercase here and stays that way.
+   */
+  uri: string;
+  /** Shown in the client's resource picker. Max 100 chars. */
+  name: string;
+  /** Max 5000 chars. Read by a model deciding whether to open it. */
+  description: string;
+  mimeType: string;
+  /** Why this one is a resource. Read on every review of the list. */
+  rationale: string;
+}
+
+/**
+ * The two resources.
+ *
+ * ## Why these are resources and the other reads are tools
+ *
+ * A client can read a resource without spending a turn: it attaches the
+ * content to the conversation itself, where a tool call costs a round trip and
+ * a decision by the model to make it. That is the right shape for the two
+ * reads a person opens a session *already wanting*, and the wrong shape for
+ * anything the model should choose to do.
+ *
+ * So the split is not "cheap reads become resources". `resparkable_search`
+ * takes a query the model composes, `resparkable_ideate` spends money, and
+ * `resparkable_find_connections` answers a question nobody asked at the top of
+ * a session. Those stay tools. "What does my day look like" and "what is the
+ * state of this project" are context, and context belongs in the context
+ * window without being asked for.
+ *
+ * ## The scheme
+ *
+ * `resparkable://`, which is the platform's own (`CORE_URI_SCHEME`) and is
+ * passed explicitly at registration rather than inherited. Core requires a
+ * fork to name a scheme so that a fork resource cannot quietly advertise the
+ * platform's identity; here the platform and the tier are the same product, so
+ * naming it is a statement rather than a leak.
+ *
+ * ## Both of these are also reachable as tools
+ *
+ * `resparkable_get_snapshot` overlaps `resparkable://today` and nothing
+ * overlaps the project view, so neither row takes a read away from a client
+ * that cannot use resources. A key without `resources:read` loses the cheaper
+ * door and keeps every answer.
+ */
+export const RESPARKABLE_MCP_RESOURCES: readonly ResparkableMcpResourceExposure[] = [
+  {
+    resourceType: RESPARKABLE_MCP_RESOURCE_TYPES.today,
+    uri: 'resparkable://today',
+    name: 'Today',
+    description:
+      'The ranked task list for today, plus time blocks, inbox count, goals at risk, unreviewed connections and the stored morning briefing. The same payload the Today page renders. Read this at the start of a session instead of asking what to work on.',
+    mimeType: 'application/json',
+    rationale:
+      'The one read a person opens an assistant already wanting. As a tool it costs a round trip and a decision by the model to make it; as a resource the client attaches it and the first answer of the session is already informed.',
+  },
+  {
+    resourceType: RESPARKABLE_MCP_RESOURCE_TYPES.project,
+    uri: 'resparkable://project/{slug}',
+    name: 'Project',
+    description:
+      'One project by slug: its status and area, its open tasks in ranked order, how many tasks it has in total, and what it is connected to. The slug is the one in the /resparkable/projects URL.',
+    mimeType: 'application/json',
+    rationale:
+      'A template, so the client can read the project being discussed rather than searching for it. Addressed by slug because that is what a person can see in their own URL bar and type from memory; an id is neither.',
+  },
+] as const;
+
 /** One `McpExposedPrompt` row. */
 export interface ResparkableMcpPrompt {
   /** `^[a-z][a-z0-9_-]*$`, max 64. Hyphenated — it is typed by a person. */

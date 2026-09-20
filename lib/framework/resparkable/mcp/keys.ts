@@ -60,7 +60,10 @@
 
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
-import { classifyStoredKeyScope } from '@/lib/framework/resparkable/mcp/key-scope';
+import {
+  classifyStoredKeyScope,
+  type ResparkableKeyScope,
+} from '@/lib/framework/resparkable/mcp/key-scope';
 import {
   RESPARKABLE_SCHEDULE_SPACE_KEY,
   type SpaceScope,
@@ -189,6 +192,30 @@ interface KeyRow {
   expiresAt: Date | null;
   createdAt: Date;
   lastUsedAt: Date | null;
+}
+
+/**
+ * The scope carrier on one key by id, classified the way this tier reads it.
+ * `null` when there is no such row.
+ *
+ * Here rather than in the caller because of the exemption above: reading
+ * `McpApiKey` is this file's job, and `mcp/resources.ts` is the caller that
+ * needs it. Core folds a key's carrier into `CapabilityContext` for a
+ * `tools/call` and drops it on the way to a resource handler, so the resource
+ * path has to fetch it back before it can refuse a carrier it cannot read.
+ *
+ * Liveness is not checked, and deliberately: this answers "what does this key
+ * say", not "may it act". Authentication settled the second question before any
+ * caller got here, and re-answering it in a second place is how two definitions
+ * of a dead key start to disagree.
+ */
+export async function readKeyScope(apiKeyId: string): Promise<ResparkableKeyScope | null> {
+  const row = await prisma.mcpApiKey.findUnique({
+    where: { id: apiKeyId },
+    select: { scope: true },
+  });
+
+  return row ? classifyStoredKeyScope(row.scope) : null;
 }
 
 /** Is this row one of *this person's* keys for *this* workspace? */
