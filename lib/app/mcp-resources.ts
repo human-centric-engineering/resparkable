@@ -46,6 +46,18 @@
  *
  * Full guide: CUSTOMIZATION.md §4 · .context/orchestration/mcp.md
  */
+import { registerResparkableMcpResources } from '@/lib/framework/resparkable/mcp/resources';
+
 export function initAppMcpResources(): void {
-  // No app MCP resources by default.
+  // Resparkable's two brain resources, `resparkable://today` and
+  // `resparkable://project/{slug}`. One call, not a pasted pair: Resparkable
+  // owns the set, so a later release can add a third without every host project
+  // editing this file.
+  //
+  // Static import on purpose, matching `lib/app/capabilities.ts`. This runs in
+  // the server route-handler realm, from `resource-registry.ts` immediately
+  // before the first read, and this repo IS the Resparkable tier so the path
+  // always resolves. A host project adds the same two lines; see
+  // `.context/framework/resparkable/install.md`.
+  registerResparkableMcpResources();
 }

@@ -387,3 +387,11 @@ the blanket `resources:read`, through a core seam that lets a resource type name
 its governing scope (sunrise#678). If that seam is in the merged tree,
 `resparkable://today` could be readable by these keys without granting them
 `sunrise://` knowledge search. Separate work.
+
+**Done, 2026-09-20.** Both resources are built:
+[`mcp/resources.ts`](../../../lib/framework/resparkable/mcp/resources.ts), rows
+in `006-mcp`, and `mcp.md`'s deferral section replaced by
+[what they are and how they are scoped](./mcp.md#resources-two-and-how-they-are-scoped).
+The governing-scope seam is **not** in the merged tree, so the second half of
+this aside still stands: reading them needs `resources:read` on a hand-minted
+key, and the card's three scopes are unchanged.
