@@ -425,6 +425,14 @@ Expose **resources and prompts too, not just tools** — `McpExposedResource` su
 
 Read paths are cheaper and more natural as resources than as tools; keep tools for the things that write.
 
+> **Decision, 2026-09-21 (phase 61).** Two of those three shipped: `resparkable://today`, `resparkable://project/{slug}`, and the `resparkable-weekly-review` prompt. **`resparkable://entity/{slug}` is not built, and this is a decision rather than a gap.**
+>
+> The reason is discovery, and it is the thing this bullet list did not think through. A URI template is only usable if something hands the client a value to put in it, and `buildToday()` is the only thing that hands out slugs at all: its `project: { id, name, slug, status }` is what makes `resparkable://project/{slug}` self-servicing. An assistant reads today, gets the slugs, reads a project. **Nothing anywhere hands out an entity slug** — not `resparkable_search`, not `resparkable_get_snapshot`, not the today payload — so an entity template would be a row a client could only reach by guessing. `resparkable_search` already reaches entities as a tool, which is the right shape for something the model looks up mid-conversation rather than opens a session already wanting.
+>
+> Two costs made it not worth adding speculatively: a template row also lists as a concrete resource (ask #50a, [sunrise#823](https://github.com/human-centric-engineering/sunrise/issues/823)), and it becomes a subscription surface with no producer behind it (#50b).
+>
+> **What would change this:** a read that returns entity slugs. If `resparkable_search` or the today payload ever carries them, the template becomes as self-servicing as the project one and should be added. Until then it is a row nobody can address.
+
 ### Personal API keys — `AiApiKey`, not `McpApiKey`
 
 > **Correction.** An earlier draft of this section said the iOS Shortcut should use `McpApiKey`. Wrong model. `McpApiKey` is for the MCP protocol endpoint; **`AiApiKey`** (`prisma/schema/orchestration-providers.prisma:139`) is the per-user HTTP key, with self-service routes already built at `/api/v1/user/api-keys`.

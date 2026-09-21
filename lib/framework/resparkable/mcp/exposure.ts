@@ -249,10 +249,10 @@ export const RESPARKABLE_MCP_RESOURCES: readonly ResparkableMcpResourceExposure[
     uri: 'resparkable://project/{slug}',
     name: 'Project',
     description:
-      'One project by slug: its status and area, its open tasks in ranked order, how many tasks it has in total, and what it is connected to. The slug is the one in the /resparkable/projects URL.',
+      'One project by slug: its status and area, its open tasks in ranked order, how many tasks it has in total, and what it is connected to. Read resparkable://today first if you do not have a slug; every task there carries its project’s.',
     mimeType: 'application/json',
     rationale:
-      'A template, so the client can read the project being discussed rather than searching for it. Addressed by slug because that is what a person can see in their own URL bar and type from memory; an id is neither.',
+      'A template, so the client can read the project being discussed rather than searching for it. Addressed by slug rather than id because `buildToday()` carries a slug on every task’s project, which makes the pair self-servicing: read today, then read a project it named. Nothing hands out ids, and the UI addresses projects by id rather than slug, so a slug is never something the person reads off their own URL bar and types.',
   },
 ] as const;
 

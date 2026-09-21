@@ -78,9 +78,9 @@ import { McpScope } from '@/types/mcp';
 /**
  * The three protocol scopes every one of these keys carries, and the only ones.
  *
- * `resources:read` is absent. Core's MCP resources include `sunrise://`
- * knowledge search, and a key minted from a settings page should not carry a
- * grant nobody asked for.
+ * `resources:read` is absent. Core's MCP resources include
+ * `resparkable://knowledge/search`, which an unscoped key runs system-wide, and
+ * a key minted from a settings page should not carry a grant nobody asked for.
  *
  * `prompts:read` is present, and it is the one departure from the Hub's pair.
  * Resparkable's three MCP prompts, `resparkable-capture` above all, are part of

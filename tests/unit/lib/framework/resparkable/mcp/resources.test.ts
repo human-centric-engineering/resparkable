@@ -27,6 +27,7 @@
  * - A scoped carrier resolves through membership; an empty one takes the default
  * - Project URIs are parsed strictly, decoded, and missed identically
  * - Each handler answers its own URI only, not every prefix match core sends
+ * - Both handlers call the guard, not just the one the refusals are asserted on
  *
  * @see lib/framework/resparkable/mcp/resources.ts
  */
@@ -280,6 +281,25 @@ describe('resparkable://project/{slug}', () => {
     expect(body(content).error).toContain('resparkable://project/<slug>');
     expect(mcpApiKey.findUnique).not.toHaveBeenCalled();
     expect(findProjectBySlug).not.toHaveBeenCalled();
+  });
+
+  it('runs the same guard the today resource does, before it looks anything up', async () => {
+    // The refusals above are all asserted through `handleResparkableToday`,
+    // and the two handlers share no code beyond the call to
+    // `resolveResourceScope`. So this asserts the call itself: without it a
+    // mis-scoped key would read this resource against its holder's default
+    // workspace, and every other test in this file would still pass.
+    mcpApiKey.findUnique.mockResolvedValue({ scope: { spaceId: SPACE_ID } });
+
+    const content = await handleResparkableProject(
+      'resparkable://project/ship-the-thing',
+      null,
+      callContext()
+    );
+
+    expect(String(body(content).error)).toContain(RESPARKABLE_SCHEDULE_SPACE_KEY);
+    expect(findProjectBySlug).not.toHaveBeenCalled();
+    expect(buildProjectView).not.toHaveBeenCalled();
   });
 
   it('is the row the seed writes as a template', () => {

@@ -185,7 +185,7 @@ export async function handleResparkableProject(
   if (!slug) {
     return problem(
       uri,
-      `Read a project as ${PROJECT_URI_PREFIX}<slug>, using the slug from its /resparkable/projects URL.`
+      `Read a project as ${PROJECT_URI_PREFIX}<slug>. Read ${TODAY_URI} first if you do not have a slug: every task there carries its project's.`
     );
   }
 

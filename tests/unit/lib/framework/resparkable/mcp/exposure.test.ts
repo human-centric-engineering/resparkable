@@ -17,8 +17,9 @@
  * Test Coverage:
  * - Every exposed slug is a real capability, and no slug is exposed twice
  * - `resparkable_capture` is the only write on the surface
- * - Structure-writing capabilities are absent, named individually so a new one
- *   has to be considered rather than inherited
+ * - Every withheld capability is absent, with its reason recorded beside it
+ * - The catalogue is exactly the manifest plus `WITHHELD`, so a capability
+ *   added later cannot be absent by default instead of by decision
  * - Read annotations agree with the capability's own `isIdempotent`
  * - Prompt names, argument names and templates satisfy core's validation
  * - Every tool a prompt tells a client to call is a tool this manifest exposes
@@ -43,6 +44,50 @@ import { McpResourceType } from '@/types/mcp';
 const exposedSlugs = RESPARKABLE_MCP_TOOLS.map((t) => t.slug);
 const exposed = new Set<string>(exposedSlugs);
 
+const S = RESPARKABLE_CAPABILITY_SLUGS;
+
+/**
+ * Every capability that stays off the MCP surface, and why.
+ *
+ * **This is the half of the access control that is not in `exposure.ts`.** The
+ * manifest says what a client can reach; nothing in it says what was considered
+ * and refused, so a capability added later is absent by default and nobody has
+ * to notice. The test below turns that default into a failure: the catalogue
+ * must be exactly this map plus the manifest, so a new capability cannot land
+ * without somebody writing one of these lines or adding a tool.
+ *
+ * The reasons are the point. Three groups:
+ *
+ * - **Structure writes.** Creating or reshaping a project, goal, area, entity,
+ *   task, time block or link is the person's own decision about the shape of
+ *   their work. It changes what the scorer surfaces tomorrow, and an MCP client
+ *   is the one caller with no UI in which to notice that it happened.
+ * - **Workflow plumbing.** Deterministic gather steps that mean nothing outside
+ *   the workflow that calls them.
+ * - **Capture doors that are not the capture door.** `resparkable_capture` is
+ *   the single write on the surface. The other two are bound to one agent each
+ *   and carry their own trust arguments; see `capture-channels.md`.
+ */
+const WITHHELD: Record<string, string> = {
+  [S.upsertProject]: 'structure is the owner’s decision, not a client’s',
+  [S.upsertGoal]: 'structure is the owner’s decision, not a client’s',
+  [S.upsertArea]: 'structure is the owner’s decision, not a client’s',
+  [S.upsertEntity]: 'structure is the owner’s decision, not a client’s',
+  [S.upsertTask]: 'structure is the owner’s decision, not a client’s',
+  [S.upsertTimeBlock]: 'structure is the owner’s decision, not a client’s',
+  [S.linkEntities]: 'structure is the owner’s decision, not a client’s',
+  [S.promoteThought]: 'filing an inbox item is the review ritual, not a tool call',
+  [S.writeReview]: 'the weekly review is the prompt’s job, and the person writes it',
+  [S.reprioritise]: 'it rewrites tomorrow’s ranking, invisibly to a client',
+  [S.getBriefingInputs]: 'plumbing for the briefing workflow, meaningless outside it',
+  [S.getContextDigest]: 'plumbing for the description summariser, meaningless outside it',
+  [S.notify]: 'plumbing for the briefing workflow, meaningless outside it',
+  [S.captureContext]:
+    'a second capture door, bound to the resparkable-context agent and shaped for its conversation',
+  [S.captureForToken]:
+    'the email intake door, bound to the intake agent and trusted only through a token',
+};
+
 describe('Resparkable MCP tool exposure', () => {
   it('exposes only capabilities that exist, each exactly once', () => {
     const known = new Set(RESPARKABLE_CAPABILITIES.map((c) => c.slug));
@@ -57,22 +102,37 @@ describe('Resparkable MCP tool exposure', () => {
     expect(writes).toEqual([RESPARKABLE_CAPABILITY_SLUGS.capture]);
   });
 
-  it.each([
-    RESPARKABLE_CAPABILITY_SLUGS.upsertProject,
-    RESPARKABLE_CAPABILITY_SLUGS.upsertGoal,
-    RESPARKABLE_CAPABILITY_SLUGS.upsertEntity,
-    RESPARKABLE_CAPABILITY_SLUGS.upsertTask,
-    RESPARKABLE_CAPABILITY_SLUGS.linkEntities,
-    RESPARKABLE_CAPABILITY_SLUGS.promoteThought,
-    RESPARKABLE_CAPABILITY_SLUGS.writeReview,
-    RESPARKABLE_CAPABILITY_SLUGS.reprioritise,
-  ])('does not expose %s — structure is the owner’s decision, not a client’s', (slug) => {
+  it.each(Object.entries(WITHHELD))('does not expose %s: %s', (slug) => {
     expect(exposed.has(slug)).toBe(false);
   });
 
-  it('does not expose the briefing workflow’s own plumbing', () => {
-    expect(exposed.has(RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs)).toBe(false);
-    expect(exposed.has(RESPARKABLE_CAPABILITY_SLUGS.notify)).toBe(false);
+  it('accounts for every capability in the catalogue, exposed or withheld', () => {
+    // The assertion the individually-named list above was reaching for and
+    // could not make. Typing the withheld slugs out by hand asserted only what
+    // somebody remembered to type: five capabilities added after this manifest
+    // (`upsert_area`, `upsert_time_block`, `capture_context`,
+    // `get_context_digest`, `capture_for_token`) were in neither list, so the
+    // guard whose comment promised a new one "has to be considered rather than
+    // inherited" was silently inheriting them. This makes that impossible —
+    // a new capability fails here until it is exposed or given a reason.
+    const accounted = new Set([...exposed, ...Object.keys(WITHHELD)]);
+    const unaccounted = RESPARKABLE_CAPABILITIES.map((c) => c.slug).filter(
+      (slug) => !accounted.has(slug)
+    );
+
+    expect(
+      unaccounted,
+      'add it to RESPARKABLE_MCP_TOOLS, or to WITHHELD with the reason it stays off'
+    ).toEqual([]);
+  });
+
+  it('withholds nothing it also exposes', () => {
+    // The other direction: a slug promoted into the manifest but left in
+    // WITHHELD would make the `it.each` above fail, but only once somebody ran
+    // it. Naming the overlap says which slug, rather than which case.
+    const both = Object.keys(WITHHELD).filter((slug) => exposed.has(slug));
+
+    expect(both).toEqual([]);
   });
 
   it('marks every read-only tool as one the capability itself considers safe to repeat', () => {

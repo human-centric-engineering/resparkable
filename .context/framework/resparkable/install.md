@@ -834,8 +834,8 @@ each person connects their own assistant without you.
    and gives them the snippet for their client.
 3. Mint by hand only for a **service key**, for somebody who cannot reach the
    card, or to add `resources:read`: `/admin/orchestration/mcp/keys`, with
-   `tools:list`, `tools:execute`, `prompts:read`. **Mint it as the person whose
-   brain it is** —
+   `tools:list`, `tools:execute`, `prompts:read`, plus `resources:read` if that
+   is why you are here. **Mint it as the person whose brain it is** —
    `CapabilityContext.userId` comes from the key's creator, and that is the only
    thing deciding which brain the key reaches. If you put anything in the scope
    field, read `mcp.md`'s scope table first: a near miss is refused outright,

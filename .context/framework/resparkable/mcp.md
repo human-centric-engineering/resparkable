@@ -50,18 +50,38 @@ its grants.
 | `resparkable_ideate`           | read, costed    | A pure read that bills an LLM call — `isIdempotent: false`, uncached, and the one an operator might turn off to control spend |
 | `resparkable_capture`          | **write**       | The premise. Adds an inbox item and nothing else                                                                              |
 
-**Ten capabilities are deliberately absent.** Everything that creates structure
-— `resparkable_upsert_project`, `_goal`, `_entity`, `_task`, `resparkable_link_entities`,
-`resparkable_promote_thought`, `resparkable_write_review`, `resparkable_reprioritise` —
-because those are the person's own decisions about the shape of their work, they
-change what the scorer surfaces tomorrow, and an MCP client is the one caller
-with no UI in which to notice that they happened. `resparkable_get_briefing_inputs`
-and `resparkable_notify` are absent for a duller reason: they are plumbing for the
-briefing workflow and mean nothing outside it.
+**Fifteen capabilities are deliberately absent**, in three groups.
+
+**Everything that creates structure**: `resparkable_upsert_project`, `_goal`,
+`_area`, `_entity`, `_task`, `_time_block`, plus `resparkable_link_entities`,
+`resparkable_promote_thought`, `resparkable_write_review` and
+`resparkable_reprioritise`. Those are the person's own decisions about the shape
+of their work, they change what the scorer surfaces tomorrow, and an MCP client
+is the one caller with no UI in which to notice that they happened.
+
+**Workflow plumbing**: `resparkable_get_briefing_inputs`, `resparkable_notify`
+and `resparkable_get_context_digest` are deterministic gather and delivery steps
+that mean nothing outside the workflow calling them.
+
+**The two capture doors that are not _the_ capture door**:
+`resparkable_capture_context` is shaped for the `resparkable-context` agent's
+"tell me more" conversation, and `resparkable_capture_for_token` is email intake,
+trusted through a token rather than a key. `resparkable_capture` is the single
+write on this surface, and the other two carry their own arguments in
+[`capture-channels.md`](./capture-channels.md).
 
 An operator who wants one of them can enable it at
 `/admin/orchestration/mcp/tools`. The default should not make that choice for
 them.
+
+**The list above is enforced, not just written down.** `exposure.test.ts` holds
+a `WITHHELD` map of every absent slug with its reason, and asserts that the
+catalogue is exactly that map plus the manifest. A capability added later fails
+the suite until somebody either exposes it or writes its line. That guard used
+to be a hand-typed list of eight slugs plus two, which is how five capabilities
+added after phase 7b (`_area`, `_time_block`, `capture_context`,
+`get_context_digest`, `capture_for_token`) came to be absent by default rather
+than by decision, and how this paragraph came to say "ten".
 
 ### Rows are seeded enabled
 
@@ -204,10 +224,10 @@ content to the conversation itself, where a tool call costs a round trip and a
 decision by the model to make it. That is the cheaper shape for a read, and
 these are the two reads a person opens a session already wanting.
 
-| Resource                       | What comes back                                                                                                |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `resparkable://today`          | `buildToday()`, the same payload the Today page renders: ranked tasks, time blocks, inbox count, goals at risk |
-| `resparkable://project/{slug}` | `buildProjectView()`, by the slug in the project's own `/resparkable/projects` URL: status, area, tasks, links |
+| Resource                       | What comes back                                                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `resparkable://today`          | `buildToday()`, the same payload the Today page renders: ranked tasks, time blocks, inbox count, goals at risk                              |
+| `resparkable://project/{slug}` | `buildProjectView()`, by slug: status, area, tasks, links. Slugs come from `resparkable://today`, which carries one on every task's project |
 
 Everything else stays a tool, and the split is not "cheap reads become
 resources". `resparkable_search` takes a query the model composes,
@@ -277,6 +297,33 @@ its scheme explicitly, so that fork data cannot quietly list under the
 platform's identity. These two pass `'resparkable'` on purpose: here the
 platform and the tier are the same product, so naming it is a statement rather
 than an inheritance.
+
+### Two rough edges, because core's resources are install-wide and these are not
+
+Core has only ever had resources that are the same for everybody on the install:
+the agent list, the workflow list, knowledge search. Both of these are one
+person's, and two pieces of the machinery around them were built on the first
+assumption. Neither is fixable from this tier, and neither is worth working
+around; they are written down so the next person meets them on paper first.
+Both are ask #50 in [`sunrise-asks.md`](./sunrise-asks.md) →
+[sunrise#823](https://github.com/human-centric-engineering/sunrise/issues/823).
+
+**The project template also lists as a concrete resource.**
+`listMcpResourceTemplates()` filters rows on the `{…}` placeholder;
+`listMcpResources()` does not filter at all, so `resparkable://project/{slug}`
+appears in `resources/list` as well as `resources/templates/list`. A client that
+shows the first list offers a "Project" entry that can only be read literally,
+and reading it literally gets the "use the slug from its URL" refusal rather
+than a project. Core never met this because none of its own rows is a template.
+
+**Subscribing to either works, and nothing ever fires.**
+`resources/subscribe` accepts both URIs, and no Resparkable mutation calls
+`broadcastMcpResourceUpdated`, so a subscriber holds its first snapshot forever.
+The fix is not to wire it up: that broadcast takes a URI and notifies **every**
+subscriber of it, with no notion of whose data changed, so firing
+`resparkable://today` when one person captures a thought would signal it to
+every other subscriber. Not firing is the lesser of the two wrongs. Until a
+broadcast can name a user, read these resources again rather than subscribing.
 
 ## See also
 
