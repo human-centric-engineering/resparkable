@@ -17,8 +17,9 @@
  * gets a delete and no edit. Somebody else's words standing in your own notes
  * with no way to remove them is what makes people stop sharing.
  *
- * The server enforces both in its `where` clauses; this only decides which
- * buttons to draw.
+ * The server enforces both, and says per comment what this reader may do
+ * (`canEdit`, `canDelete`). This draws exactly that rather than re-deriving it,
+ * so a button that would always fail is never shown.
  *
  * ## Why the whole thread comes back from every write
  *
@@ -33,6 +34,7 @@ import { Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { Textarea } from '@/components/ui/textarea';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { commentsSchema, type CommentWire } from '@/lib/framework/resparkable/ui/payloads';
 
@@ -41,15 +43,12 @@ export interface CommentThreadProps {
   entityId: string;
   /** Whether this reader may write. False renders the thread read-only. */
   canComment: boolean;
-  /** True when the reader owns the item, so delete is offered on every row. */
-  isOwner: boolean;
 }
 
 export function CommentThread({
   entityType,
   entityId,
   canComment,
-  isOwner,
 }: CommentThreadProps): React.ReactElement | null {
   const [comments, setComments] = React.useState<CommentWire[] | null>(null);
   const [unavailable, setUnavailable] = React.useState(false);
@@ -155,10 +154,8 @@ export function CommentThread({
                   {comment.editedAt !== null && ' · edited'}
                 </span>
 
-                {/* Edit only for the author; delete for the author or the
-                    owner. The server enforces both — this decides what to
-                    draw. */}
-                {comment.mine && (
+                {/* The server's answer for this reader and this comment. */}
+                {comment.canEdit && (
                   <Button
                     type="button"
                     variant="ghost"
@@ -170,12 +167,12 @@ export function CommentThread({
                     <span className="sr-only">Edit your comment</span>
                   </Button>
                 )}
-                {(comment.mine || isOwner) && (
+                {comment.canDelete && (
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    className={comment.mine ? undefined : 'ml-auto'}
+                    className={comment.canEdit ? undefined : 'ml-auto'}
                     onClick={() => void remove(comment.id)}
                   >
                     <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -241,7 +238,10 @@ export function CommentThread({
 
 async function read(url: string): Promise<CommentWire[] | null> {
   try {
-    const response = await fetch(url);
+    // With the active workspace, like every other read since phase 49: inside a
+    // group the comment routes resolve the group's grants, and without the param
+    // they would resolve the person's and find none.
+    const response = await fetch(withActiveSpace(url));
     const payload: unknown = await response.json();
     if (!response.ok || !isSuccess(payload)) return null;
     const parsed = commentsSchema.safeParse(payload.data);
@@ -257,7 +257,7 @@ async function write(
   body?: unknown
 ): Promise<CommentWire[] | null> {
   try {
-    const response = await fetch(url, {
+    const response = await fetch(withActiveSpace(url), {
       method,
       ...(body === undefined
         ? {}

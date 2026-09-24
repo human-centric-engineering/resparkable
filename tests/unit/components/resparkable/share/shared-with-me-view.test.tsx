@@ -8,7 +8,7 @@
  *
  *   - Every row names its **owner**. That is the one thing a public link never
  *     shows, and the reason a named grant exists as a mechanism at all.
- *   - `role: 'commenter'` earns a "you can comment" badge; `viewer` earns none.
+ *   - `canComment` earns a "you can comment" badge; the grant's role alone does not.
  *   - An archived item says so, rather than looking indistinguishable from a
  *     live one.
  *   - The search box is a substring match over what was shared, not the
@@ -24,6 +24,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+
+import { useSearchParams } from 'next/navigation';
 
 import { SharedWithMeView } from '@/components/resparkable/share/shared-with-me-view';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -49,7 +51,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 function makeSharedItem(
   itemOverrides: Partial<SharedWithMeItemWire['item']> = {},
   entryOverrides: Partial<Omit<SharedWithMeItemWire, 'item' | 'owner'>> = {},
-  ownerOverrides: Partial<SharedWithMeItemWire['owner']> = {}
+  ownerOverrides: Partial<Extract<SharedWithMeItemWire['owner'], { kind: 'person' }>> = {}
 ): SharedWithMeItemWire {
   return {
     item: {
@@ -67,6 +69,7 @@ function makeSharedItem(
       ...itemOverrides,
     },
     owner: {
+      kind: 'person',
       id: 'owner-1',
       name: 'Jane Owner',
       email: 'jane@example.com',
@@ -93,7 +96,15 @@ function makeSearchHit(overrides: Partial<SharedSearchHitWire> = {}): SharedSear
 
 beforeEach(() => {
   mockFetch.mockReset();
+  vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
+  window.history.replaceState(null, '', '/resparkable/shared');
 });
+
+/** Put the view inside a group workspace, the way the `?space=` param does. */
+function inGroupWorkspace(spaceId: string): void {
+  vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams({ space: spaceId }) as never);
+  window.history.replaceState(null, '', `/resparkable/shared?space=${spaceId}`);
+}
 
 describe('SharedWithMeView', () => {
   describe('empty state', () => {
@@ -106,6 +117,15 @@ describe('SharedWithMeView', () => {
     it('does not show the empty state when there is at least one item', () => {
       render(<SharedWithMeView items={[makeSharedItem()]} />);
 
+      expect(screen.queryByText('Nothing has been shared with you')).not.toBeInTheDocument();
+    });
+
+    it('inside a group, says nothing was shared with the group, not with you', () => {
+      inGroupWorkspace('space_b');
+
+      render(<SharedWithMeView items={[]} />);
+
+      expect(screen.getByText('Nothing has been shared with this group')).toBeInTheDocument();
       expect(screen.queryByText('Nothing has been shared with you')).not.toBeInTheDocument();
     });
   });
@@ -130,13 +150,42 @@ describe('SharedWithMeView', () => {
 
       expect(screen.getByText(/Shared by noname@example.com/)).toBeInTheDocument();
     });
+
+    it('names a group when a group shared it', () => {
+      const entry = makeSharedItem();
+      render(
+        <SharedWithMeView
+          items={[{ ...entry, owner: { kind: 'group', id: 'space_b', name: 'Study Group B' } }]}
+        />
+      );
+
+      expect(screen.getByText(/Shared by Study Group B/)).toBeInTheDocument();
+    });
+
+    it('links each row inside the active workspace, so the detail reads the same list', () => {
+      inGroupWorkspace('space_b');
+
+      render(<SharedWithMeView items={[makeSharedItem()]} />);
+
+      expect(screen.getByRole('link').getAttribute('href')).toContain('space=space_b');
+    });
   });
 
   describe('role badge', () => {
     it('shows a "you can comment" badge for a commenter grant', () => {
-      render(<SharedWithMeView items={[makeSharedItem({}, { role: 'commenter' })]} />);
+      render(
+        <SharedWithMeView items={[makeSharedItem({}, { role: 'commenter', canComment: true })]} />
+      );
 
       expect(screen.getByText('you can comment')).toBeInTheDocument();
+    });
+
+    it('shows no badge to a group viewer holding a commenter grant through the group', () => {
+      render(
+        <SharedWithMeView items={[makeSharedItem({}, { role: 'commenter', canComment: false })]} />
+      );
+
+      expect(screen.queryByText('you can comment')).not.toBeInTheDocument();
     });
 
     it('shows no comment badge for a viewer grant', () => {
@@ -186,6 +235,25 @@ describe('SharedWithMeView', () => {
       expect(await screen.findByText('Found Task')).toBeInTheDocument();
       // The un-searched item no longer shows: hits replace the full list.
       expect(screen.queryByText('Acme Redesign')).not.toBeInTheDocument();
+    });
+
+    it('inside a group, searches what was shared with the group, not the person', async () => {
+      const user = userEvent.setup();
+      inGroupWorkspace('space_b');
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [] }));
+
+      render(<SharedWithMeView items={[makeSharedItem()]} />);
+
+      await user.type(
+        screen.getByLabelText('Match words in what has been shared with you'),
+        'urgent'
+      );
+      await user.click(screen.getByRole('button', { name: /match words/i }));
+
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      const url = new URL(String(mockFetch.mock.calls[0][0]), 'http://localhost');
+      expect(url.searchParams.get('space')).toBe('space_b');
+      expect(url.searchParams.get('q')).toBe('urgent');
     });
 
     it('an empty query does not fetch and leaves the full list showing', async () => {

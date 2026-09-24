@@ -93,6 +93,8 @@ const COMMENT = {
   body: 'Looks right to me',
   author: { id: 'user_b', name: 'Bo', isOwner: false },
   mine: true,
+  canEdit: true,
+  canDelete: true,
   editedAt: null,
   createdAt: new Date('2026-08-28T10:00:00.000Z'),
 };
@@ -156,6 +158,7 @@ describe('GET /api/v1/resparkable/comments', () => {
     expect(vi.mocked(listCommentsFor).mock.calls[0][0]).toEqual({
       userId: 'user_b',
       email: 'b@example.com',
+      group: null,
     });
   });
 });

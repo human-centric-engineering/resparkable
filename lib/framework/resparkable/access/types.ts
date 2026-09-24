@@ -68,6 +68,34 @@ export interface ResparkableViewer {
    * by this and not by `userId`.
    */
   email: string | null;
+  /**
+   * The group workspace this person is reading from, or `null` when they are in
+   * their personal one (§23.7, phase 49).
+   *
+   * **It decides which grants are theirs, and it is exclusive.** In a group
+   * workspace the viewer holds exactly the grants made to that group, and none
+   * of the grants addressed to them as a person; in their personal workspace,
+   * the reverse. So a member of three spaces sees three separate lists, and a
+   * share to Study Group B never surfaces on its own in somebody's personal
+   * brain (test 13g).
+   *
+   * Only ever built from a `SpaceScope` that membership resolution produced
+   * (`viewerFor` in `api/viewer.ts`), so it is re-checked on every request and
+   * a member removed from the group loses the group's grants on their next one.
+   */
+  group: ResparkableViewerGroup | null;
+}
+
+/** The group half of a viewer. See {@link ResparkableViewer.group}. */
+export interface ResparkableViewerGroup {
+  spaceId: string;
+  /**
+   * Whether this member's role in the group lets them write. A group `viewer`
+   * reads what was shared with the group and cannot comment on it, even under
+   * a `commenter` grant: a comment is a write, made in the group's name, and a
+   * viewer writes nothing (§23.3).
+   */
+  canWrite: boolean;
 }
 
 /**
@@ -149,7 +177,15 @@ export interface ResparkableAccessResult {
   ok: boolean;
   basis: ResparkableAccessBasis | null;
   ownerId: string | null;
-  permissions: { read: boolean; comment: boolean };
+  /**
+   * `moderate` is whether the reader may remove other people's comments on the
+   * item. True for the owner, including an owner reading their own personal
+   * item from a group workspace it was shared with: there it resolves as a
+   * grant rather than as `owner` (workspaces stay exclusive), but refusing the
+   * owner there would protect nothing, since they can switch workspace or
+   * revoke. Never true on an item a group owns: that is phase 58's decision.
+   */
+  permissions: { read: boolean; comment: boolean; moderate: boolean };
   redact: readonly ResparkableRedaction[];
   /**
    * The item the grant or link was actually made on, when access came through a
@@ -164,7 +200,7 @@ export const DENY: ResparkableAccessResult = Object.freeze({
   ok: false,
   basis: null,
   ownerId: null,
-  permissions: Object.freeze({ read: false, comment: false }),
+  permissions: Object.freeze({ read: false, comment: false, moderate: false }),
   redact: ALL_REDACTIONS,
   via: null,
 });

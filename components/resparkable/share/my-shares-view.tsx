@@ -42,7 +42,7 @@
  */
 
 import * as React from 'react';
-import { AlertTriangle, Handshake, Link2, Trash2, UserPlus } from 'lucide-react';
+import { AlertTriangle, Handshake, Link2, Trash2, UserPlus, Users } from 'lucide-react';
 
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
@@ -62,7 +62,12 @@ import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import type { MyShareItemWire } from '@/lib/framework/resparkable/ui/payloads';
+import {
+  grantGranteeLabel,
+  isGroupGrant,
+  memberCountLabel,
+  type MyShareItemWire,
+} from '@/lib/framework/resparkable/ui/payloads';
 
 /** What each shareable type is called on screen. Mirrors the reader's list. */
 const TYPE_LABEL: Record<string, string> = {
@@ -183,12 +188,21 @@ export function MySharesView({ items }: MySharesViewProps): React.ReactElement {
             {item.grants.map((grant) => (
               <ShareRow
                 key={grant.id}
-                icon={<UserPlus className="h-3.5 w-3.5" aria-hidden="true" />}
-                what={grant.granteeEmail}
+                icon={
+                  isGroupGrant(grant) ? (
+                    <Users className="h-3.5 w-3.5" aria-hidden="true" />
+                  ) : (
+                    <UserPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                  )
+                }
+                what={grantGranteeLabel(grant)}
                 detail={
                   <>
                     {grant.role}
-                    {!grant.accepted && ' · not opened yet'}
+                    {grant.granteeGroup !== null &&
+                      grant.granteeGroup.memberCount !== null &&
+                      ` · ${memberCountLabel(grant.granteeGroup.memberCount)} in the group`}
+                    {!isGroupGrant(grant) && !grant.accepted && ' · not opened yet'}
                     {grant.expiresAt !== null && (
                       <>
                         {' · until '}
@@ -197,8 +211,12 @@ export function MySharesView({ items }: MySharesViewProps): React.ReactElement {
                     )}
                   </>
                 }
-                confirmTitle={`Stop sharing with ${grant.granteeEmail}?`}
-                confirmBody="They lose access on their next request. Anything they wrote as a comment stays. You can share with them again later, which creates a new invitation."
+                confirmTitle={`Stop sharing with ${grantGranteeLabel(grant)}?`}
+                confirmBody={
+                  isGroupGrant(grant)
+                    ? 'Everyone in the group loses access on their next request. Anything they wrote as a comment stays. You can share with the group again later.'
+                    : 'They lose access on their next request. Anything they wrote as a comment stays. You can share with them again later, which creates a new invitation.'
+                }
                 onRevoke={() => void revoke('grant', grant.id)}
               />
             ))}

@@ -43,19 +43,31 @@ import type { Prisma, ResparkableGrant } from '@prisma/client';
 export interface GrantCreateData {
   entityType: ResparkableShareableType;
   entityId: string;
-  granteeEmail: string;
   /**
-   * Set when the address already has an account, so the grant is usable on the
-   * grantee's next request rather than on their acceptance. Null otherwise —
-   * `granteeClauses` matches on the address as well, so an unaccepted grant is
-   * still live; the invite (phase 13) binds an account to it, it does not
-   * create the access.
+   * A person by address, or a group by its space (§23.7, phase 49). Never both:
+   * the CHECK probe B14 guards refuses a row that names two grantees.
    */
-  granteeUserId: string | null;
+  grantee: GrantGrantee;
   role: 'viewer' | 'commenter';
   includeTaskDetail: boolean;
   expiresAt: Date | null;
 }
+
+/** Who a grant is to. */
+export type GrantGrantee =
+  | {
+      kind: 'person';
+      email: string;
+      /**
+       * Set when the address already has an account, so the grant is usable on
+       * the grantee's next request rather than on their acceptance. Null
+       * otherwise — `granteeClauses` matches on the address as well, so an
+       * unaccepted grant is still live; the invite (phase 13) binds an account
+       * to it, it does not create the access.
+       */
+      userId: string | null;
+    }
+  | { kind: 'group'; spaceId: string };
 
 /** The fields a PATCH may move. `granteeEmail` is deliberately not among them. */
 export interface GrantUpdateData {
@@ -97,20 +109,45 @@ export async function upsertGrant(
     expiresAt: data.expiresAt,
   };
 
+  const { grantee } = data;
+
+  if (grantee.kind === 'group') {
+    // The group's own unique triple. No account and no invite: a group is not a
+    // mailbox, and every joined member reads the item from the moment this row
+    // exists, without accepting anything.
+    return prisma.resparkableGrant.upsert({
+      where: {
+        entityType_entityId_granteeSpaceId: {
+          entityType: data.entityType,
+          entityId: data.entityId,
+          granteeSpaceId: grantee.spaceId,
+        },
+      },
+      create: {
+        ...authoredBy(scope),
+        entityType: data.entityType,
+        entityId: data.entityId,
+        granteeSpaceId: grantee.spaceId,
+        ...shared,
+      },
+      update: { ...shared, revokedAt: null },
+    });
+  }
+
   return prisma.resparkableGrant.upsert({
     where: {
       entityType_entityId_granteeEmail: {
         entityType: data.entityType,
         entityId: data.entityId,
-        granteeEmail: data.granteeEmail,
+        granteeEmail: grantee.email,
       },
     },
     create: {
       ...authoredBy(scope),
       entityType: data.entityType,
       entityId: data.entityId,
-      granteeEmail: data.granteeEmail,
-      granteeUserId: data.granteeUserId,
+      granteeEmail: grantee.email,
+      granteeUserId: grantee.userId,
       ...shared,
     },
     update: {
@@ -119,7 +156,7 @@ export async function upsertGrant(
       // Only ever fills a null in. An accepted grant already knows who its
       // grantee is, and overwriting that from a fresh account lookup would let
       // a re-registered address inherit somebody else's acceptance.
-      ...(data.granteeUserId ? { granteeUserId: data.granteeUserId } : {}),
+      ...(grantee.userId ? { granteeUserId: grantee.userId } : {}),
     },
   });
 }
@@ -267,7 +304,9 @@ export async function stampInviteToken(
   now: Date = new Date()
 ): Promise<boolean> {
   const result = await prisma.resparkableGrant.updateMany({
-    where: { ...spaceWhere(scope), id, revokedAt: null },
+    // `granteeEmail` set: a grant to a group is never invited, and a token on
+    // one would be a credential that binds an account to a group's share.
+    where: { ...spaceWhere(scope), id, revokedAt: null, granteeEmail: { not: null } },
     data: { inviteTokenHash: tokenHash, inviteSentAt: now },
   });
   return result.count > 0;

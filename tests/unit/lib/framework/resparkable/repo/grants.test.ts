@@ -65,8 +65,7 @@ const NOW = new Date('2026-08-28T10:00:00.000Z');
 const CREATE = {
   entityType: 'project' as const,
   entityId: 'p_1',
-  granteeEmail: 'b@example.com',
-  granteeUserId: null,
+  grantee: { kind: 'person' as const, email: 'b@example.com', userId: null },
   role: 'viewer' as const,
   includeTaskDetail: false,
   expiresAt: null,
@@ -138,9 +137,41 @@ describe('upsertGrant', () => {
     const withoutAccount = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[0][0];
     expect(withoutAccount.update).not.toHaveProperty('granteeUserId');
 
-    await upsertGrant(OWNER, { ...CREATE, granteeUserId: 'user_b' });
+    await upsertGrant(OWNER, {
+      ...CREATE,
+      grantee: { kind: 'person', email: 'b@example.com', userId: 'user_b' },
+    });
     const withAccount = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[1][0];
     expect(withAccount.update).toMatchObject({ granteeUserId: 'user_b' });
+  });
+});
+
+describe('upsertGrant to a group (phase 49)', () => {
+  const GROUP = 'spc_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const TO_GROUP = { ...CREATE, grantee: { kind: 'group' as const, spaceId: GROUP } };
+
+  it('targets the group’s own unique triple, so re-sharing with a group is an update', async () => {
+    await upsertGrant(OWNER, TO_GROUP);
+
+    const args = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[0][0];
+    expect(args.where).toEqual({
+      entityType_entityId_granteeSpaceId: {
+        entityType: 'project',
+        entityId: 'p_1',
+        granteeSpaceId: GROUP,
+      },
+    });
+  });
+
+  it('writes no address and no account, which is what the B14 CHECK requires of a group grant', async () => {
+    await upsertGrant(OWNER, TO_GROUP);
+
+    const args = vi.mocked(prisma.resparkableGrant.upsert).mock.calls[0][0];
+    expect(args.create).toMatchObject({ spaceId: 'user_a', granteeSpaceId: GROUP });
+    expect(args.create).not.toHaveProperty('granteeEmail');
+    expect(args.create).not.toHaveProperty('granteeUserId');
+    expect(args.update).toMatchObject({ revokedAt: null });
+    expect(args.update).not.toHaveProperty('granteeSpaceId');
   });
 });
 
@@ -229,7 +260,14 @@ describe('stampInviteToken', () => {
     await stampInviteToken(OWNER, 'grant_1', 'digest_1', NOW);
 
     const args = vi.mocked(prisma.resparkableGrant.updateMany).mock.calls[0][0];
-    expect(args.where).toEqual({ spaceId: 'user_a', id: 'grant_1', revokedAt: null });
+    expect(args.where).toEqual({
+      spaceId: 'user_a',
+      id: 'grant_1',
+      revokedAt: null,
+      // A grant to a group is never invited: a token on one would be a
+      // credential binding an account to a group's share.
+      granteeEmail: { not: null },
+    });
     expect(args.data).toEqual({ inviteTokenHash: 'digest_1', inviteSentAt: NOW });
   });
 

@@ -72,9 +72,9 @@ import {
 import type { LiveGrant, LiveShareLink } from '@/lib/framework/resparkable/access/types';
 
 const OWNER = 'user_a';
-const GRANTEE = { userId: 'user_b', email: 'b@example.com' };
-const STRANGER = { userId: 'user_c', email: 'c@example.com' };
-const ANONYMOUS = { userId: null, email: null };
+const GRANTEE = { userId: 'user_b', email: 'b@example.com', group: null };
+const STRANGER = { userId: 'user_c', email: 'c@example.com', group: null };
+const ANONYMOUS = { userId: null, email: null, group: null };
 /** Cuid-shaped, so `boardFilterSchema` accepts it where a filter names a project. */
 const PROJECT = 'clh0000000000000000000001';
 
@@ -124,7 +124,7 @@ beforeEach(() => {
 describe('the owner short-circuit', () => {
   it('answers from one lookup — no grant query, no link query, no cascade', async () => {
     const result = await resolveResparkableAccess({
-      viewer: { userId: OWNER, email: 'a@example.com' },
+      viewer: { userId: OWNER, email: 'a@example.com', group: null },
       entityType: 'project',
       entityId: 'p_1',
     });
@@ -133,7 +133,7 @@ describe('the owner short-circuit', () => {
       ok: true,
       basis: 'owner',
       ownerId: OWNER,
-      permissions: { read: true, comment: true },
+      permissions: { read: true, comment: true, moderate: true },
       redact: [],
       via: null,
     });
@@ -150,13 +150,13 @@ describe('the owner short-circuit', () => {
     // the public-link surface, never a filter on an owner read — the owner's
     // own agent sees all of the owner's items regardless of it.
     const result = await resolveResparkableAccess({
-      viewer: { userId: OWNER, email: null },
+      viewer: { userId: OWNER, email: null, group: null },
       entityType: 'review',
       entityId: 'r_1',
     });
 
     expect(result.redact).toEqual([]);
-    expect(result.permissions).toEqual({ read: true, comment: true });
+    expect(result.permissions).toEqual({ read: true, comment: true, moderate: true });
   });
 
   it('cannot be reached by an anonymous viewer, whatever the row says', async () => {
@@ -236,7 +236,7 @@ describe('direct grants', () => {
 
     expect(result.basis).toBe('grant');
     expect(result.ownerId).toBe(OWNER);
-    expect(result.permissions).toEqual({ read: true, comment: false });
+    expect(result.permissions).toEqual({ read: true, comment: false, moderate: false });
     // A named grant is a relationship: the grantee learns who shared it and can
     // see the conversation on it. Everything the owner uses to run their own
     // life — scores, boost rationales, event history, the parent it hangs off —
@@ -286,6 +286,30 @@ describe('direct grants', () => {
     expect(viewer.ok).toBe(false);
   });
 
+  it('refuses comment to a group viewer, even under a commenter grant to the group', async () => {
+    // A comment is a write in the group's name, and a group viewer writes
+    // nothing (§23.3). This is also what refuses a demoted member's edits:
+    // `updateComment` asks for `need: 'comment'` and gets this denial.
+    findLiveGrantsForRefs.mockResolvedValue([grant({ role: 'commenter' })]);
+    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_g', canWrite: false } };
+
+    const commenting = await resolveResparkableAccess({
+      viewer: groupViewer,
+      entityType: 'project',
+      entityId: 'p_1',
+      need: 'comment',
+    });
+    const reading = await resolveResparkableAccess({
+      viewer: groupViewer,
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(commenting.ok).toBe(false);
+    expect(reading.ok).toBe(true);
+    expect(reading.permissions.comment).toBe(false);
+  });
+
   it('picks the stronger grant when a viewer matches by both id and email', async () => {
     // The mid-acceptance state: the grant carries the address AND has just been
     // bound to the account. Accepting an invite must not briefly REDUCE what
@@ -304,6 +328,74 @@ describe('direct grants', () => {
 
     expect(result.ok).toBe(true);
     expect(result.redact).not.toContain('notes');
+  });
+});
+
+describe('moderation', () => {
+  it('is not given to a grantee, however strong the grant', async () => {
+    findLiveGrantsForRefs.mockResolvedValue([grant({ role: 'commenter' })]);
+
+    const result = await resolveResparkableAccess({
+      viewer: GRANTEE,
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(result.permissions.moderate).toBe(false);
+  });
+
+  it('stays with the owner reading their own item from a group workspace it was shared with', async () => {
+    // Workspaces are exclusive, so this is a grant read and not an owner read.
+    // But it is still the owner's item: they can remove comments on it from
+    // their personal workspace, so refusing here would protect nothing.
+    findLiveGrantsForRefs.mockResolvedValue([grant({ role: 'viewer' })]);
+
+    const result = await resolveResparkableAccess({
+      viewer: {
+        userId: OWNER,
+        email: 'a@example.com',
+        group: { spaceId: 'space_g', canWrite: true },
+      },
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(result.basis).toBe('grant');
+    expect(result.permissions.moderate).toBe(true);
+    expect(result.permissions.comment).toBe(false);
+  });
+
+  it('is never given on an item a group owns, whoever reads it', async () => {
+    // A group's space key is never a user id. Moderation of group-owned items
+    // is phase 58's decision, not this flag's.
+    findEntityOwner.mockResolvedValue('space_g');
+    findLiveGrantsForRefs.mockResolvedValue([grant({ ownerId: 'space_g', role: 'commenter' })]);
+
+    const result = await resolveResparkableAccess({
+      viewer: GRANTEE,
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.permissions.moderate).toBe(false);
+  });
+
+  it('agrees between the per-item and batched forms', async () => {
+    findLiveGrantsForRefs.mockResolvedValue([grant({ role: 'viewer' })]);
+    findEntityOwners.mockResolvedValue(new Map([['p_1', OWNER]]));
+    const ownerInGroup = {
+      userId: OWNER,
+      email: 'a@example.com',
+      group: { spaceId: 'space_g', canWrite: true },
+    };
+
+    const many = await resolveResparkableAccessMany({
+      viewer: ownerInGroup,
+      refs: [{ entityType: 'project', entityId: 'p_1' }],
+    });
+
+    expect(many.get('project:p_1')?.permissions.moderate).toBe(true);
   });
 });
 
@@ -472,7 +564,7 @@ describe('a public link buys nothing on the authenticated path', () => {
     const result = shareLinkAccess(link());
 
     expect(result.basis).toBe('link');
-    expect(result.permissions).toEqual({ read: true, comment: false });
+    expect(result.permissions).toEqual({ read: true, comment: false, moderate: false });
     // A public link is a document, not a relationship: the reader learns
     // nothing about the person who wrote it.
     expect(result.redact).toContain('ownerIdentity');
@@ -530,7 +622,7 @@ describe('the batched form', () => {
     );
 
     await resolveResparkableAccessMany({
-      viewer: { userId: OWNER, email: null },
+      viewer: { userId: OWNER, email: null, group: null },
       refs: Array.from({ length: 50 }, (_, index) => ({
         entityType: 'task',
         entityId: `t_${index}`,
@@ -631,7 +723,7 @@ describe('the batched form', () => {
     });
 
     await resolveResparkableAccessMany({
-      viewer: { userId: OWNER, email: null },
+      viewer: { userId: OWNER, email: null, group: null },
       refs: [
         { entityType: 'project', entityId: 'p_1' },
         { entityType: 'project', entityId: 'p_1' },

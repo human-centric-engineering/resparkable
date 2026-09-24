@@ -408,7 +408,11 @@ export async function collectGroupContributions(
  * have been forgotten about.
  */
 export async function collectResparkableCrossSubjectData(
-  viewer: ResparkableViewer
+  // The person, and not a workspace. An export is about the subject wherever
+  // their data sits, so it takes the two identity fields and never a group:
+  // what was shared with a group is the group's, and is not the subject's
+  // personal data unless they wrote it (`groupContributions`).
+  viewer: Pick<ResparkableViewer, 'userId' | 'email'>
 ): Promise<ResparkableCrossSubjectData> {
   const clauses = [];
   if (viewer.userId) clauses.push({ granteeUserId: viewer.userId });

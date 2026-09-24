@@ -586,4 +586,27 @@ export function registerResparkableDriftProbes(): void {
     table: 'framework_resparkable_group_member, framework_resparkable_group_invite',
     probe: groupUserKeysHaveTheirActions,
   });
+
+  // B14: a grant names a person or a group, never both and never neither
+  // (phase 49, §23.7).
+  //
+  // Both failure directions are access bugs, and neither errors. A grant naming
+  // both is read by two resolvers that each think it is theirs, so the person
+  // sees a group's share in their personal workspace: the implicit crossing
+  // between spaces that §23.7 forbids. A grant naming neither is live for
+  // nobody, and nothing that lists grants by grantee can find it to revoke it.
+  //
+  // The needles are Postgres's normalised text, read back off a real database:
+  // the group half is the one that carries `"granteeUserId" IS NULL`, so its
+  // presence proves that half survived.
+  registerAppDriftProbe({
+    name: 'B14 framework_resparkable_grant_one_grantee (CHECK: a person or a group, not both)',
+    kind: 'CHECK constraint',
+    table: 'framework_resparkable_grant',
+    probe: constraintDefMatches(
+      'framework_resparkable_grant_one_grantee',
+      '("granteeEmail" IS NOT NULL) AND ("granteeSpaceId" IS NULL)',
+      '("granteeEmail" IS NULL) AND ("granteeSpaceId" IS NOT NULL) AND ("granteeUserId" IS NULL)'
+    ),
+  });
 }

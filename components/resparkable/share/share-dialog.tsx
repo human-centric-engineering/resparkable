@@ -40,7 +40,7 @@
  */
 
 import * as React from 'react';
-import { Check, Copy, Link2, Send, Trash2, UserPlus } from 'lucide-react';
+import { Check, Copy, Link2, Send, Trash2, UserPlus, Users } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -69,10 +69,15 @@ import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import {
   createdGrantSchema,
+  grantGranteeLabel,
   grantsSchema,
+  grantTargetGroupsSchema,
+  isGroupGrant,
+  memberCountLabel,
   inviteSentSchema,
   mintedShareLinkSchema,
   shareLinksSchema,
+  type GrantTargetGroupWire,
   type GrantWire,
   type ShareLinkWire,
 } from '@/lib/framework/resparkable/ui/payloads';
@@ -134,6 +139,9 @@ export function ShareDialog({
             <TabsTrigger value="people" className="flex-1">
               People
             </TabsTrigger>
+            <TabsTrigger value="groups" className="flex-1">
+              Groups
+            </TabsTrigger>
             <TabsTrigger value="link" className="flex-1">
               Public link
             </TabsTrigger>
@@ -141,6 +149,14 @@ export function ShareDialog({
 
           <TabsContent value="people" className="space-y-4 pt-4">
             <PeoplePanel entityType={entityType} entityId={entityId} />
+          </TabsContent>
+
+          <TabsContent value="groups" className="space-y-4 pt-4">
+            <GroupsPanel
+              entityType={entityType}
+              entityId={entityId}
+              isFilterBoard={filterBoard !== undefined}
+            />
           </TabsContent>
 
           <TabsContent value="link" className="space-y-4 pt-4">
@@ -247,7 +263,8 @@ function PeoplePanel({
     const url = `${RESPARKABLE_API.GRANTS}?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
     const parsed = await readList(withActiveSpace(url), grantsSchema);
     if (parsed === null) setError('Could not load who this is shared with.');
-    else setGrants(parsed);
+    // People only. Grants to a group are listed on the Groups tab.
+    else setGrants(parsed.filter((grant) => !isGroupGrant(grant)));
   }, [entityType, entityId]);
 
   React.useEffect(() => {
@@ -405,7 +422,7 @@ function PeoplePanel({
               key={grant.id}
               className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-sm"
             >
-              <span className="font-medium">{grant.granteeEmail}</span>
+              <span className="font-medium">{grantGranteeLabel(grant)}</span>
               <Badge variant="outline" className="text-[11px]">
                 {grant.role === 'commenter' ? 'can comment' : 'can read'}
               </Badge>
@@ -439,11 +456,11 @@ function PeoplePanel({
                 }}
               >
                 <Send className="h-4 w-4" aria-hidden="true" />
-                <span className="sr-only">Email {grant.granteeEmail} again</span>
+                <span className="sr-only">Email {grantGranteeLabel(grant)} again</span>
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => void revoke(grant.id)}>
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
-                <span className="sr-only">Stop sharing with {grant.granteeEmail}</span>
+                <span className="sr-only">Stop sharing with {grantGranteeLabel(grant)}</span>
               </Button>
             </li>
           ))}
@@ -451,7 +468,257 @@ function PeoplePanel({
       )}
 
       {grants !== null && grants.length === 0 && (
-        <p className="text-muted-foreground text-sm">This is not shared with anyone yet.</p>
+        <p className="text-muted-foreground text-sm">This is not shared with any person yet.</p>
+      )}
+    </div>
+  );
+}
+
+// ─── Groups ──────────────────────────────────────────────────────────────────
+
+/**
+ * Share with a whole group (§23.7, phase 49).
+ *
+ * The choices are the groups you are in, and nothing else: there is no
+ * directory of groups to search. Each is named with how many people are in it
+ * today, because a grant to a group is read by whoever is a member at the time
+ * they look, and that is a number that moves.
+ *
+ * No email and no invite. A group is not a mailbox, and its members see the
+ * item in the group's workspace from the moment it is shared.
+ */
+function GroupsPanel({
+  entityType,
+  entityId,
+  isFilterBoard,
+}: {
+  entityType: ResparkableShareableType;
+  entityId: string;
+  isFilterBoard: boolean;
+}): React.ReactElement {
+  const [grants, setGrants] = React.useState<GrantWire[] | null>(null);
+  const [targets, setTargets] = React.useState<GrantTargetGroupWire[] | null>(null);
+  const [spaceId, setSpaceId] = React.useState('');
+  const [role, setRole] = React.useState('viewer');
+  const [includeTaskDetail, setIncludeTaskDetail] = React.useState(false);
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [notice, setNotice] = React.useState<string | null>(null);
+
+  const load = React.useCallback(async () => {
+    const url = `${RESPARKABLE_API.GRANTS}?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
+    const [grantList, targetList] = await Promise.all([
+      readList(withActiveSpace(url), grantsSchema),
+      readList(withActiveSpace(RESPARKABLE_API.GRANT_GROUPS), grantTargetGroupsSchema),
+    ]);
+    if (grantList === null || targetList === null) {
+      setError('Could not load the groups this is shared with.');
+      return;
+    }
+    setError(null);
+    setGrants(grantList.filter(isGroupGrant));
+    setTargets(targetList);
+  }, [entityType, entityId]);
+
+  React.useEffect(() => {
+    void load();
+  }, [load]);
+
+  const chosen = targets?.find((target) => target.spaceId === spaceId) ?? null;
+
+  const share = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (chosen === null) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.GRANTS), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityType,
+          entityId,
+          granteeSpaceId: chosen.spaceId,
+          role,
+          includeTaskDetail,
+        }),
+      });
+      const payload: unknown = await response.json();
+      if (
+        !response.ok ||
+        !isSuccess(payload) ||
+        !createdGrantSchema.safeParse(payload.data).success
+      ) {
+        setError('Could not share this with that group.');
+        return;
+      }
+      setNotice(`Shared with ${chosen.name}. Everyone in it can see it now.`);
+      setSpaceId('');
+      await load();
+    } catch {
+      setError('Could not share this with that group.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    setNotice(null);
+    try {
+      const response = await fetch(withActiveSpace(RESPARKABLE_API.grant(id)), {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        setError('Could not stop sharing with that group. Try again.');
+        return;
+      }
+    } catch {
+      setError('Could not stop sharing with that group. Try again.');
+      return;
+    }
+    await load();
+  };
+
+  if (targets !== null && targets.length === 0 && grants !== null && grants.length === 0) {
+    return (
+      <p className="text-muted-foreground text-sm">
+        You can share with a group you belong to as a member or admin. There is no other group you
+        can share into yet.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {targets !== null && targets.length > 0 && (
+        <form className="space-y-3" onSubmit={(event) => void share(event)}>
+          <div className="space-y-1">
+            <div className="flex items-center gap-1">
+              <Label htmlFor="share-group">Group</Label>
+              <FieldHelp title="Sharing with a group">
+                Everyone in the group can see it, including people who join later. When someone
+                leaves the group, they stop seeing it. You can only share with groups you belong to.
+              </FieldHelp>
+            </div>
+            <Select value={spaceId} onValueChange={setSpaceId}>
+              <SelectTrigger id="share-group">
+                <SelectValue placeholder="Choose a group" />
+              </SelectTrigger>
+              <SelectContent>
+                {targets.map((target) => (
+                  <SelectItem key={target.spaceId} value={target.spaceId}>
+                    {target.name} ({memberCountLabel(target.memberCount)})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {chosen !== null && (
+            <p className="text-muted-foreground text-sm">
+              {memberCountLabel(chosen.memberCount)} in {chosen.name} will be able to see this
+              today.
+              {isFilterBoard &&
+                ' This board adds tasks as they match its filter, and the group can change who is in it, so a snapshot is the safer choice.'}
+            </p>
+          )}
+
+          <div className="flex items-end gap-3">
+            <div className="flex-1 space-y-1">
+              <div className="flex items-center gap-1">
+                <Label htmlFor="share-group-role">They can</Label>
+                <FieldHelp title="What the group can do">
+                  Everyone in the group can read what you shared. If you let them comment, members
+                  can leave comments on it, but people who can only view the group cannot. Nobody
+                  can change the item.
+                </FieldHelp>
+              </div>
+              <Select value={role} onValueChange={setRole}>
+                <SelectTrigger id="share-group-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="viewer">Read it</SelectItem>
+                  <SelectItem value="commenter">Read it and comment</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button type="submit" disabled={busy || chosen === null}>
+              <Users className="h-4 w-4" aria-hidden="true" />
+              Share
+            </Button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Switch
+              id="share-group-detail"
+              checked={includeTaskDetail}
+              onCheckedChange={setIncludeTaskDetail}
+            />
+            <Label htmlFor="share-group-detail" className="font-normal">
+              Include task notes
+            </Label>
+            <FieldHelp title="Task notes">
+              Off by default. A shared task shows its title, status and due date. Turn this on to
+              also show the notes you have written on it. Priority scores and the reasons behind
+              them are never shown, whatever this is set to.
+            </FieldHelp>
+          </div>
+        </form>
+      )}
+
+      {error !== null && (
+        <p role="alert" className="text-destructive text-sm">
+          {error}
+        </p>
+      )}
+
+      {notice !== null && (
+        <p aria-live="polite" className="text-muted-foreground text-sm">
+          {notice}
+        </p>
+      )}
+
+      {grants !== null && grants.length > 0 && (
+        <ul className="space-y-2">
+          {grants.map((grant) => (
+            <li
+              key={grant.id}
+              className="flex flex-wrap items-center gap-2 rounded-md border p-2 text-sm"
+            >
+              <span className="font-medium">{grantGranteeLabel(grant)}</span>
+              {grant.granteeGroup !== null && grant.granteeGroup.memberCount !== null && (
+                <span className="text-muted-foreground text-xs">
+                  {memberCountLabel(grant.granteeGroup.memberCount)}
+                </span>
+              )}
+              <Badge variant="outline" className="text-[11px]">
+                {grant.role === 'commenter' ? 'can comment' : 'can read'}
+              </Badge>
+              {grant.expiresAt !== null && (
+                <span className="text-muted-foreground text-xs">
+                  until <ClientDate date={grant.expiresAt} />
+                </span>
+              )}
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                onClick={() => void revoke(grant.id)}
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                <span className="sr-only">Stop sharing with {grantGranteeLabel(grant)}</span>
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {grants !== null && grants.length === 0 && (
+        <p className="text-muted-foreground text-sm">This is not shared with any group yet.</p>
       )}
     </div>
   );

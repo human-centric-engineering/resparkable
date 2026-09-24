@@ -556,9 +556,19 @@ describe('ResparkableSharedPage', () => {
     const { default: ResparkableSharedPage } =
       await import('@/app/(resparkable)/resparkable/shared/page');
 
-    await ResparkableSharedPage();
+    await ResparkableSharedPage({ searchParams: Promise.resolve({}) });
 
     expect(callPaths()).toEqual([RESPARKABLE_API.SHARED]);
+  });
+
+  it('reads through the active workspace, so a group sees what was shared with the group', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500));
+    const { default: ResparkableSharedPage } =
+      await import('@/app/(resparkable)/resparkable/shared/page');
+
+    await ResparkableSharedPage({ searchParams: Promise.resolve({ space: 'space_group_b' }) });
+
+    expect(vi.mocked(readResparkable).mock.calls[0][2]).toBe('space_group_b');
   });
 
   it('renders LoadError when the read fails', async () => {
@@ -566,7 +576,7 @@ describe('ResparkableSharedPage', () => {
     const { default: ResparkableSharedPage } =
       await import('@/app/(resparkable)/resparkable/shared/page');
 
-    render(await ResparkableSharedPage());
+    render(await ResparkableSharedPage({ searchParams: Promise.resolve({}) }));
 
     expect(screen.getByRole('alert')).toHaveTextContent('shared down');
     expect(screen.queryByTestId('shared-with-me-view')).not.toBeInTheDocument();
@@ -578,7 +588,7 @@ describe('ResparkableSharedPage', () => {
     const { default: ResparkableSharedPage } =
       await import('@/app/(resparkable)/resparkable/shared/page');
 
-    render(await ResparkableSharedPage());
+    render(await ResparkableSharedPage({ searchParams: Promise.resolve({}) }));
 
     const view = screen.getByTestId('shared-with-me-view');
     expect(view.getAttribute('data-props')).toBe(JSON.stringify({ items }));

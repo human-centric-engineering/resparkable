@@ -167,11 +167,6 @@ const OTHER_ROUTES: Record<string, string> = {
   'groups/invites/accept/route.ts': 'Binds an invitation token to the session. Not in a space.',
   'invites/accept/route.ts': 'Binds a share invitation to the session. Not in a space.',
   'public/[token]/route.ts': 'A public link. The token is the whole authority.',
-  'shared/route.ts': 'Items shared with the caller, through the access layer.',
-  'shared/search/route.ts': 'As above.',
-  'shared/[entityType]/[entityId]/route.ts': 'As above.',
-  'comments/route.ts': 'Comments resolve access per item through the access layer.',
-  'comments/[id]/route.ts': 'As above.',
   'spaces/route.ts': 'Lists the workspaces the caller can open, for the switcher.',
   'spaces/[spaceId]/mcp-keys/route.ts':
     'Takes the workspace from the path and resolves it through the membership service. ' +

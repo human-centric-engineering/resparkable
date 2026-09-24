@@ -42,6 +42,7 @@ function grant(overrides: Record<string, unknown> = {}) {
     entityType: 'project',
     entityId: 'proj_1',
     granteeEmail: 'friend@example.com',
+    granteeGroup: null,
     role: 'viewer',
     includeTaskDetail: false,
     accepted: true,
@@ -67,6 +68,26 @@ function link(overrides: Record<string, unknown> = {}) {
     active: true,
     viewCount: 3,
     lastViewedAt: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A grant to a group rather than a person: `granteeEmail` is null, `granteeGroup` is set. */
+function groupGrant(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'grant_group_1',
+    entityType: 'project',
+    entityId: 'proj_1',
+    granteeEmail: null,
+    granteeGroup: { spaceId: 'space_1', name: 'Study Group B', memberCount: 4 },
+    role: 'viewer',
+    includeTaskDetail: false,
+    accepted: true,
+    invitedAt: null,
+    expiresAt: null,
+    revokedAt: null,
+    active: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -196,5 +217,151 @@ describe('MySharesView', () => {
     render(<MySharesView items={[]} />);
 
     expect(screen.getByText('You have not shared anything')).toBeInTheDocument();
+  });
+
+  describe('a grant to a group', () => {
+    it('is still a group grant when its label lookup came back empty', () => {
+      render(
+        <MySharesView
+          items={[item({ grants: [groupGrant({ granteeGroup: null, accepted: false })] })]}
+        />
+      );
+
+      expect(screen.getByText('a deleted group')).toBeInTheDocument();
+      // A person-only line: a group grant has nobody to open an invitation.
+      expect(screen.queryByText(/not opened yet/)).not.toBeInTheDocument();
+    });
+
+    it('names the group, not a person, and shows its member count', () => {
+      render(
+        <MySharesView
+          items={[
+            item({
+              grants: [
+                groupGrant({
+                  granteeGroup: { spaceId: 's1', name: 'Study Group B', memberCount: 4 },
+                }),
+              ],
+            }),
+          ]}
+        />
+      );
+
+      // grantGranteeLabel() reads the group's own name for a group grant.
+      expect(screen.getByText('Study Group B')).toBeInTheDocument();
+      expect(screen.getByText(/4 people in the group/)).toBeInTheDocument();
+      // The "not opened yet" wording is a per-person concept: a group grant
+      // has no single acceptance to report, so it must not appear here.
+      expect(screen.queryByText(/not opened yet/)).not.toBeInTheDocument();
+    });
+
+    it('uses the singular "1 person" for a group with one member', () => {
+      render(
+        <MySharesView
+          items={[
+            item({
+              grants: [
+                groupGrant({ granteeGroup: { spaceId: 's1', name: 'Solo Group', memberCount: 1 } }),
+              ],
+            }),
+          ]}
+        />
+      );
+
+      expect(screen.getByText(/1 person in the group/)).toBeInTheDocument();
+    });
+
+    it('shows the expiry on a group grant alongside its member count', () => {
+      render(
+        <MySharesView
+          items={[
+            item({
+              grants: [
+                groupGrant({
+                  granteeGroup: { spaceId: 's1', name: 'Study Group B', memberCount: 4 },
+                  expiresAt: '2026-03-01T00:00:00.000Z',
+                }),
+              ],
+            }),
+          ]}
+        />
+      );
+
+      expect(screen.getByText(/4 people in the group/)).toBeInTheDocument();
+      expect(screen.getByText(/until/)).toBeInTheDocument();
+    });
+
+    it('asks for confirmation with group-specific wording before revoking', async () => {
+      const user = userEvent.setup();
+      render(
+        <MySharesView
+          items={[
+            item({
+              grants: [
+                groupGrant({
+                  granteeGroup: { spaceId: 's1', name: 'Study Group B', memberCount: 4 },
+                }),
+              ],
+            }),
+          ]}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /Revoke Study Group B/ }));
+
+      // The group wording, not the person wording: everyone in the group loses
+      // access, and there is no single invitation to speak of.
+      expect(screen.getByText(/Everyone in the group loses access/)).toBeInTheDocument();
+      expect(screen.queryByText(/creates a new invitation/)).not.toBeInTheDocument();
+    });
+
+    it('revokes a group grant through the same grant route as a person grant', async () => {
+      const user = userEvent.setup();
+      render(
+        <MySharesView
+          items={[
+            item({
+              grants: [
+                groupGrant({
+                  id: 'grant_group_9',
+                  granteeGroup: { spaceId: 's1', name: 'Study Group B', memberCount: 4 },
+                }),
+              ],
+            }),
+          ]}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /Revoke Study Group B/ }));
+      await user.click(screen.getByRole('button', { name: 'Revoke' }));
+
+      await waitFor(() => {
+        expect(mockedDelete).toHaveBeenCalledWith('/api/v1/resparkable/grants/grant_group_9');
+      });
+    });
+  });
+
+  it('shows the expiry on a public link that has one', () => {
+    render(
+      <MySharesView
+        items={[item({ grants: [], links: [link({ expiresAt: '2026-04-01T00:00:00.000Z' })] })]}
+      />
+    );
+
+    expect(screen.getByText(/until/)).toBeInTheDocument();
+    expect(screen.queryByText(/never expires/)).not.toBeInTheDocument();
+  });
+
+  it('uses the singular "1 view" for a link viewed once', () => {
+    render(<MySharesView items={[item({ grants: [], links: [link({ viewCount: 1 })] })]} />);
+
+    expect(screen.getByText(/1 view(?!s)/)).toBeInTheDocument();
+  });
+
+  it('falls back to the raw entity type when it has no display label', () => {
+    render(<MySharesView items={[item({ entityType: 'thought', title: 'A loose idea' })]} />);
+
+    // `thought` is not in TYPE_LABEL, so the badge falls back to the raw value.
+    expect(screen.getByText('thought')).toBeInTheDocument();
   });
 });

@@ -31,7 +31,8 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 import { addComment, listCommentsFor } from '@/lib/framework/resparkable/services/comments';
 import {
   commentRefQuerySchema,
@@ -40,10 +41,12 @@ import {
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
 
   const query = validateQueryParams(new URL(request.url).searchParams, commentRefQuerySchema);
 
-  const comments = await listCommentsFor(viewerFromSession(session), query);
+  const comments = await listCommentsFor(viewer, query);
   if (!comments) throw new NotFoundError('Not found');
 
   log.info('Resparkable comments list', {
@@ -56,11 +59,13 @@ export const GET = withAuth(async (request, session) => {
 
 export const POST = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
 
   const body = await validateRequestBody(request, createCommentSchema);
 
   const comments = await addComment(
-    viewerFromSession(session),
+    viewer,
     { entityType: body.entityType, entityId: body.entityId },
     body.body
   );

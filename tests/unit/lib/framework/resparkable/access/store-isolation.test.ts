@@ -74,7 +74,7 @@ import {
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/access/types';
 
-const VIEWER = { userId: 'user_b', email: 'B@Example.com' };
+const VIEWER = { userId: 'user_b', email: 'B@Example.com', group: null };
 const OWNER = 'user_a';
 
 /** The mocked delegates, typed for the two methods this suite inspects. */
@@ -114,8 +114,8 @@ describe('grant reads are bounded by the viewer', () => {
   it('makes NO query at all for a viewer with neither id nor email', async () => {
     // The failure this prevents is total: an `OR: []` matches every grant in
     // the install, and the resolver would follow whichever one came back.
-    await findLiveGrantsForViewer({ userId: null, email: null });
-    await findLiveGrantsForRefs({ userId: null, email: null }, [
+    await findLiveGrantsForViewer({ userId: null, email: null, group: null });
+    await findLiveGrantsForRefs({ userId: null, email: null, group: null }, [
       { entityType: 'project', entityId: 'p_1' },
     ]);
 
@@ -331,12 +331,14 @@ describe('granteeClauses turns "no identity" into an empty RESULT, not an empty 
   // matters because a caller that skips this and reads `.length` on `undefined`
   // would crash the whole resolution rather than reading "nothing shared".
   it('findLiveGrantsForViewer resolves to an empty array for an anonymous viewer', async () => {
-    await expect(findLiveGrantsForViewer({ userId: null, email: null })).resolves.toEqual([]);
+    await expect(
+      findLiveGrantsForViewer({ userId: null, email: null, group: null })
+    ).resolves.toEqual([]);
   });
 
   it('findLiveGrantsForRefs resolves to an empty array for an anonymous viewer', async () => {
     await expect(
-      findLiveGrantsForRefs({ userId: null, email: null }, [
+      findLiveGrantsForRefs({ userId: null, email: null, group: null }, [
         { entityType: 'project', entityId: 'p_1' },
       ])
     ).resolves.toEqual([]);

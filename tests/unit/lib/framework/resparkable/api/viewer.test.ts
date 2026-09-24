@@ -20,7 +20,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
+import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import type { AuthSession } from '@/lib/auth/guards';
 
 function session(overrides: Partial<AuthSession['user']> = {}): AuthSession {
@@ -45,27 +46,49 @@ function session(overrides: Partial<AuthSession['user']> = {}): AuthSession {
   };
 }
 
-describe('viewerFromSession', () => {
+const PERSONAL = spaceScopeFor({ spaceId: 'user_b', actorUserId: 'user_b', role: 'owner' });
+const GROUP_SPACE = 'spc_0123456789abcdef0123456789abcdef';
+
+describe('viewerFor', () => {
   it('takes both the id and the address from the session', () => {
     // Not redundant: the id matches grants already accepted or issued to an
     // existing account, and the address matches grants issued to a mailbox
     // before its owner ever signed in. A viewer built from the id alone drops
     // every unaccepted invite, which is most of them on the day they are sent.
-    expect(viewerFromSession(session())).toEqual({
+    expect(viewerFor(session(), PERSONAL)).toEqual({
       userId: 'user_b',
       email: 'b@example.com',
+      group: null,
     });
   });
 
   it('lower-cases the address', () => {
     // The failure this prevents is silent: the viewer resolves, every query
     // runs, and the person simply holds none of their own grants.
-    expect(viewerFromSession(session({ email: 'Bob@Example.COM' })).email).toBe('bob@example.com');
+    expect(viewerFor(session({ email: 'Bob@Example.COM' }), PERSONAL).email).toBe(
+      'bob@example.com'
+    );
   });
 
   it('carries nothing else from the session', () => {
     // A viewer is an identity, not a user. Anything else on it would be a field
     // the access layer could start making decisions from without a resolution.
-    expect(Object.keys(viewerFromSession(session())).sort()).toEqual(['email', 'userId']);
+    expect(Object.keys(viewerFor(session(), PERSONAL)).sort()).toEqual([
+      'email',
+      'group',
+      'userId',
+    ]);
+  });
+
+  it('names the group workspace when the scope is a group space', () => {
+    // Inside a group, the group is the grantee (phase 49). The space comes off
+    // the scope membership minted, never off the request.
+    const scope = spaceScopeFor({ spaceId: GROUP_SPACE, actorUserId: 'user_b', role: 'member' });
+    expect(viewerFor(session(), scope).group).toEqual({ spaceId: GROUP_SPACE, canWrite: true });
+  });
+
+  it('marks a group viewer as unable to write, so a commenter grant does not let them comment', () => {
+    const scope = spaceScopeFor({ spaceId: GROUP_SPACE, actorUserId: 'user_b', role: 'viewer' });
+    expect(viewerFor(session(), scope).group).toEqual({ spaceId: GROUP_SPACE, canWrite: false });
   });
 });

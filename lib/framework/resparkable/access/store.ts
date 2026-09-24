@@ -122,6 +122,14 @@ export async function findEntityOwner(
  * grant in the install.
  */
 function granteeClauses(viewer: ResparkableViewer): Prisma.ResparkableGrantWhereInput[] | null {
+  // Inside a group workspace the group is the grantee, and ONLY the group. The
+  // person's own grants are deliberately not matched here, and the group's are
+  // not matched in the personal branch below: each workspace sees the shares
+  // made to it and nothing that crosses over (§23.7, test 13g). The CHECK that
+  // probe B14 guards is what makes the two branches disjoint at the database: a
+  // group grant has no address and no account to match on.
+  if (viewer.group) return [{ granteeSpaceId: viewer.group.spaceId }];
+
   const clauses: Prisma.ResparkableGrantWhereInput[] = [];
   if (viewer.userId) clauses.push({ granteeUserId: viewer.userId });
   if (viewer.email) clauses.push({ granteeEmail: viewer.email.toLowerCase() });

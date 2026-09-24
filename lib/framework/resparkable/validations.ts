@@ -1863,16 +1863,60 @@ export const granteeEmailSchema = z
  * `role` defaults to `viewer` and `includeTaskDetail` to off: both defaults
  * are the narrow ones, and both widen what another person sees.
  */
+const grantFieldsSchema = {
+  entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
+  entityId: cuidSchema,
+  role: z.enum(['viewer', 'commenter']).default('viewer'),
+  includeTaskDetail: z.boolean().default(false),
+  expiry: grantExpirySchema,
+};
+
+/**
+ * A group workspace named as a grantee (§23.7, phase 49).
+ *
+ * The shape of a group space key (`spc_` and 32 hex characters), checked here so
+ * a user id cannot be passed as a "group" and turned into a grant addressed to a
+ * personal space: a person is addressed by `granteeEmail`, never by their space.
+ * The service then checks the caller is a joined member of it, which is what
+ * keeps this from being a directory of every group in the install.
+ */
+export const granteeSpaceIdSchema = z
+  .string()
+  .regex(/^spc_[0-9a-f]{32}$/, 'Choose a group to share with');
+
+/**
+ * One object with both grantee fields optional, rather than a union of a person
+ * schema and a group schema. A union reports a bad address as a bare
+ * `invalid_union` with no path, because the address fails one branch and the
+ * missing `granteeSpaceId` fails the other. This way `granteeEmail: 'bob@'` is
+ * still "Enter a valid email address" on `granteeEmail`, and the exactly-one
+ * rule gets its own message.
+ */
 export const createGrantSchema = z
   .object({
-    entityType: z.enum(RESPARKABLE_SHAREABLE_TYPES),
-    entityId: cuidSchema,
-    granteeEmail: granteeEmailSchema,
-    role: z.enum(['viewer', 'commenter']).default('viewer'),
-    includeTaskDetail: z.boolean().default(false),
-    expiry: grantExpirySchema,
+    ...grantFieldsSchema,
+    granteeEmail: granteeEmailSchema.optional(),
+    granteeSpaceId: granteeSpaceIdSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, ctx) => {
+    if ((input.granteeEmail === undefined) === (input.granteeSpaceId === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['granteeEmail'],
+        message: 'Share with one person or one group',
+      });
+    }
+  })
+  .transform(({ granteeEmail, granteeSpaceId, ...fields }) => ({
+    ...fields,
+    // The refine above guarantees exactly one is set; `granteeSpaceId` is only
+    // read when the address is absent.
+    grantee:
+      granteeEmail !== undefined
+        ? { kind: 'person' as const, email: granteeEmail }
+        : { kind: 'group' as const, spaceId: granteeSpaceId ?? '' },
+  }));
 
 export type CreateGrantInput = z.infer<typeof createGrantSchema>;
 

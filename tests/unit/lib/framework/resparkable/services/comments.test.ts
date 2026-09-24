@@ -12,9 +12,10 @@
  *      on its parent. It was never chosen for sharing by its owner.
  *   3. **The scope always comes from a positive resolution**, never from the
  *      writer's session — the row lands in the *owner's* brain.
- *   4. **Editing is the author's alone; deleting is the author's or the
- *      owner's.** The author id travels into the query in every case but one,
- *      and that one is the owner deleting from their own brain.
+ *   4. **Editing is the author's alone, and only while they could comment;
+ *      deleting is the author's or the owner's.** The author id travels into
+ *      the query in every case but one, and that one is the owner deleting
+ *      from their own item, from whichever workspace (`permissions.moderate`).
  *   5. **A refusal to write and a missing item look identical.** "You may look
  *      but not speak" as a distinguishable answer tells a guesser which items
  *      exist.
@@ -58,7 +59,7 @@ import {
 } from '@/lib/framework/resparkable/services/comments';
 
 const NOW = new Date('2026-08-28T10:00:00.000Z');
-const GRANTEE = { userId: 'user_b', email: 'b@example.com' };
+const GRANTEE = { userId: 'user_b', email: 'b@example.com', group: null };
 const REF = { entityType: 'project', entityId: 'p_1' };
 
 /** A commenter grant on the item itself — the only basis that may write. */
@@ -67,7 +68,7 @@ function commenterAccess(overrides: Record<string, unknown> = {}) {
     ok: true,
     basis: 'grant',
     ownerId: 'user_a',
-    permissions: { read: true, comment: true },
+    permissions: { read: true, comment: true, moderate: false },
     redact: ['priorityScore', 'events', 'parent'],
     via: null,
     ...overrides,
@@ -78,7 +79,7 @@ const DENIED = {
   ok: false,
   basis: null,
   ownerId: null,
-  permissions: { read: false, comment: false },
+  permissions: { read: false, comment: false, moderate: false },
   redact: [],
   via: null,
 };
@@ -135,6 +136,32 @@ describe('listCommentsFor', () => {
 
     expect(thread?.[0]).toMatchObject({ mine: true, author: { isOwner: false } });
     expect(thread?.[1]).toMatchObject({ mine: false, author: { isOwner: true } });
+  });
+
+  it('tells the reader what they may do with each comment, by the rules the writes enforce', async () => {
+    listComments.mockResolvedValue([
+      row({ id: 'c_mine', authorUserId: 'user_b' }),
+      row({ id: 'c_theirs', authorUserId: 'user_a' }),
+    ]);
+
+    const commenter = await listCommentsFor(GRANTEE, REF, NOW);
+    expect(commenter?.[0]).toMatchObject({ canEdit: true, canDelete: true });
+    expect(commenter?.[1]).toMatchObject({ canEdit: false, canDelete: false });
+
+    // Lost the right to comment: their own is still deletable, no longer
+    // editable, so the UI draws no Edit that would always fail.
+    resolveResparkableAccess.mockResolvedValue(
+      commenterAccess({ permissions: { read: true, comment: false, moderate: false } })
+    );
+    const demoted = await listCommentsFor(GRANTEE, REF, NOW);
+    expect(demoted?.[0]).toMatchObject({ canEdit: false, canDelete: true });
+
+    // Moderating: anyone's is deletable, nobody else's is editable.
+    resolveResparkableAccess.mockResolvedValue(
+      commenterAccess({ permissions: { read: true, comment: false, moderate: true } })
+    );
+    const moderator = await listCommentsFor(GRANTEE, REF, NOW);
+    expect(moderator?.[1]).toMatchObject({ canEdit: false, canDelete: true });
   });
 
   it('returns null when the basis carries no comments', async () => {
@@ -252,7 +279,7 @@ describe('addComment', () => {
   });
 
   it('refuses an anonymous viewer, because a comment needs an author', async () => {
-    expect(await addComment({ userId: null, email: null }, REF, 'hi', NOW)).toBeNull();
+    expect(await addComment({ userId: null, email: null, group: null }, REF, 'hi', NOW)).toBeNull();
     expect(resolveResparkableAccess).not.toHaveBeenCalled();
   });
 
@@ -296,7 +323,12 @@ describe('updateComment', () => {
 
   it('gives the OWNER no way to edit somebody else’s words', async () => {
     resolveResparkableAccess.mockResolvedValue(
-      commenterAccess({ basis: 'owner', ownerId: 'user_a', redact: [] })
+      commenterAccess({
+        basis: 'owner',
+        ownerId: 'user_a',
+        redact: [],
+        permissions: { read: true, comment: true, moderate: true },
+      })
     );
     editComment.mockResolvedValue(null);
 
@@ -305,13 +337,54 @@ describe('updateComment', () => {
     // leaving their name on it is worse than removing it — and the owner can
     // remove it.
     expect(
-      await updateComment({ userId: 'user_a', email: 'a@example.com' }, REF, 'c_1', 'no', NOW)
+      await updateComment(
+        { userId: 'user_a', email: 'a@example.com', group: null },
+        REF,
+        'c_1',
+        'no',
+        NOW
+      )
     ).toBeNull();
     expect(editComment.mock.calls[0][3]).toBe('user_a');
+  });
+
+  it('asks the resolver for comment permission, not for read', async () => {
+    await updateComment(GRANTEE, REF, 'c_1', 'Changed my mind', NOW);
+
+    expect(resolveResparkableAccess).toHaveBeenCalledWith(
+      expect.objectContaining({ need: 'comment' })
+    );
+  });
+
+  it('refuses the author once they can no longer comment, in either workspace', async () => {
+    // A personal grant lowered to viewer and a group member demoted to viewer
+    // both resolve `need: 'comment'` as a denial. One rule, in the resolver.
+    resolveResparkableAccess.mockResolvedValue(DENIED);
+    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: false } };
+
+    expect(await updateComment(GRANTEE, REF, 'c_1', 'Changed my mind', NOW)).toBeNull();
+    expect(await updateComment(groupViewer, REF, 'c_1', 'Changed my mind', NOW)).toBeNull();
+    expect(editComment).not.toHaveBeenCalled();
+  });
+
+  it('lets a group member who can write edit their own', async () => {
+    const groupMember = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: true } };
+
+    await updateComment(groupMember, REF, 'c_1', 'Changed my mind', NOW);
+
+    expect(editComment.mock.calls[0][3]).toBe('user_b');
   });
 });
 
 describe('removeComment', () => {
+  it('lets a group viewer take back their own comment, filtered to their own', async () => {
+    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: false } };
+
+    await removeComment(groupViewer, REF, 'c_1', NOW);
+
+    expect(deleteComment.mock.calls[0][3]).toBe('user_b');
+  });
+
   it('restricts a grantee to their own comment', async () => {
     await removeComment(GRANTEE, REF, 'c_1', NOW);
 
@@ -325,10 +398,15 @@ describe('removeComment', () => {
 
   it('lets the owner remove any comment in their own brain', async () => {
     resolveResparkableAccess.mockResolvedValue(
-      commenterAccess({ basis: 'owner', ownerId: 'user_a', redact: [] })
+      commenterAccess({
+        basis: 'owner',
+        ownerId: 'user_a',
+        redact: [],
+        permissions: { read: true, comment: true, moderate: true },
+      })
     );
 
-    await removeComment({ userId: 'user_a', email: 'a@example.com' }, REF, 'c_1', NOW);
+    await removeComment({ userId: 'user_a', email: 'a@example.com', group: null }, REF, 'c_1', NOW);
 
     // The author filter is dropped only here, and only for the owner. Somebody
     // else's words standing in your notes with no way to remove them is what
@@ -339,6 +417,23 @@ describe('removeComment', () => {
       'c_1',
       undefined
     );
+  });
+
+  it('lets the owner remove any comment on their item from a group workspace it was shared with', async () => {
+    // There it resolves as a grant, not as `owner`, but the resolver still
+    // says they moderate it.
+    resolveResparkableAccess.mockResolvedValue(
+      commenterAccess({ permissions: { read: true, comment: false, moderate: true } })
+    );
+    const ownerInGroup = {
+      userId: 'user_a',
+      email: 'a@example.com',
+      group: { spaceId: 'space_b', canWrite: true },
+    };
+
+    await removeComment(ownerInGroup, REF, 'c_1', NOW);
+
+    expect(deleteComment.mock.calls[0][3]).toBeUndefined();
   });
 
   it('returns null when nothing was removed', async () => {

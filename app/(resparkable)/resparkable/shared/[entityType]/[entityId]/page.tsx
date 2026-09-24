@@ -4,7 +4,11 @@ import { notFound } from 'next/navigation';
 import { SharedItemDetail } from '@/components/resparkable/share/shared-item-detail';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { sharedItemDetailSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 /**
  * One item somebody shared with you.
@@ -23,21 +27,21 @@ export const metadata: Metadata = {
 
 export default async function ResparkableSharedItemPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ entityType: string; entityId: string }>;
+  searchParams: ResparkableSearchParams;
 }) {
   const { entityType, entityId } = await params;
+  const space = readSpaceTarget(await searchParams);
 
-  // `null`, and deliberately: this surface is keyed on the READER, not on a
-  // workspace. §13's grants match a grantee's address or account, so what is
-  // shared with somebody does not change when they switch workspace, and
-  // narrowing it by the active space would hide half of it with no way to tell.
-  // Phase 49 makes it per-space, when a group can be a grantee and "shared with
-  // Study Group B" becomes a different list from "shared with me".
+  // Per workspace since phase 49. Inside a group this is what was shared with
+  // the group; in the personal workspace, what was shared with you. Neither list
+  // shows the other's, which is test 13g: nothing crosses spaces implicitly.
   const detail = await readResparkable(
     RESPARKABLE_API.sharedItem(entityType, entityId),
     sharedItemDetailSchema,
-    null
+    space
   );
 
   // Every failure is the same failure. No grant, a revoked grant, an expired

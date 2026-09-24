@@ -30,6 +30,7 @@ import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 import { issueGrant, listOwnGrants } from '@/lib/framework/resparkable/services/grants';
 import { createGrantSchema, grantListQuerySchema } from '@/lib/framework/resparkable/validations';
 
@@ -61,14 +62,28 @@ export const POST = withAuth(async (request, session) => {
   // Checked in the route rather than the schema because it needs the session,
   // and in the route rather than the service because it is a request-shape
   // complaint rather than an access decision.
-  if (body.granteeEmail === session.user.email.toLowerCase()) {
+  //
+  // Personal workspace only. An item a group owns is not the member's, so a
+  // member sharing it with their own address gets a working grant they read
+  // from their personal workspace, and "it is yours" would be false.
+  if (
+    scope.spaceId === session.user.id &&
+    body.grantee.kind === 'person' &&
+    body.grantee.email === session.user.email.toLowerCase()
+  ) {
     throw new ValidationError('You already have access to this — it is yours.');
+  }
+  // The group-to-itself version of the same gesture (phase 49). Everyone in the
+  // group already reads everything in its workspace (§23.4), so the grant would
+  // add nothing, and a grant nobody's resolver can reach is a row nobody needs.
+  if (body.grantee.kind === 'group' && body.grantee.spaceId === scope.spaceId) {
+    throw new ValidationError('Everyone in this group can already see it.');
   }
 
   const grant = await issueGrant(scope, body);
-  // Not the caller's item, or no such item. 404 rather than 403, for the reason
-  // every read in this tier gives: a 403 confirms the row exists to someone who
-  // guessed an id.
+  // Not the caller's item, no such item, or a group the caller is not in. 404
+  // rather than 403, for the reason every read in this tier gives: a 403
+  // confirms the row exists to someone who guessed an id.
   if (!grant) throw new NotFoundError('Item not found');
 
   // No address in the log line. It is one person's contact details sitting in
@@ -77,4 +92,3 @@ export const POST = withAuth(async (request, session) => {
 
   return successResponse({ grant }, undefined, { status: 201 });
 });
-import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
