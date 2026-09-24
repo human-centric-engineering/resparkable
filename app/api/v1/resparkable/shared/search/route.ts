@@ -30,14 +30,17 @@ import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { searchSharedWithMe } from '@/lib/framework/resparkable/services/shared-with-me';
 import { sharedSearchQuerySchema } from '@/lib/framework/resparkable/validations';
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
 
   const query = validateQueryParams(new URL(request.url).searchParams, sharedSearchQuerySchema);
 
-  const result = await searchSharedWithMe(viewerFromSession(session), query);
+  const result = await searchSharedWithMe(viewer, query);
 
   // The query text is the user's own and short, but it is still content: what
   // somebody searches for in another person's shared project is not something

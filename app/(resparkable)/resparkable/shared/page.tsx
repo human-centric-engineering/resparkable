@@ -4,11 +4,15 @@ import { SharedWithMeView } from '@/components/resparkable/share/shared-with-me-
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { sharedWithMeListSchema } from '@/lib/framework/resparkable/ui/payloads';
-import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
+import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
+import {
+  readResparkable,
+  type ResparkableSearchParams,
+} from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
   title: 'Shared with me',
-  description: 'Items other people have shared with you.',
+  description: 'Items other people and groups have shared with you.',
 };
 
 /**
@@ -26,14 +30,16 @@ export const metadata: Metadata = {
  * project — flattening the cascade here would answer "what has Priya given me?"
  * with two hundred rows when the honest answer is one project.
  */
-export default async function ResparkableSharedPage() {
-  // `null`, and deliberately: this surface is keyed on the READER, not on a
-  // workspace. §13's grants match a grantee's address or account, so what is
-  // shared with somebody does not change when they switch workspace, and
-  // narrowing it by the active space would hide half of it with no way to tell.
-  // Phase 49 makes it per-space, when a group can be a grantee and "shared with
-  // Study Group B" becomes a different list from "shared with me".
-  const shared = await readResparkable(RESPARKABLE_API.SHARED, sharedWithMeListSchema, null);
+export default async function ResparkableSharedPage({
+  searchParams,
+}: {
+  searchParams: ResparkableSearchParams;
+}) {
+  const space = readSpaceTarget(await searchParams);
+  // Per workspace since phase 49. Inside a group this is what was shared with
+  // the group; in the personal workspace, what was shared with you. Neither list
+  // shows the other's, which is test 13g: nothing crosses spaces implicitly.
+  const shared = await readResparkable(RESPARKABLE_API.SHARED, sharedWithMeListSchema, space);
 
   if (!shared.ok) {
     return <LoadError what="what has been shared with you" message={shared.message} />;

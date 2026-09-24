@@ -27,11 +27,14 @@ import * as React from 'react';
 
 import { CommentThread } from '@/components/resparkable/share/comment-thread';
 import { SharedMarkdown } from '@/components/resparkable/share/shared-markdown';
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { Badge } from '@/components/ui/badge';
 import { ClientDate } from '@/components/ui/client-date';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
-import type { SharedItemDetailWire } from '@/lib/framework/resparkable/ui/payloads';
-import Link from 'next/link';
+import {
+  sharedOwnerLabel,
+  type SharedItemDetailWire,
+} from '@/lib/framework/resparkable/ui/payloads';
 
 const TYPE_LABEL: Record<string, string> = {
   area: 'Life area',
@@ -74,7 +77,7 @@ export function SharedItemDetail({ detail }: { detail: SharedItemDetailWire }): 
         <h1 className="text-2xl font-semibold">{item.title}</h1>
 
         <p className="text-muted-foreground text-sm">
-          Shared with you by {owner.name ?? owner.email}
+          Shared by {sharedOwnerLabel(owner)}
           {item.dueAt !== null && (
             <>
               {' · due '}
@@ -86,12 +89,12 @@ export function SharedItemDetail({ detail }: { detail: SharedItemDetailWire }): 
         {detail.via !== null && (
           <p className="text-muted-foreground text-sm">
             You can see this because it is part of{' '}
-            <Link
+            <WorkspaceLink
               href={RESPARKABLE_ROUTES.sharedItem(detail.via.entityType, detail.via.entityId)}
               className="underline"
             >
               something else shared with you
-            </Link>
+            </WorkspaceLink>
             .
           </p>
         )}
@@ -134,7 +137,6 @@ export function SharedItemDetail({ detail }: { detail: SharedItemDetailWire }): 
         entityType={item.entityType}
         entityId={item.id}
         canComment={detail.canComment}
-        isOwner={false}
       />
 
       {children.length > 0 && (

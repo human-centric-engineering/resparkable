@@ -22,6 +22,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { useSearchParams } from 'next/navigation';
 
 import { SharedItemDetail } from '@/components/resparkable/share/shared-item-detail';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
@@ -48,7 +49,7 @@ beforeEach(() => {
 function makeDetail(
   overrides: Partial<Omit<SharedItemDetailWire, 'item' | 'owner'>> = {},
   itemOverrides: Partial<SharedItemDetailWire['item']> = {},
-  ownerOverrides: Partial<SharedItemDetailWire['owner']> = {}
+  ownerOverrides: Partial<Extract<SharedItemDetailWire['owner'], { kind: 'person' }>> = {}
 ): SharedItemDetailWire {
   return {
     item: {
@@ -69,6 +70,7 @@ function makeDetail(
     childrenTruncated: false,
     includeTaskDetail: true,
     owner: {
+      kind: 'person',
       id: 'owner-1',
       name: 'Jane Owner',
       email: 'jane@example.com',
@@ -90,9 +92,19 @@ describe('SharedItemDetail', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Acme Redesign' })).toBeInTheDocument();
-    expect(screen.getByText(/Shared with you by Jane Owner/)).toBeInTheDocument();
+    expect(screen.getByText(/Shared by Jane Owner/)).toBeInTheDocument();
     expect(screen.getByText('urgent')).toBeInTheDocument();
     expect(screen.getByText('active')).toBeInTheDocument();
+  });
+
+  it('names a group as the one who shared it, with no address to show', () => {
+    render(
+      <SharedItemDetail
+        detail={{ ...makeDetail(), owner: { kind: 'group', id: 'space_b', name: 'Study Group B' } }}
+      />
+    );
+
+    expect(screen.getByText(/Shared by Study Group B/)).toBeInTheDocument();
   });
 
   describe('via — reached through a cascade', () => {
@@ -105,6 +117,21 @@ describe('SharedItemDetail', () => {
 
       const link = screen.getByRole('link', { name: /something else shared with you/i });
       expect(link).toHaveAttribute('href', RESPARKABLE_ROUTES.sharedItem('project', 'parent-1'));
+    });
+
+    it('keeps the active workspace on the parent link, so a group member lands on the same grant', () => {
+      vi.mocked(useSearchParams).mockReturnValue(
+        new URLSearchParams({ space: 'space_b' }) as never
+      );
+      render(
+        <SharedItemDetail
+          detail={makeDetail({ via: { entityType: 'project', entityId: 'parent-1' } })}
+        />
+      );
+
+      const link = screen.getByRole('link', { name: /something else shared with you/i });
+      expect(link.getAttribute('href')).toContain('space=space_b');
+      vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
     });
 
     it('renders no cascade line when via is absent', () => {

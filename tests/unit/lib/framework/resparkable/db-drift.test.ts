@@ -188,6 +188,9 @@ describe('registration', () => {
       'B9 ',
       'B10 ',
       'B11 ',
+      'B12 ',
+      'B13 ',
+      'B14 ',
     ]) {
       expect(names.some((name) => name.startsWith(id))).toBe(true);
     }
@@ -417,6 +420,34 @@ describe('B12 — the ownership invariant', () => {
   it('fails when the constraint is missing entirely', async () => {
     withExistingObjects([]);
     await expect(probe('B12').probe()).resolves.toMatchObject({ ok: false });
+  });
+});
+
+describe('B14 — a grant names a person or a group, not both', () => {
+  const REAL =
+    'CHECK (((("granteeEmail" IS NOT NULL) AND ("granteeSpaceId" IS NULL)) OR ' +
+    '(("granteeEmail" IS NULL) AND ("granteeSpaceId" IS NOT NULL) AND ("granteeUserId" IS NULL))))';
+
+  it('passes on the real constraint definition', async () => {
+    withExistingObjects(['framework_resparkable_grant_one_grantee'], null, { def: REAL });
+    await expect(probe('B14').probe()).resolves.toMatchObject({ ok: true });
+  });
+
+  it('fails on a constraint that only requires one grantee to be set', async () => {
+    // The weakening a hurried edit would make: "at least one" instead of
+    // "exactly one". A grant naming both a person and a group then passes, and
+    // the person reads the group's share from their personal workspace.
+    withExistingObjects(['framework_resparkable_grant_one_grantee'], null, {
+      def: 'CHECK ((("granteeEmail" IS NOT NULL) OR ("granteeSpaceId" IS NOT NULL)))',
+    });
+    const result = await probe('B14').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('granteeSpaceId');
+  });
+
+  it('fails when the constraint is missing entirely', async () => {
+    withExistingObjects([]);
+    await expect(probe('B14').probe()).resolves.toMatchObject({ ok: false });
   });
 });
 

@@ -8,10 +8,12 @@
  *   basis carries no comments — a public link or a cascaded grant.
  * - Author names render, and the owner's own comments say "shared this".
  * - `canComment: false` renders no compose form; `true` renders one.
- * - Edit is offered only on the reader's own (`mine: true`) comments.
- * - Delete is offered on the reader's own comments OR when the reader is the
- *   owner, and on neither otherwise — the asymmetry §-documented in the
- *   component header, asserted here in all three shapes.
+ * - Edit and delete are drawn from the server's per-comment `canEdit` and
+ *   `canDelete`, never re-derived from `mine`. The case that matters: the
+ *   reader's own comment after they lost the right to comment shows Delete
+ *   and no Edit, because an Edit there would always fail.
+ * - Delete on someone else's comment appears only when the server says the
+ *   reader moderates the item.
  * - The body renders as plain text: markdown syntax in a comment must appear
  *   literally, never rendered.
  * - Submitting a comment POSTs it and re-renders from the returned thread;
@@ -50,10 +52,14 @@ function makeComment(
   overrides: Partial<Omit<CommentWire, 'author'>> = {},
   authorOverrides: Partial<CommentWire['author']> = {}
 ): CommentWire {
+  const mine = overrides.mine ?? false;
   return {
     id: 'comment-1',
     body: 'Looks good to me.',
-    mine: false,
+    mine,
+    // The server's usual answer for a reader who can still comment.
+    canEdit: mine,
+    canDelete: mine,
     editedAt: null,
     createdAt: '2026-01-01T00:00:00Z',
     ...overrides,
@@ -68,6 +74,7 @@ function makeComment(
 
 beforeEach(() => {
   mockFetch.mockReset();
+  window.history.replaceState(null, '', '/resparkable/shared');
 });
 
 describe('CommentThread', () => {
@@ -77,7 +84,7 @@ describe('CommentThread', () => {
     );
 
     const { container } = render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
+      <CommentThread entityType="project" entityId="item-1" canComment={false} />
     );
 
     await waitFor(() => expect(container).toBeEmptyDOMElement());
@@ -89,7 +96,7 @@ describe('CommentThread', () => {
     mockFetch.mockRejectedValueOnce(new Error('network down'));
 
     const { container } = render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
+      <CommentThread entityType="project" entityId="item-1" canComment={false} />
     );
 
     await waitFor(() => expect(container).toBeEmptyDOMElement());
@@ -103,9 +110,7 @@ describe('CommentThread', () => {
       })
     );
 
-    render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
-    );
+    render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
     expect(await screen.findByText('Jane Owner')).toBeInTheDocument();
     expect(screen.getByText(/shared this/)).toBeInTheDocument();
@@ -119,9 +124,7 @@ describe('CommentThread', () => {
       })
     );
 
-    render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
-    );
+    render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
     expect(await screen.findByText('Alex Grantee')).toBeInTheDocument();
     expect(screen.queryByText(/shared this/)).not.toBeInTheDocument();
@@ -131,9 +134,7 @@ describe('CommentThread', () => {
     it('renders no compose form when the reader cannot comment', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [] }));
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
       await waitFor(() =>
         expect(screen.getByText('Nothing has been said yet.')).toBeInTheDocument()
@@ -145,9 +146,7 @@ describe('CommentThread', () => {
     it('renders a compose form when the reader can comment', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [] }));
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
       expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
@@ -155,7 +154,7 @@ describe('CommentThread', () => {
   });
 
   describe('edit button', () => {
-    it("appears only on the reader's own comment", async () => {
+    it('appears only where the server says the reader may edit', async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({
           success: true,
@@ -166,63 +165,63 @@ describe('CommentThread', () => {
         })
       );
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Me');
       expect(screen.getAllByRole('button', { name: /edit your comment/i })).toHaveLength(1);
     });
 
-    it('appears on no comment when none are mine', async () => {
+    it('is withheld on the reader’s own comment once they can no longer comment, while delete stays', async () => {
+      // A grant lowered to viewer, or a group member demoted to viewer: the
+      // comment is still theirs, but an Edit would always be refused.
       mockFetch.mockResolvedValueOnce(
-        jsonResponse({ success: true, data: [makeComment({ id: 'theirs', mine: false })] })
+        jsonResponse({
+          success: true,
+          data: [makeComment({ id: 'mine', mine: true, canEdit: false, canDelete: true })],
+        })
       );
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={true} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
       await screen.findByText('Alex Grantee');
       expect(screen.queryByRole('button', { name: /edit your comment/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /remove this comment/i })).toBeInTheDocument();
     });
   });
 
-  describe('delete button asymmetry', () => {
-    it("shows delete on the reader's own comment when they are not the owner", async () => {
+  describe('delete button', () => {
+    it("shows delete on the reader's own comment", async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ success: true, data: [makeComment({ id: 'mine', mine: true })] })
       );
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Alex Grantee');
       expect(screen.getByRole('button', { name: /remove this comment/i })).toBeInTheDocument();
     });
 
-    it("shows delete on someone else's comment when the reader is the owner", async () => {
+    it("shows delete on someone else's comment when the server says the reader moderates", async () => {
       mockFetch.mockResolvedValueOnce(
-        jsonResponse({ success: true, data: [makeComment({ id: 'theirs', mine: false })] })
+        jsonResponse({
+          success: true,
+          data: [makeComment({ id: 'theirs', mine: false, canDelete: true })],
+        })
       );
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={true} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
       await screen.findByText('Alex Grantee');
       expect(screen.getByRole('button', { name: /remove this comment/i })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /edit your comment/i })).not.toBeInTheDocument();
     });
 
-    it('shows no delete when the comment is neither mine nor the reader is the owner', async () => {
+    it('shows no delete when the server gives none', async () => {
       mockFetch.mockResolvedValueOnce(
         jsonResponse({ success: true, data: [makeComment({ id: 'theirs', mine: false })] })
       );
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
       await screen.findByText('Alex Grantee');
       expect(
@@ -240,7 +239,7 @@ describe('CommentThread', () => {
     );
 
     const { container } = render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
+      <CommentThread entityType="project" entityId="item-1" canComment={false} />
     );
 
     expect(await screen.findByText('**bold** and _italic_')).toBeInTheDocument();
@@ -248,6 +247,27 @@ describe('CommentThread', () => {
     expect(container.querySelector('em')).toBeNull();
     expect(container.querySelector('b')).toBeNull();
     expect(container.querySelector('i')).toBeNull();
+  });
+
+  describe('inside a group workspace', () => {
+    it('reads and writes the thread with the workspace, so the group grant is the one resolved', async () => {
+      window.history.replaceState(null, '', '/resparkable/shared/project/item-1?space=space_b');
+      const user = userEvent.setup();
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [makeComment()] })); // POST
+
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
+
+      await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
+      await user.type(screen.getByLabelText('Write a comment'), 'Hello');
+      await user.click(screen.getByRole('button', { name: 'Comment' }));
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+
+      for (const [url] of mockFetch.mock.calls) {
+        expect(new URL(String(url), 'http://localhost').searchParams.get('space')).toBe('space_b');
+      }
+    });
   });
 
   describe('submitting a comment', () => {
@@ -259,9 +279,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [posted] })); // POST
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
       await user.type(screen.getByLabelText('Write a comment'), 'A new comment');
@@ -284,9 +302,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: false, error: { code: 'X' } }, 500)); // POST fails
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
       await user.type(screen.getByLabelText('Write a comment'), 'Will fail');
@@ -304,9 +320,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // load
         .mockRejectedValueOnce(new Error('network down')); // POST rejects
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
       await user.type(screen.getByLabelText('Write a comment'), 'Will fail');
@@ -326,9 +340,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [original] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [edited] })); // PATCH
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Original text');
       await user.click(screen.getByRole('button', { name: /edit your comment/i }));
@@ -358,9 +370,7 @@ describe('CommentThread', () => {
 
       mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [original] })); // load
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Original text');
       await user.click(screen.getByRole('button', { name: /edit your comment/i }));
@@ -382,9 +392,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [original] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: false, error: { code: 'X' } }, 500)); // PATCH fails
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Original text');
       await user.click(screen.getByRole('button', { name: /edit your comment/i }));
@@ -405,9 +413,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [comment] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })); // DELETE
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Alex Grantee');
       await user.click(screen.getByRole('button', { name: /remove this comment/i }));
@@ -430,9 +436,7 @@ describe('CommentThread', () => {
         .mockResolvedValueOnce(jsonResponse({ success: true, data: [comment] })) // load
         .mockResolvedValueOnce(jsonResponse({ success: false, error: { code: 'X' } }, 500)); // DELETE fails
 
-      render(
-        <CommentThread entityType="project" entityId="item-1" canComment={true} isOwner={false} />
-      );
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
 
       await screen.findByText('Alex Grantee');
       await user.click(screen.getByRole('button', { name: /remove this comment/i }));
@@ -449,9 +453,7 @@ describe('CommentThread', () => {
       })
     );
 
-    render(
-      <CommentThread entityType="project" entityId="item-1" canComment={false} isOwner={false} />
-    );
+    render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
 
     expect(await screen.findByText(/edited/)).toBeInTheDocument();
   });

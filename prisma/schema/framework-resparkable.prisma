@@ -183,9 +183,13 @@ model ResparkableSpace {
 
   /// Release 2: sharing. Both hang off the OWNER, never the grantee — see
   /// `ResparkableGrant`'s header for why that is what preserves D1.
-  grants     ResparkableGrant[]
+  grants     ResparkableGrant[]     @relation("ResparkableGrantGrantor")
   shareLinks ResparkableShareLink[]
-  comments   ResparkableComment[]
+
+  /// Grants whose grantee is this space (§23.7, phase 49). Only ever a group
+  /// space: a person is addressed by `granteeEmail`, never by their space.
+  grantsReceived ResparkableGrant[]   @relation("ResparkableGrantGrantee")
+  comments       ResparkableComment[]
 
   /// Phase 56: the job queue. One row per kind per owner; see `ResparkableJob`.
   ///
@@ -1638,8 +1642,20 @@ model ResparkableGrant {
   /// Null until the invite is accepted. Hand-written FK — see the block above.
   granteeUserId String?
   /// Lower-cased at the boundary. The address the grant was issued to, which is
-  /// what makes an unaccepted invite addressable and revocable.
-  granteeEmail  String
+  /// what makes an unaccepted invite addressable and revocable. Null exactly
+  /// when `granteeSpaceId` is set: a grant names a person or a group, never
+  /// both, and a hand-written CHECK (probe B14) makes that a database rule.
+  granteeEmail  String?
+
+  /// The group workspace this grant was made to (§23.7, phase 49), or null for
+  /// a grant to a person. Every current joined member of that group reads the
+  /// item while they are working in the group's workspace, and nowhere else.
+  ///
+  /// Cascade, because a grant to a group that no longer exists is addressed to
+  /// nobody. The grantor side (`spaceId`) keeps its name rather than becoming
+  /// `grantorSpaceId`: `WHERE spaceId = $1` means "this space's own rows" on
+  /// every table in the tier, and a grant is the grantor's row.
+  granteeSpaceId String?
 
   /// viewer | commenter. `commenter` is what makes `ResparkableComment` mean
   /// something; it never implies any write access to the item itself.
@@ -1669,12 +1685,20 @@ model ResparkableGrant {
 
   /// D1: the cascade path for the OWNER. See the drift warning above for the
   /// grantee's, which is a different FK to a different table.
-  space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
+  space        ResparkableSpace  @relation("ResparkableGrantGrantor", fields: [spaceId], references: [spaceId], onDelete: Cascade)
+  granteeSpace ResparkableSpace? @relation("ResparkableGrantGrantee", fields: [granteeSpaceId], references: [spaceId], onDelete: Cascade)
 
   /// One grant per address per item. Re-granting is an update, not a second row
   /// — two live grants with different roles would make "what can Bob do" a
   /// question with two answers.
   @@unique([entityType, entityId, granteeEmail])
+  /// The same rule for a group grantee. Postgres treats NULLs as distinct, so
+  /// the two indexes never collide: a person grant has a null space, and a
+  /// group grant a null address.
+  @@unique([entityType, entityId, granteeSpaceId])
+  /// The access layer's read from inside a group: "what has been shared with
+  /// this workspace?"
+  @@index([granteeSpaceId, revokedAt])
   /// The access layer's read: "which of this viewer's grants are live?"
   @@index([granteeUserId, revokedAt])
   @@index([granteeEmail, revokedAt])

@@ -50,9 +50,19 @@ import {
   updateGrant as updateGrantRow,
   upsertGrant,
   type GrantFilters,
+  type GrantGrantee,
 } from '@/lib/framework/resparkable/repo/grants';
+import {
+  findGroupLabelsBySpaceIds,
+  type GroupLabel,
+} from '@/lib/framework/resparkable/repo/groups';
 import { ownsEntity } from '@/lib/framework/resparkable/repo/share-links';
-import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
+import {
+  listGroupsForActor,
+  isGroupRole,
+  permissionsFor,
+  resolveGroupSpaceScope,
+} from '@/lib/framework/resparkable/services/membership';
 import type { CreateGrantInput, UpdateGrantInput } from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
 import { isShareActive } from '@/lib/utils/share-window';
@@ -90,7 +100,22 @@ export interface GrantSummary {
   id: string;
   entityType: string;
   entityId: string;
-  granteeEmail: string;
+  /** The person the grant is to. Null for a grant to a group. */
+  granteeEmail: string | null;
+  /**
+   * The group the grant is to, named for the owner with its current joined
+   * member count (§23.7): who can read this is "everyone in Study Group B, 14
+   * people today", and a roll that changes is the reason the count is shown.
+   * Null for a grant to a person, and for a group deleted since (whose grants
+   * cascaded, so that row cannot be listed anyway).
+   *
+   * `memberCount` is null unless the reader is a joined member of that group.
+   * The name is the grantor's own record of where the item went, and every
+   * member of the grantor workspace needs it to manage the grant. The count is
+   * the grantee group's business: it moves as people join and leave, so showing
+   * it to outsiders would let them watch another group's roll.
+   */
+  granteeGroup: { spaceId: string; name: string; memberCount: number | null } | null;
   role: string;
   includeTaskDetail: boolean;
   /**
@@ -109,12 +134,65 @@ export interface GrantSummary {
   createdAt: Date;
 }
 
-export function toGrantSummary(grant: ResparkableGrant, now: Date = new Date()): GrantSummary {
+/**
+ * Summarise grants for their owner, naming group grantees in one query.
+ *
+ * Batched because the owner's list may hold many grants to a handful of groups,
+ * and asking per row is the N+1 `CLAUDE.md` forbids on list endpoints. The
+ * reader's memberships are one more query, and only when a group grant is on
+ * the list: they decide which member counts the reader may see.
+ */
+export async function toGrantSummaries(
+  scope: SpaceScope,
+  grants: readonly ResparkableGrant[],
+  now: Date = new Date()
+): Promise<GrantSummary[]> {
+  const groupSpaceIds = grants
+    .map((grant) => grant.granteeSpaceId)
+    .filter((id): id is string => id !== null);
+  const [labels, joined] = await Promise.all([
+    findGroupLabelsBySpaceIds(groupSpaceIds),
+    joinedGroupSpaceIds(scope, groupSpaceIds.length > 0),
+  ]);
+
+  return grants.map((grant) => {
+    const label = grant.granteeSpaceId ? labels.get(grant.granteeSpaceId) : undefined;
+    return toGrantSummary(
+      grant,
+      label
+        ? {
+            spaceId: label.spaceId,
+            name: label.name,
+            memberCount: joined.has(label.spaceId) ? label.memberCount : null,
+          }
+        : null,
+      now
+    );
+  });
+}
+
+/** The group spaces the reader has joined, in any role. Empty when not needed. */
+async function joinedGroupSpaceIds(scope: SpaceScope, needed: boolean): Promise<Set<string>> {
+  if (!needed || !scope.actorUserId) return new Set();
+  const memberships = await listGroupsForActor(scope.actorUserId);
+  return new Set(
+    memberships
+      .filter((membership) => membership.joinedAt !== null)
+      .map((membership) => membership.group.spaceId)
+  );
+}
+
+function toGrantSummary(
+  grant: ResparkableGrant,
+  granteeGroup: GrantSummary['granteeGroup'],
+  now: Date
+): GrantSummary {
   return {
     id: grant.id,
     entityType: grant.entityType,
     entityId: grant.entityId,
     granteeEmail: grant.granteeEmail,
+    granteeGroup,
     role: grant.role,
     includeTaskDetail: grant.includeTaskDetail,
     accepted: grant.acceptedAt !== null,
@@ -146,13 +224,13 @@ export async function issueGrant(
   if (!permissionsFor(scope.role).write) return null;
   if (!(await ownsEntity(scope, input.entityType, input.entityId))) return null;
 
-  const granteeUserId = await findAccountIdForEmail(input.granteeEmail);
+  const grantee = await resolveGrantee(scope, input.grantee);
+  if (!grantee) return null;
 
   const grant = await upsertGrant(scope, {
     entityType: input.entityType,
     entityId: input.entityId,
-    granteeEmail: input.granteeEmail,
-    granteeUserId,
+    grantee,
     role: input.role,
     includeTaskDetail: input.includeTaskDetail,
     expiresAt: resolveExpiry(input.expiry, now),
@@ -163,12 +241,72 @@ export async function issueGrant(
   // sitting in another person's infrastructure for the life of the log.
   logger.info('Resparkable grant issued', {
     entityType: grant.entityType,
+    granteeKind: grantee.kind,
     role: grant.role,
     includeTaskDetail: grant.includeTaskDetail,
     expires: grant.expiresAt !== null,
   });
 
-  return toGrantSummary(grant, now);
+  const [summary] = await toGrantSummaries(scope, [grant], now);
+  return summary;
+}
+
+/**
+ * Turn the requested grantee into one this grant may be written to.
+ *
+ * **A group must be one the caller is a joined member of.** That is the whole
+ * of the discovery rule for phase 49: §23.11 declined a public directory of
+ * groups, and a grant form that accepted any group's id would be one, answering "does a group with this id exist?" by whether the
+ * share went through. The answer for a group the caller is not in is the same
+ * `null` as for an item they do not own, so the route gives the same 404.
+ *
+ * **And a role in it that can write.** A group viewer is not offered the group
+ * and cannot name it: sharing into a group puts an item in front of everyone in
+ * it, which is a write in that workspace.
+ *
+ * A group cannot be the grantee of its own item. That is a request-shape
+ * mistake rather than an access question, so the route refuses it with a 400
+ * before this runs, and this refuses it again rather than trusting that.
+ */
+async function resolveGrantee(
+  scope: SpaceScope,
+  grantee: CreateGrantInput['grantee']
+): Promise<GrantGrantee | null> {
+  if (grantee.kind === 'person') {
+    return {
+      kind: 'person',
+      email: grantee.email,
+      userId: await findAccountIdForEmail(grantee.email),
+    };
+  }
+
+  if (grantee.spaceId === scope.spaceId) return null;
+  // A viewer in the target group cannot share into it: adding an item to the
+  // group's shared list is a write in the group's workspace, and a group viewer
+  // writes nothing (§23.3). Same `null`, so the same 404.
+  if (!(await canShareIntoSpace(scope, grantee.spaceId))) return null;
+  return { kind: 'group', spaceId: grantee.spaceId };
+}
+
+/**
+ * Whether the actor behind this scope may put an item in front of that group
+ * today: a joined member, in a role that can write. Issuing and amending a
+ * group grant both ask it, so neither can be reached without the other's rule.
+ */
+async function canShareIntoSpace(scope: SpaceScope, groupSpaceId: string): Promise<boolean> {
+  if (!scope.actorUserId) return false;
+  const membership = await resolveGroupSpaceScope(scope.actorUserId, groupSpaceId);
+  return membership !== null && canShareInto(membership.role);
+}
+
+/**
+ * Whether a role in a group lets its holder share into that group. A viewer
+ * cannot: putting an item in front of everyone in the group is a write in its
+ * workspace (§23.3). One predicate, so the dialog's list of groups and the
+ * POST that issues the grant cannot disagree.
+ */
+function canShareInto(role: string): boolean {
+  return isGroupRole(role) && permissionsFor(role).write;
 }
 
 /** Every grant this owner has issued, newest first. */
@@ -178,7 +316,7 @@ export async function listOwnGrants(
   now: Date = new Date()
 ): Promise<GrantSummary[]> {
   const rows = await listOwnGrantRows(scope, filters, now);
-  return rows.map((row) => toGrantSummary(row, now));
+  return toGrantSummaries(scope, rows, now);
 }
 
 /**
@@ -188,6 +326,13 @@ export async function listOwnGrants(
  * into a 404. The read-back is a second query and worth it: the client needs
  * the resulting row to render, and computing it from the request would mean
  * guessing at whatever the database actually stored.
+ *
+ * **Changing a grant to a group takes the same standing as issuing one**: a
+ * joined membership of that group in a role that can write. Without it, the
+ * rule {@link resolveGrantee} applies on POST could be stepped around with a
+ * PATCH, and somebody who had left a group could still raise what it reads.
+ * Any change needs it, not only a widening one: a leaver who wants the group to
+ * see less can revoke, and {@link revokeGrant} asks for no membership at all.
  */
 export async function updateGrant(
   scope: SpaceScope,
@@ -196,6 +341,15 @@ export async function updateGrant(
   now: Date = new Date()
 ): Promise<GrantSummary | null> {
   if (!permissionsFor(scope.role).write) return null;
+
+  const existing = await findOwnGrant(scope, id);
+  if (!existing) return null;
+  if (
+    existing.granteeSpaceId !== null &&
+    !(await canShareIntoSpace(scope, existing.granteeSpaceId))
+  ) {
+    return null;
+  }
 
   const moved = await updateGrantRow(scope, id, {
     ...(input.role !== undefined ? { role: input.role } : {}),
@@ -211,7 +365,8 @@ export async function updateGrant(
 
   logger.info('Resparkable grant updated', { entityType: grant.entityType, role: grant.role });
 
-  return toGrantSummary(grant, now);
+  const [summary] = await toGrantSummaries(scope, [grant], now);
+  return summary;
 }
 
 /**
@@ -240,5 +395,35 @@ export async function revokeGrant(
 
   logger.info('Resparkable grant revoked', { entityType: grant.entityType });
 
-  return toGrantSummary(grant, now);
+  const [summary] = await toGrantSummaries(scope, [grant], now);
+  return summary;
+}
+
+/**
+ * The groups this workspace may share with (§23.7, phase 49).
+ *
+ * The caller's own **joined** groups, less the one whose workspace they are
+ * in. Nothing else: §23.11 declined a public directory of groups, so sharing
+ * with a group means being in it, and that rule lives in {@link issueGrant}
+ * too rather than only in what this list happens to offer.
+ *
+ * Each carries its joined-member count, because §23.7 asks the dialog to name
+ * the grantee group and how many people that is today.
+ */
+export async function listGrantTargetGroups(scope: SpaceScope): Promise<GroupLabel[]> {
+  if (!scope.actorUserId) return [];
+  // A workspace this caller cannot write in cannot issue a grant at all
+  // (issueGrant's first check), so offering it groups would be offering a
+  // button that always fails.
+  if (!permissionsFor(scope.role).write) return [];
+
+  const memberships = await listGroupsForActor(scope.actorUserId);
+  const spaceIds = memberships
+    .filter((membership) => membership.joinedAt !== null)
+    .filter((membership) => canShareInto(membership.role))
+    .map((membership) => membership.group.spaceId)
+    .filter((spaceId) => spaceId !== scope.spaceId);
+
+  const labels = await findGroupLabelsBySpaceIds(spaceIds);
+  return [...labels.values()].sort((left, right) => left.name.localeCompare(right.name));
 }

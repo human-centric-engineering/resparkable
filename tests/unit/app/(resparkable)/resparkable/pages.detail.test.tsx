@@ -456,10 +456,26 @@ describe('ResparkableSharedItemPage', () => {
     await expect(
       ResparkableSharedItemPage({
         params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+        searchParams: Promise.resolve({}),
       })
     ).rejects.toThrow('NEXT_NOT_FOUND');
 
     expect(callPaths()).toEqual([RESPARKABLE_API.sharedItem('project', PROJECT_ID)]);
+  });
+
+  it('reads through the active workspace, so a group sees what was shared with the group', async () => {
+    vi.mocked(readResparkable).mockResolvedValue(fail(500));
+    const { default: ResparkableSharedItemPage } =
+      await import('@/app/(resparkable)/resparkable/shared/[entityType]/[entityId]/page');
+
+    await expect(
+      ResparkableSharedItemPage({
+        params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+        searchParams: Promise.resolve({ space: 'space_group_b' }),
+      })
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+
+    expect(vi.mocked(readResparkable).mock.calls[0][2]).toBe('space_group_b');
   });
 
   it('calls notFound() on ANY read failure, never renders LoadError', async () => {
@@ -480,6 +496,7 @@ describe('ResparkableSharedItemPage', () => {
       await expect(
         ResparkableSharedItemPage({
           params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+          searchParams: Promise.resolve({}),
         })
       ).rejects.toThrow('NEXT_NOT_FOUND');
       expect(notFound).toHaveBeenCalled();
@@ -494,6 +511,7 @@ describe('ResparkableSharedItemPage', () => {
     await expect(
       ResparkableSharedItemPage({
         params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+        searchParams: Promise.resolve({}),
       })
     ).rejects.toThrow('NEXT_NOT_FOUND');
 
@@ -518,6 +536,7 @@ describe('ResparkableSharedItemPage', () => {
     render(
       await ResparkableSharedItemPage({
         params: Promise.resolve({ entityType: 'project', entityId: PROJECT_ID }),
+        searchParams: Promise.resolve({}),
       })
     );
 

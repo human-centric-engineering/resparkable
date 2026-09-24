@@ -103,6 +103,10 @@ export async function sendGrantInvite(
 
   const grant = await findOwnGrant(scope, grantId);
   if (!grant || !isShareActive(grant, now)) return 'no_grant';
+  // A grant to a group has no address to send to. Its members read it from the
+  // group's workspace the moment it exists, with nothing to accept.
+  const to = grant.granteeEmail;
+  if (!to) return 'no_grant';
 
   const sender = await findOwnerContact(scope);
   // An erased owner whose grant row outlived them, or a race with erasure.
@@ -114,12 +118,12 @@ export async function sendGrantInvite(
   if (!stamped) return 'no_grant';
 
   const result = await sendEmail({
-    to: grant.granteeEmail,
+    to,
     // The kind of thing, never the thing. See this file's header.
     subject: `${sender.name ?? sender.email} shared a ${KIND_LABEL[grant.entityType] ?? 'item'} with you`,
     react: ShareInviteEmail({
       sharerName: sender.name ?? sender.email,
-      inviteeEmail: grant.granteeEmail,
+      inviteeEmail: to,
       itemKind: KIND_LABEL[grant.entityType] ?? 'item',
       canComment: grant.role === 'commenter',
       acceptUrl: `${env.NEXT_PUBLIC_APP_URL}${RESPARKABLE_ROUTES.invite(token)}`,
@@ -188,7 +192,12 @@ export async function acceptInvite(
   now: Date = new Date()
 ): Promise<AcceptResult> {
   const grant = await findGrantByInviteTokenHash(hashShareToken(token));
-  if (!grant || !isShareActive(grant, now)) return { ok: false, reason: 'unknown' };
+  // A grant with no address is a group's, and no token is ever stamped on one
+  // (`stampInviteToken`). Refused here as well, with the same answer as any
+  // unknown token, because accepting would bind a person to a group's share.
+  if (!grant || !grant.granteeEmail || !isShareActive(grant, now)) {
+    return { ok: false, reason: 'unknown' };
+  }
 
   if (grant.granteeEmail !== viewer.email.toLowerCase()) {
     logger.info('Resparkable share invite opened by the wrong account', {

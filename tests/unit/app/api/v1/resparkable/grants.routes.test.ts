@@ -55,7 +55,22 @@ vi.mock('@/lib/framework/resparkable/services/grants', () => ({
   listOwnGrants: vi.fn(),
   updateGrant: vi.fn(),
   revokeGrant: vi.fn(),
+  listGrantTargetGroups: vi.fn(),
 }));
+
+// Real by default. One test swaps in a group workspace, which would otherwise
+// need a membership row in a database.
+const { requestSpaceScope } = vi.hoisted(() => ({ requestSpaceScope: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/api/space-request', async () => {
+  const actual = await vi.importActual<
+    typeof import('@/lib/framework/resparkable/api/space-request')
+  >('@/lib/framework/resparkable/api/space-request');
+  requestSpaceScope.mockImplementation(actual.requestSpaceScope);
+  return {
+    requestSpaceScope: (...args: Parameters<typeof actual.requestSpaceScope>) =>
+      requestSpaceScope(...args),
+  };
+});
 
 vi.mock('@/lib/framework/resparkable/services/shared-with-me', () => ({
   listSharedWithMe: vi.fn(),
@@ -64,6 +79,7 @@ vi.mock('@/lib/framework/resparkable/services/shared-with-me', () => ({
 }));
 
 import { GET as GRANTS_GET, POST as GRANTS_POST } from '@/app/api/v1/resparkable/grants/route';
+import { GET as GRANT_GROUPS_GET } from '@/app/api/v1/resparkable/grants/groups/route';
 import {
   DELETE as GRANT_DELETE,
   PATCH as GRANT_PATCH,
@@ -73,6 +89,7 @@ import { GET as SHARED_SEARCH_GET } from '@/app/api/v1/resparkable/shared/search
 import { GET as SHARED_ITEM_GET } from '@/app/api/v1/resparkable/shared/[entityType]/[entityId]/route';
 import {
   issueGrant,
+  listGrantTargetGroups,
   listOwnGrants,
   revokeGrant,
   updateGrant,
@@ -95,6 +112,7 @@ const SUMMARY = {
   entityType: 'project',
   entityId: PROJECT_ID,
   granteeEmail: 'b@example.com',
+  granteeGroup: null,
   role: 'viewer',
   includeTaskDetail: false,
   accepted: false,
@@ -194,7 +212,10 @@ describe('POST /api/v1/resparkable/grants', () => {
     // The unique index and `granteeClauses` both work on the lower-cased form.
     // An un-normalised write is a second grant row for one person, and a grant
     // nobody can match.
-    expect(vi.mocked(issueGrant).mock.calls[0][1].granteeEmail).toBe('b@example.com');
+    expect(vi.mocked(issueGrant).mock.calls[0][1].grantee).toEqual({
+      kind: 'person',
+      email: 'b@example.com',
+    });
   });
 
   it('rejects a body naming a userId, rather than silently ignoring it', async () => {
@@ -210,6 +231,70 @@ describe('POST /api/v1/resparkable/grants', () => {
 
     expect(response.status).toBe(400);
     expect(issueGrant).not.toHaveBeenCalled();
+  });
+
+  it('keeps a bad address a field error on granteeEmail, not a bare union failure', async () => {
+    const response = await invoke(
+      GRANTS_POST,
+      req('http://localhost/api/v1/resparkable/grants', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        granteeEmail: 'bob@',
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(body.error)).toContain('Enter a valid email address');
+    expect(JSON.stringify(body.error)).toContain('granteeEmail');
+    expect(issueGrant).not.toHaveBeenCalled();
+  });
+
+  it('refuses a body naming both a person and a group, and one naming neither', async () => {
+    for (const grantee of [
+      { granteeEmail: 'b@example.com', granteeSpaceId: 'spc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      {},
+    ]) {
+      const response = await invoke(
+        GRANTS_POST,
+        req('http://localhost/api/v1/resparkable/grants', {
+          entityType: 'project',
+          entityId: PROJECT_ID,
+          ...grantee,
+        })
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(issueGrant).not.toHaveBeenCalled();
+  });
+
+  it('passes a group grantee through as a group, with no address', async () => {
+    vi.mocked(issueGrant).mockResolvedValue({
+      ...SUMMARY,
+      granteeEmail: null,
+      granteeGroup: {
+        spaceId: 'spc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        name: 'Study Group B',
+        memberCount: 14,
+      },
+    });
+
+    const response = await invoke(
+      GRANTS_POST,
+      req('http://localhost/api/v1/resparkable/grants', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        granteeSpaceId: 'spc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      })
+    );
+
+    expect(response.status).toBe(201);
+    const input = vi.mocked(issueGrant).mock.calls[0][1];
+    expect(input.grantee).toEqual({
+      kind: 'group',
+      spaceId: 'spc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    expect(input).not.toHaveProperty('granteeEmail');
   });
 
   it('refuses a share addressed to the caller’s own address', async () => {
@@ -229,6 +314,28 @@ describe('POST /api/v1/resparkable/grants', () => {
     // and 404 on open, because `readSharedWithMe` denies `basis: 'owner'`.
     expect(response.status).toBe(400);
     expect(issueGrant).not.toHaveBeenCalled();
+  });
+
+  it('lets a group member share a group item with their own address', async () => {
+    // The item is the group's, not theirs: the grant resolves in their personal
+    // workspace like anybody else's, so "it is yours" would be false.
+    const { spaceScopeFor } = await import('@/lib/framework/resparkable/repo/space-scope');
+    requestSpaceScope.mockResolvedValueOnce(
+      spaceScopeFor({ spaceId: 'spc_' + 'a'.repeat(32), actorUserId: 'user_a', role: 'member' })
+    );
+    vi.mocked(issueGrant).mockResolvedValue(SUMMARY);
+
+    const response = await invoke(
+      GRANTS_POST,
+      req('http://localhost/api/v1/resparkable/grants', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        granteeEmail: 'a@example.com',
+      })
+    );
+
+    expect(response.status).toBe(201);
+    expect(issueGrant).toHaveBeenCalled();
   });
 
   it('refuses to share a thought, because the capture inbox is unshareable', async () => {
@@ -394,6 +501,8 @@ describe('the shared-with-me surface', () => {
     expect(vi.mocked(listSharedWithMe).mock.calls[0][0]).toEqual({
       userId: 'user_a',
       email: 'a@example.com',
+      // No workspace selected, so the personal lens: only grants made to this person.
+      group: null,
     });
   });
 
@@ -443,10 +552,10 @@ describe('the shared-with-me surface', () => {
         basis: 'grant',
         ownerId: 'user_owner',
         redact: [],
-        permissions: { read: true, comment: true },
+        permissions: { read: true, comment: true, moderate: false },
         via: { entityType: 'project', entityId: PROJECT_ID },
       },
-      owner: { id: 'user_owner', name: 'Priya', email: 'priya@example.com' },
+      owner: { kind: 'person', id: 'user_owner', name: 'Priya', email: 'priya@example.com' },
     });
 
     const response = await invoke(
@@ -458,6 +567,7 @@ describe('the shared-with-me surface', () => {
 
     expect(response.status).toBe(200);
     expect(body.data.owner).toEqual({
+      kind: 'person',
       id: 'user_owner',
       name: 'Priya',
       email: 'priya@example.com',
@@ -502,5 +612,47 @@ describe('the shared-with-me surface', () => {
 
     expect(response.status).toBe(400);
     expect(searchSharedWithMe).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/v1/resparkable/grants/groups', () => {
+  it('lists the groups this workspace can share with, counted in meta', async () => {
+    const groups = [
+      { groupId: 'g_b', spaceId: 'space_b', name: 'Study Group B', memberCount: 14 },
+      { groupId: 'g_c', spaceId: 'space_c', name: 'Choir', memberCount: 3 },
+    ];
+    vi.mocked(listGrantTargetGroups).mockResolvedValue(groups);
+
+    const response = await invoke(
+      GRANT_GROUPS_GET,
+      req('http://localhost/api/v1/resparkable/grants/groups')
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual(groups);
+    expect(body.meta).toEqual({ count: 2 });
+  });
+
+  it('asks for the groups of the workspace the session resolved, never one named in the body', async () => {
+    vi.mocked(listGrantTargetGroups).mockResolvedValue([]);
+
+    await invoke(GRANT_GROUPS_GET, req('http://localhost/api/v1/resparkable/grants/groups'));
+
+    // No `?space=`, so the caller's personal workspace, with the session's id.
+    expect(vi.mocked(listGrantTargetGroups).mock.calls[0][0]).toMatchObject({
+      spaceId: 'user_a',
+      actorUserId: 'user_a',
+    });
+  });
+
+  it('never logs a group name', async () => {
+    vi.mocked(listGrantTargetGroups).mockResolvedValue([
+      { groupId: 'g_b', spaceId: 'space_b', name: 'Study Group B', memberCount: 14 },
+    ]);
+
+    await invoke(GRANT_GROUPS_GET, req('http://localhost/api/v1/resparkable/grants/groups'));
+
+    expect(JSON.stringify(routeLog.info.mock.calls)).not.toContain('Study Group B');
   });
 });

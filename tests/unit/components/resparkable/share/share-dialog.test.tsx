@@ -19,17 +19,71 @@
  *   the plain-English rule, the live count, and "Share a snapshot instead",
  *   which POSTs a snapshot and then shows the frozen message. Absent for an
  *   explicit board or a project, none of it renders.
+ * - Groups tab (phase 49): lists the groups this workspace can share with and
+ *   the existing group grants (grants whose `granteeGroup` is set), lets the
+ *   owner grant a whole group with `granteeSpaceId` (never `granteeEmail`),
+ *   shows member counts, and offers the same revoke as the People tab.
  *
  * @see components/resparkable/share/share-dialog.tsx
  */
 
+import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+// Radix `Select` renders its dropdown through a portal happy-dom does not
+// support, so it is mocked to a native `<select>` for the Groups tab tests
+// that need to choose a target group: the same approach
+// `account-export-panel.test.tsx` takes, and for the same reason. The goal is
+// to prove this panel wires `onValueChange`, not to re-test Radix.
+vi.mock('@/components/ui/select', () => {
+  function SelectTrigger({ children }: { id?: string; children: React.ReactNode }) {
+    return <>{children}</>;
+  }
+
+  function Select({
+    value,
+    onValueChange,
+    children,
+  }: {
+    value: string;
+    onValueChange: (value: string) => void;
+    children: React.ReactNode;
+  }) {
+    const trigger = React.Children.toArray(children).find(
+      (child): child is React.ReactElement<{ id?: string }> =>
+        React.isValidElement(child) && child.type === SelectTrigger
+    );
+    return (
+      <select
+        id={trigger?.props.id}
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+      >
+        {children}
+      </select>
+    );
+  }
+
+  return {
+    Select,
+    SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => (
+      <option value={value}>{children}</option>
+    ),
+    SelectTrigger,
+    SelectValue: () => null,
+  };
+});
+
 import { ShareDialog, type ShareDialogProps } from '@/components/resparkable/share/share-dialog';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import type { GrantWire, ShareLinkWire } from '@/lib/framework/resparkable/ui/payloads';
+import type {
+  GrantTargetGroupWire,
+  GrantWire,
+  ShareLinkWire,
+} from '@/lib/framework/resparkable/ui/payloads';
 
 // ─── Fetch mock ────────────────────────────────────────────────────────────
 
@@ -55,10 +109,42 @@ function makeGrant(overrides: Partial<GrantWire> = {}): GrantWire {
     entityType: 'project',
     entityId: 'proj-1',
     granteeEmail: 'friend@example.com',
+    granteeGroup: null,
     role: 'viewer',
     includeTaskDetail: false,
     accepted: true,
     invitedAt: '2026-01-01T00:00:00Z',
+    expiresAt: null,
+    revokedAt: null,
+    active: true,
+    createdAt: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+/** A group this workspace can share with (§23.7, phase 49). */
+function makeTargetGroup(overrides: Partial<GrantTargetGroupWire> = {}): GrantTargetGroupWire {
+  return {
+    groupId: 'group-1',
+    spaceId: 'space-1',
+    name: 'Study Group B',
+    memberCount: 4,
+    ...overrides,
+  };
+}
+
+/** A grant to a group rather than a person: `granteeEmail` is null, `granteeGroup` is set. */
+function makeGroupGrant(overrides: Partial<GrantWire> = {}): GrantWire {
+  return {
+    id: 'grant-group-1',
+    entityType: 'project',
+    entityId: 'proj-1',
+    granteeEmail: null,
+    granteeGroup: { spaceId: 'space-1', name: 'Study Group B', memberCount: 4 },
+    role: 'viewer',
+    includeTaskDetail: false,
+    accepted: true,
+    invitedAt: null,
     expiresAt: null,
     revokedAt: null,
     active: true,
@@ -273,7 +359,345 @@ describe('ShareDialog', () => {
       expect(mockFetch).toHaveBeenNthCalledWith(2, RESPARKABLE_API.grant('grant-7'), {
         method: 'DELETE',
       });
-      expect(await screen.findByText('This is not shared with anyone yet.')).toBeInTheDocument();
+      expect(
+        await screen.findByText('This is not shared with any person yet.')
+      ).toBeInTheDocument();
+    });
+  });
+
+  describe('Groups tab', () => {
+    async function openGroupsTab(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+      await user.click(screen.getByRole('tab', { name: 'Groups' }));
+    }
+
+    it('lists the groups this can be shared with, and existing group grants, filtering out person grants', async () => {
+      const user = userEvent.setup();
+      const personGrant = makeGrant({ id: 'grant-person-1', granteeEmail: 'friend@example.com' });
+      const groupGrant = makeGroupGrant({
+        id: 'grant-group-1',
+        granteeGroup: { spaceId: 'space-1', name: 'Study Group B', memberCount: 4 },
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [personGrant, groupGrant] })) // Groups tab grants load
+        .mockResolvedValueOnce(
+          jsonResponse({ success: true, data: [makeTargetGroup({ memberCount: 1 })] })
+        ); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      expect(mockFetch.mock.calls[1][0]).toBe(
+        `${RESPARKABLE_API.GRANTS}?entityType=project&entityId=proj-1`
+      );
+      expect(mockFetch.mock.calls[2][0]).toBe(RESPARKABLE_API.GRANT_GROUPS);
+
+      // The group grant is shown, with its member count. The person grant
+      // belongs to the People tab and must not appear here.
+      expect(await screen.findByText('Study Group B')).toBeInTheDocument();
+      expect(screen.getByText('4 people')).toBeInTheDocument();
+      expect(screen.queryByText('friend@example.com')).not.toBeInTheDocument();
+
+      // The target group option is named with its own (singular) member count.
+      expect(
+        within(screen.getByLabelText('Group')).getByText('Study Group B (1 person)')
+      ).toBeInTheDocument();
+    });
+
+    it('POSTs granteeSpaceId, never granteeEmail, when sharing with a group', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup({ spaceId: 'space-9', name: 'Research Crew', memberCount: 3 });
+      const createdGrant = makeGroupGrant({
+        id: 'grant-new',
+        granteeGroup: { spaceId: 'space-9', name: 'Research Crew', memberCount: 3 },
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })) // Groups tab target-groups load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: { grant: createdGrant } })) // create
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [createdGrant] })) // reload: grants
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })); // reload: target groups
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      await user.selectOptions(screen.getByLabelText('Group'), 'space-9');
+      await user.click(screen.getByRole('button', { name: /^share$/i }));
+
+      // load() fetches both the grants list and the target-groups list on
+      // every call, including the post-share reload, so a successful share
+      // is 6 fetches in total, not 5.
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(6));
+
+      const [, body] = mockFetch.mock.calls[3];
+      expect(mockFetch.mock.calls[3][0]).toBe(RESPARKABLE_API.GRANTS);
+      expect(body).toEqual({
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityType: 'project',
+          entityId: 'proj-1',
+          granteeSpaceId: 'space-9',
+          role: 'viewer',
+          includeTaskDetail: false,
+        }),
+      });
+      expect(JSON.parse(body.body as string)).not.toHaveProperty('granteeEmail');
+
+      expect(
+        await screen.findByText('Shared with Research Crew. Everyone in it can see it now.')
+      ).toBeInTheDocument();
+    });
+
+    it('shows the member count and, on a filter board, the snapshot recommendation once a group is chosen', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup({ spaceId: 'space-9', name: 'Research Crew', memberCount: 3 });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })); // Groups tab target-groups load
+
+      render(
+        <ShareDialog {...props} filterBoard={{ summary: 'Tasks tagged urgent', cardCount: 5 }} />
+      );
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      await user.selectOptions(screen.getByLabelText('Group'), 'space-9');
+
+      expect(
+        screen.getByText(/3 people in Research Crew will be able to see this today\./)
+      ).toBeInTheDocument();
+      expect(screen.getByText(/a snapshot is the safer choice/)).toBeInTheDocument();
+    });
+
+    it('does not mention snapshots for a group share on a plain (non-filter) board', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup({ spaceId: 'space-9', name: 'Research Crew', memberCount: 3 });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      await user.selectOptions(screen.getByLabelText('Group'), 'space-9');
+
+      expect(
+        screen.getByText(/3 people in Research Crew will be able to see this today\./)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/a snapshot is the safer choice/)).not.toBeInTheDocument();
+    });
+
+    it('shows a share error when the group create response fails to parse', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup({ spaceId: 'space-9', name: 'Research Crew' });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })) // Groups tab target-groups load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: { nonsense: true } })); // malformed create
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      await user.selectOptions(screen.getByLabelText('Group'), 'space-9');
+      await user.click(screen.getByRole('button', { name: /^share$/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not share this with that group.'
+      );
+    });
+
+    it('shows a share error when the group create request itself throws', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup({ spaceId: 'space-9', name: 'Research Crew' });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })) // Groups tab target-groups load
+        .mockRejectedValueOnce(new Error('network down')); // create throws
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+
+      await user.selectOptions(screen.getByLabelText('Group'), 'space-9');
+      await user.click(screen.getByRole('button', { name: /^share$/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not share this with that group.'
+      );
+    });
+
+    it('renders an error rather than crashing when the group grants load fails', async () => {
+      const user = userEvent.setup();
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockRejectedValueOnce(new Error('network down')) // Groups tab grants load fails
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not load the groups this is shared with.'
+      );
+    });
+
+    it('renders an error rather than crashing when the target-groups load fails', async () => {
+      const user = userEvent.setup();
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockRejectedValueOnce(new Error('network down')); // Groups tab target-groups load fails
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'Could not load the groups this is shared with.'
+      );
+    });
+
+    it('shows the combined empty state when there are no groups to share with and nothing shared yet', async () => {
+      const user = userEvent.setup();
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+
+      expect(
+        await screen.findByText(/There is no other group you can share into yet/)
+      ).toBeInTheDocument();
+      // Neither the form nor a redundant "not shared with any group yet" line.
+      expect(screen.queryByLabelText('Group')).not.toBeInTheDocument();
+    });
+
+    it('shows "not shared with any group yet" when groups are available but none has been granted', async () => {
+      const user = userEvent.setup();
+      const target = makeTargetGroup();
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [target] })); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+
+      expect(await screen.findByText('This is not shared with any group yet.')).toBeInTheDocument();
+      // The form is still offered: there is a group available to share with.
+      expect(screen.getByLabelText('Group')).toBeInTheDocument();
+    });
+
+    it('shows a "can comment" badge and expiry for a group grant', async () => {
+      const user = userEvent.setup();
+      const groupGrant = makeGroupGrant({
+        role: 'commenter',
+        expiresAt: '2026-06-01T00:00:00Z',
+        granteeGroup: { spaceId: 'space-1', name: 'Study Group B', memberCount: 4 },
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [groupGrant] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })); // Groups tab target-groups load
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+
+      expect(await screen.findByText('can comment')).toBeInTheDocument();
+      expect(screen.getByText(/until/)).toBeInTheDocument();
+    });
+
+    it('revoke calls DELETE on /grants/{id} and reloads the group grant list', async () => {
+      const user = userEvent.setup();
+      const groupGrant = makeGroupGrant({
+        id: 'grant-group-7',
+        granteeGroup: { spaceId: 'space-1', name: 'Study Group B', memberCount: 4 },
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [groupGrant] })) // Groups tab grants load
+        // Non-empty so the reload lands on "not shared with any group yet"
+        // rather than the combined empty state, which needs both lists empty.
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [makeTargetGroup()] })) // Groups tab target-groups load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: {} })) // DELETE
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // Groups tab grants reload
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [makeTargetGroup()] })); // Groups tab target-groups reload
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      expect(await screen.findByText('Study Group B')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /stop sharing with study group b/i }));
+
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(6));
+      expect(mockFetch.mock.calls[3][0]).toBe(RESPARKABLE_API.grant('grant-group-7'));
+      expect(mockFetch.mock.calls[3][1]).toEqual({ method: 'DELETE' });
+      expect(await screen.findByText('This is not shared with any group yet.')).toBeInTheDocument();
+    });
+
+    it('says so when the revoke fails, and keeps the grant listed', async () => {
+      const user = userEvent.setup();
+      const groupGrant = makeGroupGrant({
+        id: 'grant-group-7',
+        granteeGroup: { spaceId: 'space-1', name: 'Study Group B', memberCount: 4 },
+      });
+
+      mockFetch
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [] })) // People mount load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [groupGrant] })) // Groups tab grants load
+        .mockResolvedValueOnce(jsonResponse({ success: true, data: [makeTargetGroup()] })) // Groups tab target-groups load
+        .mockResolvedValueOnce(
+          jsonResponse({ success: false, error: { code: 'NOT_FOUND', message: 'x' } }, 404)
+        ); // DELETE
+
+      render(<ShareDialog {...props} />);
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+      await openGroupsTab(user);
+      expect(await screen.findByText('Study Group B')).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /stop sharing with study group b/i }));
+
+      expect(
+        await screen.findByText('Could not stop sharing with that group. Try again.')
+      ).toBeInTheDocument();
+      // No reload after a failed revoke: the list still shows the live grant.
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      expect(screen.getByText('Study Group B')).toBeInTheDocument();
     });
   });
 

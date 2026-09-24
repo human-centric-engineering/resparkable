@@ -31,7 +31,8 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 import { removeComment, updateComment } from '@/lib/framework/resparkable/services/comments';
 import {
   commentRefQuerySchema,
@@ -40,12 +41,14 @@ import {
 
 export const PATCH = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
   const { id } = await params;
 
   const body = await validateRequestBody(request, updateCommentSchema);
 
   const comments = await updateComment(
-    viewerFromSession(session),
+    viewer,
     { entityType: body.entityType, entityId: body.entityId },
     id,
     body.body
@@ -60,12 +63,14 @@ export const PATCH = withAuth<{ id: string }>(async (request, session, { params 
 
 export const DELETE = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
   const { id } = await params;
 
   const query = validateQueryParams(new URL(request.url).searchParams, commentRefQuerySchema);
 
   const comments = await removeComment(
-    viewerFromSession(session),
+    viewer,
     { entityType: query.entityType, entityId: query.entityId },
     id
   );

@@ -36,6 +36,7 @@ import {
   isResparkableShareableType,
   resolveResparkableAccess,
   sharedSpaceScope,
+  type ResparkableAccessResult,
   type ResparkableShareableType,
   type ResparkableViewer,
 } from '@/lib/framework/resparkable/access';
@@ -60,8 +61,16 @@ export interface CommentView {
     /** Whether this comment was written by the person whose item it sits on. */
     isOwner: boolean;
   };
-  /** True for the person reading it, so the UI can offer edit and delete. */
+  /** True for the person reading it. */
   mine: boolean;
+  /**
+   * Whether the reader may edit it: their own comment, on an item they could
+   * comment on right now. The same rule {@link updateComment} enforces, so the
+   * UI never draws an Edit that always fails.
+   */
+  canEdit: boolean;
+  /** Whether the reader may remove it: their own, or any if they moderate. */
+  canDelete: boolean;
   editedAt: Date | null;
   createdAt: Date;
 }
@@ -111,7 +120,7 @@ export async function listCommentsFor(
   if (access.redact.includes('comments')) return null;
 
   const scope = sharedSpaceScope(access, viewer.userId);
-  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
+  return hydrate(scope, entityType, ref.entityId, viewer, access);
 }
 
 /**
@@ -164,7 +173,7 @@ export async function addComment(
   // The whole thread back, not the one row. The client is rendering a
   // conversation, and a single appended comment leaves it guessing about
   // anything said between its last read and this write.
-  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
+  return hydrate(scope, entityType, ref.entityId, viewer, access);
 }
 
 /**
@@ -173,6 +182,12 @@ export async function addComment(
  * The owner cannot edit somebody else's words. Rewriting a person's sentence
  * while leaving their name on it is worse than removing it, and the owner can
  * remove it — see {@link removeComment}.
+ *
+ * **You may edit only where you could comment right now.** Rewriting a comment
+ * is writing one, so it asks the resolver the same `need: 'comment'` question
+ * {@link addComment} does. One rule covers both ways of losing that standing: a
+ * grant lowered to `viewer`, and a group member demoted to viewer (§23.3). The
+ * author can still delete it; see {@link removeComment}.
  */
 export async function updateComment(
   viewer: ResparkableViewer,
@@ -190,10 +205,10 @@ export async function updateComment(
     viewer,
     entityType,
     entityId: ref.entityId,
-    need: 'read',
+    need: 'comment',
     now,
   });
-  if (!access.ok || access.redact.includes('comments')) return null;
+  if (!access.ok || !access.permissions.comment) return null;
 
   const scope = sharedSpaceScope(access, viewer.userId);
   const edited = await editComment(
@@ -206,7 +221,7 @@ export async function updateComment(
   );
   if (!edited) return null;
 
-  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
+  return hydrate(scope, entityType, ref.entityId, viewer, access);
 }
 
 /**
@@ -217,6 +232,14 @@ export async function updateComment(
  * standing in your notes with no way to remove them is what makes people stop
  * sharing, and the owner already decides whether the grant exists at all, so
  * withholding the smaller gesture would protect nothing.
+ *
+ * "The owner" is `permissions.moderate`, not `basis === 'owner'`: an owner
+ * reading their personal item from a group workspace it was shared with
+ * resolves as a grant there, and keeps the same say over its thread.
+ *
+ * Anyone who can read the thread may delete their own, whatever their standing
+ * now, unlike editing: taking back what you said is closer to erasure than to
+ * writing.
  */
 export async function removeComment(
   viewer: ResparkableViewer,
@@ -239,7 +262,7 @@ export async function removeComment(
   if (!access.ok || access.redact.includes('comments')) return null;
 
   const scope = sharedSpaceScope(access, viewer.userId);
-  const isOwner = access.basis === 'owner';
+  const moderates = access.permissions.moderate;
 
   // The author filter is dropped only for the owner, and only here. Everywhere
   // else in this file the writer's id travels into the query.
@@ -247,13 +270,13 @@ export async function removeComment(
     scope,
     { entityType, entityId: ref.entityId },
     commentId,
-    isOwner ? undefined : viewer.userId
+    moderates ? undefined : viewer.userId
   );
   if (!removed) return null;
 
-  logger.info('Resparkable comment deleted', { entityType, byOwner: isOwner });
+  logger.info('Resparkable comment deleted', { entityType, byOwner: moderates });
 
-  return hydrate(scope, entityType, ref.entityId, viewer, access.ownerId);
+  return hydrate(scope, entityType, ref.entityId, viewer, access);
 }
 
 /**
@@ -287,7 +310,7 @@ async function hydrate(
   entityType: ResparkableShareableType,
   entityId: string,
   viewer: ResparkableViewer,
-  ownerId: string | null
+  access: ResparkableAccessResult
 ): Promise<CommentView[]> {
   const rows = await listComments(scope, entityType, entityId);
   if (rows.length === 0) return [];
@@ -302,9 +325,11 @@ async function hydrate(
       // An author erased since they wrote it cannot reach here — the row goes
       // with them (probe B9) — so a missing name is an account with none set.
       name: authors.get(row.authorUserId)?.name ?? null,
-      isOwner: row.authorUserId === ownerId,
+      isOwner: row.authorUserId === access.ownerId,
     },
     mine: row.authorUserId === viewer.userId,
+    canEdit: row.authorUserId === viewer.userId && access.permissions.comment,
+    canDelete: row.authorUserId === viewer.userId || access.permissions.moderate,
     editedAt: row.editedAt,
     createdAt: row.createdAt,
   }));

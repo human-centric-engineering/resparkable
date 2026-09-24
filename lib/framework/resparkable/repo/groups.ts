@@ -221,6 +221,54 @@ export async function findGroupById(groupId: string): Promise<ResparkableGroup |
   return prisma.resparkableGroup.findUnique({ where: { id: groupId } });
 }
 
+/** A group as another space sees it: its name and how many people it holds. */
+export interface GroupLabel {
+  groupId: string;
+  spaceId: string;
+  name: string;
+  /** Joined members only. A pending request is not somebody who can read. */
+  memberCount: number;
+}
+
+/**
+ * Names and joined-member counts for a batch of group spaces, in one query.
+ *
+ * For the two places a group is named to somebody working in a different space
+ * (phase 49): a grantor's list of the groups they have shared with, and a
+ * grantee's "shared by Study Group B". Nothing here reads brain content, and
+ * the count is the whole of what is said about the membership: never who.
+ *
+ * A space id that is not a group's (a personal space, or one since deleted) is
+ * simply absent from the map.
+ */
+export async function findGroupLabelsBySpaceIds(
+  spaceIds: readonly string[]
+): Promise<Map<string, GroupLabel>> {
+  if (spaceIds.length === 0) return new Map();
+
+  const rows = await prisma.resparkableGroup.findMany({
+    where: { spaceId: { in: [...new Set(spaceIds)] } },
+    select: {
+      id: true,
+      spaceId: true,
+      name: true,
+      _count: { select: { members: { where: { joinedAt: { not: null } } } } },
+    },
+  });
+
+  return new Map(
+    rows.map((row) => [
+      row.spaceId,
+      {
+        groupId: row.id,
+        spaceId: row.spaceId,
+        name: row.name,
+        memberCount: row._count.members,
+      },
+    ])
+  );
+}
+
 export async function findGroupBySlug(slug: string): Promise<ResparkableGroup | null> {
   return prisma.resparkableGroup.findUnique({ where: { slug } });
 }

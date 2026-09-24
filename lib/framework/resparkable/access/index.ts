@@ -12,6 +12,7 @@
  */
 
 export {
+  grantPermitsComment,
   grantSpaceScope,
   hashShareToken,
   resolveResparkableAccess,

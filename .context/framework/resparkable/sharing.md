@@ -4,7 +4,7 @@ How Resparkable answers **"may this viewer see this row?"**, and why the answer 
 
 This is the Release 2 companion to [`plan.md`](./plan.md) §13, which is the specification. This document is what a person reading the code needs: the boundary, the entry points, what each basis permits, and the four places the implementation deviates from the plan on purpose.
 
-Status: **Release 2 is complete** — access resolution, the three tables, the ESLint boundary, public share links, named grants with `/shared-with-me`, invites, comments, and erasure.
+Status: **Release 2 is complete** — access resolution, the three tables, the ESLint boundary, public share links, named grants with `/shared-with-me`, invites, comments, and erasure. Phase 49 (Release 9) adds grants to a group; see "Grants to a group" below.
 
 ---
 
@@ -35,11 +35,11 @@ Two orthogonal facts, deliberately not merged.
 
 **Named grants live entirely in `ResparkableGrant` rows.** Nothing is denormalised onto the entity or its children. See "the cascade" below for why.
 
-| Table                              | Holds                                         | Key details                                                                                  |
-| ---------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `framework_resparkable_grant`      | One person, one item, `viewer` or `commenter` | `userId` is the **owner**. Grantee is `granteeUserId` (null until accepted) + `granteeEmail` |
-| `framework_resparkable_share_link` | A public read-only link                       | `tokenHash` is sha256 of a 192-bit `base64url` token. The plaintext is never stored          |
-| `framework_resparkable_comment`    | What a `commenter` grant is for               | `userId` is the **owner** again. The author is `authorUserId`, a second hand-written FK      |
+| Table                              | Holds                                                      | Key details                                                                                                                |
+| ---------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `framework_resparkable_grant`      | One person or one group, one item, `viewer` or `commenter` | `spaceId` is the **grantor**. Grantee is `granteeUserId` (null until accepted) + `granteeEmail`, or `granteeSpaceId` alone |
+| `framework_resparkable_share_link` | A public read-only link                                    | `tokenHash` is sha256 of a 192-bit `base64url` token. The plaintext is never stored                                        |
+| `framework_resparkable_comment`    | What a `commenter` grant is for                            | `userId` is the **owner** again. The author is `authorUserId`, a second hand-written FK                                    |
 
 ### Two things about these tables that are easy to get wrong
 
@@ -423,6 +423,67 @@ Keep `rg 'grantSpaceScope\('` as short as `rg 'sharedSpaceScope\('`.
 
 ---
 
+## Grants to a group
+
+Phase 49, §23.7. A grant can name a group workspace instead of a person. Everyone who is a joined member of that group reads the item, from inside the group's workspace.
+
+### The row
+
+`granteeSpaceId` is a third grantee column, and a grant names **a person or a group, never both and never neither**. The `framework_resparkable_grant_one_grantee` CHECK enforces that, and **drift probe B14** guards the CHECK. Both failure directions are silent access bugs rather than errors. A row naming both would be matched by the personal branch and the group branch at once, which is the implicit crossing between spaces §23.7 forbids. A row naming neither would be live for nobody and invisible on every list.
+
+- `granteeSpaceId` cascades from `ResparkableSpace`: deleting a group deletes the grants made to it.
+- A group grant has no `granteeEmail` and no `granteeUserId`, so the invite machinery and the erasure scrub have nothing to act on. That is correct: there is no person's address on the row.
+- `@@unique([entityType, entityId, granteeSpaceId])` gives "one grant per group per item", the same way the email index gives one per person.
+- `spaceId` stays the grantor column. It was **not** renamed to `grantorSpaceId`, so `WHERE spaceId = $1` keeps its one meaning across every table in the tier.
+
+### The viewer carries its workspace, and the workspace is exclusive
+
+`ResparkableViewer.group` is the group workspace the request is reading from, or `null` for the personal one. `granteeClauses()` in `access/store.ts` branches on it:
+
+- **In a group workspace**, the viewer holds only the grants made to that group.
+- **In the personal workspace**, the viewer holds only the grants made to them as a person.
+
+Neither list shows the other's items. A member of three spaces gets three separate lists, three separate searches and three separate item routes, and opening another space's item by id is a 404 rather than merely unlisted (test 13g).
+
+`viewer.group` is only ever built by `viewerFor()` in `api/viewer.ts`, from a `SpaceScope` that `requestSpaceScope()` resolved through membership on this request. That is what makes "a member removed afterwards cannot read it" true on their next request: they no longer get a scope for the group, so they never get a group viewer. The resolver itself does not re-check membership, and does not need to.
+
+**A group `viewer` cannot comment, even under a `commenter` grant.** A comment is a write made in the group's name, and a group viewer writes nothing (§23.3). `viewer.group.canWrite` carries that into `grantPermitsComment()`.
+
+**Editing a comment needs what posting one needs**, in either workspace: `updateComment` resolves with `need: 'comment'`. So a group member demoted to viewer and a person whose grant was lowered to `viewer` both lose Edit on what they wrote before. Both can still delete their own: taking back what you said is closer to erasure than to writing. Each comment carries `canEdit` and `canDelete`, computed from the same access result, so the thread never draws a button the server would refuse.
+
+**The owner keeps moderation in a group workspace.** An owner reading their own personal item from a group it was shared with resolves as `grant`, not `owner`, because workspaces are exclusive. `permissions.moderate` is true for them anyway, and `removeComment` asks that rather than the basis. They could delete the comment from their personal workspace, or revoke the grant, so refusing here would protect nothing. `moderate` compares the reader's user id with the owning space's key, so it is never true on an item a group owns.
+
+### Issuing one
+
+`POST /api/v1/resparkable/grants` takes either `granteeEmail` or `granteeSpaceId`, never both (`createGrantSchema` is a strict union). Two rules:
+
+1. **The caller must be a joined member of the grantee group, in a role that can write.** Changing a group grant later (`PATCH`) asks the same, so somebody who has left the group cannot raise its role or open task notes to it. Revoking asks nothing: a leaver can always take a share back. A group `viewer` cannot share into the group: putting an item in front of everyone in it is a write in that workspace (§23.3). `GET /grants/groups` leaves those groups out for the same reason. §23.11 declined a public directory of groups, and a grant form that accepted any group id would be one: it would answer "does this group exist?" by whether the share went through. A group the caller is not in gets the same 404 as an item they do not own.
+2. **A group cannot be granted its own item.** Everyone in it can already read it. The route refuses this with a 400, and `issueGrant` refuses it again.
+
+`GET /api/v1/resparkable/grants/groups` lists the groups the current workspace can share with, each with its joined-member count. The share dialog's Groups tab reads it and names the group with that count, because who can read a group share changes whenever the group's membership does.
+
+On an issued grant, the group's **name** is shown to everyone in the grantor workspace, since it is their record of where the item went. The **member count** is shown only to readers who are joined members of that group, and is `null` for everyone else: when group G shares with group H, H's roll is H's business, and a count that moves as people join and leave would otherwise let G's members watch it. For a filter board the dialog recommends a snapshot, since the dynamic-filter trap above is worse when the audience is also a moving target.
+
+**Group grants never send an invite.** There is no address to send one to.
+
+### Items a group owns
+
+A group can share its own items too (group to group). The reader sees **"Shared by <group name>"**: `SharedOwnerIdentity` has a `group` kind with no address. Before phase 49, a grant from a group to a person never appeared on that person's list at all, because the owner lookup only found people.
+
+Items a group owns **do not resolve as `owner` through this layer** for the group's own members, and never get `permissions.moderate`. The owner short-circuit still compares an account id. Giving group admins owner powers over comments on group items is phase 58's, not this phase's.
+
+### What stays out
+
+**A group grant puts zero rows in the grantee group's `ResparkableEmbedding`.** Nothing on the read path indexes what it shows, and shared-in items stay out of the recipient's context block, exactly as for a person. `scripts/framework/resparkable/smoke-group-sharing.ts` proves this against a real database by counting rows, not by mocking.
+
+### Deliberately not done in phase 49
+
+- **A person is still named by email or account, not by their personal space.** Re-keying person grants onto `granteeSpaceId` would touch every accepted grant and the invite flow for no behaviour change.
+- **Comments on an item a group shared are invisible to that group.** A group can issue a `commenter` grant, and the grantee's comments are stored and shown to other grantees, but no member of the sharing group can read or remove them: group-owned items do not resolve as `owner` here, and the group holds no grant to its own item. Accepted for phase 49 and closed by phase 58's owner powers. Until then a group that wants to moderate a thread should share as `viewer`.
+- **A group still cannot email an invite to a person.** That dates from phase 47. The grant works without the email; the person sees it when they sign in with that address.
+
+---
+
 ## Where to look
 
 | Thing                                    | File                                                                     |
@@ -440,6 +501,8 @@ Keep `rg 'grantSpaceScope\('` as short as `rg 'sharedSpaceScope\('`.
 | The owner's side of a grant, in SQL      | `lib/framework/resparkable/repo/grants.ts`                               |
 | `/shared-with-me`, and its search        | `lib/framework/resparkable/services/shared-with-me.ts`                   |
 | Building a viewer from a session         | `lib/framework/resparkable/api/viewer.ts`                                |
+| The groups a workspace can share with    | `app/api/v1/resparkable/grants/groups/route.ts`                          |
+| Group grants against a real database     | `scripts/framework/resparkable/smoke-group-sharing.ts`                   |
 | The owner's share dialog                 | `components/resparkable/share/share-dialog.tsx`                          |
 | The control that opens it, on all six    | `components/resparkable/share/share-button.tsx`                          |
 | What I have shared, and revoking it      | `lib/framework/resparkable/services/my-shares.ts`                        |

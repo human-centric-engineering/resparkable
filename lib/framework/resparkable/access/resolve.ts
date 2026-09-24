@@ -85,7 +85,7 @@ const OWNER_RESULT = (ownerId: string): ResparkableAccessResult => ({
   ok: true,
   basis: 'owner',
   ownerId,
-  permissions: { read: true, comment: true },
+  permissions: { read: true, comment: true, moderate: true },
   redact: [],
   via: null,
 });
@@ -130,14 +130,24 @@ function redactionsFor(
 function sharedResult(
   basis: ResparkableAccessBasis,
   ownerId: string,
-  options: { includeTaskDetail: boolean; canComment: boolean; via: ResparkableEntityRef | null }
+  options: {
+    includeTaskDetail: boolean;
+    canComment: boolean;
+    via: ResparkableEntityRef | null;
+    /** Who is reading, for `moderate`. `null` for a public-link reader. */
+    viewerUserId: string | null;
+  }
 ): ResparkableAccessResult {
   const { redact } = redactionsFor(basis, options.includeTaskDetail);
   return {
     ok: true,
     basis,
     ownerId,
-    permissions: { read: true, comment: options.canComment },
+    permissions: {
+      read: true,
+      comment: options.canComment,
+      moderate: ownsPersonally(options.viewerUserId, ownerId),
+    },
     redact,
     via: options.via,
   };
@@ -168,19 +178,20 @@ export async function resolveResparkableAccess(
   if (!ownerId) return DENY;
 
   // ── The short circuit. Before any grant or link query. ────────────────────
-  if (viewer.userId && viewer.userId === ownerId) return OWNER_RESULT(ownerId);
+  if (isOwner(viewer, ownerId)) return OWNER_RESULT(ownerId);
 
   const ref: ResparkableEntityRef = { entityType, entityId };
 
   const direct = await findLiveGrantsForRefs(viewer, [ref], now);
   const directGrant = best(direct);
   if (directGrant) {
-    const canComment = directGrant.role === 'commenter';
+    const canComment = grantPermitsComment(viewer, directGrant);
     if (need === 'comment' && !canComment) return DENY;
     return sharedResult('grant', ownerId, {
       includeTaskDetail: directGrant.includeTaskDetail,
       canComment,
       via: null,
+      viewerUserId: viewer.userId,
     });
   }
 
@@ -203,6 +214,7 @@ export async function resolveResparkableAccess(
     includeTaskDetail: parentGrant.includeTaskDetail,
     canComment: false,
     via: { entityType: parentGrant.entityType, entityId: parentGrant.entityId },
+    viewerUserId: viewer.userId,
   });
 }
 
@@ -258,7 +270,7 @@ export async function resolveResparkableAccessMany(input: {
       results.set(key, DENY);
       continue;
     }
-    if (input.viewer.userId && input.viewer.userId === ownerId) {
+    if (isOwner(input.viewer, ownerId)) {
       results.set(key, OWNER_RESULT(ownerId));
       continue;
     }
@@ -278,7 +290,7 @@ export async function resolveResparkableAccessMany(input: {
       stillUnresolved.push(ref);
       continue;
     }
-    const canComment = grant.role === 'commenter';
+    const canComment = grantPermitsComment(input.viewer, grant);
     if (need === 'comment' && !canComment) {
       results.set(key, DENY);
       continue;
@@ -289,6 +301,7 @@ export async function resolveResparkableAccessMany(input: {
         includeTaskDetail: grant.includeTaskDetail,
         canComment,
         via: null,
+        viewerUserId: input.viewer.userId,
       })
     );
   }
@@ -352,6 +365,7 @@ export async function resolveResparkableAccessMany(input: {
         includeTaskDetail: parentGrant.includeTaskDetail,
         canComment: false,
         via: { entityType: parentGrant.entityType, entityId: parentGrant.entityId },
+        viewerUserId: input.viewer.userId,
       })
     );
   }
@@ -506,6 +520,7 @@ export function shareLinkAccess(link: LiveShareLink): ResparkableAccessResult {
     includeTaskDetail: link.includeTaskDetail,
     canComment: false,
     via: null,
+    viewerUserId: null,
   });
 }
 
@@ -545,10 +560,49 @@ export async function resolveResparkableShareLinkChild(
     includeTaskDetail: link.includeTaskDetail,
     canComment: false,
     via: { entityType: link.entityType, entityId: link.entityId },
+    viewerUserId: null,
   });
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Whether the viewer owns the item, which is the whole short circuit.
+ *
+ * Only in the personal workspace, where a space's key IS its owner's user id
+ * (`createSpace`). Inside a group workspace nothing is owned in this sense:
+ * the group's own items are read through space queries (`repo/**`), and
+ * through this layer they are simply not shared with anybody, so they deny.
+ * Letting a member resolve as `owner` here would hand every member, a group
+ * viewer included, the owner's say over the comment thread on every group
+ * item, which is a decision §23.13 (phase 58) makes on its own terms.
+ */
+function isOwner(viewer: ResparkableViewer, ownerId: string): boolean {
+  return viewer.group === null && ownsPersonally(viewer.userId, ownerId);
+}
+
+/**
+ * Whether the reader is the person whose personal space holds the item, in
+ * whichever workspace they are reading from. A personal space's key is its
+ * owner's user id, so this is exact; a group's key is never a user id, so it
+ * is always false for an item a group owns.
+ */
+function ownsPersonally(viewerUserId: string | null, ownerId: string): boolean {
+  return viewerUserId !== null && viewerUserId === ownerId;
+}
+
+/**
+ * Whether a grant lets this viewer comment.
+ *
+ * A `commenter` role on the grant, and, inside a group workspace, a role in the
+ * group that may write. A group `viewer` reads what was shared with the group
+ * and says nothing on it: a comment is a write, and §23.3's viewer writes
+ * nothing, whatever the grantor allowed.
+ */
+export function grantPermitsComment(viewer: ResparkableViewer, grant: LiveGrant): boolean {
+  if (grant.role !== 'commenter') return false;
+  return viewer.group === null || viewer.group.canWrite;
+}
 
 /**
  * The strongest of several grants on one item.

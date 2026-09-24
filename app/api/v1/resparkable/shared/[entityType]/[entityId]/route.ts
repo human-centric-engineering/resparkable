@@ -32,11 +32,14 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
 import { readSharedWithMe } from '@/lib/framework/resparkable/services/shared-with-me';
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 
 export const GET = withAuth<{ entityType: string; entityId: string }>(
   async (request, session, { params }) => {
     const log = await getRouteLogger(request);
+    // The workspace decides which grants are this viewer's (phase 49).
+    const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
     const { entityType, entityId } = await params;
 
     // The type is not validated against the shareable list here on purpose. The
@@ -44,7 +47,7 @@ export const GET = withAuth<{ entityType: string; entityId: string }>(
     // `thought` while `project` returned 404 would tell an unauthenticated
     // guesser which types are shareable and, worse, would separate "wrong type"
     // from "no access" in the response.
-    const result = await readSharedWithMe(viewerFromSession(session), { entityType, entityId });
+    const result = await readSharedWithMe(viewer, { entityType, entityId });
     if (!result) throw new NotFoundError('Not found');
 
     log.info('Resparkable shared item read', {

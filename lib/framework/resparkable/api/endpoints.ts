@@ -193,10 +193,16 @@ export const RESPARKABLE_API = {
 
   /**
    * Named grants — the owner's side. `POST` is an upsert on
-   * `(entityType, entityId, granteeEmail)`: sharing again with the same person
-   * amends the relationship rather than adding a second one beside it.
+   * `(entityType, entityId, granteeEmail)`, or on `granteeSpaceId` for a group:
+   * sharing again with the same person or group amends the relationship rather
+   * than adding a second one beside it.
    */
   GRANTS: '/api/v1/resparkable/grants',
+  /**
+   * The groups this workspace can share with: the caller's own joined groups,
+   * less the one they are in, each with its member count (phase 49).
+   */
+  GRANT_GROUPS: '/api/v1/resparkable/grants/groups',
   grant: (id: string): string => `/api/v1/resparkable/grants/${id}`,
   /**
    * Email the person a grant was issued to.

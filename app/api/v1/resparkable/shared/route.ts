@@ -27,14 +27,17 @@ import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { listSharedWithMe } from '@/lib/framework/resparkable/services/shared-with-me';
 import { sharedListQuerySchema } from '@/lib/framework/resparkable/validations';
-import { viewerFromSession } from '@/lib/framework/resparkable/api/viewer';
+import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
+  // The workspace decides which grants are this viewer's (phase 49).
+  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
 
   const query = validateQueryParams(new URL(request.url).searchParams, sharedListQuerySchema);
 
-  const items = await listSharedWithMe(viewerFromSession(session), query);
+  const items = await listSharedWithMe(viewer, query);
 
   log.info('Resparkable shared-with-me list', { count: items.length });
 

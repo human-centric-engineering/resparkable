@@ -56,6 +56,12 @@ vi.mock('@/lib/framework/resparkable/repo/owner-contact', () => ({
   findOwnerContact: (...args: unknown[]) => findOwnerContact(...args),
 }));
 
+const findGroupLabelsBySpaceIds = vi.fn();
+
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
+  findGroupLabelsBySpaceIds: (...args: unknown[]) => findGroupLabelsBySpaceIds(...args),
+}));
+
 const buildBoardView = vi.fn();
 
 vi.mock('@/lib/framework/resparkable/services/board-view', () => ({
@@ -87,7 +93,7 @@ import {
 } from '@/lib/framework/resparkable/services/shared-with-me';
 
 const NOW = new Date('2026-08-28T10:00:00.000Z');
-const VIEWER = { userId: 'user_b', email: 'b@example.com' };
+const VIEWER = { userId: 'user_b', email: 'b@example.com', group: null };
 
 function grant(overrides: Record<string, unknown> = {}) {
   return {
@@ -141,6 +147,7 @@ beforeEach(() => {
   });
   findSharedItems.mockResolvedValue([item()]);
   findSharedChildIds.mockResolvedValue(null);
+  findGroupLabelsBySpaceIds.mockResolvedValue(new Map());
 });
 
 describe('listSharedWithMe', () => {
@@ -157,11 +164,49 @@ describe('listSharedWithMe', () => {
 
     const [entry] = await listSharedWithMe(VIEWER, {}, NOW);
 
-    expect(entry.owner).toEqual({ id: 'user_a', name: 'Priya', email: 'a@example.com' });
+    expect(entry.owner).toEqual({
+      kind: 'person',
+      id: 'user_a',
+      name: 'Priya',
+      email: 'a@example.com',
+    });
     // The grant's own createdAt, never "now": a grant to an address that
     // already has an account is live from the moment it is issued and may never
     // be accepted, so acceptedAt cannot stand in for when it was shared.
     expect(entry.sharedAt).toEqual(new Date('2026-08-20T00:00:00.000Z'));
+  });
+
+  it('names a group that shared something by the group, not by an account', async () => {
+    // A group space has no owner account, so the contact lookup answers null
+    // for it. Before phase 49 that null dropped the row, and a share from a
+    // group to a person was a live grant that never appeared on their list.
+    const GROUP = 'spc_0123456789abcdef0123456789abcdef';
+    resparkableVisibilityScope.mockResolvedValue(scopeOf([grant({ ownerId: GROUP })]));
+    findGroupLabelsBySpaceIds.mockResolvedValue(
+      new Map([[GROUP, { groupId: 'g_1', spaceId: GROUP, name: 'Study Group B', memberCount: 4 }]])
+    );
+
+    const [entry] = await listSharedWithMe(VIEWER, {}, NOW);
+
+    expect(entry.owner).toEqual({ kind: 'group', id: GROUP, name: 'Study Group B' });
+    // Nothing about who is in it. The member count is for the grantor's
+    // dialog; the grantee holds a relationship with the group.
+    expect(entry.owner).not.toHaveProperty('memberCount');
+    expect(findOwnerContact).not.toHaveBeenCalled();
+  });
+
+  it('does not let a group viewer comment, even under a commenter grant', async () => {
+    const inGroup = {
+      userId: 'user_b',
+      email: 'b@example.com',
+      group: { spaceId: 'spc_ffffffffffffffffffffffffffffffff', canWrite: false },
+    };
+    resparkableVisibilityScope.mockResolvedValue(scopeOf([grant({ role: 'commenter' })]));
+
+    const [entry] = await listSharedWithMe(inGroup, {}, NOW);
+
+    expect(entry.role).toBe('commenter');
+    expect(entry.canComment).toBe(false);
   });
 
   it('scopes each owner separately when grants come from two people', async () => {

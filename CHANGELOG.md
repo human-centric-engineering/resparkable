@@ -18,6 +18,41 @@ release process.
 
 ### Added
 
+- **Grants to a group (Release 9, phase 49).** A grant can now name a group
+  workspace instead of a person. `ResparkableGrant` gains `granteeSpaceId`
+  (cascades from the grantee's `ResparkableSpace`), and **`granteeEmail` is now
+  nullable**, which is a breaking change for any fork code that treats it as a
+  string. The `framework_resparkable_grant_one_grantee` CHECK, guarded by drift
+  probe B14, means a grant names a person or a group, never both and never
+  neither. `spaceId` stays the grantor column.
+
+  `ResparkableViewer` gains `group`, built only by `viewerFor()` from a
+  membership-resolved scope, and it is exclusive: inside a group workspace a
+  person holds only the grants made to that group, and in their personal
+  workspace only the grants made to them. `/shared`, `/shared/search`,
+  `/shared/[type]/[id]` and the comment routes now follow `?space=`. A group
+  `viewer` never comments, even under a `commenter` grant, and
+  `grantPermitsComment()` is exported from `access/index.ts` to answer that in
+  one place. `POST /api/v1/resparkable/grants` takes `granteeSpaceId` for a group
+  the caller is a joined member of with a role that can write, and never for the group's own item.
+  `PATCH /api/v1/resparkable/grants/[id]` asks the same of a group grant, so
+  somebody who has left the group can revoke it but not change it. The new
+  `GET /api/v1/resparkable/grants/groups` lists the groups a workspace can share
+  with and their member counts, for the share dialog's new Groups tab. On a
+  grant, `granteeGroup.memberCount` is `null` unless the reader is a joined
+  member of that group. Group grants send no invite.
+
+  Comment permissions come from the access layer. `ResparkableAccessResult`'s
+  `permissions` gains `moderate`: true for the owner, including an owner
+  reading their own personal item from a group workspace it was shared with.
+  Editing a comment now needs `need: 'comment'`, the same as posting one, so a
+  grant lowered to `viewer` and a group member demoted to viewer both lose Edit
+  and keep Delete. Each comment on the wire gains `canEdit` and `canDelete`,
+  and `CommentThread` loses its `isOwner` prop and draws from those. Proved against a real database by
+  `npm run framework:resparkable:smoke-group-sharing` (tests 13f and 13g). See
+  the "Grants to a group" section of
+  [`sharing.md`](./.context/framework/resparkable/sharing.md).
+
 - **The brain as two MCP resources: `resparkable://today` and
   `resparkable://project/{slug}`.** A client reads a resource without spending a
   tool call: it attaches the content to the conversation, where a tool call
@@ -740,6 +775,15 @@ release process.
 
 ### Changed
 
+- **Phase 49 breaks three things a fork may import or parse.**
+  `viewerFromSession(session)` in `api/viewer.ts` is replaced by
+  `viewerFor(session, scope)`, because a viewer now carries the workspace it
+  reads from and only a membership-resolved `SpaceScope` can say which.
+  `toGrantSummary` in `services/grants.ts` is no longer exported; use
+  `toGrantSummaries(grants, now)`, which names every group grantee in one
+  lookup. And the `owner` on every `/shared` response now carries `kind:
+  'person' | 'group'`, and a group owner has no `email`, so a client validating
+  the old `{ id, name, email }` shape rejects it.
 
 - **`DELETE /api/v1/resparkable/groups/[id]` requires `{ confirmName }`**
   (phase 48). A bare `DELETE` is now a 400, and a name that does not match the
@@ -1633,6 +1677,11 @@ release process.
 
 ### Fixed
 
+- **A share from a group to a person never appeared on that person's
+  `/shared` list.** The owner lookup only found people, so the row was dropped
+  silently. It now reads "Shared by <group name>" (phase 49).
+- **The `/shared` search ignored the active workspace**, so inside a group it
+  searched the person's own shares (phase 49).
 - **`createdByUserId` is written.** Phase 45 added it to every satellite and no
   create path set it, so every row in a group space recorded no author. Rows
   created before this release stay `null`.

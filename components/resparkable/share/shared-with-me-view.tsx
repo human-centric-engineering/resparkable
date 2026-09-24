@@ -28,18 +28,21 @@ import * as React from 'react';
 import { Handshake, Search } from 'lucide-react';
 
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
+import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
 import { Input } from '@/components/ui/input';
+import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
+import { useActiveSpaceId } from '@/lib/framework/resparkable/ui/use-active-space';
 import {
+  sharedOwnerLabel,
   sharedSearchHitsSchema,
   type SharedSearchHitWire,
   type SharedWithMeItemWire,
 } from '@/lib/framework/resparkable/ui/payloads';
-import Link from 'next/link';
 
 /** What each shareable type is called on screen. */
 const TYPE_LABEL: Record<string, string> = {
@@ -56,6 +59,8 @@ export function SharedWithMeView({ items }: { items: SharedWithMeItemWire[] }): 
   const [hits, setHits] = React.useState<SharedSearchHitWire[] | null>(null);
   const [searching, setSearching] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // Which list this is. A group's shares and the person's never mix (phase 49).
+  const inGroup = useActiveSpaceId() !== null;
 
   const runSearch = React.useCallback(async (term: string) => {
     const trimmed = term.trim();
@@ -70,8 +75,10 @@ export function SharedWithMeView({ items }: { items: SharedWithMeItemWire[] }): 
     setSearching(true);
     setError(null);
     try {
+      // With the active workspace, like every other read: inside a group this
+      // searches what was shared with the group, and nothing of the person's.
       const response = await fetch(
-        `${RESPARKABLE_API.SHARED_SEARCH}?q=${encodeURIComponent(trimmed)}`
+        withActiveSpace(`${RESPARKABLE_API.SHARED_SEARCH}?q=${encodeURIComponent(trimmed)}`)
       );
       const payload: unknown = await response.json();
       if (!response.ok || !isSuccess(payload)) {
@@ -139,11 +146,19 @@ export function SharedWithMeView({ items }: { items: SharedWithMeItemWire[] }): 
       {hits !== null ? (
         <SearchResults hits={hits} />
       ) : items.length === 0 ? (
-        <EmptyState
-          icon={Handshake}
-          title="Nothing has been shared with you"
-          description="When someone shares a project, a board or a goal with you, it appears here. Shared items stay in this section and never mix with your own, so your lists keep showing only what you have taken on."
-        />
+        inGroup ? (
+          <EmptyState
+            icon={Handshake}
+            title="Nothing has been shared with this group"
+            description="When someone shares a project, a board or a goal with this group, everyone in it sees it here. Things shared with you personally are in your own workspace, not this one."
+          />
+        ) : (
+          <EmptyState
+            icon={Handshake}
+            title="Nothing has been shared with you"
+            description="When someone shares a project, a board or a goal with you, it appears here. Shared items stay in this section and never mix with your own, so your lists keep showing only what you have taken on."
+          />
+        )
       ) : (
         <ul className="space-y-2">
           {items.map((entry) => (
@@ -161,7 +176,7 @@ function SharedRow({ entry }: { entry: SharedWithMeItemWire }): React.ReactEleme
   const { item, owner } = entry;
 
   return (
-    <Link
+    <WorkspaceLink
       href={RESPARKABLE_ROUTES.sharedItem(item.entityType, item.id)}
       className="bg-card hover:bg-accent/40 block space-y-2 rounded-md border p-3 transition-colors"
     >
@@ -172,7 +187,9 @@ function SharedRow({ entry }: { entry: SharedWithMeItemWire }): React.ReactEleme
           {TYPE_LABEL[item.entityType] ?? item.entityType}
         </Badge>
 
-        {entry.role === 'commenter' && (
+        {/* canComment, not the grant's role: a group viewer holds a commenter grant
+            through the group and still cannot comment (phase 49). */}
+        {entry.canComment && (
           <Badge variant="secondary" className="text-[11px]">
             you can comment
           </Badge>
@@ -190,7 +207,7 @@ function SharedRow({ entry }: { entry: SharedWithMeItemWire }): React.ReactEleme
       </div>
 
       <p className="text-muted-foreground text-xs">
-        Shared by {owner.name ?? owner.email}
+        Shared by {sharedOwnerLabel(owner)}
         {entry.expiresAt !== null && (
           <>
             {' · access ends '}
@@ -202,7 +219,7 @@ function SharedRow({ entry }: { entry: SharedWithMeItemWire }): React.ReactEleme
       {item.body !== null && item.body.length > 0 && (
         <p className="text-muted-foreground line-clamp-2 text-sm">{item.body}</p>
       )}
-    </Link>
+    </WorkspaceLink>
   );
 }
 
@@ -224,18 +241,18 @@ function SearchResults({ hits }: { hits: SharedSearchHitWire[] }): React.ReactEl
           className="bg-card space-y-1 rounded-md border p-3"
         >
           <div className="flex flex-wrap items-center gap-2">
-            <Link
+            <WorkspaceLink
               href={RESPARKABLE_ROUTES.sharedItem(hit.item.entityType, hit.item.id)}
               className="font-medium hover:underline"
             >
               {hit.item.title}
-            </Link>
+            </WorkspaceLink>
             <Badge variant="outline" className="text-[11px]">
               {TYPE_LABEL[hit.item.entityType] ?? hit.item.entityType}
             </Badge>
           </div>
           <p className="text-muted-foreground text-xs">
-            Shared by {hit.owner.name ?? hit.owner.email}
+            Shared by {sharedOwnerLabel(hit.owner)}
             {/* Names the granted parent, so a task found inside a shared
                 project does not read as something handed over on its own. */}
             {hit.via !== null && ' · part of something shared with you'}

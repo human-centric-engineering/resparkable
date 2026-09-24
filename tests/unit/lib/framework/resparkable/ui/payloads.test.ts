@@ -48,6 +48,10 @@ import {
   timeBlockSchema,
   todayPayloadSchema,
   todayTaskSchema,
+  grantGranteeLabel,
+  isGroupGrant,
+  memberCountLabel,
+  sharedOwnerLabel,
 } from '@/lib/framework/resparkable/ui/payloads';
 
 const ISO = '2026-01-15T10:30:00.000Z';
@@ -1038,5 +1042,60 @@ describe('boardViewSchema', () => {
   it('rejects a malformed nested board', () => {
     const result = boardViewSchema.safeParse(makeBoardView({ board: { id: 'b1' } }));
     expect(result.success).toBe(false);
+  });
+});
+
+// ─── Naming who is on the other side of a grant (phase 49) ──────────────────
+
+describe('grantGranteeLabel', () => {
+  it('names a group grantee by the group, not by an address', () => {
+    expect(
+      grantGranteeLabel({
+        granteeEmail: null,
+        granteeGroup: { spaceId: 'space_b', name: 'Study Group B', memberCount: 14 },
+      })
+    ).toBe('Study Group B');
+  });
+
+  it('names a person grantee by their address', () => {
+    expect(grantGranteeLabel({ granteeEmail: 'b@example.com', granteeGroup: null })).toBe(
+      'b@example.com'
+    );
+  });
+
+  it('says the group is gone rather than rendering an empty name', () => {
+    expect(grantGranteeLabel({ granteeEmail: null, granteeGroup: null })).toBe('a deleted group');
+  });
+});
+
+describe('sharedOwnerLabel', () => {
+  it('names a sharing group by its name', () => {
+    expect(sharedOwnerLabel({ kind: 'group', id: 'space_b', name: 'Study Group B' })).toBe(
+      'Study Group B'
+    );
+  });
+
+  it('names a person by name, falling back to their address', () => {
+    expect(
+      sharedOwnerLabel({ kind: 'person', id: 'u1', name: 'Priya', email: 'p@example.com' })
+    ).toBe('Priya');
+    expect(sharedOwnerLabel({ kind: 'person', id: 'u1', name: null, email: 'p@example.com' })).toBe(
+      'p@example.com'
+    );
+  });
+});
+
+describe('isGroupGrant', () => {
+  it('reads the kind off the missing address, not off the group label', () => {
+    expect(isGroupGrant({ granteeEmail: null })).toBe(true);
+    expect(isGroupGrant({ granteeEmail: 'b@example.com' })).toBe(false);
+  });
+});
+
+describe('memberCountLabel', () => {
+  it('says person for one and people for anything else', () => {
+    expect(memberCountLabel(1)).toBe('1 person');
+    expect(memberCountLabel(14)).toBe('14 people');
+    expect(memberCountLabel(0)).toBe('0 people');
   });
 });

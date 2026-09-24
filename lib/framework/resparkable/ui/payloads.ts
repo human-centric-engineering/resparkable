@@ -685,11 +685,23 @@ export type SharedItemWire = z.infer<typeof sharedItemSchema>;
  * carries this: a stranger holding a URL gets the content and learns nothing
  * about whose it is. That is the line the whole access layer is drawn on.
  */
-export const sharedOwnerSchema = z.object({
-  id: z.string(),
-  name: z.string().nullable(),
-  email: z.string(),
-});
+export const sharedOwnerSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('person'),
+    id: z.string(),
+    name: z.string().nullable(),
+    email: z.string(),
+  }),
+  /** A group workspace that shared something (phase 49). Its name, never its members. */
+  z.object({ kind: z.literal('group'), id: z.string(), name: z.string() }),
+]);
+
+export type SharedOwnerWire = z.infer<typeof sharedOwnerSchema>;
+
+/** How a grantee names whoever shared with them: a group's name, or a person's. */
+export function sharedOwnerLabel(owner: SharedOwnerWire): string {
+  return owner.kind === 'group' ? owner.name : (owner.name ?? owner.email);
+}
 
 export const sharedWithMeItemSchema = z.object({
   item: sharedItemSchema,
@@ -748,7 +760,17 @@ export const grantSchema = z.object({
   id: z.string(),
   entityType: z.string(),
   entityId: z.string(),
-  granteeEmail: z.string(),
+  /** The person the grant is to. Null for a grant to a group. */
+  granteeEmail: z.string().nullable(),
+  /**
+   * The group the grant is to, with its joined-member count today (phase 49).
+   * Null for a grant to a person. `memberCount` is null when the reader is not
+   * a member of that group: the count is the group's business, not the
+   * grantor's.
+   */
+  granteeGroup: z
+    .object({ spaceId: z.string(), name: z.string(), memberCount: z.number().nullable() })
+    .nullable(),
   role: z.string(),
   includeTaskDetail: z.boolean(),
   /**
@@ -763,9 +785,44 @@ export const grantSchema = z.object({
   createdAt: isoDate,
 });
 
+/**
+ * Whether a grant is to a group rather than a person.
+ *
+ * Read off the address, not off `granteeGroup`: the label is a lookup that can
+ * come back empty (a group deleted mid-request), and a group grant with no label
+ * is still a group grant. Filed under People it would offer "Email again" for a
+ * grant with nobody to email.
+ */
+export function isGroupGrant(grant: Pick<GrantWire, 'granteeEmail'>): boolean {
+  return grant.granteeEmail === null;
+}
+
+/** How many people are in a group, in words: "1 person", "14 people". */
+export function memberCountLabel(count: number): string {
+  return count === 1 ? '1 person' : `${count} people`;
+}
+
+/** How an owner names who a grant is to. */
+export function grantGranteeLabel(grant: Pick<GrantWire, 'granteeEmail' | 'granteeGroup'>): string {
+  if (grant.granteeGroup) return grant.granteeGroup.name;
+  return grant.granteeEmail ?? 'a deleted group';
+}
+
 export type GrantWire = z.infer<typeof grantSchema>;
 
 export const grantsSchema = z.array(grantSchema);
+
+/** A group this workspace can share with, and how many people are in it today. */
+export const grantTargetGroupSchema = z.object({
+  groupId: z.string(),
+  spaceId: z.string(),
+  name: z.string(),
+  memberCount: z.number(),
+});
+
+export type GrantTargetGroupWire = z.infer<typeof grantTargetGroupSchema>;
+
+export const grantTargetGroupsSchema = z.array(grantTargetGroupSchema);
 
 /** What `POST /resparkable/grants` answers. The grant, and nothing beside it. */
 export const createdGrantSchema = z.object({ grant: grantSchema });
@@ -905,8 +962,12 @@ export const commentSchema = z.object({
     /** Whether the writer is the person whose item this sits on. */
     isOwner: z.boolean(),
   }),
-  /** True for the reader's own comment, so the UI can offer edit and delete. */
+  /** True for the reader's own comment. */
   mine: z.boolean(),
+  /** Whether the reader may edit it. The server's rule, so the UI never guesses. */
+  canEdit: z.boolean(),
+  /** Whether the reader may remove it: their own, or any on an item they own. */
+  canDelete: z.boolean(),
   editedAt: isoDate.nullable(),
   createdAt: isoDate,
 });

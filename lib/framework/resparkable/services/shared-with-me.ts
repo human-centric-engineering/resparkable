@@ -40,6 +40,7 @@
  */
 
 import {
+  grantPermitsComment,
   grantSpaceScope,
   isResparkableShareableType,
   refKey,
@@ -53,6 +54,7 @@ import {
 import { RESPARKABLE_CASCADE } from '@/lib/framework/resparkable/access/cascade';
 import { resolveResparkableAccess } from '@/lib/framework/resparkable/access/resolve';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { findGroupLabelsBySpaceIds } from '@/lib/framework/resparkable/repo/groups';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
 import {
   findSharedChildIds,
@@ -80,13 +82,29 @@ import type { SharedListQuery, SharedSearchQuery } from '@/lib/framework/respark
  */
 export const SHARED_SEARCH_SCAN_LIMIT = 1000;
 
-/** Who shared this, as a grantee is allowed to see them. */
-export interface SharedOwnerIdentity {
-  /** The account id. The grantee holds a relationship with a person, not an id. */
-  id: string;
-  name: string | null;
-  email: string;
-}
+/**
+ * Who shared this, as a grantee is allowed to see them.
+ *
+ * A person, or since phase 49 a group: a group workspace can issue a grant like
+ * a personal one can, and "shared by Study Group B" is the honest answer to who
+ * did it. A group carries its name and nothing about its members, because the
+ * grantee holds a relationship with the group and not with whoever pressed the
+ * button.
+ */
+export type SharedOwnerIdentity =
+  | {
+      kind: 'person';
+      /** The account id. The grantee holds a relationship with a person, not an id. */
+      id: string;
+      name: string | null;
+      email: string;
+    }
+  | {
+      kind: 'group';
+      /** The group's space id, which is what a grant's grantor side holds. */
+      id: string;
+      name: string;
+    };
 
 /** One item somebody has shared with me. */
 export interface SharedWithMeItem {
@@ -150,7 +168,7 @@ export async function listSharedWithMe(
       item,
       owner,
       role: grant.role,
-      canComment: grant.role === 'commenter',
+      canComment: grantPermitsComment(viewer, grant),
       includeTaskDetail: grant.includeTaskDetail,
       sharedAt: grant.createdAt,
       expiresAt: grant.expiresAt,
@@ -196,7 +214,7 @@ export async function readSharedWithMe(
   // A public link cannot reach this route — `ResparkableViewer` has no token
   // field — so a positive result here is always a grant or a grant cascade.
   const scope = sharedSpaceScope(access, viewer.userId);
-  const owner = await identityFor(scope, access.ownerId);
+  const owner = (await loadIdentities([{ scope, ownerId: access.ownerId }])).get(access.ownerId);
   if (!owner) return null;
 
   // Narrowed by a guard rather than asserted by a cast. The resolver has
@@ -314,48 +332,62 @@ function viewKey(ownerId: string, entityType: string, entityId: string): string 
 }
 
 /**
- * The owners behind a set of grants, one contact lookup each.
+ * The owners behind a set of grants.
  *
- * `findOwnerContact` takes an `SpaceScope`, and the id it is given comes off a
- * live grant row — never off the request. That is the same discipline
- * `sharedSpaceScope` documents, reached without a resolution because a grant
- * the viewer holds already *is* the resolution.
+ * Every id comes off a live grant row, never off the request. That is the same
+ * discipline `sharedSpaceScope` documents, reached without a resolution because
+ * a grant the viewer holds already *is* the resolution.
  */
 async function loadOwnerIdentities(
   grants: readonly LiveGrant[],
   actorUserId: string | null
 ): Promise<Map<string, SharedOwnerIdentity>> {
   // One grant per distinct owner is enough to mint that owner's scope, and
-  // asking twice for the same address would be two queries for one answer.
+  // asking twice for the same owner would be two queries for one answer.
   const firstPerOwner = new Map<string, LiveGrant>();
   for (const grant of grants) {
     if (!firstPerOwner.has(grant.ownerId)) firstPerOwner.set(grant.ownerId, grant);
   }
 
-  const entries = await Promise.all(
-    [...firstPerOwner.values()].map(
-      async (grant) =>
-        [
-          grant.ownerId,
-          await identityFor(grantSpaceScope(grant, actorUserId), grant.ownerId),
-        ] as const
-    )
+  return loadIdentities(
+    [...firstPerOwner.values()].map((grant) => ({
+      ownerId: grant.ownerId,
+      scope: grantSpaceScope(grant, actorUserId),
+    }))
   );
-
-  const map = new Map<string, SharedOwnerIdentity>();
-  for (const [id, identity] of entries) {
-    if (identity) map.set(id, identity);
-  }
-  return map;
 }
 
-async function identityFor(
-  scope: SpaceScope,
-  ownerId: string
-): Promise<SharedOwnerIdentity | null> {
-  const contact = await findOwnerContact(scope);
-  if (!contact) return null;
-  return { id: ownerId, name: contact.name, email: contact.email };
+/**
+ * Name each grantor: as a group if its space is a group's, as a person if not.
+ *
+ * Groups first and in one query, because a group space has no owner account and
+ * `findOwnerContact` would answer `null` for it. Before phase 49 that `null`
+ * dropped the row: anything a group shared with a person was a live grant that
+ * never appeared on their list. The people left over cost one contact lookup
+ * each, as they always did.
+ */
+async function loadIdentities(
+  owners: ReadonlyArray<{ ownerId: string; scope: SpaceScope }>
+): Promise<Map<string, SharedOwnerIdentity>> {
+  const groups = await findGroupLabelsBySpaceIds(owners.map((owner) => owner.ownerId));
+
+  const map = new Map<string, SharedOwnerIdentity>();
+  const people: Array<{ ownerId: string; scope: SpaceScope }> = [];
+  for (const owner of owners) {
+    const group = groups.get(owner.ownerId);
+    if (group) map.set(owner.ownerId, { kind: 'group', id: owner.ownerId, name: group.name });
+    else people.push(owner);
+  }
+
+  const contacts = await Promise.all(
+    people.map(async ({ ownerId, scope }) => [ownerId, await findOwnerContact(scope)] as const)
+  );
+  for (const [ownerId, contact] of contacts) {
+    if (contact) {
+      map.set(ownerId, { kind: 'person', id: ownerId, name: contact.name, email: contact.email });
+    }
+  }
+  return map;
 }
 
 /** Load the directly-granted items, one query per (owner, type) pair. */
