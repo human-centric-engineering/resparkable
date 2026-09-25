@@ -74,7 +74,6 @@ import { registerAppJob, type AppJob } from '@/lib/orchestration/maintenance/app
 import { drainResparkableJobs } from '@/lib/framework/resparkable/queue/drain';
 import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { findUnbilledTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
-import { RESPARKABLE_SCHEDULE_OWNER_KEY } from '@/lib/framework/resparkable/repo/space-scope';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { WorkflowStatus } from '@/types/orchestration';
@@ -98,7 +97,14 @@ const EMPTY_DRAIN = {
 };
 
 function execution(overrides: Record<string, unknown> = {}) {
-  return { id: 'exec_1', userId: 'user_a', scope: null, totalCostUsd: 0.12, ...overrides };
+  return {
+    id: 'exec_1',
+    userId: 'user_a',
+    totalCostUsd: 0.12,
+    spaceId: 'user_a',
+    spaceKind: 'personal',
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -144,58 +150,69 @@ describe('the billing pass', () => {
     expect(recordAgentSpend).toHaveBeenCalledWith(spaceScope('user_a'), {
       tokenCostUsd: 0.12,
       relatedWorkflowExecutionId: 'exec_1',
+      authorUserId: 'user_a',
+      // The tick awaits the group alerts: nobody is waiting on it, and one
+      // pass must not start an alert chain per billed run all at once.
+      awaitAlerts: true,
     });
     expect(result.executionsBilled).toBe(1);
   });
 
-  it('bills a legacy system-owned run through its scope key', async () => {
-    // Executions fired by the platform scheduler before the cutover are
-    // `userId: null` and carry the owner in `scope` (resparkable#502). Nothing
-    // creates those any more, but the ones already in the table still have to
-    // be billed rather than dropped.
+  it('bills the space a run names, not the person who started it', async () => {
+    // Phase 50, §23.12. A summary a member asks for in a group is billed to the
+    // group and attributed to the member. Reading `userId` first, as this did
+    // until then, billed the member's personal balance for the group's work.
     vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
-      execution({ userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user_b' } }),
+      execution({ userId: 'user_m', spaceId: 'spc_group', spaceKind: 'group' }),
     ] as never);
 
     await runResparkableTick();
 
-    expect(vi.mocked(recordAgentSpend).mock.calls[0]?.[0]).toEqual(spaceScope('user_b'));
+    const [scope, input] = vi.mocked(recordAgentSpend).mock.calls[0] ?? [];
+    expect(scope).toMatchObject({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+    expect(input).toMatchObject({ authorUserId: 'user_m' });
   });
 
-  it('skips an execution it cannot attribute rather than billing somebody', async () => {
-    // An org-level run, or a Resparkable-slug row written by something outside
-    // this tier. Guessing an owner here debits a real person for a run that was
-    // not theirs.
+  it('mints the scope from the kind the query returned, with no lookup per run', async () => {
+    // The code review's N+1: the query already joins the space row, so its
+    // kind comes back with the run. An unknown kind is a group, never a person.
     vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
-      execution({ userId: null, scope: { somethingElse: 'user_b' } }),
+      execution({ userId: null, spaceId: 'odd_1', spaceKind: 'team' }),
+    ] as never);
+
+    await runResparkableTick();
+
+    expect(vi.mocked(recordAgentSpend).mock.calls[0]?.[0]).toMatchObject({
+      spaceId: 'odd_1',
+      actorUserId: null,
+      role: 'member',
+    });
+  });
+
+  it('counts a ledger write that fails for another reason as skipped, and carries on', async () => {
+    // A space deleted between the query and the write fails the FK. That run is
+    // not billed this pass, and the next pass no longer returns it.
+    vi.mocked(recordAgentSpend)
+      .mockRejectedValueOnce(Object.assign(new Error('FK'), { code: 'P2003' }))
+      .mockResolvedValueOnce({ id: 'ledger_2' } as never);
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
+      execution(),
+      execution({ id: 'exec_2' }),
     ] as never);
 
     const result = await runResparkableTick();
 
-    expect(recordAgentSpend).not.toHaveBeenCalled();
     expect(result.executionsSkipped).toBe(1);
-    expect(result.executionsBilled).toBe(0);
+    expect(result.executionsBilled).toBe(1);
   });
 
-  it('treats every malformed scope shape as unattributable', async () => {
-    // Untrusted JSON from a platform-owned column. None of these throws — a
-    // bare string indexes to `undefined`, an array is an object to `typeof` —
-    // so without the shape check they would all resolve quietly to "no owner"
-    // by accident rather than by decision, and a future reader would have no
-    // way to tell which.
-    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([
-      execution({ userId: null, scope: 'user_b' }),
-      execution({ id: 'exec_2', userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 42 } }),
-      execution({ id: 'exec_3', userId: null, scope: [RESPARKABLE_SCHEDULE_OWNER_KEY, 'user_b'] }),
-      execution({ id: 'exec_4', userId: null, scope: 42 }),
-      execution({ id: 'exec_5', userId: null, scope: null }),
-      execution({ id: 'exec_6', userId: null, scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: '' } }),
-    ] as never);
+  it('counts a failure thrown as a non-Error value as skipped too', async () => {
+    vi.mocked(recordAgentSpend).mockRejectedValueOnce('connection reset');
+    vi.mocked(findUnbilledTerminalResparkableExecutions).mockResolvedValue([execution()] as never);
 
     const result = await runResparkableTick();
 
-    expect(result.executionsSkipped).toBe(6);
-    expect(recordAgentSpend).not.toHaveBeenCalled();
+    expect(result.executionsSkipped).toBe(1);
   });
 
   it('swallows a duplicate ledger write instead of logging an error', async () => {
@@ -297,6 +314,18 @@ describe('registerResparkableJobs', () => {
     // (Sunrise ask #44), plus the sole-admin notice. Hourly: two queries that
     // almost always match nothing.
     expect(registered(RESPARKABLE_GROUP_SUCCESSION_JOB_NAME).intervalMs).toBe(3_600_000);
+  });
+
+  it('leaves draining to the external worker when one is configured', async () => {
+    vi.stubEnv('RESPARKABLE_WORKER_MODE', 'external');
+    try {
+      registerResparkableJobs();
+      await registered(RESPARKABLE_QUEUE_JOB_NAME).run();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(drainResparkableJobs).not.toHaveBeenCalled();
   });
 
   it('settles stranded groups before telling sole admins, and reports both', async () => {

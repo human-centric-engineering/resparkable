@@ -75,6 +75,8 @@ export const RESPARKABLE_CAPABILITY_SLUGS = {
   getBriefingInputs: 'resparkable_get_briefing_inputs',
   notify: 'resparkable_notify',
   getStaleDigest: 'resparkable_get_stale_digest',
+  /** Deterministic gather for a group's weekly digest (phase 50). No authorship in it. */
+  getGroupDigestInputs: 'resparkable_get_group_digest_inputs',
   /** Email-to-inbox intake (phase 9). Bound to the intake agent only — see its class header. */
   captureForToken: 'resparkable_capture_for_token',
 } as const;
@@ -723,6 +725,21 @@ export const RESPARKABLE_CAPABILITIES: readonly ResparkableCapabilitySpec[] = [
         },
         required: [],
       },
+    },
+  },
+  {
+    slug: RESPARKABLE_CAPABILITY_SLUGS.getGroupDigestInputs,
+    name: 'Resparkable: Gather a group digest’s inputs',
+    description:
+      'A week of a group’s work for the digest writer: what moved, what arrived, proposed connections, what went quiet, what nobody picked up. Carries no authorship. Deterministic; makes no model call. Not bound to any chat-reachable agent.',
+    executionHandler: 'ResparkableGetGroupDigestInputsCapability',
+    rateLimit: 10,
+    isIdempotent: true,
+    functionDefinition: {
+      name: RESPARKABLE_CAPABILITY_SLUGS.getGroupDigestInputs,
+      description:
+        'Gather the last week of this group’s work for its digest: what was finished, what arrived, connections nobody has reviewed, what has gone quiet and what nobody has picked up. Nothing in it says who did what, and the digest must not either. Call this once, then write the digest from what it returns.',
+      parameters: { type: 'object', properties: {}, required: [] },
     },
   },
   {

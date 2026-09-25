@@ -44,6 +44,7 @@ import {
   agentListTasksSchema,
   agentNotifySchema,
   agentStaleDigestSchema,
+  agentGroupDigestInputsSchema,
   agentPromoteThoughtSchema,
   agentReprioritiseSchema,
   agentSearchSchema,
@@ -121,11 +122,12 @@ const SCHEMA_BY_SLUG: Record<string, z.ZodType> = {
   [RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs]: agentBriefingInputsSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.notify]: agentNotifySchema,
   [RESPARKABLE_CAPABILITY_SLUGS.getStaleDigest]: agentStaleDigestSchema,
+  [RESPARKABLE_CAPABILITY_SLUGS.getGroupDigestInputs]: agentGroupDigestInputsSchema,
   [RESPARKABLE_CAPABILITY_SLUGS.captureForToken]: agentCaptureForTokenSchema,
 };
 
 describe('Resparkable capability catalogue', () => {
-  it('holds exactly the twenty-three capabilities the agent layer promises', () => {
+  it('holds exactly the twenty-four capabilities the agent layer promises', () => {
     // Thirteen in plan.md §5, plus `resparkable_promote_thought`: none of the
     // thirteen could mark a thought as processed, so a nightly triage run left
     // every note looking un-triaged and re-processed the lot the next night.
@@ -140,8 +142,9 @@ describe('Resparkable capability catalogue', () => {
     // upsert (the one resource type that had no chat-reachable create/update
     // path until the create-via-chat flow needed one). The chat/form create
     // flow's extension to the Plan page adds one more: the time-block upsert.
-    expect(RESPARKABLE_CAPABILITIES).toHaveLength(23);
-    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(23);
+    // Phase 50 adds the group digest's gather step, which carries no authorship.
+    expect(RESPARKABLE_CAPABILITIES).toHaveLength(24);
+    expect(Object.values(RESPARKABLE_CAPABILITY_SLUGS)).toHaveLength(24);
   });
 
   it('uses unique, namespaced slugs', () => {
@@ -224,6 +227,7 @@ describe('Resparkable capability catalogue', () => {
         RESPARKABLE_CAPABILITY_SLUGS.getBriefingInputs,
         RESPARKABLE_CAPABILITY_SLUGS.getStaleDigest,
         RESPARKABLE_CAPABILITY_SLUGS.getContextDigest,
+        RESPARKABLE_CAPABILITY_SLUGS.getGroupDigestInputs,
       ].sort()
     );
   });

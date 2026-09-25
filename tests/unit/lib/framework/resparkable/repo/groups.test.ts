@@ -55,8 +55,10 @@ vi.mock('@/lib/db/client', () => {
   const resparkableGroup = {
     create: vi.fn(),
     findMany: vi.fn().mockResolvedValue([]),
+    findFirst: vi.fn().mockResolvedValue(null),
     findUnique: vi.fn().mockResolvedValue(null),
     update: vi.fn(),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
   };
   const resparkableGroupMember = {
     create: vi.fn(),
@@ -65,6 +67,7 @@ vi.mock('@/lib/db/client', () => {
     findMany: vi.fn().mockResolvedValue([]),
     count: vi.fn().mockResolvedValue(0),
     update: vi.fn(),
+    updateMany: vi.fn().mockResolvedValue({ count: 0 }),
     upsert: vi.fn(),
     delete: vi.fn(),
   };
@@ -100,6 +103,10 @@ import {
   deleteMember,
   findGroupById,
   findGroupBySlug,
+  claimLargeRunAlert,
+  releaseLargeRunAlert,
+  findGroupBySpaceId,
+  findGroupLabelsBySpaceIds,
   findInviteByTokenHash,
   findMembership,
   findMembershipBySpace,
@@ -114,6 +121,7 @@ import {
   markInviteAccepted,
   revokeInvite,
   updateGroup,
+  updateMemberDailyCreditCap,
   updateMemberRole,
   upsertInvite,
   upsertMember,
@@ -128,6 +136,7 @@ const CREATE_DATA: GroupCreateData = {
   spaceId: 'grp_space_1',
   founderUserId: 'user_a',
   inboxToken: 'inbox_tok_1',
+  timezone: 'Europe/London',
 };
 
 function memberRow(overrides: Record<string, unknown> = {}) {
@@ -138,6 +147,7 @@ function memberRow(overrides: Record<string, unknown> = {}) {
     role: 'member',
     invitedByUserId: null,
     soleAdminNotifiedAt: null,
+    dailyCreditCap: null,
     joinedAt: NOW,
     createdAt: NOW,
     updatedAt: NOW,
@@ -278,6 +288,103 @@ describe('findGroupById / findGroupBySlug', () => {
   });
 });
 
+describe('claimLargeRunAlert', () => {
+  const NOW = new Date('2026-09-25T10:00:00.000Z');
+  const DAY = 24 * 60 * 60_000;
+
+  it('claims only when the alert has never gone out or went out before the window', async () => {
+    vi.mocked(prisma.resparkableGroup.updateMany).mockResolvedValue({ count: 1 });
+
+    await expect(claimLargeRunAlert('group_1', NOW, DAY)).resolves.toBe(true);
+    expect(prisma.resparkableGroup.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: 'group_1',
+        OR: [
+          { largeRunAlertedAt: null },
+          { largeRunAlertedAt: { lt: new Date(NOW.getTime() - DAY) } },
+        ],
+      },
+      data: { largeRunAlertedAt: NOW },
+    });
+  });
+
+  it('refuses when another debit already claimed it inside the window', async () => {
+    vi.mocked(prisma.resparkableGroup.updateMany).mockResolvedValue({ count: 0 });
+
+    await expect(claimLargeRunAlert('group_1', NOW, DAY)).resolves.toBe(false);
+  });
+});
+
+describe('releaseLargeRunAlert', () => {
+  it('gives back only the claim it stamped, matched by the same claimedAt', async () => {
+    const claimedAt = new Date('2026-09-25T10:00:00.000Z');
+    vi.mocked(prisma.resparkableGroup.updateMany).mockResolvedValue({ count: 1 });
+
+    await releaseLargeRunAlert('group_1', claimedAt);
+
+    expect(prisma.resparkableGroup.updateMany).toHaveBeenCalledWith({
+      where: { id: 'group_1', largeRunAlertedAt: claimedAt },
+      data: { largeRunAlertedAt: null },
+    });
+  });
+});
+
+describe('findGroupBySpaceId', () => {
+  it('finds the group that owns a space', async () => {
+    vi.mocked(prisma.resparkableGroup.findFirst).mockResolvedValue({
+      id: 'group_1',
+    } as never);
+
+    const group = await findGroupBySpaceId('grp_space_1');
+
+    expect(group).toEqual({ id: 'group_1' });
+    expect(prisma.resparkableGroup.findFirst).toHaveBeenCalledWith({
+      where: { spaceId: 'grp_space_1' },
+    });
+  });
+
+  it('returns null for a personal space, or any space with no group', async () => {
+    vi.mocked(prisma.resparkableGroup.findFirst).mockResolvedValue(null);
+
+    await expect(findGroupBySpaceId('user_a')).resolves.toBeNull();
+  });
+});
+
+describe('findGroupLabelsBySpaceIds', () => {
+  it('returns an empty map without a query when given no ids', async () => {
+    const labels = await findGroupLabelsBySpaceIds([]);
+
+    expect(labels).toEqual(new Map());
+    expect(prisma.resparkableGroup.findMany).not.toHaveBeenCalled();
+  });
+
+  it('dedupes the ids it queries with and maps each row to its label', async () => {
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValue([
+      { id: 'group_1', spaceId: 'grp_space_1', name: 'Study Group', _count: { members: 3 } },
+    ] as never);
+
+    const labels = await findGroupLabelsBySpaceIds(['grp_space_1', 'grp_space_1']);
+
+    expect(prisma.resparkableGroup.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { spaceId: { in: ['grp_space_1'] } } })
+    );
+    expect(labels.get('grp_space_1')).toEqual({
+      groupId: 'group_1',
+      spaceId: 'grp_space_1',
+      name: 'Study Group',
+      memberCount: 3,
+    });
+  });
+
+  it('leaves a space id absent from the map when it is not a group (or is gone)', async () => {
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValue([]);
+
+    const labels = await findGroupLabelsBySpaceIds(['user_a']);
+
+    expect(labels.has('user_a')).toBe(false);
+  });
+});
+
 describe('updateGroup', () => {
   it('updates by id with only the given fields: slug and spaceId are not patchable', async () => {
     await updateGroup('group_1', { name: 'New Name' });
@@ -297,6 +404,48 @@ describe('updateMemberRole', () => {
       where: { groupId_userId: { groupId: 'group_1', userId: 'user_b' } },
       data: { role: 'admin' },
     });
+  });
+});
+
+describe('updateMemberDailyCreditCap', () => {
+  it('sets the cap and re-reads the row when a joined member matched', async () => {
+    vi.mocked(prisma.resparkableGroupMember.updateMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.resparkableGroupMember.findUnique).mockResolvedValue(
+      memberRow({ dailyCreditCap: 50 })
+    );
+
+    const result = await updateMemberDailyCreditCap('group_1', 'user_b', 50);
+
+    expect(prisma.resparkableGroupMember.updateMany).toHaveBeenCalledWith({
+      where: { groupId: 'group_1', userId: 'user_b', joinedAt: { not: null } },
+      data: { dailyCreditCap: 50 },
+    });
+    expect(prisma.resparkableGroupMember.findUnique).toHaveBeenCalledWith({
+      where: { groupId_userId: { groupId: 'group_1', userId: 'user_b' } },
+    });
+    expect(result).toMatchObject({ dailyCreditCap: 50 });
+  });
+
+  it('returns null without a re-read when nobody joined matched: a pending request has nothing to cap', async () => {
+    vi.mocked(prisma.resparkableGroupMember.updateMany).mockResolvedValue({ count: 0 });
+
+    const result = await updateMemberDailyCreditCap('group_1', 'user_pending', 25);
+
+    expect(result).toBeNull();
+    expect(prisma.resparkableGroupMember.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('clears the cap by passing null through untouched', async () => {
+    vi.mocked(prisma.resparkableGroupMember.updateMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.resparkableGroupMember.findUnique).mockResolvedValue(
+      memberRow({ dailyCreditCap: null })
+    );
+
+    await updateMemberDailyCreditCap('group_1', 'user_b', null);
+
+    expect(prisma.resparkableGroupMember.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { dailyCreditCap: null } })
+    );
   });
 });
 
@@ -397,6 +546,36 @@ describe('listMemberContacts', () => {
 
     expect(await listMemberContacts('group_1')).toEqual([]);
     expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  it('adds a role filter when roles are given, for the admin-only alert path', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      { userId: 'user_a' },
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: 'user_a', email: 'a@example.com', name: 'A' },
+    ] as never);
+
+    await listMemberContacts('group_1', { roles: ['admin'] });
+
+    expect(prisma.resparkableGroupMember.findMany).toHaveBeenCalledWith({
+      where: { groupId: 'group_1', joinedAt: { not: null }, role: { in: ['admin'] } },
+      select: { userId: true },
+    });
+  });
+
+  it('does not add a role filter at all when none is given', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      { userId: 'user_a' },
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([
+      { id: 'user_a', email: 'a@example.com', name: 'A' },
+    ] as never);
+
+    await listMemberContacts('group_1');
+
+    const where = vi.mocked(prisma.resparkableGroupMember.findMany).mock.calls[0]?.[0]?.where;
+    expect(where).not.toHaveProperty('role');
   });
 });
 

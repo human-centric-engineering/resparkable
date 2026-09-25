@@ -1,5 +1,5 @@
 /**
- * The slugs of the four background workflows, and nothing else.
+ * The slugs of the five background workflows, and nothing else.
  *
  * A file of its own because four different layers need these strings —
  * `workflows/definitions.ts` to declare the workflows, `queue/handlers.ts` to
@@ -26,4 +26,6 @@ export const RESPARKABLE_SCHEDULED_WORKFLOWS = {
   morningBriefing: 'resparkable-morning-briefing',
   weeklyReview: 'resparkable-weekly-review',
   horizonCheck: 'resparkable-horizon-check',
+  /** A group's weekly digest (§23.8, phase 50). The one per-group scheduled model call. */
+  groupDigest: 'resparkable-group-digest',
 } as const;

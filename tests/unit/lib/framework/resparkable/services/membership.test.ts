@@ -32,6 +32,8 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('@/lib/framework/resparkable/repo/space', () => ({ findSpaceByUserId: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/queue/enqueue', () => ({ ensureResparkableJobs: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   countAdmins: vi.fn(),
   createGroupWithSpace: vi.fn(),
@@ -51,6 +53,8 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
 }));
 
 import * as repo from '@/lib/framework/resparkable/repo/groups';
+import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
+import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import {
   changeMemberRole,
   createGroup,
@@ -77,6 +81,7 @@ function membership(overrides: Record<string, unknown> = {}) {
     role: 'member',
     invitedByUserId: null,
     soleAdminNotifiedAt: null,
+    dailyCreditCap: null,
     joinedAt: NOW,
     createdAt: NOW,
     updatedAt: NOW,
@@ -88,6 +93,10 @@ function membership(overrides: Record<string, unknown> = {}) {
       spaceId: SPACE,
       maxMembers: 50,
       viewersCanInheritAdmin: true,
+      fundingMode: 'self_funded',
+      lowBalanceAlertCredits: null,
+      largeRunAlertPercent: null,
+      largeRunAlertedAt: null,
       createdAt: NOW,
       updatedAt: NOW,
     },
@@ -186,6 +195,27 @@ describe('createGroup', () => {
     // value the moment a space is not a person's.
     expect(data.spaceId).not.toBe('user_a');
     expect(data.spaceId).toMatch(/^spc_[0-9a-f]{32}$/);
+  });
+
+  it('starts the group on its founder’s clock and gives it only group jobs', async () => {
+    // Phase 50. The digest lands at 09:00 on the group's clock, and UTC would
+    // put a Sydney group's on a Monday evening. The jobs are the group set,
+    // never the personal four that would queue runs naming the space as a user.
+    vi.mocked(findSpaceByUserId).mockResolvedValue({ timezone: 'Australia/Sydney' } as never);
+    vi.mocked(repo.findGroupBySlug).mockResolvedValue(null);
+    vi.mocked(repo.createGroupWithSpace).mockResolvedValue(membership({ role: 'admin' }));
+
+    await createGroup('user_a', { name: 'Study Group B' });
+
+    expect(vi.mocked(repo.createGroupWithSpace).mock.calls[0]?.[0]).toMatchObject({
+      timezone: 'Australia/Sydney',
+    });
+    expect(ensureResparkableJobs).toHaveBeenCalledWith(
+      SPACE,
+      'Australia/Sydney',
+      expect.any(Date),
+      'group'
+    );
   });
 
   it('walks the slug forward rather than colliding', async () => {

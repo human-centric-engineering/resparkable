@@ -44,7 +44,7 @@ vi.mock('@/lib/framework/resparkable/services/reviews', () => ({
 }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/billing', () => ({
-  assertPositiveBalance: vi.fn(),
+  assertCanSpend: vi.fn(),
   recordAgentSpend: vi.fn(),
 }));
 
@@ -55,10 +55,7 @@ import { GET as REVIEWS_GET, POST as REVIEWS_POST } from '@/app/api/v1/resparkab
 import { GET as REVIEW_GET } from '@/app/api/v1/resparkable/reviews/[id]/route';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { buildSnapshot } from '@/lib/framework/resparkable/services/snapshot';
-import {
-  assertPositiveBalance,
-  recordAgentSpend,
-} from '@/lib/framework/resparkable/services/billing';
+import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import {
   getResparkableReview,
@@ -76,7 +73,7 @@ const mockedWrite = writeReview as unknown as ReturnType<typeof vi.fn>;
 const mockedList = listResparkableReviews as unknown as ReturnType<typeof vi.fn>;
 const mockedGetReview = getResparkableReview as unknown as ReturnType<typeof vi.fn>;
 const mockedEnsureSpace = ensureResparkableSpace as unknown as ReturnType<typeof vi.fn>;
-const mockedAssertBalance = assertPositiveBalance as unknown as ReturnType<typeof vi.fn>;
+const mockedAssertBalance = assertCanSpend as unknown as ReturnType<typeof vi.fn>;
 const mockedRecordSpend = recordAgentSpend as unknown as ReturnType<typeof vi.fn>;
 
 function postReq(url: string, body: unknown) {
@@ -323,7 +320,7 @@ describe('POST /api/v1/resparkable/ideate', () => {
         order.push('ensureResparkableSpace');
       });
       mockedAssertBalance.mockImplementation(() => {
-        order.push('assertPositiveBalance');
+        order.push('assertCanSpend');
       });
 
       await invoke(
@@ -335,7 +332,7 @@ describe('POST /api/v1/resparkable/ideate', () => {
         SESSION_A
       );
 
-      expect(order).toEqual(['ensureResparkableSpace', 'assertPositiveBalance']);
+      expect(order).toEqual(['ensureResparkableSpace', 'assertCanSpend']);
     });
 
     it('records agent spend from the real result cost after ideate resolves', async () => {

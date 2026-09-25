@@ -79,6 +79,9 @@ vi.mock('@/lib/framework/resparkable/services/membership', () => ({
 vi.mock('@/lib/framework/resparkable/services/group-deletion', () => ({
   deleteGroupConfirmed: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/group-digest', () => ({
+  getLatestGroupDigest: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
   issueGroupInvite: vi.fn(),
@@ -115,6 +118,7 @@ import {
   updateGroupSettings,
 } from '@/lib/framework/resparkable/services/membership';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
+import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
 import {
   acceptGroupInvite,
   issueGroupInvite,
@@ -137,6 +141,10 @@ const GROUP = {
   spaceId: 'spc_abc123',
   maxMembers: 50,
   viewersCanInheritAdmin: true,
+  fundingMode: 'self_funded',
+  lowBalanceAlertCredits: null,
+  largeRunAlertPercent: null,
+  largeRunAlertedAt: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };
@@ -148,6 +156,7 @@ const MEMBERSHIP = {
   role: 'admin',
   invitedByUserId: null,
   soleAdminNotifiedAt: null,
+  dailyCreditCap: null,
   joinedAt: new Date('2026-08-01T00:00:00.000Z'),
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
@@ -315,6 +324,29 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
     expect(body.data.members).toEqual([
       { userId: 'user_a', role: 'admin', joinedAt: MEMBERSHIP.joinedAt.toISOString() },
     ]);
+    expect(body.data.latestDigest).toBeNull();
+  });
+
+  it('carries the newest digest, read in the group’s own space', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP]);
+    const digest = {
+      id: 'review_1',
+      title: 'Week of 21 September',
+      body: 'Eleven tasks were finished.',
+      generatedAt: '2026-09-21T08:00:00.000Z',
+    };
+    vi.mocked(getLatestGroupDigest).mockResolvedValueOnce(digest);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.latestDigest).toEqual(digest);
+    expect(getLatestGroupDigest).toHaveBeenCalledWith(SCOPE);
   });
 });
 

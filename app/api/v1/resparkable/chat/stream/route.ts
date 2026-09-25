@@ -71,10 +71,7 @@ import { withAuth } from '@/lib/auth/guards';
 import { RESPARKABLE_CHAT_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
 import { RESPARKABLE_SCHEDULE_SPACE_KEY } from '@/lib/framework/resparkable/repo/space-scope';
-import {
-  assertPositiveBalance,
-  recordAgentSpend,
-} from '@/lib/framework/resparkable/services/billing';
+import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { resparkableChatRequestSchema } from '@/lib/framework/resparkable/validations';
 import { logger } from '@/lib/logging';
@@ -100,7 +97,7 @@ export const POST = withAuth(async (request, session) => {
   const scope = await requestSpaceScope(request, session.user.id);
   // Refused before any provider call: see services/billing.ts. Throws
   // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
-  await assertPositiveBalance(scope);
+  await assertCanSpend(scope);
 
   const [requestId, visitorId] = await Promise.all([getRequestId(), getVisitorId()]);
 

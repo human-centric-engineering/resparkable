@@ -44,6 +44,12 @@ vi.mock('@/lib/framework/resparkable/repo/workflow-runs', () => ({
   queueResparkableWorkflowRun: vi.fn(),
 }));
 
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({
+  assertCanSpend: vi.fn(),
+}));
+
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
+
 import {
   createCollectionHandlers,
   createItemHandlers,
@@ -55,6 +61,9 @@ import {
 import { snoozeItem, unsnoozeItem } from '@/lib/framework/resparkable/services/snooze';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
+import { assertCanSpend } from '@/lib/framework/resparkable/services/billing';
+import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
+import { ForbiddenError } from '@/lib/api/errors';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {
   createTaskSchema,
@@ -522,11 +531,56 @@ describe('summarize handlers (Release 8 phase 39)', () => {
     // Assert
     expect(response.status).toBe(200);
     expect(payload.data).toEqual({ executionId: 'exec_1', status: 'queued' });
-    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toBe('user_a');
+    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toMatchObject({
+      spaceId: 'user_a',
+    });
     expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[2]).toEqual({
       entityType: 'area',
       entityId: 'area_1',
     });
+  });
+
+  it('queues a summary asked for in a group against the group, checked against its balance', async () => {
+    // Phase 50, §23.12. Until then the run was queued under the member's user id
+    // alone, so it read their personal brain and was billed to their personal
+    // balance. The group's scope now goes to both the pre-flight and the run.
+    vi.mocked(findMembershipBySpace).mockResolvedValue({
+      groupId: 'grp_1',
+      role: 'member',
+      joinedAt: new Date(),
+    } as never);
+    vi.mocked(entityExists).mockResolvedValue(true);
+    vi.mocked(queueResparkableWorkflowRun).mockResolvedValue('exec_1');
+    const { POST } = createSummarizeHandlers('area');
+
+    await invoke(
+      POST,
+      req('http://x/api/v1/resparkable/areas/area_1/summarize?space=spc_group'),
+      SESSION_A,
+      params('area_1')
+    );
+
+    const expected = { spaceId: 'spc_group', actorUserId: 'user_a', role: 'member' };
+    expect(vi.mocked(assertCanSpend).mock.calls[0]?.[0]).toMatchObject(expected);
+    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toMatchObject(expected);
+  });
+
+  it('refuses before queueing when the pre-flight refuses', async () => {
+    vi.mocked(entityExists).mockResolvedValue(true);
+    vi.mocked(assertCanSpend).mockRejectedValueOnce(
+      new ForbiddenError('Viewers cannot use features that spend credits')
+    );
+    const { POST } = createSummarizeHandlers('area');
+
+    const response = await invoke(
+      POST,
+      req('http://x/api/v1/resparkable/areas/area_1/summarize'),
+      SESSION_A,
+      params('area_1')
+    );
+
+    expect(response.status).toBe(403);
+    expect(queueResparkableWorkflowRun).not.toHaveBeenCalled();
   });
 
   it('returns a 503 WORKFLOW_UNAVAILABLE when the workflow has no published version', async () => {

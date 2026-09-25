@@ -269,9 +269,9 @@ describe('group contributions (phase 48, §23.6)', () => {
   const NOT_A_CONTRIBUTION = [
     // The group's own space row, not the member's.
     'ResparkableSpace',
-    // A group has no credit account until phase 50.
+    // One balance for the whole group, not the member's. Their own ledger rows
+    // in it are a contribution (phase 50) and so are not listed here.
     'ResparkableCreditAccount',
-    'ResparkableCreditLedgerEntry',
     // Already complete in `commentsIWrote`, which matches on `authorUserId` in
     // every space, group spaces included. Listing it here too would export
     // each comment twice.

@@ -42,7 +42,7 @@ vi.mock('@/lib/orchestration/chat', () => ({ streamChat: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({ ensureResparkableSpace: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/billing', () => ({
-  assertPositiveBalance: vi.fn(),
+  assertCanSpend: vi.fn(),
   recordAgentSpend: vi.fn(),
 }));
 vi.mock('@/lib/logging/context', () => ({
@@ -53,10 +53,7 @@ vi.mock('@/lib/logging/context', () => ({
 import { POST } from '@/app/api/v1/resparkable/chat/stream/route';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
-import {
-  assertPositiveBalance,
-  recordAgentSpend,
-} from '@/lib/framework/resparkable/services/billing';
+import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { streamChat } from '@/lib/orchestration/chat';
@@ -80,7 +77,7 @@ const SESSION_A = { user: { id: 'user_a' }, session: { userId: 'user_a' } };
 
 const mockedStream = streamChat as unknown as ReturnType<typeof vi.fn>;
 const mockedSpace = ensureResparkableSpace as unknown as ReturnType<typeof vi.fn>;
-const mockedAssertBalance = assertPositiveBalance as unknown as ReturnType<typeof vi.fn>;
+const mockedAssertBalance = assertCanSpend as unknown as ReturnType<typeof vi.fn>;
 const mockedRecordSpend = recordAgentSpend as unknown as ReturnType<typeof vi.fn>;
 
 /** An empty async iterable — enough for `sseResponse` to build a Response. */
@@ -319,7 +316,7 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
         order.push('ensureResparkableSpace');
       });
       mockedAssertBalance.mockImplementation(() => {
-        order.push('assertPositiveBalance');
+        order.push('assertCanSpend');
       });
 
       await invoke(
@@ -330,7 +327,7 @@ describe('POST /api/v1/resparkable/chat/stream', () => {
       // A brand-new credit account's FK requires the space row to already
       // exist. Checking balance first would throw a raw FK violation
       // instead of a clean InsufficientCreditsError.
-      expect(order).toEqual(['ensureResparkableSpace', 'assertPositiveBalance']);
+      expect(order).toEqual(['ensureResparkableSpace', 'assertCanSpend']);
     });
 
     it('records agent spend from the done event, keyed to the conversation started', async () => {

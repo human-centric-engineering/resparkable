@@ -81,6 +81,7 @@ const WITHHELD: Record<string, string> = {
   [S.reprioritise]: 'it rewrites tomorrow’s ranking, invisibly to a client',
   [S.getBriefingInputs]: 'plumbing for the briefing workflow, meaningless outside it',
   [S.getContextDigest]: 'plumbing for the description summariser, meaningless outside it',
+  [S.getGroupDigestInputs]: 'plumbing for the group digest workflow, meaningless outside it',
   [S.notify]: 'plumbing for the briefing workflow, meaningless outside it',
   [S.captureContext]:
     'a second capture door, bound to the resparkable-context agent and shaped for its conversation',

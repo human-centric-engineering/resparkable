@@ -32,7 +32,6 @@
 import {
   RESPARKABLE_SCHEDULE_SPACE_KEY,
   readResparkableScheduleSpaceId,
-  spaceScope,
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import {
@@ -40,7 +39,10 @@ import {
   type ProvenanceRedaction,
 } from '@/lib/orchestration/capabilities/base-capability';
 import { runAsSystemAuthored } from '@/lib/framework/resparkable/services/authorship';
-import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
+import {
+  resolveActiveSpaceScope,
+  resolveBackgroundSpaceScope,
+} from '@/lib/framework/resparkable/services/membership';
 import type { CapabilityContext, CapabilityResult } from '@/lib/orchestration/capabilities/types';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
 import { redactedString } from '@/lib/security/redact';
@@ -158,8 +160,16 @@ export async function requireResparkableSpace(context: CapabilityContext): Promi
   // added blind: getting it wrong silently stops every 04:30 run, and it needs
   // a test proving the scheduler path sets the flag before it can be trusted to
   // gate on it.
+  //
+  // Resolved by the space's kind rather than minted with `spaceScope()`, which
+  // assumes the key is a person (phase 50): a group's digest arrives here with
+  // no actor and a `spc_` key, and `spaceScope()` would make that key the
+  // `owner` and stamp it into `createdByUserId` on every row the run writes.
   const carried = readResparkableScheduleSpaceId(context.scope);
-  if (carried) return spaceScope(carried);
+  if (carried) {
+    const scope = await resolveBackgroundSpaceScope(carried);
+    if (scope) return scope;
+  }
 
   throw new MissingResparkableUserError();
 }

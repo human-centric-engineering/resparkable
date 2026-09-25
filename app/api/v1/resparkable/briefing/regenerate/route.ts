@@ -26,7 +26,10 @@ import { getRouteLogger } from '@/lib/api/context';
 import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { NotFoundError } from '@/lib/api/errors';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
+import { assertCanSpend } from '@/lib/framework/resparkable/services/billing';
+import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { WORK_STYLES } from '@/lib/framework/resparkable/validations';
@@ -46,9 +49,19 @@ export const POST = withAuth(async (request, session) => {
   // account creation, repeating every tick until the execution ages out).
   await ensureResparkableSpace(session.user.id);
 
+  // Always the personal space, whatever `?space=` says: the briefing is one
+  // person's reflection on their own brain, and a group has no briefing to
+  // regenerate (`RESPARKABLE_JOB_KINDS_BY_SPACE_KIND`). A null target is the
+  // resolver's spelling of "personal".
+  const scope = await resolveActiveSpaceScope(session.user.id, null);
+  if (!scope) throw new NotFoundError('Workspace not found');
+  // Refused before the run is queued (§23.12, phase 50). Until then this path
+  // queued regardless and the budget failure arrived in the run history later.
+  await assertCanSpend(scope);
+
   const executionId = await queueResparkableWorkflowRun(
     RESPARKABLE_SCHEDULED_WORKFLOWS.morningBriefing,
-    session.user.id,
+    scope,
     // The workflow's first step reads its args from `inputData` when no explicit
     // `args` are configured, so the override arrives at
     // `resparkable_get_briefing_inputs` without any step needing to know about it.

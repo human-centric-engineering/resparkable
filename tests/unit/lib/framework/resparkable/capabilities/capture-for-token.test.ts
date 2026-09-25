@@ -70,7 +70,11 @@ function args(trigger: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedSpace.mockResolvedValue({ id: 'space_1', spaceId: 'user_owner' } as never);
+  mockedSpace.mockResolvedValue({
+    id: 'space_1',
+    spaceId: 'user_owner',
+    kind: 'personal',
+  } as never);
   mockedContact.mockResolvedValue({
     email: 'owner@example.com',
     name: 'Owner',
@@ -112,6 +116,22 @@ describe('resparkable_capture_for_token — owner resolution', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe('unknown_inbox_token');
+    expect(mockedContact).not.toHaveBeenCalled();
+    expect(mockedCapture).not.toHaveBeenCalled();
+  });
+
+  it('refuses a group space’s inbox token and never treats the group key as a user', async () => {
+    mockedSpace.mockResolvedValue({
+      id: 'space_g',
+      spaceId: 'spc_group1',
+      kind: 'group',
+    } as never);
+    const cap = capability();
+
+    const result = await cap.execute(args(), CONTEXT);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('group_inbox_unsupported');
     expect(mockedContact).not.toHaveBeenCalled();
     expect(mockedCapture).not.toHaveBeenCalled();
   });

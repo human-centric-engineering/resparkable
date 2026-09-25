@@ -67,6 +67,10 @@ function group() {
     spaceId: SPACE,
     maxMembers: 50,
     viewersCanInheritAdmin: true,
+    fundingMode: 'self_funded',
+    lowBalanceAlertCredits: null,
+    largeRunAlertPercent: null,
+    largeRunAlertedAt: null,
     createdAt: NOW,
     updatedAt: NOW,
   };
@@ -81,6 +85,7 @@ function asAdmin(): void {
       role: 'admin',
       invitedByUserId: null,
       soleAdminNotifiedAt: null,
+      dailyCreditCap: null,
       joinedAt: NOW,
       createdAt: NOW,
       updatedAt: NOW,

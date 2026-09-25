@@ -55,6 +55,8 @@ export interface GroupCreateData {
   founderUserId: string;
   /** Everything `createSpace` needs that is not derivable here. */
   inboxToken: string;
+  /** IANA zone the group's wall-clock jobs resolve against. The founder's, at creation. */
+  timezone: string;
 }
 
 /** The fields a PATCH may move. `slug` and `spaceId` are deliberately absent. */
@@ -63,6 +65,10 @@ export interface GroupUpdateData {
   description?: string | null;
   maxMembers?: number;
   viewersCanInheritAdmin?: boolean;
+  /** Phase 50's budget settings. Admin only, through `services/group-budget.ts`. */
+  fundingMode?: string;
+  lowBalanceAlertCredits?: number | null;
+  largeRunAlertPercent?: number | null;
 }
 
 /**
@@ -113,6 +119,7 @@ export async function createGroupWithSpace(
         name: data.name,
         slug: data.slug,
         inboxToken: data.inboxToken,
+        timezone: data.timezone,
       },
     });
 
@@ -269,6 +276,46 @@ export async function findGroupLabelsBySpaceIds(
   );
 }
 
+/**
+ * Claim the right to send a group's large-run alert: true at most once in any
+ * `windowMs`. One conditional update, so two debits racing each other cannot
+ * both win and email the admins twice.
+ */
+export async function claimLargeRunAlert(
+  groupId: string,
+  now: Date,
+  windowMs: number
+): Promise<boolean> {
+  const claimed = await prisma.resparkableGroup.updateMany({
+    where: {
+      id: groupId,
+      OR: [
+        { largeRunAlertedAt: null },
+        { largeRunAlertedAt: { lt: new Date(now.getTime() - windowMs) } },
+      ],
+    },
+    data: { largeRunAlertedAt: now },
+  });
+  return claimed.count === 1;
+}
+
+/**
+ * Give back a large-run claim that sent nothing, so the next large run within
+ * the window can still tell somebody. Only undoes this claim: a later one that
+ * stamped a different instant is left alone.
+ */
+export async function releaseLargeRunAlert(groupId: string, claimedAt: Date): Promise<void> {
+  await prisma.resparkableGroup.updateMany({
+    where: { id: groupId, largeRunAlertedAt: claimedAt },
+    data: { largeRunAlertedAt: null },
+  });
+}
+
+/** The group that owns a space, or `null` for a personal space (or none). */
+export async function findGroupBySpaceId(spaceId: string): Promise<ResparkableGroup | null> {
+  return prisma.resparkableGroup.findFirst({ where: { spaceId } });
+}
+
 export async function findGroupBySlug(slug: string): Promise<ResparkableGroup | null> {
   return prisma.resparkableGroup.findUnique({ where: { slug } });
 }
@@ -289,6 +336,26 @@ export async function updateMemberRole(
   return db.resparkableGroupMember.update({
     where: { groupId_userId: { groupId, userId } },
     data: { role },
+  });
+}
+
+/**
+ * Set or clear one joined member's `dailyCreditCap`. `null` when there is no
+ * such joined member, which the service turns into a 404: a pending request to
+ * join has nothing to spend yet, so it has nothing to cap.
+ */
+export async function updateMemberDailyCreditCap(
+  groupId: string,
+  userId: string,
+  dailyCreditCap: number | null
+): Promise<ResparkableGroupMember | null> {
+  const updated = await prisma.resparkableGroupMember.updateMany({
+    where: { groupId, userId, joinedAt: { not: null } },
+    data: { dailyCreditCap },
+  });
+  if (updated.count === 0) return null;
+  return prisma.resparkableGroupMember.findUnique({
+    where: { groupId_userId: { groupId, userId } },
   });
 }
 
@@ -511,13 +578,14 @@ export interface MemberContact {
 }
 
 /**
- * The contact details of a group's joined members, for the deletion notice.
+ * The contact details of a group's joined members.
  *
- * **The one read in this file that returns addresses**, and it has exactly one
- * caller: `services/group-deletion.ts`, which reads them before the delete and
- * uses them to send one email each. No route returns them. `GET /groups/[id]`
- * deliberately hands out user ids and roles only, because every member seeing
- * everybody else's address is a decision nobody made.
+ * **The one read in this file that returns addresses**, and no route returns
+ * them. `GET /groups/[id]` deliberately hands out user ids and roles only,
+ * because every member seeing everybody else's address is a decision nobody
+ * made. Three callers, all server-side: `services/group-deletion.ts` (one email
+ * each before the delete), the budget alerts (admins only, via `roles`), and the
+ * digest guard, which checks a generated digest names nobody in the group.
  *
  * Joined members only. A pending request to join was never in the workspace,
  * so it has nothing there to lose.
@@ -525,9 +593,16 @@ export interface MemberContact {
  * Two queries rather than a join, because `ResparkableGroupMember.userId` is a
  * hand-written FK with no Prisma relation (see the schema's drift warning).
  */
-export async function listMemberContacts(groupId: string): Promise<MemberContact[]> {
+export async function listMemberContacts(
+  groupId: string,
+  options: { roles?: readonly string[] } = {}
+): Promise<MemberContact[]> {
   const members = await prisma.resparkableGroupMember.findMany({
-    where: { groupId, joinedAt: { not: null } },
+    where: {
+      groupId,
+      joinedAt: { not: null },
+      ...(options.roles ? { role: { in: [...options.roles] } } : {}),
+    },
     select: { userId: true },
   });
   if (members.length === 0) return [];

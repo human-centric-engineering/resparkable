@@ -130,6 +130,10 @@ export async function findLatestStatusChanges(
 
 export interface EventFilters {
   kind?: ResparkableEventKind;
+  /** Any of these kinds. Ignored when `kind` is set. */
+  kinds?: ResparkableEventKind[];
+  /** Only rows written by this source (`user` or `system`). */
+  source?: string;
   entityType?: string;
   entityId?: string;
   since?: Date;
@@ -143,7 +147,12 @@ export async function listEvents(
   return prisma.resparkableEvent.findMany({
     where: {
       ...spaceWhere(scope),
-      ...(filters.kind ? { kind: filters.kind } : {}),
+      ...(filters.kind
+        ? { kind: filters.kind }
+        : filters.kinds
+          ? { kind: { in: filters.kinds } }
+          : {}),
+      ...(filters.source ? { source: filters.source } : {}),
       ...(filters.entityType ? { entityType: filters.entityType } : {}),
       ...(filters.entityId ? { entityId: filters.entityId } : {}),
       ...(filters.since ? { createdAt: { gte: filters.since } } : {}),

@@ -51,12 +51,62 @@ export const RESPARKABLE_JOB_KINDS = [
   'briefing',
   'weekly_review',
   'horizon_check',
+  'group_digest',
   'sweep',
   'retention',
   'reindex',
 ] as const;
 
 export type ResparkableJobKind = (typeof RESPARKABLE_JOB_KINDS)[number];
+
+/** `ResparkableSpace.kind`: whose brain a job row is for. */
+export type ResparkableSpaceKind = 'personal' | 'group';
+
+/**
+ * Which kinds a space of each kind is owed.
+ *
+ * **A group space has no triage, briefing, weekly review or horizon check.**
+ * All four are one person's reflection on their own brain: "your five tasks for
+ * today" has no subject in a workspace thirty people share, and the triage that
+ * reprioritises a person's inbox would reorder a group's for everybody on the
+ * say-so of nobody. What a group does need is the upkeep underneath (the sweep,
+ * retention and the reindex drain), and its own digest (§23.8), which is a
+ * different workflow with a different subject rather than the briefing pointed
+ * at a different space.
+ *
+ * Until phase 50 the backfill net read the whole vocabulary for every space, so
+ * a group received all seven; the four personal ones then queued runs naming the
+ * group's space key as a user, which is not one. The phase-50 migration deletes
+ * those rows and this table is what stops the net writing them back.
+ */
+export const RESPARKABLE_JOB_KINDS_BY_SPACE_KIND: Record<
+  ResparkableSpaceKind,
+  readonly ResparkableJobKind[]
+> = {
+  personal: [
+    'triage',
+    'briefing',
+    'weekly_review',
+    'horizon_check',
+    'sweep',
+    'retention',
+    'reindex',
+  ],
+  group: ['group_digest', 'sweep', 'retention', 'reindex'],
+};
+
+/**
+ * The kinds a space is owed, from its `kind` column.
+ *
+ * An unrecognised value gets the group set, never the personal one: the personal
+ * set is the one that bills a person and names them as a run's owner, so it is
+ * the one that must not be reached by a value nobody expected.
+ */
+export function jobKindsForSpace(spaceKind: string): readonly ResparkableJobKind[] {
+  return spaceKind === 'personal'
+    ? RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.personal
+    : RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.group;
+}
 
 /** Narrow an untrusted string — a database column — to a known kind. */
 export function isResparkableJobKind(value: string): value is ResparkableJobKind {
@@ -110,6 +160,18 @@ export interface JobKindSpec {
    * history for something they could not have fixed at 03:15.
    */
   spendsCredits: boolean;
+  /**
+   * Whether the demand gate also asks before the **first** run, over one
+   * cadence period back from now.
+   *
+   * The personal kinds skip the gate on a first run so a brand-new brain gets
+   * its first briefing. The group digest is the opposite case (§23.12): a
+   * group's balance is somebody's actual money, a group created on Sunday with
+   * nothing written in it has nothing to summarise on Monday, and "never debit
+   * for a run that cannot produce anything" holds on the first run as much as
+   * on the fortieth.
+   */
+  gatesFirstRun?: boolean;
 }
 
 const MINUTE = 60_000;
@@ -155,6 +217,16 @@ export const RESPARKABLE_JOB_SPECS: Record<ResparkableJobKind, JobKindSpec> = {
     cadence: { shape: 'monthly', local: { hour: 9, minute: 0 }, dayOfMonth: 2 },
     demandGated: true,
     spendsCredits: true,
+  },
+  group_digest: {
+    // Monday at 09:00 on the group's clock (`ResparkableSpace.timezone`, the
+    // founder's at creation): the week that has just ended, read as the new one
+    // starts. One run per group, not per member (§23.8), so a group of thirty
+    // costs one digest where thirty personal reviews would cost thirty.
+    cadence: { shape: 'weekly', local: { hour: 9, minute: 0 }, weekday: 1 },
+    demandGated: true,
+    spendsCredits: true,
+    gatesFirstRun: true,
   },
   sweep: {
     // Free by construction: `sweepConnections` reads vectors that are already

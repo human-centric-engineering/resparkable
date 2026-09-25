@@ -254,6 +254,31 @@ export function spaceScopeFor(input: {
 }
 
 /**
+ * Mint the scope a background pass runs under: the queue drain, a scheduled
+ * workflow's capabilities, the billing pass. Nobody is signed in on any of them.
+ *
+ * **A group space is not a person, and {@link spaceScope} assumes it is.** That
+ * constructor makes the key the actor and the role `owner`, which is exactly
+ * right for a personal space and wrong twice over for a group one: `owner` never
+ * appears on a group space (§23.2), and `authoredBy` would stamp a `spc_` id into
+ * `createdByUserId`, whose hand-written FK into `"user"` refuses it. So a group
+ * space gets no actor, which is what a row the system wrote should carry, and
+ * `member`, so the background write paths a group has (sweep, retention,
+ * reindex, the digest) are not refused as a viewer's would be.
+ *
+ * The kind comes from the space row, never from the caller's guess about the
+ * key's shape.
+ */
+export function backgroundSpaceScope(space: { spaceId: string; kind: string }): SpaceScope {
+  // Only a space known to be personal gets the owner scope. An unrecognised
+  // kind is treated as a group, the same way `jobKindsForSpace` treats it: the
+  // owner scope names the key as a person, which is the one mistake this must
+  // never make about a value nobody expected.
+  if (space.kind === 'personal') return spaceScope(space.spaceId);
+  return spaceScopeFor({ spaceId: space.spaceId, actorUserId: null, role: 'member' });
+}
+
+/**
  * The mandatory filter fragment.
  *
  * **In a `where`, spread it first and follow it only with literal keys.** That

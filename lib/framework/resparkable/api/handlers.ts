@@ -32,6 +32,7 @@ import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
+import { assertCanSpend } from '@/lib/framework/resparkable/services/billing';
 import { entityExists } from '@/lib/framework/resparkable/repo/summaries';
 import type { ResparkableResource } from '@/lib/framework/resparkable/services/resources';
 import {
@@ -248,10 +249,14 @@ export function createSummarizeHandlers(type: SummarizableType): { POST: ItemHan
     const { id } = await params;
 
     if (!(await entityExists(scope, type, id))) throw new NotFoundError(`${type} not found`);
+    // Refused here, before a run is queued, rather than by the queue's own gate:
+    // a request someone is waiting on should say why it cannot run, and a queued
+    // run that fails on budget a minute later says nothing (§23.12).
+    await assertCanSpend(scope);
 
     const executionId = await queueResparkableWorkflowRun(
       RESPARKABLE_CONTEXT_DIGEST_WORKFLOW_SLUG,
-      session.user.id,
+      scope,
       { entityType: type, entityId: id }
     );
 

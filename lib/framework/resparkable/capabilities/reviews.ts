@@ -17,6 +17,10 @@ import {
   RESPARKABLE_CAPABILITY_SLUGS,
 } from '@/lib/framework/resparkable/capabilities/catalogue';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import {
+  GroupDigestViolationError,
+  NotAGroupSpaceError,
+} from '@/lib/framework/resparkable/services/group-digest';
 import { writeReview } from '@/lib/framework/resparkable/services/reviews';
 import {
   createReviewSchema,
@@ -81,6 +85,16 @@ export class ResparkableWriteReviewCapability extends ResparkableCapability<
       // that the schema cannot, since the cap is on serialised bytes. Its message
       // already tells the caller what to do about it ("put the prose in `body`"),
       // so pass it through rather than replacing it with something vaguer.
+      //
+      // A group digest the guard refused gets its own code, and the message
+      // names what was wrong, so the writer can rewrite it rather than retry
+      // the same text (`services/group-digest.ts`).
+      if (error instanceof GroupDigestViolationError) {
+        return this.error(error.message, 'digest_names_or_compares_members');
+      }
+      if (error instanceof NotAGroupSpaceError) {
+        return this.error(error.message, 'not_a_group_space');
+      }
       if (error instanceof ValidationError) {
         return this.error(error.message, 'payload_too_large');
       }

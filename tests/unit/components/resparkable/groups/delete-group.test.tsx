@@ -113,6 +113,7 @@ describe('GroupDetail and deletion', () => {
       viewersCanInheritAdmin: true,
     },
     yourRole: 'admin',
+    latestDigest: null,
     members: [
       { userId: 'user_a', role: 'admin', joinedAt: '2026-09-01T10:00:00.000Z' },
       { userId: 'user_b', role: 'member', joinedAt: '2026-09-02T10:00:00.000Z' },
@@ -120,7 +121,7 @@ describe('GroupDetail and deletion', () => {
   };
 
   it('offers deletion to an admin, in its own section', () => {
-    render(<GroupDetail detail={DETAIL} invites={[]} viewerUserId="user_a" />);
+    render(<GroupDetail detail={DETAIL} invites={[]} budget={null} viewerUserId="user_a" />);
 
     const heading = screen.getByRole('heading', { name: 'Delete this group' });
     // Not inside the member list, where "leave" lives.
@@ -130,7 +131,12 @@ describe('GroupDetail and deletion', () => {
 
   it('offers nothing to a member who is not an admin', () => {
     render(
-      <GroupDetail detail={{ ...DETAIL, yourRole: 'member' }} invites={[]} viewerUserId="user_a" />
+      <GroupDetail
+        detail={{ ...DETAIL, yourRole: 'member' }}
+        invites={[]}
+        budget={null}
+        viewerUserId="user_a"
+      />
     );
 
     expect(screen.queryByRole('button', { name: 'Delete group' })).toBeNull();

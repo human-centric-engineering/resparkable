@@ -897,6 +897,8 @@ export const REVIEW_HORIZONS = [
   'briefing',
   'connections',
   'context_summary',
+  /** A group's weekly digest (§23.8). Written only in a group space; see `services/group-digest.ts`. */
+  'group_digest',
 ] as const;
 
 /**
@@ -1246,6 +1248,11 @@ export type AgentNotifyInput = z.infer<typeof agentNotifySchema>;
 export const agentStaleDigestSchema = z.object({}).strict();
 
 export type AgentStaleDigestInput = z.infer<typeof agentStaleDigestSchema>;
+
+/** `resparkable_get_group_digest_inputs` takes nothing: the space is the scope's. */
+export const agentGroupDigestInputsSchema = z.object({}).strict();
+
+export type AgentGroupDigestInputsInput = z.infer<typeof agentGroupDigestInputsSchema>;
 
 /**
  * `POST /resparkable/stale/still-live`.
@@ -2138,6 +2145,46 @@ export type DeleteGroupInput = z.infer<typeof deleteGroupSchema>;
 export const updateGroupMemberSchema = z.object({ role: groupRoleSchema }).strict();
 
 export type UpdateGroupMemberInput = z.infer<typeof updateGroupMemberSchema>;
+
+// ─── Group budget (phase 50, §23.12) ─────────────────────────────────────────
+
+/** The largest single top-up or cap accepted. A ceiling against a typo, not a policy. */
+const MAX_CREDITS = 1_000_000;
+
+/**
+ * `PATCH /resparkable/groups/[id]/budget`. Admin only; the service checks.
+ *
+ * `null` switches an alert off. The percentage is whole numbers from 1 to 100:
+ * "one run cost more than 0% of what was left" would fire on every run.
+ */
+export const updateGroupBudgetSchema = z
+  .object({
+    fundingMode: z.enum(['self_funded', 'member_contributions']).optional(),
+    lowBalanceAlertCredits: z.number().finite().min(0).max(MAX_CREDITS).nullable().optional(),
+    largeRunAlertPercent: z.number().int().min(1).max(100).nullable().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'Nothing to change');
+
+export type UpdateGroupBudgetInput = z.infer<typeof updateGroupBudgetSchema>;
+
+/** `POST /resparkable/groups/[id]/budget/top-up`. */
+export const groupTopUpSchema = z
+  .object({ credits: z.number().finite().positive().max(MAX_CREDITS) })
+  .strict();
+
+export type GroupTopUpInput = z.infer<typeof groupTopUpSchema>;
+
+/**
+ * `PATCH /resparkable/groups/[id]/budget/members/[userId]`. `null` removes the
+ * cap. Zero is allowed and means the member can use nothing that costs credits
+ * while still writing everything else.
+ */
+export const groupMemberCapSchema = z
+  .object({ dailyCreditCap: z.number().finite().min(0).max(MAX_CREDITS).nullable() })
+  .strict();
+
+export type GroupMemberCapInput = z.infer<typeof groupMemberCapSchema>;
 
 /**
  * Invite somebody to a group.

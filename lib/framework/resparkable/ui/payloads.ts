@@ -1044,6 +1044,10 @@ export const groupDetailSchema = z.object({
   }),
   yourRole: z.string(),
   members: z.array(groupMemberSchema),
+  /** The newest weekly digest (phase 50), or `null` before the first. */
+  latestDigest: z
+    .object({ id: z.string(), title: z.string(), body: z.string(), generatedAt: z.string() })
+    .nullable(),
 });
 
 /** A pending invitation, from `GET /resparkable/groups/[id]/invites`. */
@@ -1058,6 +1062,40 @@ export const groupInviteSchema = z.object({
 });
 
 export const groupInvitesSchema = z.array(groupInviteSchema);
+
+/**
+ * `GET /resparkable/groups/[id]/budget` (phase 50). `admin` is `null` for
+ * everybody who is not an admin of the group, never an empty object: the
+ * per-person figures are an admin's to see and nobody else's (§23.12).
+ */
+export const groupBudgetSchema = z.object({
+  balanceCredits: z.number(),
+  fundingMode: z.enum(['self_funded', 'member_contributions']),
+  canTopUp: z.boolean(),
+  yourPersonalBalanceCredits: z.number(),
+  you: z.object({
+    dailyCreditCap: z.number().nullable(),
+    spentLastDayCredits: z.number(),
+  }),
+  admin: z
+    .object({
+      lowBalanceAlertCredits: z.number().nullable(),
+      largeRunAlertPercent: z.number().nullable(),
+      windowDays: z.number(),
+      members: z.array(
+        z.object({
+          userId: z.string(),
+          role: z.string(),
+          dailyCreditCap: z.number().nullable(),
+          spentCredits: z.number(),
+          contributedCredits: z.number(),
+        })
+      ),
+    })
+    .nullable(),
+});
+
+export type GroupBudgetWire = z.infer<typeof groupBudgetSchema>;
 
 export type GroupListItemWire = z.infer<typeof groupListItemSchema>;
 export type GroupDetailWire = z.infer<typeof groupDetailSchema>;

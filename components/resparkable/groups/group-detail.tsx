@@ -38,9 +38,11 @@ import { useRouter } from 'next/navigation';
 import { Mail, UserMinus, X } from 'lucide-react';
 
 import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
+import { GroupBudget } from '@/components/resparkable/groups/group-budget';
 import { GroupSuccession } from '@/components/resparkable/groups/group-succession';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
+import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -51,7 +53,11 @@ import {
 } from '@/components/ui/select';
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import type { GroupDetailWire, GroupInviteWire } from '@/lib/framework/resparkable/ui/payloads';
+import type {
+  GroupBudgetWire,
+  GroupDetailWire,
+  GroupInviteWire,
+} from '@/lib/framework/resparkable/ui/payloads';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 /** The three a group has. `owner` is deliberately absent (§23.2). */
@@ -60,6 +66,8 @@ const ROLES = ['admin', 'member', 'viewer'] as const;
 export interface GroupDetailProps {
   detail: GroupDetailWire;
   invites: GroupInviteWire[];
+  /** The group's credits, or `null` when they could not be read. */
+  budget: GroupBudgetWire | null;
   /** The signed-in user, so the member list can say which row is you. */
   viewerUserId: string;
 }
@@ -67,6 +75,7 @@ export interface GroupDetailProps {
 export function GroupDetail({
   detail,
   invites: initialInvites,
+  budget,
   viewerUserId,
 }: GroupDetailProps): React.ReactElement {
   const router = useRouter();
@@ -224,6 +233,53 @@ export function GroupDetail({
           })}
         </ul>
       </section>
+
+      <section>
+        <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+          This week
+          <FieldHelp title="The weekly digest">
+            <p>
+              Every Monday morning the group gets a short digest of its week: what moved, what
+              arrived, what went quiet and what nobody has picked up yet.
+            </p>
+            <p>
+              It is about the work, never the people. It does not say who did what, and it never
+              compares anyone. A week where nothing happened gets no digest and costs nothing.
+            </p>
+          </FieldHelp>
+        </h3>
+        {detail.latestDigest ? (
+          <article className="border-border/60 rounded-md border px-3 py-2">
+            <p className="text-sm font-medium">{detail.latestDigest.title}</p>
+            <p className="text-muted-foreground mt-1 text-sm whitespace-pre-wrap">
+              {detail.latestDigest.body}
+            </p>
+          </article>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            No digest yet. The first arrives on the Monday after the group has had a week of
+            activity.
+          </p>
+        )}
+      </section>
+
+      {budget && (
+        // Keyed on the group-wide settings only: a refresh that brings one
+        // another admin changed replaces the form. Figures, members and caps
+        // are followed in place, so a refresh after a role change or a cap save
+        // leaves anything half-typed alone.
+        <GroupBudget
+          key={JSON.stringify([
+            budget.fundingMode,
+            budget.admin?.lowBalanceAlertCredits ?? null,
+            budget.admin?.largeRunAlertPercent ?? null,
+          ])}
+          groupId={groupId}
+          budget={budget}
+          yourRole={detail.yourRole}
+          viewerUserId={viewerUserId}
+        />
+      )}
 
       {isAdmin && (
         <section>

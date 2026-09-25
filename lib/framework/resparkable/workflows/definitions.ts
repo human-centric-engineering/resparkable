@@ -360,6 +360,57 @@ const horizonCheck: ResparkableWorkflowSpec = {
 };
 
 /**
+ * A group's weekly digest (§23.8, phase 50).
+ *
+ * The morning briefing's shape: a deterministic gather, then exactly one model
+ * call. The gather carries no authorship, and `resparkable_write_review` refuses a
+ * `group_digest` that names a member or compares people, so the rule that a
+ * digest never ranks anyone holds even if the writer ignores its guardrails
+ * (test 13h). No notify step: the digest is read in the app, and §23.13 keeps
+ * email for the three events that earn one.
+ *
+ * Fired by the group's `group_digest` job, which asks first whether anybody did
+ * anything in the week, so a quiet fortnight is not billed to the group (§23.12).
+ */
+const groupDigest: ResparkableWorkflowSpec = {
+  slug: RESPARKABLE_SCHEDULED_WORKFLOWS.groupDigest,
+  name: 'Resparkable: group digest',
+  description:
+    'What moved, what arrived, what went quiet and what nobody picked up in a group’s week. Never about who. Runs Monday at 09:00 on the group’s clock.',
+  patternsUsed: [1],
+  maxCostPerExecutionUsd: 0.25,
+  definition: {
+    entryStepId: 'gather_inputs',
+    errorStrategy: 'fail',
+    steps: [
+      {
+        id: 'gather_inputs',
+        name: 'Gather the week',
+        description:
+          'Deterministic. Titles, types and dates from the group’s week, with no record of who wrote any of it.',
+        type: 'tool_call',
+        config: { capabilitySlug: C.getGroupDigestInputs, args: {} },
+        nextSteps: [{ targetStepId: 'write_digest' }],
+      },
+      {
+        id: 'write_digest',
+        name: 'Write the digest',
+        description:
+          'The one LLM call. Writes about the work, never the people; the write refuses a digest that names or compares members.',
+        type: 'agent_call',
+        config: {
+          agentSlug: A.digester,
+          message:
+            'Write this week’s digest for the group from the material below, in this order: what moved, what arrived, connections worth a look, what has gone quiet, and what nobody has picked up. Say nothing about a section with nothing in it. Write about the work, never about who did it. Finish by calling resparkable_write_review with horizon "group_digest".\n\n{{gather_inputs.output}}',
+          maxToolIterations: 4,
+        },
+        nextSteps: [],
+      },
+    ],
+  },
+};
+
+/**
  * The one workflow here that is triggered, not scheduled — no cron row, no
  * `ensureResparkableSchedules()` entry. `008-capture-intake-trigger.ts` points
  * an `AiWorkflowTrigger` (`channel: 'postmark'`) at this slug, so a verified
@@ -476,6 +527,7 @@ export const RESPARKABLE_WORKFLOWS: readonly ResparkableWorkflowSpec[] = [
   morningBriefing,
   weeklyReview,
   horizonCheck,
+  groupDigest,
   captureIntake,
   contextDigest,
 ];

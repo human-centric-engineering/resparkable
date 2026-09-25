@@ -70,11 +70,14 @@ import {
   type GroupUpdateData,
 } from '@/lib/framework/resparkable/repo/groups';
 import {
+  backgroundSpaceScope,
   spaceScope,
   spaceScopeFor,
   type SpaceRole,
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
+import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
+import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { slugify } from '@/lib/framework/resparkable/services/slug';
 import { planErasureSuccession } from '@/lib/framework/resparkable/services/succession';
 import { logger } from '@/lib/logging';
@@ -194,6 +197,23 @@ export async function resolveGroupSpaceScope(
 }
 
 /**
+ * The scope an unattended run gets for a space named on a platform-written
+ * carrier (a queued execution's `scope`), where there is no actor to check
+ * membership against and the carrier is the authority.
+ *
+ * Reads the space row for its kind rather than trusting the key's shape: a
+ * group space gets no actor and `member` (see `backgroundSpaceScope`), a
+ * personal one is its owner's. `null` for a space that no longer exists, which
+ * the caller refuses rather than minting a scope over nothing.
+ */
+export async function resolveBackgroundSpaceScope(spaceId: string): Promise<SpaceScope | null> {
+  if (!spaceId) return null;
+  const space = await findSpaceByUserId(spaceId);
+  if (!space) return null;
+  return backgroundSpaceScope({ spaceId: space.spaceId, kind: space.kind });
+}
+
+/**
  * The same resolution, addressed by group id, for the management routes.
  *
  * Returns the membership as well as the scope, because those routes need the
@@ -256,6 +276,10 @@ export async function createGroup(
   input: { name: string; description?: string | null }
 ): Promise<GroupMemberWithGroup> {
   const slug = await resolveFreeGroupSlug(input.name);
+  // The group's clock starts as its founder's. The digest lands at 09:00 on it
+  // (phase 50), and UTC would put a London group's on a Monday morning and a
+  // Sydney group's on a Monday evening.
+  const timezone = (await findSpaceByUserId(founderUserId))?.timezone ?? 'UTC';
 
   const created = await createGroupWithSpace({
     name: input.name,
@@ -264,7 +288,12 @@ export async function createGroup(
     spaceId: generateGroupSpaceId(),
     founderUserId,
     inboxToken: generateInboxToken(),
+    timezone,
   });
+
+  // Best-effort, like a personal space's: `ensureResparkableJobs` never throws,
+  // and the tick's backfill net writes any row this misses.
+  await ensureResparkableJobs(created.group.spaceId, timezone, new Date(), 'group');
 
   // No group name in the log line. It is a shared object other people can be
   // identified through, and this line outlives the group.

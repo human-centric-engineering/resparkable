@@ -21,6 +21,7 @@
  * retention pass (§11) to use; nothing rewrites history.
  */
 
+import { assertGroupDigestAcceptable } from '@/lib/framework/resparkable/services/group-digest';
 import { ValidationError } from '@/lib/api/errors';
 import * as reviews from '@/lib/framework/resparkable/repo/reviews';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
@@ -85,6 +86,12 @@ export async function writeReview(
   input: CreateReviewInput
 ): Promise<ResparkableReview> {
   await ensureResparkableSpace(scope.spaceId);
+
+  // A group digest is held to §23.8 whoever wrote it: the digest workflow's
+  // agent, or a member posting the horizon to `/reviews` by hand.
+  if (input.horizon === 'group_digest') {
+    await assertGroupDigestAcceptable(scope, `${input.title}\n${input.body}`);
+  }
 
   const payload = normalisePayload(input.payload);
 

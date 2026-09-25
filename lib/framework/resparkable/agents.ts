@@ -21,8 +21,9 @@
  */
 
 /**
- * The nine agents — five from phase 6, the briefer from phase 7, the intake
- * from phase 9, the context and summariser agents from Release 8.
+ * The ten agents: five from phase 6, the briefer from phase 7, the intake
+ * from phase 9, the context and summariser agents from Release 8, and the
+ * group digester from phase 50.
  */
 export const RESPARKABLE_AGENT_SLUGS = {
   /** The conversational face — the agent a person talks to at `/resparkable/chat`. */
@@ -62,6 +63,12 @@ export const RESPARKABLE_AGENT_SLUGS = {
    * from `POST .../[id]/summarize`, not from a turn a browser drives.
    */
   summariser: 'resparkable-summariser',
+  /**
+   * Writes a group's weekly digest (§23.8, phase 50) from inputs already
+   * gathered for it. Bound to the gather capability and `resparkable_write_review`
+   * only, and not chat-addressable: it runs from the group digest workflow.
+   */
+  digester: 'resparkable-digester',
 } as const;
 
 export type ResparkableAgentSlug =

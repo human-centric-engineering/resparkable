@@ -33,6 +33,7 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
+import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
 import {
   resolveGroupMembership,
   updateGroupSettings,
@@ -46,7 +47,10 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
   const resolved = await resolveGroupMembership(session.user.id, id);
   if (!resolved) throw new NotFoundError('Group not found');
 
-  const members = await listGroupMembers(id);
+  const [members, latestDigest] = await Promise.all([
+    listGroupMembers(id),
+    getLatestGroupDigest(resolved.scope),
+  ]);
 
   log.info('Resparkable group read', { groupId: id, members: members.length });
 
@@ -70,6 +74,9 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       role: member.role,
       joinedAt: member.joinedAt,
     })),
+    // The group's newest weekly digest (§23.8), read by every member. It names
+    // nobody and ranks nobody: see `services/group-digest.ts`.
+    latestDigest,
   });
 });
 

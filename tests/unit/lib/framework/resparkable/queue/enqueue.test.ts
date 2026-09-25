@@ -48,7 +48,7 @@ import {
   pullResparkableJobsForward,
 } from '@/lib/framework/resparkable/repo/jobs';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
-import { RESPARKABLE_JOB_KINDS } from '@/lib/framework/resparkable/queue/kinds';
+import { RESPARKABLE_JOB_KINDS_BY_SPACE_KIND } from '@/lib/framework/resparkable/queue/kinds';
 
 const NOW = new Date('2026-06-15T12:00:00.000Z');
 
@@ -62,11 +62,11 @@ describe('ensureResparkableJobs', () => {
   it('writes a due time for every kind, resolved in the owner’s zone', async () => {
     await ensureResparkableJobs('user_a', 'Pacific/Auckland', NOW);
 
-    const dueAtByKind = vi.mocked(enqueueResparkableJobs).mock.calls[0]?.[1] as Record<
-      string,
-      Date
-    >;
-    expect(Object.keys(dueAtByKind).sort()).toEqual([...RESPARKABLE_JOB_KINDS].sort());
+    const jobs = vi.mocked(enqueueResparkableJobs).mock.calls[0]?.[1] ?? [];
+    const dueAtByKind = Object.fromEntries(jobs.map((job) => [job.kind, job.dueAt]));
+    expect(Object.keys(dueAtByKind).sort()).toEqual(
+      [...RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.personal].sort()
+    );
     // Noon UTC is midnight in Auckland (+12), so the next 03:15 on this
     // person's clock is three and a quarter hours away — at 15:15 UTC on the
     // 15th, for a local time on the 16th. A server-time answer would have said
@@ -166,8 +166,8 @@ describe('backfillMissingResparkableJobs', () => {
     // replacement a brain that missed its enqueue would have no background work
     // for ever, and nothing anywhere would say so.
     vi.mocked(listSpacesWithoutJobs).mockResolvedValue([
-      { spaceId: 'user_a', timezone: 'UTC' },
-      { spaceId: 'user_b', timezone: 'Asia/Tokyo' },
+      { spaceId: 'user_a', timezone: 'UTC', kind: 'personal' },
+      { spaceId: 'user_b', timezone: 'Asia/Tokyo', kind: 'personal' },
     ]);
 
     expect(await backfillMissingResparkableJobs(5, NOW)).toBe(14);

@@ -40,7 +40,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('@/lib/db/client', () => ({
-  prisma: { $queryRaw: vi.fn(), $executeRaw: vi.fn() },
+  prisma: {
+    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
+    resparkableJob: { deleteMany: vi.fn() },
+  },
 }));
 
 import { prisma } from '@/lib/db/client';
@@ -49,13 +53,17 @@ import {
   clearResparkableJobDormancy,
   completeResparkableJob,
   countDueResparkableJobs,
+  deleteClaimedResparkableJob,
   enqueueResparkableJobs,
   failResparkableJob,
   hasResparkableActivitySince,
   listSpacesWithoutJobs,
   pullResparkableJobsForward,
 } from '@/lib/framework/resparkable/repo/jobs';
-import { RESPARKABLE_JOB_KINDS } from '@/lib/framework/resparkable/queue/kinds';
+import {
+  RESPARKABLE_JOB_KINDS,
+  RESPARKABLE_JOB_KINDS_BY_SPACE_KIND,
+} from '@/lib/framework/resparkable/queue/kinds';
 
 const NOW = new Date('2026-06-15T12:00:00.000Z');
 
@@ -179,6 +187,26 @@ describe('settling', () => {
     expect(lastSql(vi.mocked(prisma.$executeRaw))).toContain('"leasedBy" =');
   });
 
+  it('leaves dormancy alone on a failure the caller did not flag as terminal', async () => {
+    await failResparkableJob(
+      'job_1',
+      'worker-1',
+      { dueAt: NOW, attempts: 1, lastError: 'boom' },
+      NOW
+    );
+    expect(lastSql(vi.mocked(prisma.$executeRaw))).not.toContain('"dormantSince"');
+  });
+
+  it('stamps dormancy on a failure once the attempt cap is reached', async () => {
+    await failResparkableJob(
+      'job_1',
+      'worker-1',
+      { dueAt: NOW, attempts: 5, lastError: 'boom', dormantSince: NOW },
+      NOW
+    );
+    expect(lastSql(vi.mocked(prisma.$executeRaw))).toContain('"dormantSince"');
+  });
+
   it('reports a stale settle as false rather than throwing', async () => {
     // Zero rows is the *correct* outcome for a worker whose lease expired: the
     // row belongs to somebody else now. Throwing would turn a benign race into
@@ -211,9 +239,11 @@ describe('settling', () => {
 
 describe('enqueueResparkableJobs', () => {
   it('is an idempotent insert of one row per kind', async () => {
-    const dueAt = Object.fromEntries(RESPARKABLE_JOB_KINDS.map((kind) => [kind, NOW]));
-
-    await enqueueResparkableJobs('user_a', dueAt as never, NOW);
+    await enqueueResparkableJobs(
+      'user_a',
+      RESPARKABLE_JOB_KINDS.map((kind) => ({ kind, dueAt: NOW })),
+      NOW
+    );
 
     const sql = lastSql(vi.mocked(prisma.$executeRaw));
     // Without this an enqueue that ran twice — on signup and again from the
@@ -223,6 +253,30 @@ describe('enqueueResparkableJobs', () => {
     for (const kind of RESPARKABLE_JOB_KINDS) {
       expect(lastValues(vi.mocked(prisma.$executeRaw))).toContain(kind);
     }
+  });
+
+  it('does nothing and issues no statement for an empty job list', async () => {
+    expect(await enqueueResparkableJobs('user_a', [], NOW)).toBe(0);
+    expect(prisma.$executeRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteClaimedResparkableJob', () => {
+  it('deletes only while this worker still holds the lease', async () => {
+    // Same guard as every settle: a worker whose lease expired must not delete a
+    // row somebody else has since claimed.
+    vi.mocked(prisma.resparkableJob.deleteMany).mockResolvedValue({ count: 1 });
+
+    expect(await deleteClaimedResparkableJob('job_1', 'worker_a')).toBe(true);
+    expect(prisma.resparkableJob.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'job_1', leasedBy: 'worker_a' },
+    });
+  });
+
+  it('reports false when the lease has moved on', async () => {
+    vi.mocked(prisma.resparkableJob.deleteMany).mockResolvedValue({ count: 0 });
+
+    expect(await deleteClaimedResparkableJob('job_1', 'worker_stale')).toBe(false);
   });
 });
 
@@ -282,10 +336,25 @@ describe('the reads behind the gates', () => {
     expect(sql).not.toContain('NOT EXISTS');
   });
 
-  it('compares against the number of kinds this build knows about', async () => {
+  it('compares a personal space against the personal set this build knows about', async () => {
     await listSpacesWithoutJobs(5);
 
-    expect(lastValues(vi.mocked(prisma.$queryRaw))).toContain(RESPARKABLE_JOB_KINDS.length);
+    expect(lastValues(vi.mocked(prisma.$queryRaw))).toContain(
+      RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.personal.length
+    );
+  });
+
+  it('expects the group set of a group space, counting only kinds it is owed', async () => {
+    // Phase 50. One expected count for every space would flag every group space
+    // on every tick; counting any kind would let a stray personal row on a group
+    // space make a short set look complete.
+    await listSpacesWithoutJobs(5);
+
+    const sql = lastSql(vi.mocked(prisma.$queryRaw));
+    const values = lastValues(vi.mocked(prisma.$queryRaw));
+    expect(sql).toContain('CASE WHEN s."kind" = \'personal\'');
+    expect(values).toContain(RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.group.length);
+    expect(sql).toMatch(/s\."kind" <> 'personal' AND j\."kind" IN/);
   });
 
   it('counts only the rows a worker could actually claim', async () => {
@@ -296,6 +365,12 @@ describe('the reads behind the gates', () => {
 
     expect(await countDueResparkableJobs(NOW)).toBe(42);
     expect(lastSql(vi.mocked(prisma.$queryRaw))).toContain('"leaseExpiresAt" IS NULL');
+  });
+
+  it('reports zero due jobs rather than throwing when the probe comes back empty', async () => {
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([] as never);
+
+    expect(await countDueResparkableJobs(NOW)).toBe(0);
   });
 
   it('clears dormancy only where there is dormancy to clear', async () => {

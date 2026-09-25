@@ -13,6 +13,7 @@
 
 import { prisma } from '@/lib/db/client';
 import {
+  authoredBy,
   spaceScope,
   spaceWhere,
   type SpaceScope,
@@ -27,7 +28,14 @@ import { Prisma } from '@prisma/client';
 import type { ResparkableCreditAccount, ResparkableCreditLedgerEntry } from '@prisma/client';
 
 /** The ledger's `kind` discriminator; see the schema doc comment. */
-export type CreditLedgerEntryKind = 'admin_grant' | 'agent_spend' | 'refund';
+export type CreditLedgerEntryKind =
+  | 'admin_grant'
+  | 'agent_spend'
+  | 'refund'
+  /** A group top-up, the giver's side (phase 50). */
+  | 'transfer_out'
+  /** A group top-up, the group's side. */
+  | 'transfer_in';
 
 export interface LedgerEntryInput {
   kind: CreditLedgerEntryKind;
@@ -40,6 +48,15 @@ export interface LedgerEntryInput {
   relatedCostLogId?: string;
   note?: string;
   createdByAdminId?: string;
+  /**
+   * Who the row is attributed to, when that is not the scope's actor (§23.9's
+   * `actorUserId`, which is this table's `createdByUserId`). `undefined` means
+   * "the scope's actor", and every live request path leaves it so. Two writers
+   * set it: the billing pass, which bills a finished run under a background
+   * scope while the run was started by a named member, and the grants, which
+   * write into somebody's account without that person having acted (`null`).
+   */
+  authorUserId?: string | null;
 }
 
 /**
@@ -95,14 +112,183 @@ export async function applyLedgerEntry(
   scope: SpaceScope,
   entry: LedgerEntryInput
 ): Promise<ResparkableCreditLedgerEntry> {
+  return (await applyLedgerEntryWithBalance(scope, entry)).entry;
+}
+
+/**
+ * {@link applyLedgerEntry}, also returning the balance the account holds after
+ * this row, read from the same `UPDATE`. The group budget alerts need the
+ * balance either side of one debit, and reading it anywhere but inside the
+ * transaction lets two concurrent debits both see the same "before", so a
+ * crossing is reported twice or not at all.
+ */
+export async function applyLedgerEntryWithBalance(
+  scope: SpaceScope,
+  entry: LedgerEntryInput
+): Promise<{ entry: ResparkableCreditLedgerEntry; balanceAfter: number }> {
+  const { authorUserId, ...row } = entry;
+  const author = authoredBy(scope);
+
   return prisma.$transaction(async (tx) => {
-    await tx.resparkableCreditAccount.update({
+    const account = await tx.resparkableCreditAccount.update({
       where: { spaceId: scope.spaceId },
       data: { balanceCredits: { increment: entry.creditsDelta } },
     });
-    return tx.resparkableCreditLedgerEntry.create({
-      data: { ...entry, ...spaceWhere(scope) },
+    const written = await tx.resparkableCreditLedgerEntry.create({
+      data: {
+        ...row,
+        // The scope wins, as everywhere: the space is never a caller's value.
+        // The author is the scope's actor unless the writer names another (see
+        // `authorUserId`).
+        ...author,
+        createdByUserId: authorUserId === undefined ? author.createdByUserId : authorUserId,
+      },
     });
+    return { entry: written, balanceAfter: account.balanceCredits };
+  });
+}
+
+/**
+ * Credits one member has spent in a space since `since`: the sum behind a
+ * group member's `dailyCreditCap` (§23.12).
+ *
+ * **The one repo read that names a member, and why it is not an ACL.** D5's rule
+ * is that the actor never filters *content*: a group space has no per-row
+ * privacy, and a `where` on the actor would build one. This filters no content.
+ * It is a pre-flight sum over the space's own ledger, returning one number to
+ * the billing service, which answers "has this member reached their cap" and
+ * nothing else. The member arrives as an explicit argument rather than being
+ * read off the scope, so it cannot be mistaken for the scope's actor filtering
+ * a list, and the isolation sweep's enumeration of scoped calls is unaffected.
+ *
+ * Reads `@@index([spaceId, createdByUserId, createdAt])`.
+ */
+export async function sumMemberSpendSince(
+  scope: SpaceScope,
+  memberUserId: string,
+  since: Date
+): Promise<number> {
+  const result = await prisma.resparkableCreditLedgerEntry.aggregate({
+    where: {
+      ...spaceWhere(scope),
+      kind: 'agent_spend',
+      createdByUserId: memberUserId,
+      createdAt: { gte: since },
+    },
+    _sum: { creditsDelta: true },
+  });
+  // Spend rows are negative deltas; the cap is a positive number of credits.
+  // Subtracted from zero rather than negated, so an empty sum is 0 and not -0.
+  return 0 - (result._sum.creditsDelta ?? 0);
+}
+
+/** One member's figures in a group's ledger, for the admin's budget view. */
+export interface MemberLedgerSummary {
+  userId: string;
+  /** Credits spent from the group's balance in the window. Positive. */
+  spentCredits: number;
+  /** Credits moved into the group's balance in the window. Positive. */
+  contributedCredits: number;
+}
+
+/**
+ * Spend and contributions per member in a space since `since`: the per-person
+ * figures §23.12 gives a group **admin** and nobody else.
+ *
+ * Like {@link sumMemberSpendSince}, this is not an ACL: it filters no content and
+ * returns money, not productivity. The service is what keeps it admin-only;
+ * members see the balance and nothing about who spent it (23.8). Rows with no
+ * author (a run nobody started, a platform grant) are left out, because there is
+ * no person to put them against.
+ */
+export async function summariseLedgerByMemberSince(
+  scope: SpaceScope,
+  since: Date
+): Promise<MemberLedgerSummary[]> {
+  const rows = await prisma.resparkableCreditLedgerEntry.groupBy({
+    by: ['createdByUserId', 'kind'],
+    where: {
+      ...spaceWhere(scope),
+      kind: { in: ['agent_spend', 'transfer_in'] },
+      createdByUserId: { not: null },
+      createdAt: { gte: since },
+    },
+    _sum: { creditsDelta: true },
+  });
+
+  const byUser = new Map<string, MemberLedgerSummary>();
+  for (const row of rows) {
+    if (!row.createdByUserId) continue;
+    const entry = byUser.get(row.createdByUserId) ?? {
+      userId: row.createdByUserId,
+      spentCredits: 0,
+      contributedCredits: 0,
+    };
+    const sum = row._sum.creditsDelta ?? 0;
+    if (row.kind === 'agent_spend') entry.spentCredits += 0 - sum;
+    else entry.contributedCredits += sum;
+    byUser.set(row.createdByUserId, entry);
+  }
+  return [...byUser.values()];
+}
+
+/**
+ * Move credits from a person's own balance into a group's (§23.12, amended
+ * 2026-09-25). One transaction, two ledger rows, both attributed to the giver.
+ *
+ * **Refuses rather than overdraws.** The giver's balance is decremented only
+ * where it still covers the amount, checked in the same statement, so two
+ * top-ups racing each other cannot take a personal balance below zero. `null`
+ * means it did not cover it and nothing was written.
+ *
+ * Two scopes, because this is the one write in the tier that touches two spaces
+ * at once: the giver's own (`from`, an `owner` scope from their session) and the
+ * group's (`to`, resolved from their membership). The service decides whether
+ * the giver may; this only makes the move atomic.
+ */
+export async function transferCreditsToGroup(
+  from: SpaceScope,
+  to: SpaceScope,
+  credits: number,
+  note: string
+): Promise<{ groupBalanceCredits: number } | null> {
+  if (from.role !== 'owner' || !from.actorUserId) {
+    throw new Error('transferCreditsToGroup: the giver must be the owner of their own space');
+  }
+  const giver = from.actorUserId;
+
+  return prisma.$transaction(async (tx) => {
+    const taken = await tx.resparkableCreditAccount.updateMany({
+      where: { spaceId: from.spaceId, balanceCredits: { gte: credits } },
+      data: { balanceCredits: { decrement: credits } },
+    });
+    if (taken.count === 0) return null;
+
+    const group = await tx.resparkableCreditAccount.upsert({
+      where: { spaceId: to.spaceId },
+      create: { spaceId: to.spaceId, balanceCredits: credits },
+      update: { balanceCredits: { increment: credits } },
+    });
+
+    await tx.resparkableCreditLedgerEntry.create({
+      data: {
+        spaceId: from.spaceId,
+        createdByUserId: giver,
+        kind: 'transfer_out',
+        creditsDelta: -credits,
+        note,
+      },
+    });
+    await tx.resparkableCreditLedgerEntry.create({
+      data: {
+        spaceId: to.spaceId,
+        createdByUserId: giver,
+        kind: 'transfer_in',
+        creditsDelta: credits,
+      },
+    });
+
+    return { groupBalanceCredits: group.balanceCredits };
   });
 }
 
@@ -118,8 +304,16 @@ export async function applyLedgerEntry(
 export interface BillableWorkflowExecution {
   id: string;
   userId: string | null;
-  scope: unknown;
   totalCostUsd: number;
+  /**
+   * The space the run is billed to and its `ResparkableSpace.kind`, resolved in
+   * the query itself. One source for "which space": the `COALESCE` below. The
+   * billing pass used to re-derive the space in TypeScript, which had to mirror
+   * that precedence exactly and could disagree with it on an odd `scope` value,
+   * billing one space with another space's kind.
+   */
+  spaceId: string;
+  spaceKind: string;
 }
 
 /**
@@ -167,8 +361,9 @@ export interface BillableWorkflowExecution {
  * a `NaN` cost, which `> 0` is false for: an unmapped model in the provider's
  * cost table would otherwise be permanent sediment.)
  *
- * **The owner must still have a brain.** `resolveExecutionOwner` reads
- * `userId`, falling back to the legacy `scope` key for runs the platform
+ * **The space must still exist.** The query resolves the space a run is billed
+ * to, in this order: the space key a run carries (phase 50: the space the run is
+ * about), then `userId`, then the legacy `scope` key for runs the platform
  * scheduler fired before the cutover. Two shapes never resolve to a billable
  * owner: a system-owned row with no scope key at all, and — the one that
  * accumulates — a scope key naming a user who has since been erased. The
@@ -206,9 +401,29 @@ export async function findUnbilledTerminalResparkableExecutions(
   // — `kind` is the leading column and it is a constant here — so it costs one
   // index probe per candidate.
   return prisma.$queryRaw<BillableWorkflowExecution[]>`
-    SELECT e."id", e."userId", e."scope", e."totalCostUsd"
+    SELECT e."id", e."userId", e."totalCostUsd", s."spaceId" AS "spaceId", s."kind" AS "spaceKind"
     FROM "ai_workflow_execution" e
     JOIN "ai_workflow" w ON w."id" = e."workflowId"
+    -- e."userId" is ai_workflow_execution.userId, a CORE column naming the
+    -- person a run belongs to. It is NOT the tier's owner key and phase 45
+    -- does not rename it: only s."spaceId", on the tier's own table, moved.
+    -- Worth the comment, because a blanket rename of every "userId" in this
+    -- file's SQL silently rewrites this one, after which the query matches
+    -- nothing: it bills nobody and raises no error.
+    --
+    -- An inner join, so a run whose space no longer exists is not returned, and
+    -- the space's kind comes back with the run rather than one lookup per row.
+    JOIN "framework_resparkable_space" s ON s."spaceId" = COALESCE(
+      -- The only place the billed space is decided: the space the run names
+      -- first (phase 50 writes it on every queued run), then the person for a
+      -- run queued before that, then the legacy key a pre-cutover scheduler row
+      -- carried. ->> yields text, and a key that is not a string, or names no
+      -- space, matches no row, so the run is not returned rather than billed
+      -- somewhere by guesswork.
+      e."scope"->>${RESPARKABLE_SCHEDULE_SPACE_KEY},
+      e."userId",
+      e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY}
+    )
     WHERE e."status" IN (${Prisma.join(terminalStatuses)})
       AND w."slug" IN (${Prisma.join(workflowSlugs)})
       AND e."totalCostUsd" > 0
@@ -216,23 +431,6 @@ export async function findUnbilledTerminalResparkableExecutions(
         SELECT 1 FROM "framework_resparkable_credit_ledger_entry" l
         WHERE l."kind" = 'agent_spend'
           AND l."relatedWorkflowExecutionId" = e."id"
-      )
-      AND EXISTS (
-        -- e."userId" is ai_workflow_execution.userId, a CORE column naming the
-        -- person a run belongs to. It is NOT the tier's owner key and phase 45
-        -- does not rename it: only s."spaceId", on the tier's own table, moved.
-        -- Worth the comment, because a blanket rename of every "userId" in this
-        -- file's SQL silently rewrites this one, after which the query matches
-        -- nothing: it bills nobody and raises no error.
-        SELECT 1 FROM "framework_resparkable_space" s
-        WHERE s."spaceId" = COALESCE(
-          e."userId",
-          -- Both scope keys, because phase 45 writes the new one alongside the
-          -- old rather than replacing it: a schedule row created before the
-          -- migration still carries only the old resparkableUserId key.
-          e."scope"->>${RESPARKABLE_SCHEDULE_SPACE_KEY},
-          e."scope"->>${RESPARKABLE_SCHEDULE_OWNER_KEY}
-        )
       )
     ORDER BY e."updatedAt" ASC
     LIMIT ${limit}
@@ -316,5 +514,7 @@ export async function grantCreditsAsAdmin(
     creditsDelta: amount,
     ...(note !== undefined ? { note } : {}),
     createdByAdminId: adminId,
+    // The recipient did nothing; the admin is recorded in `createdByAdminId`.
+    authorUserId: null,
   });
 }

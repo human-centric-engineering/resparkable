@@ -5,7 +5,11 @@ import { GroupDetail } from '@/components/resparkable/groups/group-detail';
 import { LoadError } from '@/components/resparkable/ui/load-error';
 import { getServerSession } from '@/lib/auth/utils';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import { groupDetailSchema, groupInvitesSchema } from '@/lib/framework/resparkable/ui/payloads';
+import {
+  groupBudgetSchema,
+  groupDetailSchema,
+  groupInvitesSchema,
+} from '@/lib/framework/resparkable/ui/payloads';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
 export const metadata: Metadata = {
@@ -16,7 +20,7 @@ export const metadata: Metadata = {
 /**
  * One group.
  *
- * ## Two reads, and why that is not the N+1 rule being bent
+ * ## Three reads, and why that is not the N+1 rule being bent
  *
  * The invitations list is admin-only at the route. Folding it into the detail
  * payload would mean either refusing the whole page to a member, or a detail
@@ -42,9 +46,13 @@ export default async function ResparkableGroupPage({
 }) {
   const { id } = await params;
 
-  const [session, detail] = await Promise.all([
+  // The budget is answered for every member (the per-person half only for an
+  // admin, decided by the route), so it is read alongside the detail rather
+  // than after it. A failure costs the page its credits section, not the page.
+  const [session, detail, budget] = await Promise.all([
     getServerSession(),
     readResparkable(RESPARKABLE_API.group(id), groupDetailSchema, null),
+    readResparkable(RESPARKABLE_API.groupBudget(id), groupBudgetSchema, null),
   ]);
 
   if (!detail.ok) {
@@ -64,6 +72,7 @@ export default async function ResparkableGroupPage({
     <GroupDetail
       detail={detail.data}
       invites={invites?.ok ? invites.data : []}
+      budget={budget.ok ? budget.data : null}
       viewerUserId={session?.user.id ?? ''}
     />
   );

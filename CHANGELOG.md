@@ -18,6 +18,41 @@ release process.
 
 ### Added
 
+- **The group digest (Release 9, phase 50).** A group gets a weekly digest of
+  its work, never of its people (§23.8). New job kind `group_digest` (groups
+  only, the group's Monday 09:00, demand-gated from its first run via the new
+  `JobKindSpec.gatesFirstRun`), workflow `resparkable-group-digest`, agent
+  `resparkable-digester`, capability `resparkable_get_group_digest_inputs` (its
+  output carries no authorship), and review horizon `group_digest`. `writeReview`
+  refuses a `group_digest` that names a member or compares people, or that is
+  written outside a group space; the capability reports these as
+  `digest_names_or_compares_members` and `not_a_group_space`. `GET
+  /groups/[id]` gains `latestDigest`.
+- **Group funding, top-up and alerts (Release 9, phase 50).** `ResparkableGroup`
+  gains `fundingMode` (`self_funded`, the default, or `member_contributions`),
+  `lowBalanceAlertCredits Float?`, `largeRunAlertPercent Int?` and
+  `largeRunAlertedAt DateTime?` (the large-run alert goes out at most once in
+  24 hours, and not once the balance is already at or below the low mark). New routes
+  under `/api/v1/resparkable/groups/[id]/budget`: `GET` (balance for every
+  member, per-person spend and contributions for admins only), `PATCH` (funding
+  mode and alerts, admin), `POST .../top-up` (move credits from your own balance
+  into the group's), `PATCH .../members/[userId]` (a member's
+  `dailyCreditCap`, admin). The ledger gains two `kind` values, `transfer_out`
+  and `transfer_in`. `listMemberContacts` takes an optional `{ roles }`.
+- **The group budget (Release 9, phase 50).** A group workspace's
+  credits now behave as §23.12 specifies. `ResparkableGroupMember` gains
+  `dailyCreditCap Float?` (null, the default, is uncapped): a rolling 24-hour
+  limit on what one member may spend from the group's balance, checked before
+  the provider call. `ResparkableCreditLedgerEntry` gains an index on
+  `(spaceId, createdByUserId, createdAt)`, and every ledger row now records who
+  spent in `createdByUserId` (grants record nobody).
+
+  **Renamed: `assertPositiveBalance` is now `assertCanSpend`** in
+  `services/billing.ts`, because it now does more than read a balance. It
+  refuses a `viewer` outright (403), refuses an empty group balance without ever
+  falling back to the member's own (402), and refuses a member at their cap (402,
+  `DAILY_CREDIT_CAP_REACHED`, thrown as the new `DailyCreditCapError`).
+
 - **Grants to a group (Release 9, phase 49).** A grant can now name a group
   workspace instead of a person. `ResparkableGrant` gains `granteeSpaceId`
   (cascades from the grantee's `ResparkableSpace`), and **`granteeEmail` is now
@@ -774,6 +809,24 @@ release process.
 
 
 ### Changed
+
+- **Background runs name the space they are about (Release 9, phase 50).**
+  `queueResparkableWorkflowRun(slug, scope, input)` now takes a `SpaceScope`
+  rather than a user id and writes `scope.resparkableSpaceId` on the execution;
+  the billing pass bills that space first and the person second. Before this, a
+  summary asked for in a group workspace read the member's personal brain and
+  was billed to their personal balance. `POST .../[id]/summarize` and
+  `POST /resparkable/briefing/regenerate` now check the balance before queueing.
+- **A group workspace gets group jobs only.** `RESPARKABLE_JOB_KINDS_BY_SPACE_KIND`
+  gives a group `sweep`, `retention` and `reindex`, never the four personal
+  workflows, and the phase-50 migration deletes the rows the backfill had
+  written. `ensureResparkableJobs` takes the space kind as a fourth argument,
+  `enqueueResparkableJobs` takes a list of `{ kind, dueAt }`, and
+  `ClaimedResparkableJob` carries `spaceKind`. The new `backgroundSpaceScope()`
+  mints a group space's background scope with no actor and the `member` role;
+  `spaceScope()` had made the group's key its `owner`.
+- `GroupCreateData` gains a required `timezone`: a new group starts on its
+  founder's clock.
 
 - **Phase 49 breaks three things a fork may import or parse.**
   `viewerFromSession(session)` in `api/viewer.ts` is replaced by
