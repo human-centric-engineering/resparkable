@@ -367,15 +367,17 @@ already have the two lines above, you need no change.
 
 #### What is on the queue
 
-Seven kinds per brain, one row each. Four fire the background workflows the tier
-has always had; three are the maintenance passes:
+Seven kinds per personal brain and four per group, one row each. A person's four
+workflows fire the background runs the tier has always had; a group gets its
+weekly digest instead (phase 50); both get the three maintenance passes:
 
-| Kind                                                       | When                                        | Costs credits |
-| ---------------------------------------------------------- | ------------------------------------------- | ------------- |
-| `triage`, `briefing`, `weekly_review`, `horizon_check`     | local 03:15 / 04:30 / Fri 16:00 / 2nd 09:00 | yes           |
-| `sweep` — connection suggestions from stored vectors       | every 6 hours                               | no            |
-| `retention` — archive and prune per the windows below      | local 02:00                                 | no            |
-| `reindex` — drain `indexedHash` so new content is findable | every 15 minutes                            | no            |
+| Kind                                                       | When                                        | Costs credits    |
+| ---------------------------------------------------------- | ------------------------------------------- | ---------------- |
+| `triage`, `briefing`, `weekly_review`, `horizon_check`     | local 03:15 / 04:30 / Fri 16:00 / 2nd 09:00 | yes              |
+| `group_digest`: groups only, gated from its first run      | group's Mon 09:00                           | yes, the group's |
+| `sweep` — connection suggestions from stored vectors       | every 6 hours                               | no               |
+| `retention` — archive and prune per the windows below      | local 02:00                                 | no               |
+| `reindex` — drain `indexedHash` so new content is findable | every 15 minutes                            | no               |
 
 The four workflows still run as workflows. The job writes a `PENDING`
 `AiWorkflowExecution` and `processPendingExecutions` runs it exactly as before —

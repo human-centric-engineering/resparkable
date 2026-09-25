@@ -114,6 +114,12 @@ const BINDINGS: readonly AgentBindings[] = [
     capabilities: [C.getContextDigest, C.writeReview],
   },
   {
+    agentSlug: RESPARKABLE_AGENT_SLUGS.digester,
+    rationale:
+      'Two rows, the briefer’s shape: read what the workflow gathered, write one artefact. No search and no snapshot, because both would hand it rows that carry authorship, and the gather is built to carry none (§23.8). A digester that could look up who wrote what is one that can rank people.',
+    capabilities: [C.getGroupDigestInputs, C.writeReview],
+  },
+  {
     agentSlug: RESPARKABLE_AGENT_SLUGS.intake,
     rationale:
       'One row, and it is the only agent bound to it. resparkable_capture_for_token resolves its own owner from a bearer token rather than context.userId (capture-for-token.ts) — the compensating control is that no chat-reachable agent is ever bound to it, so this capability appears in no tool list a browser-driven turn could reach.',

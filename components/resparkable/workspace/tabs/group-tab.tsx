@@ -20,7 +20,11 @@ import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { TabLoadError } from '@/components/resparkable/workspace/tabs/tab-load-error';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import { groupDetailSchema, groupInvitesSchema } from '@/lib/framework/resparkable/ui/payloads';
+import {
+  groupBudgetSchema,
+  groupDetailSchema,
+  groupInvitesSchema,
+} from '@/lib/framework/resparkable/ui/payloads';
 
 export interface GroupTabProps {
   id: string;
@@ -38,6 +42,8 @@ export function GroupTab({ id }: GroupTabProps): React.ReactElement {
     isAdmin ? RESPARKABLE_API.groupInvites(id) : null,
     groupInvitesSchema
   );
+  // Every member is answered; the per-person half only for an admin.
+  const [budget] = useTabFetch(RESPARKABLE_API.groupBudget(id), groupBudgetSchema);
 
   if (detail.status === 'loading') return <SkeletonList label="Loading this group" />;
   if (detail.status === 'error') {
@@ -48,6 +54,7 @@ export function GroupTab({ id }: GroupTabProps): React.ReactElement {
     <GroupDetail
       detail={detail.data}
       invites={invites.status === 'ready' ? invites.data : []}
+      budget={budget.status === 'ready' ? budget.data : null}
       viewerUserId={session?.user.id ?? ''}
     />
   );

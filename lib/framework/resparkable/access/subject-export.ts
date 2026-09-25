@@ -235,8 +235,9 @@ const OLDEST_FIRST = { createdAt: 'asc' } as const;
  * Every table a member can write into, by the section name the personal export
  * gives it.
  *
- * Absent, each for a reason: the space row (the group's, not theirs), credit
- * rows (a group has no account until phase 50), embeddings and jobs (derived,
+ * Absent, each for a reason: the space row (the group's, not theirs), the
+ * group's credit account (one balance for the whole group, not theirs; their
+ * own ledger rows in it ARE here), embeddings and jobs (derived,
  * excluded from the personal export on the same grounds), and comments (already
  * complete in `commentsIWrote`, which matches on `authorUserId` in every space).
  * `subject-export.test.ts` asserts this list against the owner-scoped manifest,
@@ -328,6 +329,17 @@ export const GROUP_CONTRIBUTION_SOURCES: Record<
     section: 'activity',
     fetch: (userId) =>
       prisma.resparkableEvent.findMany({ where: contributedBy(userId), orderBy: OLDEST_FIRST }),
+  },
+  ResparkableCreditLedgerEntry: {
+    section: 'billingLedger',
+    // Phase 50: what they spent from a group's balance and what they added to
+    // it. Rows attributed to them only: the group's other members' spend is
+    // theirs, and operational rows are attributed to nobody.
+    fetch: (userId) =>
+      prisma.resparkableCreditLedgerEntry.findMany({
+        where: contributedBy(userId),
+        orderBy: OLDEST_FIRST,
+      }),
   },
   ResparkableGrant: {
     section: 'sharedByMe',

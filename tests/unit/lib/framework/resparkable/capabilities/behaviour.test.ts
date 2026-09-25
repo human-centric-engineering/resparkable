@@ -102,6 +102,10 @@ import { findNeighbours } from '@/lib/framework/resparkable/services/neighbours'
 import { promoteThought } from '@/lib/framework/resparkable/services/promote';
 import { buildSnapshot } from '@/lib/framework/resparkable/services/snapshot';
 import { writeReview } from '@/lib/framework/resparkable/services/reviews';
+import {
+  GroupDigestViolationError,
+  NotAGroupSpaceError,
+} from '@/lib/framework/resparkable/services/group-digest';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
 import {
@@ -790,6 +794,41 @@ describe('resparkable_write_review', () => {
     expect(result).toMatchObject({
       success: false,
       error: { code: 'payload_too_large', message: expect.stringContaining('body') },
+    });
+  });
+
+  it('turns a group-digest violation into a result naming what was wrong, message intact', async () => {
+    mocked(writeReview).mockRejectedValue(
+      new GroupDigestViolationError(['names a member', 'ranks activity'])
+    );
+
+    const result = await call(capability, {
+      horizon: 'group_digest',
+      title: 'Week 12',
+      body: 'Alice was the most active this week.',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: {
+        code: 'digest_names_or_compares_members',
+        message: expect.stringContaining('names a member'),
+      },
+    });
+  });
+
+  it('turns a digest written into a personal brain into not_a_group_space', async () => {
+    mocked(writeReview).mockRejectedValue(new NotAGroupSpaceError());
+
+    const result = await call(capability, {
+      horizon: 'group_digest',
+      title: 'Week 12',
+      body: 'Eleven tasks were finished.',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: { code: 'not_a_group_space', message: expect.stringContaining('group workspace') },
     });
   });
 

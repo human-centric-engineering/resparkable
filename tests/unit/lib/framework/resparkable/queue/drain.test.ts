@@ -35,6 +35,8 @@
  * - One brain's failure does not stop the batch or the loop
  * - The job budget and the wall-clock budget both stop the loop
  * - An unknown kind is deferred, not failed
+ * - A group space's job runs under a scope with no actor, never as `owner`
+ * - A personal kind on a group space is deleted, never run (phase 50)
  *
  * @see lib/framework/resparkable/queue/drain.ts
  */
@@ -46,6 +48,7 @@ vi.mock('@/lib/framework/resparkable/repo/jobs', () => ({
   claimResparkableJobs: vi.fn(),
   completeResparkableJob: vi.fn().mockResolvedValue(true),
   failResparkableJob: vi.fn().mockResolvedValue(true),
+  deleteClaimedResparkableJob: vi.fn().mockResolvedValue(true),
   hasResparkableActivitySince: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/queue/handlers', () => ({
@@ -60,6 +63,7 @@ import { runResparkableJob } from '@/lib/framework/resparkable/queue/handlers';
 import {
   claimResparkableJobs,
   completeResparkableJob,
+  deleteClaimedResparkableJob,
   failResparkableJob,
   hasResparkableActivitySince,
 } from '@/lib/framework/resparkable/repo/jobs';
@@ -87,6 +91,7 @@ function job(overrides: Partial<Record<string, unknown>> = {}) {
     lastRunAt: new Date('2026-06-14T03:15:00.000Z'),
     dormantSince: null,
     timezone: 'UTC',
+    spaceKind: 'personal',
     ...overrides,
   };
 }
@@ -232,6 +237,50 @@ describe('the demand gate — the billing rule, not a budget lever', () => {
 
     expect(hasResparkableActivitySince).not.toHaveBeenCalled();
     expect(runResparkableJob).toHaveBeenCalledWith('retention', spaceScope('user_a'), NOW);
+  });
+
+  it('gates a never-run group digest too, over one cadence period back from now (phase 50)', async () => {
+    // Unlike the personal kinds, the group digest asks its gate even on the
+    // first run: a group created on Sunday with nothing written in it has
+    // nothing to summarise on Monday, and "never debit for a run that cannot
+    // produce anything" holds on the first run as much as the fortieth.
+    vi.mocked(hasResparkableActivitySince).mockResolvedValue(false);
+    claimOnce([
+      job({ kind: 'group_digest', spaceId: 'spc_group', spaceKind: 'group', lastRunAt: null }),
+    ]);
+
+    const result = await drainResparkableJobs({ now: NOW, maxJobs: 5 });
+
+    expect(hasResparkableActivitySince).toHaveBeenCalledWith(
+      'spc_group',
+      new Date('2026-06-08T12:00:00.000Z')
+    );
+    expect(runResparkableJob).not.toHaveBeenCalled();
+    expect(result.skippedDormant).toBe(1);
+  });
+
+  it('runs a never-run group digest once there has been activity in the window', async () => {
+    vi.mocked(hasResparkableActivitySince).mockResolvedValue(true);
+    claimOnce([
+      job({ kind: 'group_digest', spaceId: 'spc_group', spaceKind: 'group', lastRunAt: null }),
+    ]);
+
+    await drainResparkableJobs({ now: NOW, maxJobs: 5 });
+
+    expect(runResparkableJob).toHaveBeenCalledWith(
+      'group_digest',
+      expect.objectContaining({ spaceId: 'spc_group' }),
+      NOW
+    );
+  });
+
+  it('never gates a first-ever personal briefing', async () => {
+    claimOnce([job({ kind: 'briefing', lastRunAt: null })]);
+
+    await drainResparkableJobs({ now: NOW, maxJobs: 5 });
+
+    expect(hasResparkableActivitySince).not.toHaveBeenCalled();
+    expect(runResparkableJob).toHaveBeenCalled();
   });
 
   it('never gates a first-ever run', async () => {
@@ -424,5 +473,39 @@ describe('the worker identity', () => {
 
     expect(vi.mocked(claimResparkableJobs).mock.calls[0]?.[0]).toBe('worker-7');
     expect(vi.mocked(completeResparkableJob).mock.calls[0]?.[1]).toBe('worker-7');
+  });
+});
+
+describe('group spaces (phase 50)', () => {
+  it('runs a group job with no actor and the member role, never as its owner', async () => {
+    // `spaceScope()` assumes the key is a person. Minting a group's `spc_` key
+    // through it made the key the `owner` and put it in `createdByUserId`,
+    // whose FK into "user" refuses it: the sweep's first write would throw.
+    claimOnce([job({ kind: 'sweep', spaceId: 'spc_group', spaceKind: 'group', lastRunAt: null })]);
+    vi.mocked(runResparkableJob).mockResolvedValue({ ...NOTHING });
+
+    await drainResparkableJobs({ now: NOW });
+
+    expect(vi.mocked(runResparkableJob).mock.calls[0]?.[1]).toMatchObject({
+      spaceId: 'spc_group',
+      actorUserId: null,
+      role: 'member',
+    });
+  });
+
+  it('deletes a personal kind found on a group space rather than running it', async () => {
+    // The four personal workflows queue a run naming the space as a user. The
+    // migration removes the rows; this is the belt for one an old build writes
+    // during the deploy. Deleted, because a deferred row that can never run is
+    // claimed again for ever.
+    claimOnce([job({ kind: 'briefing', spaceId: 'spc_group', spaceKind: 'group' })]);
+
+    const result = await drainResparkableJobs({ now: NOW });
+
+    expect(runResparkableJob).not.toHaveBeenCalled();
+    expect(hasPositiveBalance).not.toHaveBeenCalled();
+    expect(deleteClaimedResparkableJob).toHaveBeenCalledWith('job_1', expect.any(String));
+    expect(completeResparkableJob).not.toHaveBeenCalled();
+    expect(result.settled).toBe(1);
   });
 });

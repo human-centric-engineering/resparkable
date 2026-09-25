@@ -21,8 +21,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const findUnique = vi.fn();
 const create = vi.fn();
 const update = vi.fn();
+const updateMany = vi.fn();
+const upsert = vi.fn();
 const findMany = vi.fn();
 const ledgerCreate = vi.fn();
+const ledgerAggregate = vi.fn();
+const ledgerGroupBy = vi.fn();
 const userFindMany = vi.fn();
 const transaction = vi.fn();
 const queryRaw = vi.fn();
@@ -33,10 +37,14 @@ vi.mock('@/lib/db/client', () => ({
       findUnique: (...args: unknown[]) => findUnique(...args),
       create: (...args: unknown[]) => create(...args),
       update: (...args: unknown[]) => update(...args),
+      updateMany: (...args: unknown[]) => updateMany(...args),
+      upsert: (...args: unknown[]) => upsert(...args),
       findMany: (...args: unknown[]) => findMany(...args),
     },
     resparkableCreditLedgerEntry: {
       create: (...args: unknown[]) => ledgerCreate(...args),
+      aggregate: (...args: unknown[]) => ledgerAggregate(...args),
+      groupBy: (...args: unknown[]) => ledgerGroupBy(...args),
     },
     user: {
       findMany: (...args: unknown[]) => userFindMany(...args),
@@ -46,14 +54,18 @@ vi.mock('@/lib/db/client', () => ({
   },
 }));
 
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { spaceScope, spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   applyLedgerEntry,
+  applyLedgerEntryWithBalance,
   ensureCreditAccount,
   findCreditAccount,
   findUnbilledTerminalResparkableExecutions,
   grantCreditsAsAdmin,
   listCreditAccountsForAdmin,
+  summariseLedgerByMemberSince,
+  sumMemberSpendSince,
+  transferCreditsToGroup,
 } from '@/lib/framework/resparkable/repo/billing';
 
 const scope = spaceScope('user_a');
@@ -72,7 +84,7 @@ beforeEach(() => {
   // the same mocked methods a real transaction client would expose.
   transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
     fn({
-      resparkableCreditAccount: { update },
+      resparkableCreditAccount: { update, updateMany, upsert },
       resparkableCreditLedgerEntry: { create: ledgerCreate },
     })
   );
@@ -140,6 +152,7 @@ describe('findCreditAccount', () => {
 describe('applyLedgerEntry', () => {
   it('adjusts the balance by exactly creditsDelta and writes a matching ledger row', async () => {
     ledgerCreate.mockResolvedValue({ id: 'ledger_1', kind: 'agent_spend', creditsDelta: -3.5 });
+    update.mockResolvedValue({ spaceId: 'user_a', balanceCredits: 6.5 });
 
     await applyLedgerEntry(scope, {
       kind: 'agent_spend',
@@ -152,12 +165,41 @@ describe('applyLedgerEntry', () => {
       data: { balanceCredits: { increment: -3.5 } },
     });
     expect(ledgerCreate).toHaveBeenCalledWith({
-      data: { kind: 'agent_spend', creditsDelta: -3.5, tokenCostUsd: 3.5, spaceId: 'user_a' },
+      data: {
+        kind: 'agent_spend',
+        creditsDelta: -3.5,
+        tokenCostUsd: 3.5,
+        spaceId: 'user_a',
+        createdByUserId: 'user_a',
+      },
     });
+  });
+
+  it('records a named author over the scope’s actor, and a null one as nobody', async () => {
+    // Phase 50: the billing pass bills a member's run under a background scope,
+    // and a grant is attributed to nobody. `authorUserId` is how each says so;
+    // it is a column value, never a key that reaches the row by name.
+    ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
+    update.mockResolvedValue({ spaceId: 'user_a', balanceCredits: 4 });
+
+    await applyLedgerEntry(scope, {
+      kind: 'agent_spend',
+      creditsDelta: -1,
+      authorUserId: 'user_m',
+    });
+    await applyLedgerEntry(scope, { kind: 'admin_grant', creditsDelta: 5, authorUserId: null });
+
+    const rows = ledgerCreate.mock.calls.map(
+      (call) => (call[0] as { data: Record<string, unknown> }).data
+    );
+    expect(rows[0]).toMatchObject({ createdByUserId: 'user_m', spaceId: 'user_a' });
+    expect(rows[1]).toMatchObject({ createdByUserId: null, spaceId: 'user_a' });
+    expect(rows.every((row) => !('authorUserId' in row))).toBe(true);
   });
 
   it('runs the balance update and the ledger write inside one transaction', async () => {
     ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
+    update.mockResolvedValue({ spaceId: 'user_a', balanceCredits: 20 });
 
     await applyLedgerEntry(scope, { kind: 'admin_grant', creditsDelta: 10 });
 
@@ -179,10 +221,184 @@ describe('applyLedgerEntry', () => {
   });
 });
 
+describe('applyLedgerEntryWithBalance', () => {
+  it('reports the balance the in-transaction UPDATE returned, not a value read separately', async () => {
+    // The group budget alerts need the balance either side of one debit, read
+    // from the same UPDATE: reading it any other way lets two concurrent
+    // debits both see the same "before".
+    ledgerCreate.mockResolvedValue({ id: 'ledger_1', kind: 'agent_spend', creditsDelta: -3 });
+    update.mockResolvedValue({ spaceId: 'user_a', balanceCredits: 7 });
+
+    const result = await applyLedgerEntryWithBalance(scope, {
+      kind: 'agent_spend',
+      creditsDelta: -3,
+    });
+
+    expect(result).toEqual({
+      entry: { id: 'ledger_1', kind: 'agent_spend', creditsDelta: -3 },
+      balanceAfter: 7,
+    });
+  });
+});
+
+describe('sumMemberSpendSince', () => {
+  it('sums one member’s spend in one space as a positive number of credits', async () => {
+    ledgerAggregate.mockResolvedValue({ _sum: { creditsDelta: -3.25 } });
+    const since = new Date('2026-09-24T00:00:00.000Z');
+
+    expect(await sumMemberSpendSince(scope, 'user_m', since)).toBe(3.25);
+    expect(ledgerAggregate).toHaveBeenCalledWith({
+      where: {
+        spaceId: 'user_a',
+        kind: 'agent_spend',
+        createdByUserId: 'user_m',
+        createdAt: { gte: since },
+      },
+      _sum: { creditsDelta: true },
+    });
+  });
+
+  it('is zero when the member has spent nothing', async () => {
+    ledgerAggregate.mockResolvedValue({ _sum: { creditsDelta: null } });
+
+    expect(await sumMemberSpendSince(scope, 'user_m', new Date())).toBe(0);
+  });
+});
+
+describe('transferCreditsToGroup', () => {
+  const giver = spaceScope('user_g');
+  const group = spaceScopeFor({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+
+  it('refuses and writes nothing when the conditional decrement matches zero rows', async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await transferCreditsToGroup(giver, group, 10, 'Top-up');
+
+    expect(result).toBeNull();
+    expect(upsert).not.toHaveBeenCalled();
+    expect(ledgerCreate).not.toHaveBeenCalled();
+  });
+
+  it('decrements the giver conditionally on balanceCredits >= credits', async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+    upsert.mockResolvedValue({ spaceId: 'spc_group', balanceCredits: 30 });
+
+    await transferCreditsToGroup(giver, group, 10, 'Top-up');
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { spaceId: 'user_g', balanceCredits: { gte: 10 } },
+      data: { balanceCredits: { decrement: 10 } },
+    });
+  });
+
+  it('writes transfer_out on the giver’s space and transfer_in on the group’s, both authored by the giver', async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+    upsert.mockResolvedValue({ spaceId: 'spc_group', balanceCredits: 30 });
+
+    await transferCreditsToGroup(giver, group, 10, 'Top-up to Study Group B');
+
+    const rows = ledgerCreate.mock.calls.map(
+      (call) => (call[0] as { data: Record<string, unknown> }).data
+    );
+    expect(rows).toContainEqual({
+      spaceId: 'user_g',
+      createdByUserId: 'user_g',
+      kind: 'transfer_out',
+      creditsDelta: -10,
+      note: 'Top-up to Study Group B',
+    });
+    expect(rows).toContainEqual({
+      spaceId: 'spc_group',
+      createdByUserId: 'user_g',
+      kind: 'transfer_in',
+      creditsDelta: 10,
+    });
+  });
+
+  it('reports the group’s balance after the credit', async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+    upsert.mockResolvedValue({ spaceId: 'spc_group', balanceCredits: 55 });
+
+    const result = await transferCreditsToGroup(giver, group, 10, 'Top-up');
+
+    expect(result).toEqual({ groupBalanceCredits: 55 });
+  });
+
+  it('throws when the giver is not an owner scope', async () => {
+    const notOwner = spaceScopeFor({ spaceId: 'spc_group', actorUserId: 'user_m', role: 'member' });
+
+    await expect(transferCreditsToGroup(notOwner, group, 10, 'Top-up')).rejects.toThrow(
+      'the giver must be the owner of their own space'
+    );
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('summariseLedgerByMemberSince', () => {
+  const group = spaceScopeFor({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+
+  it('negates agent_spend into a positive spentCredits per user', async () => {
+    ledgerGroupBy.mockResolvedValue([
+      { createdByUserId: 'user_a', kind: 'agent_spend', _sum: { creditsDelta: -12.5 } },
+    ]);
+
+    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
+
+    expect(result).toEqual([{ userId: 'user_a', spentCredits: 12.5, contributedCredits: 0 }]);
+  });
+
+  it('adds transfer_in into contributedCredits, not spentCredits', async () => {
+    ledgerGroupBy.mockResolvedValue([
+      { createdByUserId: 'user_a', kind: 'transfer_in', _sum: { creditsDelta: 20 } },
+    ]);
+
+    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
+
+    expect(result).toEqual([{ userId: 'user_a', spentCredits: 0, contributedCredits: 20 }]);
+  });
+
+  it('groups both kinds together per user', async () => {
+    ledgerGroupBy.mockResolvedValue([
+      { createdByUserId: 'user_a', kind: 'agent_spend', _sum: { creditsDelta: -5 } },
+      { createdByUserId: 'user_a', kind: 'transfer_in', _sum: { creditsDelta: 30 } },
+      { createdByUserId: 'user_b', kind: 'agent_spend', _sum: { creditsDelta: -2 } },
+    ]);
+
+    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
+
+    expect(result).toEqual(
+      expect.arrayContaining([
+        { userId: 'user_a', spentCredits: 5, contributedCredits: 30 },
+        { userId: 'user_b', spentCredits: 2, contributedCredits: 0 },
+      ])
+    );
+    expect(result).toHaveLength(2);
+  });
+
+  it('filters out null-author rows and scopes to the space, asking only for the two relevant kinds', async () => {
+    ledgerGroupBy.mockResolvedValue([]);
+    const since = new Date('2026-08-01');
+
+    await summariseLedgerByMemberSince(group, since);
+
+    expect(ledgerGroupBy).toHaveBeenCalledWith({
+      by: ['createdByUserId', 'kind'],
+      where: {
+        spaceId: 'spc_group',
+        kind: { in: ['agent_spend', 'transfer_in'] },
+        createdByUserId: { not: null },
+        createdAt: { gte: since },
+      },
+      _sum: { creditsDelta: true },
+    });
+  });
+});
+
 describe('grantCreditsAsAdmin', () => {
   it('ensures the target account exists before writing the grant', async () => {
     findUnique.mockResolvedValue({ id: 'acct_1', spaceId: 'user_b', balanceCredits: 0 });
     ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
+    update.mockResolvedValue({ spaceId: 'user_b', balanceCredits: 25 });
 
     await grantCreditsAsAdmin('user_b', 25, 'welcome bonus', 'admin_1');
 
@@ -193,6 +409,9 @@ describe('grantCreditsAsAdmin', () => {
         creditsDelta: 25,
         note: 'welcome bonus',
         createdByAdminId: 'admin_1',
+        // The recipient did nothing, so the grant is attributed to nobody: an
+        // admin's per-member spend view must not show a grant as spend.
+        createdByUserId: null,
       }),
     });
   });
@@ -201,6 +420,7 @@ describe('grantCreditsAsAdmin', () => {
     findUnique.mockResolvedValue(null);
     create.mockResolvedValue({ id: 'acct_new', spaceId: 'user_new', balanceCredits: 0 });
     ledgerCreate.mockResolvedValue({ id: 'ledger_1' });
+    update.mockResolvedValue({ spaceId: 'user_new', balanceCredits: 10 });
 
     await grantCreditsAsAdmin('user_new', 10, undefined, 'admin_1');
 
@@ -318,7 +538,9 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
     // because a blanket rename of every `"userId"` in that file's SQL rewrites
     // this one too, after which the query matches nothing, bills nobody, and
     // raises no error.
-    expect(sql).toMatch(/COALESCE\(\s*e\."userId",/);
+    // Phase 50 puts the space the run names ahead of it, so a member's run in a
+    // group bills the group; the person comes second, for runs queued before.
+    expect(sql).toMatch(/COALESCE\([\s\S]*?e\."scope"->>\s*\?\s*,\s*e\."userId",/);
     // Both scope keys are read, so a schedule row written before phase 45 still
     // resolves. The migration adds the new key beside the old rather than
     // replacing it, and this is the half that makes that worth doing. The keys
@@ -327,6 +549,22 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
     const bound = (queryRaw.mock.calls.at(-1) ?? []).slice(1);
     expect(bound).toContain('resparkableSpaceId');
     expect(bound).toContain('resparkableUserId');
+  });
+
+  it('decides the billed space and its kind in the query, once', async () => {
+    // Code review, phase 50: re-deriving the space in TypeScript meant mirroring
+    // this COALESCE exactly, and a per-run lookup for its kind. The inner join
+    // returns both, so the billing pass has nothing to resolve.
+    await findUnbilledTerminalResparkableExecutions(
+      ['resparkable-nightly-triage'],
+      ['completed'],
+      100
+    );
+
+    const sql = lastSql();
+    expect(sql).toMatch(/JOIN "framework_resparkable_space" s ON s\."spaceId"\s*=\s*COALESCE\(/);
+    expect(sql).toContain('s."spaceId" AS "spaceId"');
+    expect(sql).toContain('s."kind" AS "spaceKind"');
   });
 
   it('takes the oldest unbilled first', async () => {
@@ -385,11 +623,25 @@ describe('findUnbilledTerminalResparkableExecutions', () => {
 
   it('returns what the query returned', async () => {
     queryRaw.mockResolvedValue([
-      { id: 'exec_1', spaceId: 'user_a', scope: null, totalCostUsd: 0.4 },
+      {
+        id: 'exec_1',
+        userId: 'user_a',
+        totalCostUsd: 0.4,
+        spaceId: 'user_a',
+        spaceKind: 'personal',
+      },
     ]);
 
     await expect(
       findUnbilledTerminalResparkableExecutions(['resparkable-nightly-triage'], ['completed'], 100)
-    ).resolves.toEqual([{ id: 'exec_1', spaceId: 'user_a', scope: null, totalCostUsd: 0.4 }]);
+    ).resolves.toEqual([
+      {
+        id: 'exec_1',
+        userId: 'user_a',
+        totalCostUsd: 0.4,
+        spaceId: 'user_a',
+        spaceKind: 'personal',
+      },
+    ]);
   });
 });

@@ -230,6 +230,11 @@ export const RESPARKABLE_API = {
   groupMember: (groupId: string, userId: string): string =>
     `/api/v1/resparkable/groups/${groupId}/members/${userId}`,
   groupInvites: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/invites`,
+  /** The group's budget: balance for everyone, per-person figures for admins (phase 50). */
+  groupBudget: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/budget`,
+  groupTopUp: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/budget/top-up`,
+  groupMemberCap: (groupId: string, userId: string): string =>
+    `/api/v1/resparkable/groups/${groupId}/budget/members/${userId}`,
   groupInvite: (groupId: string, inviteId: string): string =>
     `/api/v1/resparkable/groups/${groupId}/invites/${inviteId}`,
   /**

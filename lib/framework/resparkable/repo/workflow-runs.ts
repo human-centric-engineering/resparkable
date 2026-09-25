@@ -28,6 +28,10 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import {
+  RESPARKABLE_SCHEDULE_SPACE_KEY,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import { WorkflowStatus } from '@/types/orchestration';
 import type { Prisma } from '@prisma/client';
 
@@ -42,7 +46,7 @@ import type { Prisma } from '@prisma/client';
 export const RESPARKABLE_WORKFLOW_SLUG_PREFIX = 'resparkable-';
 
 /**
- * Queue a run of one Resparkable workflow for a user, for the tick to pick up.
+ * Queue a run of one Resparkable workflow over one space, for the tick to pick up.
  *
  * ## Why a queued row rather than an inline engine call
  *
@@ -66,7 +70,7 @@ export const RESPARKABLE_WORKFLOW_SLUG_PREFIX = 'resparkable-';
  */
 export async function queueResparkableWorkflowRun(
   slug: string,
-  userId: string,
+  scope: SpaceScope,
   inputData: Prisma.InputJsonValue
 ): Promise<string | null> {
   const workflow = await prisma.aiWorkflow.findUnique({
@@ -94,9 +98,20 @@ export async function queueResparkableWorkflowRun(
       status: WorkflowStatus.PENDING,
       inputData,
       executionTrace: [],
-      // The same field the scheduler stamps from `createdBy` — this is how the
-      // run knows whose brain it is, and it comes from the verified session.
-      userId,
+      // Who started it: the verified session's person, or for a personal
+      // space's background run its owner (resparkable#502's reasoning, reversed
+      // for a run that belongs to one person). `null` for a group's background
+      // run, which nobody started and which must not be erased with anybody.
+      userId: scope.actorUserId,
+      // **Which brain the run is about** (phase 50). Until then the run's brain
+      // was inferred from `userId`, which was right while a person had one: a
+      // "summarise" pressed in a group workspace ran against the member's
+      // personal brain and was billed to their personal balance, which is the
+      // fallback §23.12 forbids. The engine reads this back on resume and hands
+      // it to every capability, which re-resolves it against `userId`'s
+      // membership when there is one (`requireResparkableSpace`), and the billing
+      // pass bills this space rather than the person.
+      scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: scope.spaceId },
       ...(workflow.maxCostPerExecutionUsd !== null
         ? { budgetLimitUsd: workflow.maxCostPerExecutionUsd }
         : {}),

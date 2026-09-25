@@ -63,7 +63,7 @@ describe('the workflow kinds', () => {
   ] as const)('%s queues %s for the job’s owner', async (kind, slug) => {
     const outcome = await runResparkableJob(kind, SCOPE, NOW);
 
-    expect(queueResparkableWorkflowRun).toHaveBeenCalledWith(slug, 'user_a', {});
+    expect(queueResparkableWorkflowRun).toHaveBeenCalledWith(slug, SCOPE, {});
     expect(outcome.executionsQueued).toBe(1);
     expect(outcome.incomplete).toBe(false);
   });
@@ -77,7 +77,24 @@ describe('the workflow kinds', () => {
     // smuggling that ask #29 exists for is off this path entirely.
     await runResparkableJob('briefing', SCOPE, NOW);
 
-    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toBe('user_a');
+    expect(vi.mocked(queueResparkableWorkflowRun).mock.calls[0]?.[1]).toMatchObject({
+      spaceId: 'user_a',
+      actorUserId: 'user_a',
+    });
+  });
+
+  it('queues the group digest under the scope it was given, once (phase 50)', async () => {
+    const groupScope = spaceScope('spc_group');
+
+    const outcome = await runResparkableJob('group_digest', groupScope, NOW);
+
+    expect(queueResparkableWorkflowRun).toHaveBeenCalledTimes(1);
+    expect(queueResparkableWorkflowRun).toHaveBeenCalledWith(
+      'resparkable-group-digest',
+      groupScope,
+      {}
+    );
+    expect(outcome.executionsQueued).toBe(1);
   });
 
   it('reports a missing published version rather than throwing', async () => {

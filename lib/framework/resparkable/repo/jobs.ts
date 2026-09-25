@@ -34,8 +34,9 @@
 
 import { prisma } from '@/lib/db/client';
 import {
-  RESPARKABLE_JOB_KINDS,
+  RESPARKABLE_JOB_KINDS_BY_SPACE_KIND,
   type ResparkableJobKind,
+  type ResparkableSpaceKind,
 } from '@/lib/framework/resparkable/queue/kinds';
 import { Prisma } from '@prisma/client';
 
@@ -50,6 +51,12 @@ export interface ClaimedResparkableJob {
   dormantSince: Date | null;
   /** From the joined `ResparkableSpace`. Wall-clock kinds resolve against it. */
   timezone: string;
+  /**
+   * From the joined `ResparkableSpace` too: `personal` or `group`. The drain
+   * mints the run's scope from it (`backgroundSpaceScope`), because a group
+   * space's key is not a person and must not be minted as one.
+   */
+  spaceKind: string;
 }
 
 /**
@@ -90,7 +97,7 @@ export async function claimResparkableJobs(
         FOR UPDATE SKIP LOCKED
       )
     RETURNING j."id", j."spaceId", j."kind", j."dueAt", j."attempts",
-              j."lastRunAt", j."dormantSince", s."timezone"
+              j."lastRunAt", j."dormantSince", s."timezone", s."kind" AS "spaceKind"
   `;
 }
 
@@ -214,13 +221,14 @@ export async function failResparkableJob(
  * that runs at lunchtime.
  */
 export async function enqueueResparkableJobs(
-  userId: string,
-  dueAtByKind: Record<ResparkableJobKind, Date>,
+  spaceId: string,
+  jobs: ReadonlyArray<{ kind: ResparkableJobKind; dueAt: Date }>,
   now: Date
 ): Promise<number> {
-  const values = RESPARKABLE_JOB_KINDS.map(
-    (kind) =>
-      Prisma.sql`(gen_random_uuid()::text, ${userId}, ${kind}, ${dueAtByKind[kind]}, ${now})`
+  if (jobs.length === 0) return 0;
+
+  const values = jobs.map(
+    (job) => Prisma.sql`(gen_random_uuid()::text, ${spaceId}, ${job.kind}, ${job.dueAt}, ${now})`
   );
 
   return prisma.$executeRaw`
@@ -228,6 +236,21 @@ export async function enqueueResparkableJobs(
     VALUES ${Prisma.join(values)}
     ON CONFLICT ("spaceId", "kind") DO NOTHING
   `;
+}
+
+/**
+ * Remove a claimed job this space is not owed (phase 50): a personal kind on a
+ * group space, written by the backfill before the vocabulary was split.
+ *
+ * Deleted rather than deferred, because deferring a row that can never run keeps
+ * it in the claim for ever. Lease-guarded like every other settle, so a worker
+ * that lost its lease cannot delete a row somebody else now holds.
+ */
+export async function deleteClaimedResparkableJob(id: string, workerId: string): Promise<boolean> {
+  // The Prisma client, not raw SQL: nothing here needs what the claim needs, and
+  // a raw statement is one the tenancy layer's app-side filters never reach.
+  const { count } = await prisma.resparkableJob.deleteMany({ where: { id, leasedBy: workerId } });
+  return count > 0;
 }
 
 /**
@@ -304,20 +327,38 @@ export async function pullResparkableJobsForward(
  * new kind. Comparing the count against what this build expects catches both
  * the brand-new brain and the one a deploy left a kind short.
  *
+ * **The expectation is per space kind** (phase 50). A group space is owed a
+ * different set from a personal one (`RESPARKABLE_JOB_KINDS_BY_SPACE_KIND`), so
+ * one expected count for every row would either miss a short personal space or
+ * flag every group space on every tick. Only rows of a kind the space is owed
+ * are counted, so a stray row of the wrong kind cannot make a short set look
+ * complete.
+ *
  * `ensureResparkableJobs` is `ON CONFLICT DO NOTHING`, so re-running it against
  * a partial set writes only what is missing and leaves existing due times
  * alone. Bounded by `limit` because this runs on a tick.
  */
 export async function listSpacesWithoutJobs(
   limit: number,
-  expectedKinds: number = RESPARKABLE_JOB_KINDS.length
-): Promise<Array<{ spaceId: string; timezone: string }>> {
-  return prisma.$queryRaw<Array<{ spaceId: string; timezone: string }>>`
-    SELECT s."spaceId", s."timezone"
+  kindsBySpaceKind: Record<
+    ResparkableSpaceKind,
+    readonly ResparkableJobKind[]
+  > = RESPARKABLE_JOB_KINDS_BY_SPACE_KIND
+): Promise<Array<{ spaceId: string; timezone: string; kind: string }>> {
+  const personal = [...kindsBySpaceKind.personal];
+  const group = [...kindsBySpaceKind.group];
+
+  return prisma.$queryRaw<Array<{ spaceId: string; timezone: string; kind: string }>>`
+    SELECT s."spaceId", s."timezone", s."kind"
     FROM "framework_resparkable_space" s
-    LEFT JOIN "framework_resparkable_job" j ON j."spaceId" = s."spaceId"
-    GROUP BY s."spaceId", s."timezone", s."createdAt"
-    HAVING count(j."id") < ${expectedKinds}
+    LEFT JOIN "framework_resparkable_job" j
+      ON j."spaceId" = s."spaceId"
+     AND (
+       (s."kind" = 'personal' AND j."kind" IN (${Prisma.join(personal)}))
+       OR (s."kind" <> 'personal' AND j."kind" IN (${Prisma.join(group)}))
+     )
+    GROUP BY s."spaceId", s."timezone", s."kind", s."createdAt"
+    HAVING count(j."id") < CASE WHEN s."kind" = 'personal' THEN ${personal.length} ELSE ${group.length} END
     ORDER BY s."createdAt" ASC
     LIMIT ${limit}
   `;

@@ -16,9 +16,8 @@
 
 import {
   nextDueAt,
-  RESPARKABLE_JOB_KINDS,
   isResparkableJobKind,
-  type ResparkableJobKind,
+  jobKindsForSpace,
 } from '@/lib/framework/resparkable/queue/kinds';
 import {
   clearResparkableJobDormancy,
@@ -29,15 +28,17 @@ import {
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { logger } from '@/lib/logging';
 
-/** Every kind's next occurrence for one owner, computed in one place. */
-function dueAtByKind(timezone: string, now: Date): Record<ResparkableJobKind, Date> {
-  return Object.fromEntries(
-    RESPARKABLE_JOB_KINDS.map((kind) => [kind, nextDueAt(kind, timezone, now)])
-  ) as Record<ResparkableJobKind, Date>;
+/** The next occurrence of every kind a space is owed, computed in one place. */
+function dueJobs(spaceKind: string, timezone: string, now: Date) {
+  return jobKindsForSpace(spaceKind).map((kind) => ({
+    kind,
+    dueAt: nextDueAt(kind, timezone, now),
+  }));
 }
 
 /**
- * Give one owner their seven job rows. Idempotent, never throws.
+ * Give one space its job rows (seven for a person, fewer for a group: see
+ * `RESPARKABLE_JOB_KINDS_BY_SPACE_KIND`). Idempotent, never throws.
  *
  * Called from `ensureResparkableSpace`'s create branch. Deliberately not called
  * on the existing-space branch, which is the hot read path under capture, chat
@@ -46,15 +47,16 @@ function dueAtByKind(timezone: string, now: Date): Record<ResparkableJobKind, Da
  * {@link backfillMissingResparkableJobs} covers it for free on the tick.
  */
 export async function ensureResparkableJobs(
-  userId: string,
+  spaceId: string,
   timezone: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  spaceKind: string = 'personal'
 ): Promise<number> {
   try {
-    return await enqueueResparkableJobs(userId, dueAtByKind(timezone, now), now);
+    return await enqueueResparkableJobs(spaceId, dueJobs(spaceKind, timezone, now), now);
   } catch (error) {
     logger.warn('Resparkable jobs could not be enqueued for a new brain', {
-      userId,
+      spaceId,
       error: error instanceof Error ? error.message : String(error),
     });
     return 0;
@@ -142,7 +144,7 @@ export async function backfillMissingResparkableJobs(
 
   let enqueued = 0;
   for (const space of missing) {
-    enqueued += await ensureResparkableJobs(space.spaceId, space.timezone, now);
+    enqueued += await ensureResparkableJobs(space.spaceId, space.timezone, now, space.kind);
   }
 
   logger.info('Resparkable backfilled job rows for brains that had none', {

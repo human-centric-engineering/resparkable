@@ -41,12 +41,12 @@
 
 import { prisma } from '@/lib/db/client';
 import { claimResparkableJobs } from '@/lib/framework/resparkable/repo/jobs';
-import { RESPARKABLE_JOB_KINDS } from '@/lib/framework/resparkable/queue/kinds';
+import { RESPARKABLE_JOB_KINDS_BY_SPACE_KIND } from '@/lib/framework/resparkable/queue/kinds';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 
 const stamp = Date.now();
 const PREFIX = 'smoke-resparkable-queue';
-const KIND_COUNT = RESPARKABLE_JOB_KINDS.length;
+const KIND_COUNT = RESPARKABLE_JOB_KINDS_BY_SPACE_KIND.personal.length;
 
 async function dbReachable(): Promise<boolean> {
   try {

@@ -26,6 +26,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
+import type { GroupDetailWire } from '@/lib/framework/resparkable/ui/payloads';
 vi.mock('next/navigation', () => ({ useRouter: vi.fn() }));
 vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn(), get: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -38,7 +39,7 @@ import { apiClient } from '@/lib/api/client';
 const push = vi.fn();
 const refresh = vi.fn();
 
-const DETAIL = {
+const DETAIL: GroupDetailWire = {
   group: {
     groupId: 'grp_1',
     name: 'Study Group B',
@@ -49,6 +50,7 @@ const DETAIL = {
     viewersCanInheritAdmin: true,
   },
   yourRole: 'admin',
+  latestDigest: null,
   members: [
     { userId: 'user_a', role: 'admin', joinedAt: '2026-09-01T10:00:00.000Z' },
     { userId: 'user_b', role: 'member', joinedAt: '2026-09-02T10:00:00.000Z' },
@@ -65,9 +67,14 @@ const INVITE = {
   acceptedAt: null,
 };
 
-function renderDetail(overrides: Partial<typeof DETAIL> = {}, invites = [INVITE]) {
+function renderDetail(overrides: Partial<GroupDetailWire> = {}, invites = [INVITE]) {
   return render(
-    <GroupDetail detail={{ ...DETAIL, ...overrides }} invites={invites} viewerUserId="user_a" />
+    <GroupDetail
+      detail={{ ...DETAIL, ...overrides }}
+      invites={invites}
+      budget={null}
+      viewerUserId="user_a"
+    />
   );
 }
 
@@ -161,6 +168,64 @@ describe('GroupDetail', () => {
     expect(screen.queryByLabelText('Role for user_b')).not.toBeInTheDocument();
     // Leaving is still theirs to do.
     expect(screen.getByRole('button', { name: 'Leave this group' })).toBeInTheDocument();
+  });
+
+  it('shows the newest digest, and says so plainly when there is none yet', () => {
+    const { unmount } = renderDetail({
+      latestDigest: {
+        id: 'review_1',
+        title: 'Week of 14 September',
+        body: 'Eleven tasks were finished.',
+        generatedAt: '2026-09-21T08:00:00.000Z',
+      },
+    });
+    expect(screen.getByText('Week of 14 September')).toBeInTheDocument();
+    expect(screen.getByText('Eleven tasks were finished.')).toBeInTheDocument();
+    unmount();
+
+    renderDetail({ latestDigest: null });
+    expect(screen.getByText(/No digest yet/)).toBeInTheDocument();
+  });
+
+  it('shows the credits panel when the budget loaded, with the admin half only for an admin', () => {
+    const budget = {
+      balanceCredits: 40,
+      fundingMode: 'self_funded' as const,
+      canTopUp: false,
+      yourPersonalBalanceCredits: 5,
+      you: { dailyCreditCap: null, spentLastDayCredits: 0 },
+      admin: null,
+    };
+    const { unmount } = render(
+      <GroupDetail
+        detail={{ ...DETAIL, yourRole: 'member' }}
+        invites={[]}
+        budget={budget}
+        viewerUserId="user_a"
+      />
+    );
+    expect(screen.getByText('40')).toBeInTheDocument();
+    expect(screen.queryByText('Only admins see this part.')).toBeNull();
+    unmount();
+
+    render(
+      <GroupDetail
+        detail={DETAIL}
+        invites={[]}
+        budget={{
+          ...budget,
+          canTopUp: true,
+          admin: {
+            lowBalanceAlertCredits: 10,
+            largeRunAlertPercent: 50,
+            windowDays: 30,
+            members: [],
+          },
+        }}
+        viewerUserId="user_a"
+      />
+    );
+    expect(screen.getByText('Only admins see this part.')).toBeInTheDocument();
   });
 
   it('names members by id and never by address', () => {

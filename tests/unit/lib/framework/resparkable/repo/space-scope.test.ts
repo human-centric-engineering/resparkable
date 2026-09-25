@@ -16,6 +16,8 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  authoredBy,
+  backgroundSpaceScope,
   liveSpaceWhere,
   spaceScope,
   spaceScopeFor,
@@ -86,6 +88,24 @@ describe('spaceScopeFor', () => {
     expect(() => spaceScopeFor({ spaceId: '', actorUserId: 'user_a', role: 'member' })).toThrow(
       /verified spaceId is required/
     );
+  });
+});
+
+describe('backgroundSpaceScope', () => {
+  it('is the owner’s own scope for a personal space', () => {
+    expect(backgroundSpaceScope({ spaceId: 'user_a', kind: 'personal' })).toEqual(
+      spaceScope('user_a')
+    );
+  });
+
+  it('gives a group space no actor and the member role, never owner', () => {
+    // Phase 50. A group's key is not a person: as the actor it would be written
+    // into `createdByUserId`, whose FK into "user" refuses it, and `owner` never
+    // appears on a group space (§23.2).
+    const scope = backgroundSpaceScope({ spaceId: 'spc_group', kind: 'group' });
+
+    expect(scope).toMatchObject({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+    expect(authoredBy(scope)).toEqual({ spaceId: 'spc_group', createdByUserId: null });
   });
 });
 

@@ -1421,7 +1421,11 @@ model ResparkableCreditLedgerEntry {
   /// do not.
   createdByUserId String?
 
-  /// admin_grant | agent_spend | refund
+  /// admin_grant | agent_spend | refund | transfer_out | transfer_in
+  ///
+  /// The two transfer kinds are a group top-up (§23.12): `transfer_out` on the
+  /// giver's personal account and `transfer_in` on the group's, written in one
+  /// transaction, both attributed to the giver.
   kind         String @db.VarChar(16)
   creditsDelta Float
 
@@ -1449,6 +1453,10 @@ model ResparkableCreditLedgerEntry {
   /// unconstrained. Postgres treats each NULL as distinct.
   @@unique([kind, relatedWorkflowExecutionId])
   @@index([spaceId, createdAt])
+  /// Phase 50: a group member's `dailyCreditCap` pre-flight sums their spend in
+  /// the space over the last day (`sumMemberSpendSince`), and the admin's
+  /// per-member spend view reads the same shape.
+  @@index([spaceId, createdByUserId, createdAt])
   @@map("framework_resparkable_credit_ledger_entry")
 }
 
@@ -1920,6 +1928,29 @@ model ResparkableGroup {
   /// and in the stranded-group sweep alike.
   viewersCanInheritAdmin Boolean @default(true)
 
+  /// How the group's balance is filled (§23.12, amended 2026-09-25):
+  /// `self_funded` (admins top it up) or `member_contributions` (any member
+  /// may). Both are one-way transfers from the giver's personal balance that
+  /// the giver makes on purpose. Neither changes what is read at spend time,
+  /// which is the group's balance and nothing else.
+  fundingMode String @default("self_funded") @db.VarChar(24)
+
+  /// Admin-only alert: email the admins when the balance falls to or below this
+  /// many credits. `null` is off. Fires on the crossing, not on every run
+  /// below it, so no "already told them" column is needed.
+  lowBalanceAlertCredits Float?
+
+  /// Admin-only alert: email the admins when one run costs more than this
+  /// percentage of the balance that was left before it. `null` is off.
+  largeRunAlertPercent Int?
+
+  /// When the large-run alert last went out. It is sent at most once in any
+  /// 24 hours, claimed atomically (`claimLargeRunAlert`), and not at all once
+  /// the balance is already at or below the low-balance mark, which has told
+  /// the admins already. Without both, a low balance makes nearly every run
+  /// "large" and the admins get an email per run.
+  largeRunAlertedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1979,6 +2010,18 @@ model ResparkableGroupMember {
   /// second email would add nothing. Null until sent. Set by
   /// `services/sole-admin-notice.ts`, which is the only writer.
   soleAdminNotifiedAt DateTime?
+
+  /// Credits this member may spend from the group's balance in any 24 hours
+  /// (§23.12). `null`, the default, is uncapped.
+  ///
+  /// **A blast-radius limit, not a productivity control.** Any member can spend
+  /// everyone's credits, and this answers "a member left a workflow looping
+  /// overnight". It does not answer "a member is using too much", and a UI that
+  /// presents it as the latter has misread it. Enforced in the pre-flight
+  /// (`assertCanSpend`), so it refuses before a provider call rather than after.
+  /// Rolling rather than calendar: a cap that resets at a midnight is a cap a
+  /// loop can spend twice across it.
+  dailyCreditCap Float?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

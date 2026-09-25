@@ -37,14 +37,8 @@
 import { RESPARKABLE_JOB_KINDS } from '@/lib/framework/resparkable/queue/kinds';
 import { backfillMissingResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { drainResparkableJobs, type DrainResult } from '@/lib/framework/resparkable/queue/drain';
-import {
-  findUnbilledTerminalResparkableExecutions,
-  type BillableWorkflowExecution,
-} from '@/lib/framework/resparkable/repo/billing';
-import {
-  spaceScope,
-  readResparkableScheduleSpaceId,
-} from '@/lib/framework/resparkable/repo/space-scope';
+import { findUnbilledTerminalResparkableExecutions } from '@/lib/framework/resparkable/repo/billing';
+import { backgroundSpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { isUniqueConstraintViolation } from '@/lib/framework/resparkable/repo/shared';
 import { recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { settleStrandedGroups } from '@/lib/framework/resparkable/services/membership';
@@ -112,45 +106,14 @@ const BILLING_BATCH = 100;
 export interface ResparkableTickResult extends DrainResult {
   /** Ledger rows written for newly terminal executions. */
   executionsBilled: number;
-  /** Terminal executions that could not be attributed to a user, so not billed. */
+  /**
+   * Terminal executions whose ledger write failed this pass, for any reason but
+   * already being billed (for example a space deleted since the query). Runs
+   * that name no existing space are never returned by the query at all.
+   */
   executionsSkipped: number;
   /** Job rows created for brains that somehow had none. */
   jobsBackfilled: number;
-}
-
-/**
- * Resolve a workflow execution's owner.
- *
- * `userId` for everything the queue and the routes create — phase 56 queues
- * background runs as user-owned, which is correct for a run that belongs to one
- * person and should be erased with them.
- *
- * `scope[RESPARKABLE_SCHEDULE_OWNER_KEY]` is the legacy branch: executions
- * fired by the platform scheduler before the cutover are system-owned
- * (`userId: null`) and carry the owner in `scope` instead (resparkable#502; ask
- * #29). Nothing creates those any more, but the ones already in the table still
- * have to be billed, and they age out on their own.
- *
- * `null` for anything else — an org-level or non-Resparkable run — which the
- * caller must skip rather than bill to somebody.
- */
-function resolveExecutionOwner(execution: BillableWorkflowExecution): string | null {
-  if (execution.userId) return execution.userId;
-
-  // Untrusted JSON from a platform-owned column, so every non-object shape is
-  // rejected before anything is read out of it — an array is an object to
-  // `typeof` and a bare string indexes to `undefined` rather than throwing, so
-  // neither would error, they would just quietly resolve to "no owner". The
-  // strict version of this check used to live in `repo/schedules.ts`'s
-  // `carriesOwnerScope`, which phase 56 deleted along with the rows it read;
-  // this is that check, kept.
-  const scope: unknown = execution.scope;
-  if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) return null;
-
-  // Either key: phase 45 writes `resparkableSpaceId` alongside the old
-  // `resparkableUserId` rather than replacing it, so a schedule row created
-  // before the migration still resolves here.
-  return readResparkableScheduleSpaceId(scope as Record<string, unknown>) ?? null;
 }
 
 /**
@@ -174,23 +137,28 @@ async function billResparkableWorkflowExecutions(): Promise<{ billed: number; sk
   let skipped = 0;
 
   for (const execution of executions) {
-    const ownerUserId = resolveExecutionOwner(execution);
-    if (!ownerUserId) {
-      skipped++;
-      continue;
-    }
+    // The query decided the space and read its kind, so there is nothing to
+    // resolve and no lookup per run. A space deleted since the query fails the
+    // ledger write's FK, which the catch below logs, and the next pass no longer
+    // returns it.
+    const scope = backgroundSpaceScope({ spaceId: execution.spaceId, kind: execution.spaceKind });
 
     try {
-      const entry = await recordAgentSpend(spaceScope(ownerUserId), {
+      const entry = await recordAgentSpend(scope, {
         tokenCostUsd: execution.totalCostUsd,
         relatedWorkflowExecutionId: execution.id,
+        // Who started it, so an admin's per-member spend view has it (§23.9).
+        // `null` for a group's own background run, which nobody started.
+        authorUserId: execution.userId,
+        awaitAlerts: true,
       });
       if (entry) billed++;
     } catch (error) {
       if (isUniqueConstraintViolation(error)) continue;
+      skipped++;
       logger.error('Resparkable workflow-execution billing failed for one run', {
         executionId: execution.id,
-        userId: ownerUserId,
+        spaceId: execution.spaceId,
         error: error instanceof Error ? error.message : String(error),
       });
     }

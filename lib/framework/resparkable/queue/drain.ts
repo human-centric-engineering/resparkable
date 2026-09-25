@@ -54,17 +54,19 @@ import {
   nextDueAt,
   RESPARKABLE_JOB_SPECS,
   isResparkableJobKind,
+  jobKindsForSpace,
   type ResparkableJobKind,
 } from '@/lib/framework/resparkable/queue/kinds';
 import { runResparkableJob, type JobRunOutcome } from '@/lib/framework/resparkable/queue/handlers';
 import {
   claimResparkableJobs,
   completeResparkableJob,
+  deleteClaimedResparkableJob,
   failResparkableJob,
   type ClaimedResparkableJob,
 } from '@/lib/framework/resparkable/repo/jobs';
 import { hasResparkableActivitySince } from '@/lib/framework/resparkable/repo/jobs';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { backgroundSpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { hasPositiveBalance } from '@/lib/framework/resparkable/services/billing';
 import { logger } from '@/lib/logging';
 
@@ -254,8 +256,23 @@ async function settleOne(
   }
 
   const kind: ResparkableJobKind = job.kind;
+
+  if (!jobKindsForSpace(job.spaceKind).includes(kind)) {
+    // A kind this space is not owed: before phase 50 the backfill gave a group
+    // space all seven, and the personal four queue runs naming the group's key
+    // as a person. The migration deletes those rows; this is the belt for one
+    // written by a process still running the old build during the deploy.
+    logger.warn('Resparkable job is not owed by its space, deleting', {
+      jobId: job.id,
+      kind,
+      spaceKind: job.spaceKind,
+    });
+    await deleteClaimedResparkableJob(job.id, workerId);
+    return { kind: 'unknown-kind' };
+  }
+
   const spec = RESPARKABLE_JOB_SPECS[kind];
-  const scope = spaceScope(job.spaceId);
+  const scope = backgroundSpaceScope({ spaceId: job.spaceId, kind: job.spaceKind });
 
   // ── Gate 1: has anything changed? ─────────────────────────────────────────
   //
@@ -263,8 +280,12 @@ async function settleOne(
   // to compare against and the first run always happens. That matters for a
   // brand-new brain: it is empty and has no events, and gating it would mean
   // the first briefing never arrives.
-  if (spec.demandGated && job.lastRunAt !== null) {
-    const changed = await hasResparkableActivitySince(job.spaceId, job.lastRunAt);
+  //
+  // A kind that `gatesFirstRun` (the group digest) asks on its first run too,
+  // over one cadence period back from now.
+  const since = job.lastRunAt ?? (spec.gatesFirstRun ? cadenceWindowStart(kind, now) : null);
+  if (spec.demandGated && since !== null) {
+    const changed = await hasResparkableActivitySince(job.spaceId, since);
     if (!changed) {
       const dormantSince = job.dormantSince ?? now;
       await completeResparkableJob(
@@ -354,6 +375,25 @@ async function settleOne(
     return { kind: 'failed' };
   }
 }
+
+/**
+ * The start of the window a never-run job's gate asks about: one cadence period
+ * before now. Only reached for a kind that `gatesFirstRun`.
+ */
+function cadenceWindowStart(kind: ResparkableJobKind, now: Date): Date {
+  const { cadence } = RESPARKABLE_JOB_SPECS[kind];
+  const periodMs =
+    cadence.shape === 'interval'
+      ? cadence.everyMs
+      : cadence.shape === 'daily'
+        ? DAY_MS
+        : cadence.shape === 'weekly'
+          ? 7 * DAY_MS
+          : 31 * DAY_MS;
+  return new Date(now.getTime() - periodMs);
+}
+
+const DAY_MS = 24 * 60 * 60_000;
 
 /**
  * How long a dormant job waits, and how its wall-clock kinds keep their hour.

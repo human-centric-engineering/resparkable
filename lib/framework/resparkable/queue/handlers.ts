@@ -77,13 +77,14 @@ const NOTHING: JobRunOutcome = {
 };
 
 /** The workflow slug each workflow-firing kind pulls the trigger on. */
-type WorkflowJobKind = 'triage' | 'briefing' | 'weekly_review' | 'horizon_check';
+type WorkflowJobKind = 'triage' | 'briefing' | 'weekly_review' | 'horizon_check' | 'group_digest';
 
 const WORKFLOW_SLUG_BY_KIND: Record<WorkflowJobKind, string> = {
   triage: RESPARKABLE_SCHEDULED_WORKFLOWS.nightlyTriage,
   briefing: RESPARKABLE_SCHEDULED_WORKFLOWS.morningBriefing,
   weekly_review: RESPARKABLE_SCHEDULED_WORKFLOWS.weeklyReview,
   horizon_check: RESPARKABLE_SCHEDULED_WORKFLOWS.horizonCheck,
+  group_digest: RESPARKABLE_SCHEDULED_WORKFLOWS.groupDigest,
 };
 
 /**
@@ -100,7 +101,7 @@ export async function runResparkableJob(
   now: Date
 ): Promise<JobRunOutcome> {
   switch (kind) {
-    // The four that pull a workflow trigger. Named individually rather than
+    // The five that pull a workflow trigger. Named individually rather than
     // handled by a lookup before the switch, so the `never` at the bottom is a
     // real exhaustiveness check: a kind added to `RESPARKABLE_JOB_KINDS`
     // without a handler fails type-check rather than at 03:15.
@@ -108,6 +109,7 @@ export async function runResparkableJob(
     case 'briefing':
     case 'weekly_review':
     case 'horizon_check':
+    case 'group_digest':
       return queueWorkflow(WORKFLOW_SLUG_BY_KIND[kind], scope, kind);
     case 'sweep': {
       const result = await sweepConnections(scope, now);
@@ -159,7 +161,7 @@ async function queueWorkflow(
   scope: SpaceScope,
   kind: WorkflowJobKind
 ): Promise<JobRunOutcome> {
-  const executionId = await queueResparkableWorkflowRun(slug, scope.spaceId, {});
+  const executionId = await queueResparkableWorkflowRun(slug, scope, {});
 
   if (!executionId) {
     logger.warn('Resparkable job found no published workflow to queue', {

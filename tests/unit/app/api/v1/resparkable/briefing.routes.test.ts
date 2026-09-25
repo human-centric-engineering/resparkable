@@ -49,12 +49,20 @@ vi.mock('@/lib/framework/resparkable/repo/workflow-runs', () => ({
 vi.mock('@/lib/framework/resparkable/services/space', () => ({
   ensureResparkableSpace: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/billing', () => ({
+  assertCanSpend: vi.fn(),
+}));
+// The real resolver: a null target is the personal space, which is the whole
+// behaviour this route depends on and so the part worth not mocking.
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
 
 import { GET } from '@/app/api/v1/resparkable/briefing/route';
 import { POST } from '@/app/api/v1/resparkable/briefing/regenerate/route';
 import { getStoredBriefing } from '@/lib/framework/resparkable/services/briefing';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
+import { assertCanSpend } from '@/lib/framework/resparkable/services/billing';
+import { InsufficientCreditsError } from '@/lib/api/errors';
 
 const mockedStored = vi.mocked(getStoredBriefing);
 const mockedQueue = vi.mocked(queueResparkableWorkflowRun);
@@ -139,9 +147,32 @@ describe('POST /resparkable/briefing/regenerate', () => {
     expect(response.status).toBe(200);
     expect(json.data).toMatchObject({ executionId: 'exec_1', status: 'queued' });
 
-    const [slug, userId] = mockedQueue.mock.calls[0] ?? [];
+    const [slug, scope] = mockedQueue.mock.calls[0] ?? [];
     expect(slug).toBe('resparkable-morning-briefing');
-    expect(userId).toBe('user_a');
+    expect(scope).toMatchObject({ spaceId: 'user_a', actorUserId: 'user_a', role: 'owner' });
+  });
+
+  it('refuses before queueing when the balance cannot pay, and queues nothing', async () => {
+    // Phase 50: the pre-flight moved to the request. Until then this path queued
+    // regardless and the budget failure arrived later in the run history.
+    vi.mocked(assertCanSpend).mockRejectedValueOnce(new InsufficientCreditsError());
+
+    const response = await postRegenerate(post({}), SESSION_A, undefined);
+
+    expect(response.status).toBe(402);
+    expect(mockedQueue).not.toHaveBeenCalled();
+  });
+
+  it('regenerates the personal briefing even from a group workspace URL', async () => {
+    // A group has no briefing. `?space=` is ignored here rather than resolved,
+    // so a member in a group cannot queue their briefing against the group.
+    const request = new Request(
+      'http://localhost/api/v1/resparkable/briefing/regenerate?space=spc_group',
+      { method: 'POST', body: JSON.stringify({}), headers: { 'content-type': 'application/json' } }
+    );
+    await postRegenerate(request, SESSION_A, undefined);
+
+    expect(mockedQueue.mock.calls[0]?.[1]).toMatchObject({ spaceId: 'user_a' });
   });
 
   /**

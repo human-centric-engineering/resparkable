@@ -35,6 +35,18 @@ vi.mock('@/lib/framework/resparkable/services/capture', () => ({ captureThought:
 // and the scope mint are the real ones, because those are what this file is
 // about.
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({ findMembershipBySpace: vi.fn() }));
+// A background run's scope is minted from the space row's kind (phase 50), so
+// the row is what the carrier resolves against. Every id here is a personal
+// space unless it starts `spc_`, which is how group keys are minted.
+vi.mock('@/lib/framework/resparkable/repo/space', () => ({
+  findSpaceByUserId: vi.fn((spaceId: string) =>
+    Promise.resolve(
+      spaceId === 'gone'
+        ? null
+        : { spaceId, kind: spaceId.startsWith('spc_') ? 'group' : 'personal' }
+    )
+  ),
+}));
 vi.mock('@/lib/framework/resparkable/services/context-digest', () => ({
   buildContextDigest: vi.fn(),
 }));
@@ -46,6 +58,10 @@ vi.mock('@/lib/framework/resparkable/services/snapshot', () => ({ buildSnapshot:
 vi.mock('@/lib/framework/resparkable/services/reviews', () => ({ writeReview: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/ideate', () => ({ ideate: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/services/stale-digest', () => ({ buildStaleDigest: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/services/group-digest', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/services/group-digest')>()),
+  buildGroupDigestInputs: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/services/briefing', () => ({
   getStoredBriefing: vi.fn(),
   buildBriefingInputs: vi.fn(),
@@ -100,6 +116,7 @@ import { buildSnapshot } from '@/lib/framework/resparkable/services/snapshot';
 import { writeReview } from '@/lib/framework/resparkable/services/reviews';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { buildStaleDigest } from '@/lib/framework/resparkable/services/stale-digest';
+import { buildGroupDigestInputs } from '@/lib/framework/resparkable/services/group-digest';
 import { reprioritiseTasks } from '@/lib/framework/resparkable/priority/reprioritise';
 import { taskResource } from '@/lib/framework/resparkable/services/resources';
 import {
@@ -152,11 +169,13 @@ const VALID_ARGS: Record<string, unknown> = {
   resparkable_get_briefing_inputs: { workStyleOverride: 'exploratory' },
   resparkable_notify: { notification: 'briefing_ready' },
   resparkable_get_stale_digest: {},
+  resparkable_get_group_digest_inputs: {},
 };
 
 const ALL_SERVICES = [
   captureThought,
   buildContextDigest,
+  buildGroupDigestInputs,
   searchResparkable,
   linkEntities,
   findNeighbours,
@@ -220,6 +239,29 @@ describe('requireResparkableSpace', () => {
         scope: { [RESPARKABLE_SCHEDULE_OWNER_KEY]: 'user-b' },
       })
     ).toMatchObject({ spaceId: 'user-b' });
+  });
+
+  it('gives a group background run no actor and never the owner role', async () => {
+    // Phase 50. `spaceScope()` assumes the key is a person: minting a group's
+    // `spc_` key through it made the key the `owner` and stamped it into
+    // `createdByUserId`, whose FK into "user" refuses it.
+    expect(
+      await requireResparkableSpace({
+        userId: null,
+        agentId: 'workflow:wf_1',
+        scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: 'spc_group' },
+      })
+    ).toMatchObject({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+  });
+
+  it('refuses a background run whose space no longer exists', async () => {
+    await expect(
+      requireResparkableSpace({
+        userId: null,
+        agentId: 'workflow:wf_1',
+        scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: 'gone' },
+      })
+    ).rejects.toThrow(MissingResparkableUserError);
   });
 
   it('ignores a LEGACY schedule scope on a live session turn', async () => {

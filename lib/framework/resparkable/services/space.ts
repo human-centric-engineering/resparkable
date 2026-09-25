@@ -104,7 +104,7 @@ export async function ensureResparkableSpace(userId: string): Promise<Resparkabl
     // above and for the same reason: this is the read path of a brand-new
     // brain and must not 500 because billing setup was briefly unavailable.
     // Unlike schedules, a missed grant here is not silently corrected later:
-    // `assertPositiveBalance`'s lazy backfill creates the account at zero
+    // `assertCanSpend`'s lazy backfill creates the account at zero
     // balance with no retroactive grant (that grant is specifically for
     // genuinely new users, i.e. this branch). So this failing means a new
     // user starts at zero instead of their configured grant, worse than a
@@ -260,6 +260,8 @@ async function ensureNewUserCreditGrant(userId: string): Promise<void> {
       kind: 'admin_grant',
       creditsDelta: settings.newUserGrantCredits,
       note: 'New user grant',
+      // A grant the person did not make. Attribution is for spend.
+      authorUserId: null,
     });
   }
 }

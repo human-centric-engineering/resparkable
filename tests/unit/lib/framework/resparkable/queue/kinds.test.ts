@@ -39,6 +39,7 @@ import { describe, it, expect } from 'vitest';
 import {
   nextDueAt,
   isResparkableJobKind,
+  jobKindsForSpace,
   RESPARKABLE_JOB_KINDS,
   RESPARKABLE_JOB_SPECS,
 } from '@/lib/framework/resparkable/queue/kinds';
@@ -248,5 +249,32 @@ describe('the vocabulary', () => {
     // ageing out.
     expect(RESPARKABLE_JOB_SPECS.retention.demandGated).toBe(false);
     expect(RESPARKABLE_JOB_SPECS.retention.spendsCredits).toBe(false);
+  });
+});
+
+describe('which kinds a space is owed (phase 50)', () => {
+  it('gives a person everything but the group digest', () => {
+    expect(jobKindsForSpace('personal')).toEqual(
+      RESPARKABLE_JOB_KINDS.filter((kind) => kind !== 'group_digest')
+    );
+  });
+
+  it('gives a group none of the four that bill a person or name one as owner', () => {
+    const group = jobKindsForSpace('group');
+    for (const personal of ['triage', 'briefing', 'weekly_review', 'horizon_check']) {
+      expect(group).not.toContain(personal);
+    }
+    expect([...group].sort()).toEqual(['group_digest', 'reindex', 'retention', 'sweep']);
+  });
+
+  it('covers every kind between the two sets, so none is owed by nobody', () => {
+    const owed = new Set([...jobKindsForSpace('personal'), ...jobKindsForSpace('group')]);
+    expect([...owed].sort()).toEqual([...RESPARKABLE_JOB_KINDS].sort());
+  });
+
+  it('treats a kind nobody expected as a group, never as a person', () => {
+    // The personal set is the one that bills a person and names them as a run's
+    // owner, so it is the one an unrecognised value must not reach.
+    expect(jobKindsForSpace('organisation')).toEqual(jobKindsForSpace('group'));
   });
 });

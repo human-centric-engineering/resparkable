@@ -74,6 +74,8 @@ vi.mock('@/lib/db/client', () => {
       resparkableReview: reader(),
       resparkableEvent: reader(),
       resparkableShareLink: reader(),
+      // Phase 50: a member's own spend and top-ups in a group's ledger.
+      resparkableCreditLedgerEntry: reader(),
     },
   };
 });
@@ -351,6 +353,25 @@ describe('collectGroupContributions (phase 48, §23.6)', () => {
       createdByUserId: 'user_b',
       space: { kind: 'group' },
     });
+  });
+
+  it('exports the subject’s own rows in a group’s ledger, and nobody else’s', async () => {
+    // Phase 50 attributes every group debit and top-up to the member who made
+    // it. Leaving these out would hand a data subject a short answer.
+    vi.mocked(prisma.resparkableCreditLedgerEntry.findMany).mockResolvedValueOnce([
+      { id: 'le1', kind: 'transfer_in', creditsDelta: 500, spaceId: 'spc_b', createdAt: at },
+    ] as never);
+    vi.mocked(prisma.resparkableGroup.findMany).mockResolvedValueOnce([
+      { id: 'grp_b', name: 'Study Group B', spaceId: 'spc_b' },
+    ] as never);
+
+    const groups = await collectGroupContributions('user_b', [{ groupId: 'grp_b', joinedAt: at }]);
+
+    expect(
+      vi.mocked(prisma.resparkableCreditLedgerEntry.findMany).mock.calls[0]?.[0]?.where
+    ).toEqual({ createdByUserId: 'user_b', space: { kind: 'group' } });
+    expect(JSON.stringify(groups)).toContain('transfer_in');
+    expect(JSON.stringify(groups)).toContain('billingLedger');
   });
 
   it('groups rows by group, labels them by name, and strips the space key', async () => {

@@ -41,6 +41,8 @@ export interface TaskFilters {
    * two are asked for together ("open tasks in this project").
    */
   excludeStatuses?: string[];
+  /** Tasks nobody has changed since this instant: the group digest's "not picked up". */
+  untouchedSince?: Date;
 }
 
 export type TaskCreateData = WithoutOwner<Prisma.ResparkableTaskUncheckedCreateInput>;
@@ -56,6 +58,7 @@ function taskWhere(
     ...statusWhere(filters),
     ...(filters.projectId ? { projectId: filters.projectId } : {}),
     ...(filters.dueBefore ? { dueAt: { lte: filters.dueBefore } } : {}),
+    ...(filters.untouchedSince ? { updatedAt: { lte: filters.untouchedSince } } : {}),
     ...(filters.hideDeferred
       ? { OR: [{ deferUntil: null }, { deferUntil: { lte: new Date() } }] }
       : {}),

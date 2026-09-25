@@ -177,6 +177,23 @@ export class ResparkableCaptureForTokenCapability extends BaseCapability<
       );
     }
 
+    // A group space has an inbox token too (the column is required), but no
+    // owner: its key is a `spc_` id, not a user id, so `spaceScope` would mint
+    // a scope naming the group as a person and the contact lookup would ask the
+    // `user` table for it. That fails closed today only because the lookup
+    // happens to miss. Email capture is a personal-space channel (phase 47:
+    // capture defaults to personal), so a group token is refused by name.
+    if (space.kind !== 'personal') {
+      logger.warn('Resparkable inbound capture: inbox token belongs to a group', {
+        messageId: parsed.messageId,
+        spaceId: space.spaceId,
+      });
+      return this.error(
+        'Email capture is only available for a personal brain. The message was not captured.',
+        'group_inbox_unsupported'
+      );
+    }
+
     const scope = spaceScope(space.spaceId);
     const contact = await findOwnerContact(scope);
 

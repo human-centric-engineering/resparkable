@@ -111,6 +111,23 @@ describe('listEvents filters', () => {
     expect(call?.where).toMatchObject({ kind: 'promoted' });
   });
 
+  it('filters by any of several kinds, and by source', async () => {
+    await listEvents(SCOPE, { kinds: ['captured', 'created'], source: 'user' });
+
+    const call = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0]?.[0];
+    expect(call?.where).toMatchObject({
+      kind: { in: ['captured', 'created'] },
+      source: 'user',
+    });
+  });
+
+  it('lets a single kind win over a list of kinds', async () => {
+    await listEvents(SCOPE, { kind: 'completed', kinds: ['captured'] });
+
+    const call = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0]?.[0];
+    expect(call?.where).toMatchObject({ kind: 'completed' });
+  });
+
   it('filters by entityType when provided', async () => {
     // Arrange / Act
     await listEvents(SCOPE, { entityType: 'goal' });

@@ -39,7 +39,7 @@ vi.mock('@/lib/db/client', () => ({
 import { prisma } from '@/lib/db/client';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { backgroundSpaceScope, spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { WorkflowStatus } from '@/types/orchestration';
 
 const SCOPE = spaceScope('user_a');
@@ -58,7 +58,7 @@ describe('queueResparkableWorkflowRun', () => {
     } as never);
     vi.mocked(prisma.aiWorkflowExecution.create).mockResolvedValue({ id: 'exec1' } as never);
 
-    const id = await queueResparkableWorkflowRun('resparkable-morning-briefing', 'user_a', {});
+    const id = await queueResparkableWorkflowRun('resparkable-morning-briefing', SCOPE, {});
 
     expect(id).toBe('exec1');
     const data = vi.mocked(prisma.aiWorkflowExecution.create).mock.calls[0]?.[0]?.data;
@@ -68,7 +68,31 @@ describe('queueResparkableWorkflowRun', () => {
       status: WorkflowStatus.PENDING,
       userId: 'user_a',
       budgetLimitUsd: 0.25,
+      scope: { resparkableSpaceId: 'user_a' },
     });
+  });
+
+  it('names the space the run is about, and nobody as its owner for a group background run', async () => {
+    // Phase 50. The run's brain used to be inferred from `userId`, so a summary
+    // asked for in a group ran against the member's personal brain and was
+    // billed to their personal balance. The space now travels on `scope`, and a
+    // group's own background run carries no person at all.
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue({
+      id: 'wf1',
+      isActive: true,
+      maxCostPerExecutionUsd: null,
+      publishedVersionId: 'v1',
+    } as never);
+    vi.mocked(prisma.aiWorkflowExecution.create).mockResolvedValue({ id: 'exec1' } as never);
+
+    await queueResparkableWorkflowRun(
+      'resparkable-context-digest',
+      backgroundSpaceScope({ spaceId: 'spc_group', kind: 'group' }),
+      {}
+    );
+
+    const data = vi.mocked(prisma.aiWorkflowExecution.create).mock.calls[0]?.[0]?.data;
+    expect(data).toMatchObject({ userId: null, scope: { resparkableSpaceId: 'spc_group' } });
   });
 
   it('writes the status the tick actually selects on, not an upper-cased lookalike', async () => {
@@ -87,7 +111,7 @@ describe('queueResparkableWorkflowRun', () => {
     } as never);
     vi.mocked(prisma.aiWorkflowExecution.create).mockResolvedValue({ id: 'exec1' } as never);
 
-    await queueResparkableWorkflowRun('resparkable-morning-briefing', 'user_a', {});
+    await queueResparkableWorkflowRun('resparkable-morning-briefing', SCOPE, {});
 
     const data = vi.mocked(prisma.aiWorkflowExecution.create).mock.calls[0]?.[0]?.data;
     expect(data).toMatchObject({ status: 'pending' });
@@ -103,9 +127,7 @@ describe('queueResparkableWorkflowRun', () => {
       publishedVersionId: null,
     } as never);
 
-    expect(
-      await queueResparkableWorkflowRun('resparkable-morning-briefing', 'user_a', {})
-    ).toBeNull();
+    expect(await queueResparkableWorkflowRun('resparkable-morning-briefing', SCOPE, {})).toBeNull();
     expect(prisma.aiWorkflowExecution.create).not.toHaveBeenCalled();
   });
 
@@ -117,16 +139,14 @@ describe('queueResparkableWorkflowRun', () => {
       publishedVersionId: 'v1',
     } as never);
 
-    expect(
-      await queueResparkableWorkflowRun('resparkable-morning-briefing', 'user_a', {})
-    ).toBeNull();
+    expect(await queueResparkableWorkflowRun('resparkable-morning-briefing', SCOPE, {})).toBeNull();
     expect(prisma.aiWorkflowExecution.create).not.toHaveBeenCalled();
   });
 
   it('refuses an unknown slug', async () => {
     vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(null);
 
-    expect(await queueResparkableWorkflowRun('resparkable-nope', 'user_a', {})).toBeNull();
+    expect(await queueResparkableWorkflowRun('resparkable-nope', SCOPE, {})).toBeNull();
   });
 });
 

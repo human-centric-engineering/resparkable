@@ -31,6 +31,7 @@ import { ResparkableCaptureCapability } from '@/lib/framework/resparkable/capabi
 import { ResparkableCaptureContextCapability } from '@/lib/framework/resparkable/capabilities/capture-context';
 import { ResparkableCaptureForTokenCapability } from '@/lib/framework/resparkable/capabilities/capture-for-token';
 import { ResparkableGetContextDigestCapability } from '@/lib/framework/resparkable/capabilities/context-digest';
+import { ResparkableGetGroupDigestInputsCapability } from '@/lib/framework/resparkable/capabilities/group-digest';
 import { ResparkableGetSnapshotCapability } from '@/lib/framework/resparkable/capabilities/snapshot';
 import { ResparkableIdeateCapability } from '@/lib/framework/resparkable/capabilities/ideate';
 import { ResparkableNotifyCapability } from '@/lib/framework/resparkable/capabilities/notify';
@@ -91,6 +92,7 @@ export function resparkableCapabilityHandlers(): BaseCapability[] {
     new ResparkableGetBriefingInputsCapability(),
     new ResparkableNotifyCapability(),
     new ResparkableGetStaleDigestCapability(),
+    new ResparkableGetGroupDigestInputsCapability(),
     new ResparkableCaptureForTokenCapability(),
   ];
 }

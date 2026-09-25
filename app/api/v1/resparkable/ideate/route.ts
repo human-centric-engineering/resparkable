@@ -24,10 +24,7 @@ import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import {
-  assertPositiveBalance,
-  recordAgentSpend,
-} from '@/lib/framework/resparkable/services/billing';
+import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { ideateSchema } from '@/lib/framework/resparkable/validations';
@@ -43,7 +40,7 @@ export const POST = withAuth(async (request, session) => {
   await ensureResparkableSpace(session.user.id);
   // Refused before any provider call: see services/billing.ts. Throws
   // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
-  await assertPositiveBalance(scope);
+  await assertCanSpend(scope);
 
   const result = await ideate(scope, body);
 
