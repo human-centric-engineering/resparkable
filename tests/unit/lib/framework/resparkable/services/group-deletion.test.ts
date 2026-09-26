@@ -67,6 +67,8 @@ function resolvedAs(role: 'admin' | 'member' | 'viewer') {
       soleAdminNotifiedAt: null,
       dailyCreditCap: null,
       joinedAt: NOW,
+      requestedAt: null,
+      joinLinkId: null,
       createdAt: NOW,
       updatedAt: NOW,
       group: {
@@ -76,6 +78,7 @@ function resolvedAs(role: 'admin' | 'member' | 'viewer') {
         description: null,
         spaceId: SPACE,
         maxMembers: 50,
+        joinRefusedFullAt: null,
         viewersCanInheritAdmin: true,
         fundingMode: 'self_funded',
         lowBalanceAlertCredits: null,

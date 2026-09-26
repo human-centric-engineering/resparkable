@@ -29,6 +29,12 @@ vi.mock('@/lib/api/client', () => ({
 
 import { GroupsView } from '@/components/resparkable/groups/groups-view';
 import { apiClient } from '@/lib/api/client';
+import type { GroupListItemWire } from '@/lib/framework/resparkable/ui/payloads';
+
+/** `viewerUserId` defaults to a signed-in id; pass `''` for the no-session case. */
+function renderView(initial: GroupListItemWire[], viewerUserId = 'user_a') {
+  return render(<GroupsView initial={initial} viewerUserId={viewerUserId} />);
+}
 
 const JOINED = {
   groupId: 'grp_1',
@@ -48,7 +54,7 @@ beforeEach(() => {
 
 describe('GroupsView', () => {
   it('opens a group by naming its workspace in the URL', () => {
-    render(<GroupsView initial={[JOINED]} />);
+    renderView([JOINED]);
 
     expect(screen.getByRole('link', { name: 'Open' })).toHaveAttribute(
       'href',
@@ -57,14 +63,53 @@ describe('GroupsView', () => {
   });
 
   it('shows a pending membership as waiting, with no way in', () => {
-    render(<GroupsView initial={[PENDING]} />);
+    renderView([PENDING]);
 
     expect(screen.getByText(/waiting to be let in/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Open' })).not.toBeInTheDocument();
+    // Not "Manage" or "Open": there is nothing to manage in a group you have
+    // not been let into yet.
+    expect(screen.getByRole('button', { name: 'Withdraw request' })).toBeInTheDocument();
+  });
+
+  it('withdraws a pending request by deleting your own membership row', async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.delete).mockResolvedValue(undefined);
+
+    renderView([PENDING]);
+    await user.click(screen.getByRole('button', { name: 'Withdraw request' }));
+
+    expect(apiClient.delete).toHaveBeenCalledWith(
+      '/api/v1/resparkable/groups/grp_2/members/user_a'
+    );
+    expect(screen.queryByText('Allotment')).not.toBeInTheDocument();
+  });
+
+  it('puts the pending row back when withdrawing fails', async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.delete).mockRejectedValue(new Error('offline'));
+
+    renderView([PENDING]);
+    await user.click(screen.getByRole('button', { name: 'Withdraw request' }));
+
+    expect(await screen.findByText('Allotment')).toBeInTheDocument();
+  });
+
+  it('disables withdrawing, and does nothing, while there is no viewer id to withdraw as', async () => {
+    const user = userEvent.setup();
+
+    renderView([PENDING], '');
+    // The workspace tab's client session can still be loading. A button that
+    // looks live and silently does nothing is the failure this guards against.
+    expect(screen.getByRole('button', { name: 'Withdraw request' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Withdraw request' }));
+
+    expect(apiClient.delete).not.toHaveBeenCalled();
+    expect(screen.getByText('Allotment')).toBeInTheDocument();
   });
 
   it('says the workspace starts empty before anyone invites people into it', () => {
-    render(<GroupsView initial={[]} />);
+    renderView([]);
 
     expect(screen.getByText(/Nothing from yours moves into it/)).toBeInTheDocument();
   });
@@ -79,7 +124,7 @@ describe('GroupsView', () => {
       role: 'admin',
     });
 
-    render(<GroupsView initial={[]} />);
+    renderView([]);
     await user.type(screen.getByLabelText('Start a group'), 'Book Club');
     await user.click(screen.getByRole('button', { name: /Create/ }));
 
@@ -96,7 +141,7 @@ describe('GroupsView', () => {
     const user = userEvent.setup();
     vi.mocked(apiClient.post).mockRejectedValue(new Error('offline'));
 
-    render(<GroupsView initial={[]} />);
+    renderView([]);
     await user.type(screen.getByLabelText('Start a group'), 'Book Club');
     await user.click(screen.getByRole('button', { name: /Create/ }));
 
@@ -113,7 +158,7 @@ describe('GroupsView', () => {
       role: 'admin',
     });
 
-    render(<GroupsView initial={[]} />);
+    renderView([]);
     await user.type(screen.getByLabelText('Start a group'), 'x');
     await user.click(screen.getByRole('button', { name: /Create/ }));
 

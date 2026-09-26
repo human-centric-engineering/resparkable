@@ -243,6 +243,18 @@ export const RESPARKABLE_API = {
    * for a valid token, which is an enumeration surface.
    */
   ACCEPT_GROUP_INVITE: '/api/v1/resparkable/groups/invites/accept',
+  /** Join links (§23.11, phase 57). Minting and listing are admin only. */
+  groupJoinLinks: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/join-links`,
+  groupJoinLink: (groupId: string, linkId: string): string =>
+    `/api/v1/resparkable/groups/${groupId}/join-links/${linkId}`,
+  /** Approve (POST) or turn down (DELETE) one person's request to join. */
+  groupJoinRequest: (groupId: string, userId: string): string =>
+    `/api/v1/resparkable/groups/${groupId}/join-requests/${userId}`,
+  /**
+   * Redeem a join link. Not under a group id, for the reason accepting an
+   * invitation is not: the token names the group.
+   */
+  JOIN_GROUP: '/api/v1/resparkable/groups/join',
 
   /**
    * Comments — the only write path in the tier a non-owner can reach, and the

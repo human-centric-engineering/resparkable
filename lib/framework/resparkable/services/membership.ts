@@ -26,9 +26,9 @@
  *
  * Nothing. Not a `viewer` scope, not a scope on an empty space: `null`, and the
  * caller 404s. `joinedAt: null` means a request to join that an admin has not
- * approved (§23.11), and the difference between "waiting" and "in" is the whole
- * point of phase 57's approval flow. Getting this wrong in phase 46, before
- * anything can even create such a row, is how phase 57 inherits a hole.
+ * approved (§23.11, written by redeeming a `request` join link in
+ * `services/group-join-links.ts`), and the difference between "waiting" and
+ * "in" is the whole point of the approval flow.
  *
  * ## Last admin, and the rules that are here rather than in a route
  *
@@ -53,6 +53,8 @@ import {
   countAdmins,
   createGroupWithSpace,
   deleteGroupSpace,
+  deleteJoinRequest,
+  deleteGroupSpaceIfLastMember,
   deleteGroupSpaceIfMemberless,
   deleteMember,
   findGroupById,
@@ -63,6 +65,7 @@ import {
   listGroupsWithoutAdmin,
   listJoinedGroupsForErasure,
   listMembershipsForActor,
+  returnJoinLinkUsesForErasure,
   updateGroup,
   updateMemberRole,
   type GroupMemberWithGroup,
@@ -255,6 +258,20 @@ export function permissionsFor(role: SpaceRole): GroupPermissions {
   };
 }
 
+/**
+ * The member rows a caller may see: joined members for everybody, and requests
+ * to join (`joinedAt: null`) only for somebody who can answer one. To anybody
+ * else a request is a person who is not in the group, named to people they have
+ * not met. One function, so the two routes that list members cannot disagree.
+ */
+export function visibleMemberRows<T extends { joinedAt: Date | null }>(
+  rows: readonly T[],
+  viewerRole: SpaceRole
+): T[] {
+  const seesRequests = permissionsFor(viewerRole).administer;
+  return rows.filter((row) => row.joinedAt !== null || seesRequests);
+}
+
 /** Why a membership change was refused. Every one is a 400 the UI can explain. */
 export type MembershipRefusal =
   'not_a_member' | 'not_an_admin' | 'no_such_member' | 'last_admin' | 'unknown_role';
@@ -327,7 +344,10 @@ export async function updateGroupSettings(
     return { ok: false, reason: 'not_an_admin' };
   }
 
-  return { ok: true, value: await updateGroup(groupId, data) };
+  // A new cap answers the "somebody was turned away" notice, whichever way it
+  // moved: an admin who has looked at the cap has seen the notice.
+  const update = 'maxMembers' in data ? { ...data, joinRefusedFullAt: null } : data;
+  return { ok: true, value: await updateGroup(groupId, update) };
 }
 
 /**
@@ -354,7 +374,9 @@ export async function changeMemberRole(
   }
 
   const target = await findMembership(targetUserId, groupId);
-  if (!target) return { ok: false, reason: 'no_such_member' };
+  // A pending row's role was fixed by the link it came through, and changing
+  // it would let an admin turn a request into an admin-to-be. Approve first.
+  if (!target || target.joinedAt === null) return { ok: false, reason: 'no_such_member' };
   if (target.role === role) return { ok: true, value: null };
 
   if (target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
@@ -386,6 +408,18 @@ export async function removeMember(
   groupId: string,
   targetUserId: string
 ): Promise<MembershipResult<{ groupDeleted: boolean }>> {
+  // Withdrawing your own request to join. It has to come before the resolve
+  // below, because a pending member resolves to nothing and would be told the
+  // group does not exist. One cheap read first, so an ordinary leave does not
+  // pay for the delete transaction.
+  if (targetUserId === actorUserId) {
+    const own = await findMembership(actorUserId, groupId);
+    if (own && own.joinedAt === null && (await deleteJoinRequest(groupId, actorUserId))) {
+      logger.info('Resparkable group join request withdrawn', { groupId });
+      return { ok: true, value: { groupDeleted: false } };
+    }
+  }
+
   const resolved = await resolveGroupMembership(actorUserId, groupId);
   if (!resolved) return { ok: false, reason: 'not_a_member' };
 
@@ -397,6 +431,16 @@ export async function removeMember(
   const target = await findMembership(targetUserId, groupId);
   if (!target) return { ok: false, reason: 'no_such_member' };
 
+  // A pending request is not a member, so none of what follows applies to it.
+  // Before phase 57 this fell through to the "last member out" count, which
+  // counts joined members only: an admin alone in a group, removing the one
+  // request waiting on it, took that branch and deleted the group.
+  if (target.joinedAt === null) {
+    await deleteJoinRequest(groupId, targetUserId);
+    logger.info('Resparkable group join request removed', { groupId });
+    return { ok: true, value: { groupDeleted: false } };
+  }
+
   // Joined members only, matching `countAdmins`, which excludes pending rows on
   // purpose. Counting them here and not there was an inconsistency with a real
   // consequence: a sole admin sitting beside one request-to-join failed the
@@ -404,18 +448,20 @@ export async function removeMember(
   // could never leave their own group. A pending row is somebody asking to come
   // in, and it cannot be the reason somebody else is trapped.
   const members = (await listGroupMembers(groupId)).filter((member) => member.joinedAt !== null);
-  const lastMember = members.length <= 1;
-
-  if (!lastMember && target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
-    return { ok: false, reason: 'last_admin' };
-  }
-
-  if (lastMember) {
-    // The last person out. See the docblock: the space goes with them, because
-    // nothing afterwards can reach it.
-    await deleteGroupSpace(resolved.membership.group.spaceId);
+  // The last person out. See the docblock: the space goes with them, because
+  // nothing afterwards can reach it. The repo counts again under the group lock,
+  // and a `false` means somebody came in through a link since the count above,
+  // so this is an ordinary leave after all.
+  if (
+    members.length <= 1 &&
+    (await deleteGroupSpaceIfLastMember(groupId, resolved.membership.group.spaceId, targetUserId))
+  ) {
     logger.info('Resparkable group deleted: its last member left', { groupId });
     return { ok: true, value: { groupDeleted: true } };
+  }
+
+  if (target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
+    return { ok: false, reason: 'last_admin' };
   }
 
   await deleteMember(groupId, targetUserId);
@@ -452,6 +498,9 @@ export interface ErasureSettlement {
  * workspaces from a bare user id, and the only caller it may ever have is the
  * erasure hook in `privacy/erasure.ts`.
  *
+ * It also gives back the join-link use each of their pending requests took,
+ * since the cascade that removes those requests cannot.
+ *
  * What it does NOT do is remove the erased person's own membership rows, null
  * `createdByUserId` on what they wrote, or touch a group space that still has
  * people in it. Those are database constraints (B13, B11 and B12), and doing
@@ -485,6 +534,13 @@ export async function settleGroupsAfterErasure(
       settlement.leftWithoutAdmin += 1;
       logger.info('Resparkable group left without an admin: only viewers remain', { groupId });
     }
+  }
+
+  // Requests to join they were still waiting on go with them by cascade, and
+  // each gives its link back the use it took, as turning one down would.
+  const usesReturned = await returnJoinLinkUsesForErasure(erasedUserId, tx);
+  if (usesReturned > 0) {
+    logger.info('Resparkable join link uses returned after erasure', { usesReturned });
   }
 
   return settlement;

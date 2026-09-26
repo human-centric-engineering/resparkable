@@ -18,9 +18,11 @@ import { describe, it, expect } from 'vitest';
 
 import { DEFAULT_PRIORITY_WEIGHTS } from '@/lib/framework/resparkable/settings';
 import {
+  createJoinLinkSchema,
   createLinkSchema,
   documentUploadSchema,
   energyProfileSchema,
+  redeemJoinLinkSchema,
   resparkableAdminSettingsResponseSchema,
   resparkableSettingsSchema,
   priorityWeightsSchema,
@@ -664,5 +666,108 @@ describe('resparkableAdminSettingsResponseSchema', () => {
         documentOriginals: 'shred',
       }).success
     ).toBe(false);
+  });
+});
+
+describe('createJoinLinkSchema', () => {
+  it('rejects role: admin at the boundary — §23.11, test 13i', () => {
+    // This is the mint route's own assertion, not the UI's. `mintJoinLink`
+    // refuses it a second time even if a caller skips this schema.
+    const result = createJoinLinkSchema.safeParse({ role: 'admin' });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('defaults role to member when the field is left out', () => {
+    const result = createJoinLinkSchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.role).toBe('member');
+  });
+
+  it('accepts viewer explicitly', () => {
+    const result = createJoinLinkSchema.safeParse({ role: 'viewer' });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.role).toBe('viewer');
+  });
+
+  it('defaults expiry to 30 days, the public link default, not a grant’s 90', () => {
+    const result = createJoinLinkSchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.expiry).toEqual({ kind: 'days', days: 30 });
+  });
+
+  it('accepts an explicit "never expires" choice', () => {
+    const result = createJoinLinkSchema.safeParse({ expiry: { kind: 'never' } });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.expiry).toEqual({ kind: 'never' });
+  });
+
+  it('leaves maxUses absent as unlimited rather than defaulting it', () => {
+    const result = createJoinLinkSchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxUses).toBeUndefined();
+  });
+
+  it('accepts an explicit null maxUses as unlimited', () => {
+    const result = createJoinLinkSchema.safeParse({ maxUses: null });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.maxUses).toBeNull();
+  });
+
+  it('accepts maxUses at its bounds, 1 and 500', () => {
+    expect(createJoinLinkSchema.safeParse({ maxUses: 1 }).success).toBe(true);
+    expect(createJoinLinkSchema.safeParse({ maxUses: 500 }).success).toBe(true);
+  });
+
+  it('rejects maxUses outside its bounds', () => {
+    expect(createJoinLinkSchema.safeParse({ maxUses: 0 }).success).toBe(false);
+    expect(createJoinLinkSchema.safeParse({ maxUses: 501 }).success).toBe(false);
+  });
+
+  it('rejects an unrecognised field, since a join link is not the place for one', () => {
+    expect(createJoinLinkSchema.safeParse({ role: 'member', spendLimit: 5 }).success).toBe(false);
+  });
+
+  it('accepts an explicit approval that overrides the role default', () => {
+    const result = createJoinLinkSchema.safeParse({ role: 'member', approval: 'open' });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.approval).toBe('open');
+  });
+
+  it('leaves approval undefined when not given, so the service can pick the role’s default', () => {
+    const result = createJoinLinkSchema.safeParse({ role: 'viewer' });
+
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.approval).toBeUndefined();
+  });
+});
+
+describe('redeemJoinLinkSchema', () => {
+  it('accepts a 32-character base64url token', () => {
+    const token = 'A'.repeat(32);
+    const result = redeemJoinLinkSchema.safeParse({ token });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a token of the wrong length', () => {
+    expect(redeemJoinLinkSchema.safeParse({ token: 'A'.repeat(31) }).success).toBe(false);
+    expect(redeemJoinLinkSchema.safeParse({ token: 'A'.repeat(33) }).success).toBe(false);
+  });
+
+  it('rejects a token carrying characters base64url does not use', () => {
+    expect(redeemJoinLinkSchema.safeParse({ token: `${'A'.repeat(31)}+` }).success).toBe(false);
+    expect(redeemJoinLinkSchema.safeParse({ token: `${'A'.repeat(31)}/` }).success).toBe(false);
+  });
+
+  it('rejects a missing token', () => {
+    expect(redeemJoinLinkSchema.safeParse({}).success).toBe(false);
   });
 });

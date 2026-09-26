@@ -24,7 +24,15 @@ import {
   groupBudgetSchema,
   groupDetailSchema,
   groupInvitesSchema,
+  groupJoinLinksSchema,
+  type GroupJoinLinkWire,
 } from '@/lib/framework/resparkable/ui/payloads';
+
+/**
+ * Stable while the admin's link list is loading: `GroupJoinLinks` follows its
+ * `links` prop, and a fresh `[]` on every render would reset it each time.
+ */
+const NO_JOIN_LINKS: GroupJoinLinkWire[] = [];
 
 export interface GroupTabProps {
   id: string;
@@ -42,6 +50,10 @@ export function GroupTab({ id }: GroupTabProps): React.ReactElement {
     isAdmin ? RESPARKABLE_API.groupInvites(id) : null,
     groupInvitesSchema
   );
+  const [joinLinks] = useTabFetch(
+    isAdmin ? RESPARKABLE_API.groupJoinLinks(id) : null,
+    groupJoinLinksSchema
+  );
   // Every member is answered; the per-person half only for an admin.
   const [budget] = useTabFetch(RESPARKABLE_API.groupBudget(id), groupBudgetSchema);
 
@@ -54,6 +66,7 @@ export function GroupTab({ id }: GroupTabProps): React.ReactElement {
     <GroupDetail
       detail={detail.data}
       invites={invites.status === 'ready' ? invites.data : []}
+      joinLinks={joinLinks.status === 'ready' ? joinLinks.data : NO_JOIN_LINKS}
       budget={budget.status === 'ready' ? budget.data : null}
       viewerUserId={session?.user.id ?? ''}
     />

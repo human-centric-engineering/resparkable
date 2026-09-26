@@ -2109,10 +2109,7 @@ export const updateGroupSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().max(2000).nullable().optional(),
-    /**
-     * Nothing enforces this until phase 57. The ceiling is here so a value that
-     * would be nonsense when it IS enforced cannot be written in the meantime.
-     */
+    /** The member cap join links are held to (phase 57). */
     maxMembers: z.number().int().min(1).max(500).optional(),
     /**
      * Whether a viewer may inherit admin when the last admin's account is
@@ -2227,3 +2224,38 @@ export const acceptGroupInviteSchema = z
   .strict();
 
 export type AcceptGroupInviteInput = z.infer<typeof acceptGroupInviteSchema>;
+
+// ─── Group join links (phase 57, §23.11) ─────────────────────────────────────
+
+/**
+ * Mint a join link.
+ *
+ * **`role` cannot be `admin`**, and this is the mint route's own assertion
+ * rather than the UI's (test 13i). `mintJoinLink` refuses it a second time.
+ *
+ * `approval` is optional because its default depends on the role: `request` for
+ * `member`, `open` for `viewer` (`defaultApprovalFor`). `maxUses` absent or
+ * `null` is unlimited, and the group's `maxMembers` still applies.
+ *
+ * Expiry is `shareLinkExpirySchema`, not `grantExpirySchema`: a join link names
+ * nobody, so it takes the public link's 30-day default rather than a grant's 90.
+ */
+export const createJoinLinkSchema = z
+  .object({
+    role: z.enum(['member', 'viewer']).default('member'),
+    approval: z.enum(['open', 'request']).optional(),
+    maxUses: z.number().int().min(1).max(500).nullable().optional(),
+    expiry: shareLinkExpirySchema,
+  })
+  .strict();
+
+export type CreateJoinLinkInput = z.infer<typeof createJoinLinkSchema>;
+
+/** Redeem a join link. The same token shape as every other token in the tier. */
+export const redeemJoinLinkSchema = z
+  .object({
+    token: z.string().regex(/^[A-Za-z0-9_-]{32}$/, 'Not a join link'),
+  })
+  .strict();
+
+export type RedeemJoinLinkInput = z.infer<typeof redeemJoinLinkSchema>;

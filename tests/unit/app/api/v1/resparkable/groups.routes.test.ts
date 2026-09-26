@@ -13,7 +13,7 @@
  *   addresses are deliberately in the response body: an admin cannot withdraw an
  *   invitation they cannot see.
  * - The member list is an allowlisted projection, not the row: it strips
- *   everything but `userId`, `role` and `joinedAt`.
+ *   everything but `userId`, `role`, `joinedAt` and `requestedAt`.
  * - The accept route answers 200 with `joined: false` on every failure, never a
  *   4xx, and its wrong-account answer carries a masked address.
  * - Every mutating handler is wrapped in `withAuth`, and every body goes through
@@ -65,16 +65,27 @@ vi.mock('@/lib/auth/guards', () => ({
 
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   listGroupMembers: vi.fn(),
+  findAccountNames: vi.fn(),
 }));
 
-vi.mock('@/lib/framework/resparkable/services/membership', () => ({
-  createGroup: vi.fn(),
-  listGroupsForActor: vi.fn(),
-  resolveGroupMembership: vi.fn(),
-  updateGroupSettings: vi.fn(),
-  changeMemberRole: vi.fn(),
-  removeMember: vi.fn(),
-}));
+vi.mock('@/lib/framework/resparkable/services/membership', async () => {
+  // `permissionsFor` and `visibleMemberRows` are pure rules the routes now
+  // call directly (they used to inline `membership.role === 'admin'`), so the
+  // real implementations are kept here rather than stubbed: a mock cannot
+  // drift from the rule it is supposed to exercise.
+  const actual = await vi.importActual<
+    typeof import('@/lib/framework/resparkable/services/membership')
+  >('@/lib/framework/resparkable/services/membership');
+  return {
+    ...actual,
+    createGroup: vi.fn(),
+    listGroupsForActor: vi.fn(),
+    resolveGroupMembership: vi.fn(),
+    updateGroupSettings: vi.fn(),
+    changeMemberRole: vi.fn(),
+    removeMember: vi.fn(),
+  };
+});
 
 vi.mock('@/lib/framework/resparkable/services/group-deletion', () => ({
   deleteGroupConfirmed: vi.fn(),
@@ -88,6 +99,15 @@ vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
   listInvitesForAdmin: vi.fn(),
   revokeGroupInvite: vi.fn(),
   acceptGroupInvite: vi.fn(),
+}));
+
+vi.mock('@/lib/framework/resparkable/services/group-join-links', () => ({
+  mintJoinLink: vi.fn(),
+  listJoinLinksForAdmin: vi.fn(),
+  revokeGroupJoinLink: vi.fn(),
+  redeemJoinLinkToken: vi.fn(),
+  approveGroupJoinRequest: vi.fn(),
+  rejectGroupJoinRequest: vi.fn(),
 }));
 
 import { GET as GROUPS_GET, POST as GROUPS_POST } from '@/app/api/v1/resparkable/groups/route';
@@ -107,7 +127,17 @@ import {
 } from '@/app/api/v1/resparkable/groups/[id]/invites/route';
 import { DELETE as INVITE_DELETE } from '@/app/api/v1/resparkable/groups/[id]/invites/[inviteId]/route';
 import { POST as ACCEPT_POST } from '@/app/api/v1/resparkable/groups/invites/accept/route';
-import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
+import {
+  GET as JOIN_LINKS_GET,
+  POST as JOIN_LINKS_POST,
+} from '@/app/api/v1/resparkable/groups/[id]/join-links/route';
+import { DELETE as JOIN_LINK_DELETE } from '@/app/api/v1/resparkable/groups/[id]/join-links/[linkId]/route';
+import {
+  DELETE as JOIN_REQUEST_DELETE,
+  POST as JOIN_REQUEST_POST,
+} from '@/app/api/v1/resparkable/groups/[id]/join-requests/[userId]/route';
+import { POST as JOIN_GROUP_POST } from '@/app/api/v1/resparkable/groups/join/route';
+import { findAccountNames, listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
 import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   changeMemberRole,
@@ -125,6 +155,14 @@ import {
   listInvitesForAdmin,
   revokeGroupInvite,
 } from '@/lib/framework/resparkable/services/group-invites';
+import {
+  approveGroupJoinRequest,
+  listJoinLinksForAdmin,
+  mintJoinLink,
+  redeemJoinLinkToken,
+  rejectGroupJoinRequest,
+  revokeGroupJoinLink,
+} from '@/lib/framework/resparkable/services/group-join-links';
 
 const SESSION = {
   user: { id: 'user_a', email: 'a@example.com' },
@@ -141,6 +179,7 @@ const GROUP = {
   spaceId: 'spc_abc123',
   maxMembers: 50,
   viewersCanInheritAdmin: true,
+  joinRefusedFullAt: null,
   fundingMode: 'self_funded',
   lowBalanceAlertCredits: null,
   largeRunAlertPercent: null,
@@ -158,12 +197,31 @@ const MEMBERSHIP = {
   soleAdminNotifiedAt: null,
   dailyCreditCap: null,
   joinedAt: new Date('2026-08-01T00:00:00.000Z'),
+  requestedAt: null,
+  joinLinkId: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
   group: GROUP,
 };
 
+/** A pending row: asked to join through a `request` link, not yet let in. */
+const PENDING_MEMBERSHIP = {
+  ...MEMBERSHIP,
+  id: 'member_2',
+  userId: 'user_p',
+  role: 'member',
+  joinedAt: null,
+  requestedAt: new Date('2026-09-10T00:00:00.000Z'),
+};
+
 const SCOPE = spaceScopeFor({ spaceId: 'spc_abc123', actorUserId: 'user_a', role: 'admin' });
+// `permissionsFor`/`visibleMemberRows` now decide from `scope.role`, not
+// `membership.role`, so a non-admin fixture has to carry a non-admin scope.
+const MEMBER_SCOPE = spaceScopeFor({
+  spaceId: 'spc_abc123',
+  actorUserId: 'user_a',
+  role: 'member',
+});
 
 function req(url: string, body?: unknown) {
   return {
@@ -184,6 +242,9 @@ function invoke(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Every pending-row fixture in this file is anonymous unless a test says
+  // otherwise, so a test that forgets to stub this does not throw.
+  vi.mocked(findAccountNames).mockResolvedValue(new Map());
 });
 
 describe('POST /api/v1/resparkable/groups', () => {
@@ -315,16 +376,198 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
       spaceId: 'spc_abc123',
       maxMembers: 50,
       viewersCanInheritAdmin: true,
+      joinRefusedFullAt: null,
     });
     expect(body.data.yourRole).toBe('admin');
     // The membership row carries `id`, `groupId`, `invitedByUserId`, `createdAt`,
     // `updatedAt` and the nested `group` besides. An exact match proves the
-    // three-field projection, which is what stands between a member list and an
+    // four-field projection, which is what stands between a member list and an
     // address leak the day this row is ever joined against `User`.
     expect(body.data.members).toEqual([
-      { userId: 'user_a', role: 'admin', joinedAt: MEMBERSHIP.joinedAt.toISOString() },
+      {
+        userId: 'user_a',
+        role: 'admin',
+        joinedAt: MEMBERSHIP.joinedAt.toISOString(),
+        requestedAt: null,
+        name: null,
+      },
     ]);
     expect(body.data.latestDigest).toBeNull();
+  });
+
+  it('never carries joinLinkId on a member row, even when the underlying row has one', async () => {
+    // `joinLinkId` says which link a joiner came in through, an internal
+    // fact for the service layer. The wire projection is four fields;
+    // a fifth leaking through would be a fact about the group's
+    // administration nobody meant to hand every member.
+    const viaLink = { ...MEMBERSHIP, joinLinkId: 'link_1' };
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: viaLink, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([viaLink]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.members[0]).not.toHaveProperty('joinLinkId');
+  });
+
+  it('carries a non-null joinRefusedFullAt to an admin', async () => {
+    const refusedAt = new Date('2026-09-20T00:00:00.000Z');
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: { ...MEMBERSHIP, group: { ...GROUP, joinRefusedFullAt: refusedAt } },
+      scope: SCOPE,
+    });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.group.joinRefusedFullAt).toBe(refusedAt.toISOString());
+  });
+
+  it('withholds joinRefusedFullAt from a non-admin, even when the group has one', async () => {
+    const refusedAt = new Date('2026-09-20T00:00:00.000Z');
+    const memberRole = { ...MEMBERSHIP, role: 'member' };
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: { ...memberRole, group: { ...GROUP, joinRefusedFullAt: refusedAt } },
+      scope: MEMBER_SCOPE,
+    });
+    vi.mocked(listGroupMembers).mockResolvedValue([memberRole]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.group.joinRefusedFullAt).toBeNull();
+  });
+
+  it('includes a pending row, with requestedAt, for an admin', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.members).toContainEqual({
+      userId: 'user_p',
+      role: 'member',
+      joinedAt: null,
+      requestedAt: PENDING_MEMBERSHIP.requestedAt.toISOString(),
+      name: null,
+    });
+  });
+
+  it('gives an admin the account name of somebody asking to join', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+    vi.mocked(findAccountNames).mockResolvedValue(new Map([['user_p', 'Pat Rivera']]));
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    const pending = body.data.members.find((m: { userId: string }) => m.userId === 'user_p');
+    expect(pending.name).toBe('Pat Rivera');
+    // The joined row never carries a name: it is a fact about a request, not
+    // about membership.
+    const joined = body.data.members.find((m: { userId: string }) => m.userId === 'user_a');
+    expect(joined.name).toBeNull();
+  });
+
+  it('falls back to null when the account behind a pending row has no name on file', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+    vi.mocked(findAccountNames).mockResolvedValue(new Map([['user_p', null]]));
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    const pending = body.data.members.find((m: { userId: string }) => m.userId === 'user_p');
+    expect(pending.name).toBeNull();
+  });
+
+  it('looks up names only for the pending rows it is showing, never for a joined member', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+
+    await invoke(GROUP_GET, req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`), {
+      id: GROUP_ID,
+    });
+
+    expect(findAccountNames).toHaveBeenCalledWith(['user_p']);
+  });
+
+  it('never looks up a name, and never shows a pending row or a name, for a non-admin', async () => {
+    const memberRole = { ...MEMBERSHIP, role: 'member' };
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: memberRole,
+      scope: MEMBER_SCOPE,
+    });
+    vi.mocked(listGroupMembers).mockResolvedValue([memberRole, PENDING_MEMBERSHIP]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(findAccountNames).toHaveBeenCalledWith([]);
+    expect(body.data.members.map((m: { userId: string }) => m.userId)).toEqual(['user_a']);
+  });
+
+  it('never lets an email address reach the response, even with a name attached', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+    vi.mocked(findAccountNames).mockResolvedValue(new Map([['user_p', 'Pat Rivera']]));
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(JSON.stringify(body)).not.toContain('@');
+  });
+
+  it('withholds a pending row from a non-admin', async () => {
+    const memberRole = { ...MEMBERSHIP, role: 'member' };
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: memberRole,
+      scope: MEMBER_SCOPE,
+    });
+    vi.mocked(listGroupMembers).mockResolvedValue([memberRole, PENDING_MEMBERSHIP]);
+
+    const response = await invoke(
+      GROUP_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.members.map((m: { userId: string }) => m.userId)).toEqual(['user_a']);
   });
 
   it('carries the newest digest, read in the group’s own space', async () => {
@@ -528,7 +771,7 @@ describe('GET /api/v1/resparkable/groups/[id]/members', () => {
     expect(response.status).toBe(404);
   });
 
-  it('lists members as userId, role and joinedAt, no addresses', async () => {
+  it('lists members as userId, role, joinedAt and requestedAt, no addresses', async () => {
     vi.mocked(resolveGroupMembership).mockResolvedValue({
       membership: MEMBERSHIP,
       scope: SCOPE,
@@ -548,8 +791,51 @@ describe('GET /api/v1/resparkable/groups/[id]/members', () => {
     // A divergence between the two is exactly the kind of thing a shared helper
     // would prevent and this route does not use one.
     expect(body.data).toEqual([
-      { userId: 'user_a', role: 'admin', joinedAt: MEMBERSHIP.joinedAt.toISOString() },
+      {
+        userId: 'user_a',
+        role: 'admin',
+        joinedAt: MEMBERSHIP.joinedAt.toISOString(),
+        requestedAt: null,
+      },
     ]);
+  });
+
+  it('includes a pending row for an admin, with when they asked', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
+    vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
+
+    const response = await invoke(
+      MEMBERS_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.map((m: { userId: string }) => m.userId)).toEqual(['user_a', 'user_p']);
+    // `groupMemberSchema` requires `requestedAt`, and an admin deciding on a
+    // request needs to know how long it has waited.
+    expect(body.data[1]).toMatchObject({
+      joinedAt: null,
+      requestedAt: PENDING_MEMBERSHIP.requestedAt.toISOString(),
+    });
+  });
+
+  it('withholds a pending row from a non-admin', async () => {
+    const memberRole = { ...MEMBERSHIP, role: 'member' };
+    vi.mocked(resolveGroupMembership).mockResolvedValue({
+      membership: memberRole,
+      scope: MEMBER_SCOPE,
+    });
+    vi.mocked(listGroupMembers).mockResolvedValue([memberRole, PENDING_MEMBERSHIP]);
+
+    const response = await invoke(
+      MEMBERS_GET,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members`),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(body.data.map((m: { userId: string }) => m.userId)).toEqual(['user_a']);
   });
 });
 
@@ -966,5 +1252,325 @@ describe('POST /api/v1/resparkable/groups/invites/accept', () => {
     // one thing worth pinning here is that the address that reaches the wire is
     // the masked one, never the raw one the service also holds.
     expect(JSON.stringify(body)).not.toContain('@example.com');
+  });
+});
+
+describe('GET /api/v1/resparkable/groups/[id]/join-links', () => {
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/join-links`;
+
+  it('is a 404, not a 403, when the caller is not a member', async () => {
+    vi.mocked(listJoinLinksForAdmin).mockResolvedValue({ ok: false, reason: 'not_a_member' });
+
+    const response = await invoke(JOIN_LINKS_GET, req(url), { id: GROUP_ID });
+
+    expect(response.status).toBe(404);
+  });
+
+  it('is a 403 when the caller is a member but not an admin', async () => {
+    vi.mocked(listJoinLinksForAdmin).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
+
+    const response = await invoke(JOIN_LINKS_GET, req(url), { id: GROUP_ID });
+
+    expect(response.status).toBe(403);
+  });
+
+  it('lists the group’s join links for an admin, never a token', async () => {
+    const link = {
+      id: 'link_1',
+      tokenPrefix: 'abc123',
+      role: 'member',
+      approval: 'request',
+      maxUses: null,
+      useCount: 0,
+      expiresAt: null,
+      revokedAt: null,
+      createdAt: new Date('2026-09-25T00:00:00.000Z'),
+    };
+    vi.mocked(listJoinLinksForAdmin).mockResolvedValue({ ok: true, links: [link] });
+
+    const response = await invoke(JOIN_LINKS_GET, req(url), { id: GROUP_ID });
+    const body = await response.json();
+
+    expect(body.meta.count).toBe(1);
+    expect(body.data[0]).toMatchObject({ id: 'link_1', tokenPrefix: 'abc123' });
+    // A prefix only, never the plaintext token or its digest: the list is not
+    // the response that carries the credential.
+    expect(body.data[0]).not.toHaveProperty('token');
+    expect(body.data[0]).not.toHaveProperty('tokenHash');
+  });
+});
+
+describe('POST /api/v1/resparkable/groups/[id]/join-links', () => {
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/join-links`;
+
+  it('rejects a role of admin at the schema, before the service is ever reached (13i)', async () => {
+    const response = await invoke(
+      JOIN_LINKS_POST,
+      req(url, { role: 'admin', expiry: { kind: 'never' } }),
+      { id: GROUP_ID }
+    );
+
+    // No link can confer admin. Asserted here, at the mint route's own
+    // boundary, and again in the service; this pins the boundary half.
+    expect(response.status).toBe(400);
+    expect(mintJoinLink).not.toHaveBeenCalled();
+  });
+
+  const REFUSALS: Array<{ reason: string; status: number }> = [
+    { reason: 'not_a_member', status: 404 },
+    { reason: 'not_an_admin', status: 403 },
+    { reason: 'admin_link', status: 400 },
+  ];
+
+  for (const { reason, status } of REFUSALS) {
+    it(`maps '${reason}' to ${status}`, async () => {
+      vi.mocked(mintJoinLink).mockResolvedValue({ ok: false, reason: reason as never });
+
+      const response = await invoke(
+        JOIN_LINKS_POST,
+        req(url, { role: 'member', expiry: { kind: 'never' } }),
+        { id: GROUP_ID }
+      );
+
+      expect(response.status).toBe(status);
+    });
+  }
+
+  it('answers 201 with the token and url the service minted', async () => {
+    const createdAt = new Date('2026-09-25T00:00:00.000Z');
+    vi.mocked(mintJoinLink).mockResolvedValue({
+      ok: true,
+      link: {
+        id: 'link_1',
+        tokenPrefix: 'abc123',
+        role: 'member',
+        approval: 'request',
+        maxUses: null,
+        useCount: 0,
+        expiresAt: null,
+        revokedAt: null,
+        createdAt,
+      },
+      token: 'plaintext-token-value',
+      url: 'https://resparkable.test/resparkable/groups/join/plaintext-token-value',
+    });
+
+    const response = await invoke(
+      JOIN_LINKS_POST,
+      req(url, { role: 'member', expiry: { kind: 'never' } }),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(body.data.token).toBe('plaintext-token-value');
+    expect(body.data.url).toBe(
+      'https://resparkable.test/resparkable/groups/join/plaintext-token-value'
+    );
+  });
+
+  it('never writes the token or the url to a log line: either one is the credential', async () => {
+    vi.mocked(mintJoinLink).mockResolvedValue({
+      ok: true,
+      link: {
+        id: 'link_1',
+        tokenPrefix: 'abc123',
+        role: 'member',
+        approval: 'request',
+        maxUses: null,
+        useCount: 0,
+        expiresAt: null,
+        revokedAt: null,
+        createdAt: new Date('2026-09-25T00:00:00.000Z'),
+      },
+      token: 'plaintext-token-value',
+      url: 'https://resparkable.test/resparkable/groups/join/plaintext-token-value',
+    });
+
+    await invoke(JOIN_LINKS_POST, req(url, { role: 'member', expiry: { kind: 'never' } }), {
+      id: GROUP_ID,
+    });
+
+    const logged = JSON.stringify(routeLog.info.mock.calls);
+    expect(logged).not.toContain('plaintext-token-value');
+    expect(logged).not.toContain('resparkable/groups/join');
+  });
+});
+
+describe('DELETE /api/v1/resparkable/groups/[id]/join-links/[linkId]', () => {
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/join-links/link_1`;
+
+  it('is a 404, not a 403, when the caller is not a member', async () => {
+    vi.mocked(revokeGroupJoinLink).mockResolvedValue({ ok: false, reason: 'not_a_member' });
+
+    const response = await invoke(JOIN_LINK_DELETE, req(url), {
+      id: GROUP_ID,
+      linkId: 'link_1',
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it('is a 403 when the caller is a member but not an admin', async () => {
+    vi.mocked(revokeGroupJoinLink).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
+
+    const response = await invoke(JOIN_LINK_DELETE, req(url), {
+      id: GROUP_ID,
+      linkId: 'link_1',
+    });
+
+    expect(response.status).toBe(403);
+  });
+
+  it('revokes the link and reports it', async () => {
+    vi.mocked(revokeGroupJoinLink).mockResolvedValue({ ok: true });
+
+    const response = await invoke(JOIN_LINK_DELETE, req(url), {
+      id: GROUP_ID,
+      linkId: 'link_1',
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual({ linkId: 'link_1', revoked: true });
+  });
+});
+
+describe('POST /api/v1/resparkable/groups/[id]/join-requests/[userId]', () => {
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/join-requests/user_b`;
+
+  const REFUSALS: Array<{ reason: string; status: number }> = [
+    { reason: 'not_a_member', status: 404 },
+    { reason: 'not_an_admin', status: 403 },
+    { reason: 'no_such_member', status: 404 },
+    { reason: 'group_full', status: 409 },
+  ];
+
+  for (const { reason, status } of REFUSALS) {
+    it(`maps '${reason}' to ${status}`, async () => {
+      vi.mocked(approveGroupJoinRequest).mockResolvedValue({ ok: false, reason: reason as never });
+
+      const response = await invoke(JOIN_REQUEST_POST, req(url), {
+        id: GROUP_ID,
+        userId: 'user_b',
+      });
+
+      expect(response.status).toBe(status);
+    });
+  }
+
+  it('approves the request and reports it', async () => {
+    vi.mocked(approveGroupJoinRequest).mockResolvedValue({ ok: true });
+
+    const response = await invoke(JOIN_REQUEST_POST, req(url), {
+      id: GROUP_ID,
+      userId: 'user_b',
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual({ userId: 'user_b', approved: true });
+  });
+});
+
+describe('DELETE /api/v1/resparkable/groups/[id]/join-requests/[userId]', () => {
+  const url = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/join-requests/user_b`;
+
+  const REFUSALS: Array<{ reason: string; status: number }> = [
+    { reason: 'not_a_member', status: 404 },
+    { reason: 'not_an_admin', status: 403 },
+    { reason: 'no_such_member', status: 404 },
+  ];
+
+  for (const { reason, status } of REFUSALS) {
+    it(`maps '${reason}' to ${status}`, async () => {
+      vi.mocked(rejectGroupJoinRequest).mockResolvedValue({ ok: false, reason: reason as never });
+
+      const response = await invoke(JOIN_REQUEST_DELETE, req(url), {
+        id: GROUP_ID,
+        userId: 'user_b',
+      });
+
+      expect(response.status).toBe(status);
+    });
+  }
+
+  it('rejects the request and reports it', async () => {
+    vi.mocked(rejectGroupJoinRequest).mockResolvedValue({ ok: true });
+
+    const response = await invoke(JOIN_REQUEST_DELETE, req(url), {
+      id: GROUP_ID,
+      userId: 'user_b',
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual({ userId: 'user_b', rejected: true });
+  });
+});
+
+describe('POST /api/v1/resparkable/groups/join', () => {
+  const url = 'http://localhost/api/v1/resparkable/groups/join';
+
+  it('rejects a malformed token, rather than reaching the service', async () => {
+    const response = await invoke(JOIN_GROUP_POST, req(url, { token: 'too-short' }));
+
+    expect(response.status).toBe(400);
+    expect(redeemJoinLinkToken).not.toHaveBeenCalled();
+  });
+
+  const TOKEN = 'a'.repeat(32);
+
+  const OUTCOMES: Array<'joined' | 'requested' | 'already_member' | 'already_requested'> = [
+    'joined',
+    'requested',
+    'already_member',
+    'already_requested',
+  ];
+
+  for (const outcome of OUTCOMES) {
+    it(`answers 200 with outcome '${outcome}' and the group id and name on success`, async () => {
+      vi.mocked(redeemJoinLinkToken).mockResolvedValue({
+        ok: true,
+        outcome,
+        groupId: GROUP_ID,
+        groupName: 'Study Group B',
+      });
+
+      const response = await invoke(JOIN_GROUP_POST, req(url, { token: TOKEN }));
+      const body = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(body.data).toEqual({
+        outcome,
+        groupId: GROUP_ID,
+        groupName: 'Study Group B',
+      });
+    });
+  }
+
+  it('answers 200 with outcome group_full and the group name, never a 4xx', async () => {
+    vi.mocked(redeemJoinLinkToken).mockResolvedValue({
+      ok: false,
+      reason: 'group_full',
+      groupName: 'Study Group B',
+    });
+
+    const response = await invoke(JOIN_GROUP_POST, req(url, { token: TOKEN }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual({ outcome: 'group_full', groupName: 'Study Group B' });
+  });
+
+  it('answers 200 with outcome unknown and no group name, for every bad-token reason alike', async () => {
+    vi.mocked(redeemJoinLinkToken).mockResolvedValue({ ok: false, reason: 'unknown' });
+
+    const response = await invoke(JOIN_GROUP_POST, req(url, { token: TOKEN }));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.data).toEqual({ outcome: 'unknown' });
+    expect(body.data).not.toHaveProperty('groupName');
   });
 });

@@ -37,6 +37,8 @@ import { withSpace } from '@/lib/framework/resparkable/ui/active-space';
 
 export interface GroupsViewProps {
   initial: GroupListItemWire[];
+  /** The signed-in user, for withdrawing their own request to join. */
+  viewerUserId: string;
 }
 
 /** What `POST /resparkable/groups` returns, which is less than a list row. */
@@ -48,7 +50,7 @@ interface CreatedGroup {
   role: string;
 }
 
-export function GroupsView({ initial }: GroupsViewProps): React.ReactElement {
+export function GroupsView({ initial, viewerUserId }: GroupsViewProps): React.ReactElement {
   const [groups, setGroups] = React.useState(initial);
   const [name, setName] = React.useState('');
   const { state, message, run } = useSaveStatus();
@@ -82,6 +84,20 @@ export function GroupsView({ initial }: GroupsViewProps): React.ReactElement {
         { ...created, description: null, joinedAt: new Date().toISOString() },
       ]);
     }
+  }
+
+  /**
+   * Withdraw a request to join. The same route as leaving, addressed to
+   * yourself: a pending request is a membership row that never became one.
+   */
+  async function withdraw(groupId: string): Promise<void> {
+    const userId = viewerUserId;
+    if (!userId) return;
+    const previous = groups;
+    setGroups((prev) => prev.filter((group) => group.groupId !== groupId));
+
+    const ok = await run(() => apiClient.delete(RESPARKABLE_API.groupMember(groupId, userId)));
+    if (!ok) setGroups(previous);
   }
 
   return (
@@ -161,11 +177,26 @@ export function GroupsView({ initial }: GroupsViewProps): React.ReactElement {
                     <a href={withSpace(RESPARKABLE_ROUTES.TODAY, group.spaceId)}>Open</a>
                   </Button>
                 )}
-                <Button asChild variant="ghost" size="sm">
-                  <WorkspaceLink href={RESPARKABLE_ROUTES.group(group.groupId)}>
-                    Manage
-                  </WorkspaceLink>
-                </Button>
+                {group.joinedAt === null ? (
+                  // Nothing to manage yet: the group page 404s for somebody
+                  // who has not been let in, by design. Disabled until the
+                  // workspace tab's client session has loaded: without an id
+                  // there is nobody to address the request as.
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={!viewerUserId}
+                    onClick={() => void withdraw(group.groupId)}
+                  >
+                    Withdraw request
+                  </Button>
+                ) : (
+                  <Button asChild variant="ghost" size="sm">
+                    <WorkspaceLink href={RESPARKABLE_ROUTES.group(group.groupId)}>
+                      Manage
+                    </WorkspaceLink>
+                  </Button>
+                )}
               </div>
             </li>
           ))}

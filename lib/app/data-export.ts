@@ -150,6 +150,11 @@ export function initAppSubjectSources(): void {
           'Deployment-wide configuration keyed by slug (feature toggles and defaults for the whole install). It holds no column naming a person, so there is nothing in it that is about the subject.',
       },
       {
+        model: 'ResparkableGroupJoinLink',
+        reason:
+          'A link that lets whoever holds it join a group. It holds no column naming a person: it records the group, the role and approval it confers, how often it was used and when it expires, and deliberately not who created it. A person who joined through one has that membership exported in groupMemberships.',
+      },
+      {
         model: 'ResparkableBillingSettings',
         reason:
           'Deployment-wide billing configuration keyed by slug (credit prices and grant sizes). It holds no column naming a person; the subject\u2019s own balance and ledger are exported as the billingAccount and billingLedger sections.',

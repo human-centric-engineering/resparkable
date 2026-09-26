@@ -24,6 +24,7 @@ import type {
   GroupBudgetWire,
   GroupDetailWire,
   GroupInviteWire,
+  GroupJoinLinkWire,
 } from '@/lib/framework/resparkable/ui/payloads';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -81,6 +82,7 @@ function detailFixture(overrides: Partial<GroupDetailWire> = {}): GroupDetailWir
       spaceId: 'grp_space_1',
       maxMembers: 50,
       viewersCanInheritAdmin: true,
+      joinRefusedFullAt: null,
     },
     yourRole: 'member',
     members: [],
@@ -110,6 +112,20 @@ const INVITES: GroupInviteWire[] = [
     expiresAt: null,
     revokedAt: null,
     acceptedAt: null,
+  },
+];
+
+const JOIN_LINKS: GroupJoinLinkWire[] = [
+  {
+    id: 'link_1',
+    tokenPrefix: 'abc123',
+    role: 'member',
+    approval: 'request',
+    maxUses: null,
+    useCount: 0,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
   },
 ];
 
@@ -166,24 +182,26 @@ describe('ResparkableGroupPage', () => {
     expect(notFound).not.toHaveBeenCalled();
   });
 
-  it('reads the invites for an admin', async () => {
+  it('reads the invites and join links for an admin', async () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'admin' })),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
       [RESPARKABLE_API.groupInvites('group_1')]: ok(INVITES),
+      [RESPARKABLE_API.groupJoinLinks('group_1')]: ok(JOIN_LINKS),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
 
     render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
 
-    expect(vi.mocked(readResparkable).mock.calls.map((call) => call[0])).toContain(
-      RESPARKABLE_API.groupInvites('group_1')
-    );
+    const paths = vi.mocked(readResparkable).mock.calls.map((call) => call[0]);
+    expect(paths).toContain(RESPARKABLE_API.groupInvites('group_1'));
+    expect(paths).toContain(RESPARKABLE_API.groupJoinLinks('group_1'));
     expect(propsOf().invites).toEqual(INVITES);
+    expect(propsOf().joinLinks).toEqual(JOIN_LINKS);
   });
 
-  it('does not read the invites for a non-admin, and passes an empty list', async () => {
+  it('does not read the invites or join links for a non-admin, and passes empty lists', async () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'member' })),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
@@ -193,10 +211,27 @@ describe('ResparkableGroupPage', () => {
 
     render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
 
-    expect(vi.mocked(readResparkable).mock.calls.map((call) => call[0])).not.toContain(
-      RESPARKABLE_API.groupInvites('group_1')
-    );
+    const paths = vi.mocked(readResparkable).mock.calls.map((call) => call[0]);
+    expect(paths).not.toContain(RESPARKABLE_API.groupInvites('group_1'));
+    expect(paths).not.toContain(RESPARKABLE_API.groupJoinLinks('group_1'));
     expect(propsOf().invites).toEqual([]);
+    expect(propsOf().joinLinks).toEqual([]);
+  });
+
+  it('passes an empty join-link list to GroupDetail when the read fails, without failing the page', async () => {
+    routeReads({
+      [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'admin' })),
+      [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupInvites('group_1')]: ok(INVITES),
+      [RESPARKABLE_API.groupJoinLinks('group_1')]: fail(500, 'join links unwell'),
+    });
+    const { default: ResparkableGroupPage } =
+      await import('@/app/(resparkable)/resparkable/groups/[id]/page');
+
+    render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
+
+    expect(screen.getByTestId('group-detail')).toBeInTheDocument();
+    expect(propsOf().joinLinks).toEqual([]);
   });
 
   it('passes budget={null} to GroupDetail when the budget read fails', async () => {

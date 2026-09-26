@@ -67,6 +67,7 @@
     "framework:resparkable:smoke-group-erasure": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-group-erasure.ts",
     "framework:resparkable:smoke-group-sharing": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-group-sharing.ts",
     "framework:resparkable:smoke-group-budget": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-group-budget.ts",
+    "framework:resparkable:smoke-group-join": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-group-join.ts",
     "framework:resparkable:smoke-priority": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-priority.ts",
     "framework:resparkable:smoke-search": "tsx --env-file=.env.local scripts/framework/resparkable/smoke-search.ts",
     "framework:resparkable:eval-triage": "tsx --env-file=.env.local scripts/framework/resparkable/eval-triage.ts",

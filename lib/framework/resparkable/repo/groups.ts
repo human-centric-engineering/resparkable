@@ -38,6 +38,7 @@ import type {
   Prisma,
   ResparkableGroup,
   ResparkableGroupInvite,
+  ResparkableGroupJoinLink,
   ResparkableGroupMember,
 } from '@prisma/client';
 
@@ -69,6 +70,8 @@ export interface GroupUpdateData {
   fundingMode?: string;
   lowBalanceAlertCredits?: number | null;
   largeRunAlertPercent?: number | null;
+  /** Cleared by the service whenever `maxMembers` moves. See the schema. */
+  joinRefusedFullAt?: Date | null;
 }
 
 /**
@@ -617,6 +620,23 @@ export async function listMemberContacts(
     .map((user) => ({ userId: user.id, email: user.email, name: user.name ?? null }));
 }
 
+/**
+ * Account names for a set of people, for the admin's "Asking to join" list
+ * (decided 2026-09-25: the name, and not the address). Names only: the one
+ * other read here that touches `user` is `listMemberContacts`, and that one
+ * never reaches a route. A person with no name maps to `null`.
+ */
+export async function findAccountNames(
+  userIds: readonly string[]
+): Promise<Map<string, string | null>> {
+  if (userIds.length === 0) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: [...new Set(userIds)] } },
+    select: { id: true, name: true },
+  });
+  return new Map(users.map((user) => [user.id, user.name ?? null]));
+}
+
 /** Outstanding invitations for a group, newest first, for the admin's list. */
 export async function listGroupInvites(groupId: string): Promise<ResparkableGroupInvite[]> {
   return prisma.resparkableGroupInvite.findMany({
@@ -759,6 +779,10 @@ export async function acceptInviteAndJoin(
   now: Date
 ): Promise<AcceptOutcome | null> {
   return prisma.$transaction(async (tx) => {
+    // The same lock joining through a link takes, so an invitation accepted at
+    // the moment the same person redeems a link cannot race it to the row.
+    await lockGroup(tx, invite.groupId);
+
     const spent = await tx.resparkableGroupInvite.updateMany({
       where: { id: invite.id, acceptedAt: null, revokedAt: null },
       data: { acceptedAt: now },
@@ -785,19 +809,382 @@ export async function acceptInviteAndJoin(
     }
 
     if (existing.joinedAt === null) {
-      // Pending, and this invitation is what admits them. `role` still does not
-      // move: the pending row carries whatever role the request-to-join was
-      // filed under, and an invitation is not the place to change it.
+      // Waiting on an admin after using a join link, and this invitation is what
+      // lets them in, AT THE INVITATION'S ROLE (decided 2026-09-25). An admin
+      // naming this person is a later and more deliberate act than the link
+      // they happened to click, so it decides. Safe: an invitation's role is
+      // never `admin` (`createGroupInviteSchema`). The link's use is not given
+      // back, because the person did get in.
       return {
         member: await tx.resparkableGroupMember.update({
           where: { groupId_userId: { groupId: invite.groupId, userId } },
-          data: { joinedAt: now },
+          // The inviter too: an invitation let them in, and "who invited this
+          // member" is what the Art. 15 export reads `invitedAt` from.
+          data: { joinedAt: now, role: invite.role, invitedByUserId: invite.invitedByUserId },
         }),
         joinedNow: true,
       };
     }
 
     return { member: existing, joinedNow: false };
+  });
+}
+
+// ─── Join links (§23.11, phase 57) ──────────────────────────────────────────
+
+/** What a join link is minted with. The token itself never reaches this layer. */
+export interface JoinLinkCreateData {
+  groupId: string;
+  tokenHash: string;
+  tokenPrefix: string;
+  role: string;
+  approval: string;
+  maxUses: number | null;
+  expiresAt: Date | null;
+}
+
+export async function createJoinLink(data: JoinLinkCreateData): Promise<ResparkableGroupJoinLink> {
+  return prisma.resparkableGroupJoinLink.create({ data });
+}
+
+/** Every link a group has, newest first, revoked and expired included. */
+export async function listJoinLinks(groupId: string): Promise<ResparkableGroupJoinLink[]> {
+  return prisma.resparkableGroupJoinLink.findMany({
+    where: { groupId },
+    orderBy: { createdAt: 'desc' },
+  });
+}
+
+/** Revoke one link. Idempotent: a second revoke moves nothing. */
+export async function revokeJoinLink(
+  groupId: string,
+  linkId: string,
+  now: Date
+): Promise<{ count: number }> {
+  return prisma.resparkableGroupJoinLink.updateMany({
+    where: { id: linkId, groupId, revokedAt: null },
+    data: { revokedAt: now },
+  });
+}
+
+/**
+ * Take the group's row lock for the rest of the transaction.
+ *
+ * The cap is "joined members < maxMembers", which is a read followed by a write,
+ * and without a lock thirty people redeeming one open link in the same minute
+ * all read 49 and all get in. The lock on the group row serialises the paths
+ * that add or remove a member row outside an admin's own management actions:
+ * redeeming a link, approving, rejecting or withdrawing a request, and
+ * accepting an invitation. The last is there not for the cap (invitations are
+ * not capped) but so that it cannot race a redemption to the same person's row.
+ *
+ * `FOR NO KEY UPDATE` rather than `FOR UPDATE`: two lockers still exclude each
+ * other, which is all the cap needs, but a row inserted elsewhere with a foreign
+ * key to the group (an invitation, a join link) takes only `FOR KEY SHARE`, and
+ * that does not wait on this lock. `FOR UPDATE` would queue those behind every
+ * redemption for no reason.
+ */
+async function lockGroup(tx: GroupTx, groupId: string): Promise<void> {
+  await tx.$queryRaw`SELECT "id" FROM "framework_resparkable_group" WHERE "id" = ${groupId} FOR NO KEY UPDATE`;
+}
+
+async function countJoined(tx: GroupTx, groupId: string): Promise<number> {
+  return tx.resparkableGroupMember.count({ where: { groupId, joinedAt: { not: null } } });
+}
+
+/** A link with the group it opens, as redemption reads it. */
+export type JoinLinkWithGroup = ResparkableGroupJoinLink & { group: ResparkableGroup };
+
+export async function findJoinLinkByTokenHash(
+  tokenHash: string
+): Promise<JoinLinkWithGroup | null> {
+  return prisma.resparkableGroupJoinLink.findUnique({
+    where: { tokenHash },
+    include: { group: true },
+  });
+}
+
+/** What redeeming a link did. The service turns these into the page's answers. */
+export type RedeemOutcome =
+  | { kind: 'joined' }
+  | { kind: 'requested' }
+  | { kind: 'already_member' }
+  | { kind: 'already_requested' }
+  | { kind: 'group_full' }
+  /** Lost the use-count compare-and-set, or the link was revoked meanwhile. */
+  | { kind: 'spent' };
+
+/** Thrown inside the redemption transaction to roll back a row that was written. */
+class LinkSpentError extends Error {}
+
+/**
+ * Redeem a join link: check the cap, write the membership, spend a use.
+ *
+ * One transaction behind the group's row lock, in this order, and the order is
+ * the design (phase-57-plan.md decision 4):
+ *
+ *   1. An existing row answers before anything is spent. Somebody already in,
+ *      or already waiting and holding another `request` link, writes nothing
+ *      and uses nothing, which is what makes "one account cannot redeem twice"
+ *      true without a table of redemptions: `@@unique([groupId, userId])`
+ *      already holds one row per person per group. The exception is an `open`
+ *      link held by somebody waiting: it lets them in, like anybody else.
+ *   2. A link already used up answers `spent` (so a full group is not blamed
+ *      for a dead link). The compare-and-set in step 5 is what actually holds
+ *      the limit; this only reads the value the service already has.
+ *   3. The cap, on joined members, under the lock. A full group refuses and is
+ *      stamped so an admin can see it happened.
+ *   4. The row. Every other writer of member rows for a group (accepting an
+ *      invitation, withdrawing or rejecting a request, approving one) takes the
+ *      same lock, so nothing should change under us; the writes are still made
+ *      race-proof, because a 500 is a poor way to find out a writer was missed.
+ *      A new row is `ON CONFLICT DO NOTHING` (a row that appeared is re-read and
+ *      answered), and admitting a waiting row is a compare-and-set on
+ *      `joinedAt: null` (a row that went is replaced by a new one).
+ *   5. The use, by compare-and-set: `useCount < maxUses` and `revokedAt: null`
+ *      are in the `where`, so a revoke or a last use that lands in between is a
+ *      miss rather than an overrun. A miss throws, which rolls back step 4.
+ *
+ * Expiry is the service's check (`isShareActive`, the shared window helper),
+ * not repeated here: the window cannot move backwards between the two reads.
+ */
+export async function redeemJoinLink(
+  link: {
+    id: string;
+    groupId: string;
+    role: string;
+    approval: string;
+    maxUses: number | null;
+    useCount: number;
+  },
+  userId: string,
+  now: Date
+): Promise<RedeemOutcome> {
+  try {
+    return await prisma.$transaction(async (tx): Promise<RedeemOutcome> => {
+      await lockGroup(tx, link.groupId);
+
+      const existing = await tx.resparkableGroupMember.findUnique({
+        where: { groupId_userId: { groupId: link.groupId, userId } },
+        select: { id: true, joinedAt: true },
+      });
+      if (existing && existing.joinedAt !== null) return { kind: 'already_member' };
+      const open = link.approval === 'open';
+      // Waiting on an admin already. A second `request` link changes nothing; an
+      // `open` one lets them in, below, at its own role (decided 2026-09-25).
+      if (existing && !open) return { kind: 'already_requested' };
+
+      if (link.maxUses !== null && link.useCount >= link.maxUses) return { kind: 'spent' };
+
+      const group = await tx.resparkableGroup.findUnique({
+        where: { id: link.groupId },
+        select: { maxMembers: true },
+      });
+      if (!group) return { kind: 'spent' };
+
+      if ((await countJoined(tx, link.groupId)) >= group.maxMembers) {
+        await tx.resparkableGroup.update({
+          where: { id: link.groupId },
+          data: { joinRefusedFullAt: now },
+        });
+        return { kind: 'group_full' };
+      }
+
+      // An open link admitting somebody who was waiting. `requestedAt` and the
+      // request's `joinLinkId` stay: they asked, and then they got in, and the
+      // first link's use is not given back because they did get in.
+      const admitted = existing
+        ? await tx.resparkableGroupMember.updateMany({
+            where: { id: existing.id, joinedAt: null },
+            data: { joinedAt: now, role: link.role },
+          })
+        : { count: 0 };
+
+      if (admitted.count === 0) {
+        const inserted = await tx.resparkableGroupMember.createMany({
+          data: [
+            {
+              groupId: link.groupId,
+              userId,
+              role: link.role,
+              // Nobody invited them: they held a link. See the schema.
+              invitedByUserId: null,
+              joinedAt: open ? now : null,
+              requestedAt: open ? null : now,
+              // Only a request remembers its link: it is what gets the use back
+              // if the request is turned down or withdrawn.
+              joinLinkId: open ? null : link.id,
+            },
+          ],
+          skipDuplicates: true,
+        });
+        if (inserted.count === 0) {
+          // A row appeared since step 1, from an invitation accepted at the same
+          // moment. Nothing has been spent; answer from the row that won.
+          const winner = await tx.resparkableGroupMember.findUnique({
+            where: { groupId_userId: { groupId: link.groupId, userId } },
+            select: { joinedAt: true },
+          });
+          return { kind: winner?.joinedAt ? 'already_member' : 'already_requested' };
+        }
+      }
+
+      const spent = await tx.resparkableGroupJoinLink.updateMany({
+        where: {
+          id: link.id,
+          revokedAt: null,
+          ...(link.maxUses === null ? {} : { useCount: { lt: link.maxUses } }),
+        },
+        data: { useCount: { increment: 1 } },
+      });
+      if (spent.count === 0) throw new LinkSpentError();
+
+      return { kind: open ? 'joined' : 'requested' };
+    });
+  } catch (error) {
+    if (error instanceof LinkSpentError) return { kind: 'spent' };
+    throw error;
+  }
+}
+
+export type ApproveOutcome = 'approved' | 'no_such_request' | 'group_full';
+
+/**
+ * Let a pending member in. Same lock and same cap as redemption, because
+ * approval is the second half of the same way in: without the re-check, a
+ * `request` link would be a way round the cap.
+ */
+export async function approveJoinRequest(
+  groupId: string,
+  userId: string,
+  now: Date
+): Promise<ApproveOutcome> {
+  return prisma.$transaction(async (tx) => {
+    await lockGroup(tx, groupId);
+
+    const group = await tx.resparkableGroup.findUnique({
+      where: { id: groupId },
+      select: { maxMembers: true },
+    });
+    if (!group) return 'no_such_request';
+
+    const pending = await tx.resparkableGroupMember.findFirst({
+      where: { groupId, userId, joinedAt: null },
+      select: { id: true },
+    });
+    if (!pending) return 'no_such_request';
+
+    if ((await countJoined(tx, groupId)) >= group.maxMembers) return 'group_full';
+
+    // A compare-and-set rather than an update by id. Withdrawing and rejecting
+    // take the group lock, but an erasure cascade does not, so the row can still
+    // go between the read and this write; an update by id would throw there, and
+    // this answers it instead.
+    const approved = await tx.resparkableGroupMember.updateMany({
+      where: { id: pending.id, joinedAt: null },
+      data: { joinedAt: now },
+    });
+    return approved.count === 1 ? 'approved' : 'no_such_request';
+  });
+}
+
+/**
+ * Delete a pending request: an admin rejecting it, or its author withdrawing.
+ *
+ * `joinedAt: null` is in the `where`, so no argument, however wrong, can remove
+ * a joined member through this path. Rejection leaves nothing behind (§23.11).
+ *
+ * **The link gets its use back** (decided 2026-09-25). A request spent one of
+ * its link's uses when it was filed; if that request never becomes a member,
+ * the place is returned, so strangers holding a forwarded link cannot use up
+ * every place on it and leave the people it was meant for locked out. One
+ * transaction, so a use is never returned for a request that was not deleted.
+ */
+export async function deleteJoinRequest(groupId: string, userId: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    // Behind the group lock like every other path that adds or removes a
+    // member, so an approval or a redemption is never mid-flight on this row.
+    await lockGroup(tx, groupId);
+    const request = await tx.resparkableGroupMember.findFirst({
+      where: { groupId, userId, joinedAt: null },
+      select: { id: true, joinLinkId: true },
+    });
+    if (!request) return false;
+
+    const deleted = await tx.resparkableGroupMember.deleteMany({
+      where: { id: request.id, joinedAt: null },
+    });
+    if (deleted.count === 0) return false;
+
+    if (request.joinLinkId) {
+      await tx.resparkableGroupJoinLink.updateMany({
+        where: { id: request.joinLinkId, useCount: { gt: 0 } },
+        data: { useCount: { decrement: 1 } },
+      });
+    }
+    return true;
+  });
+}
+
+/**
+ * Give back the link use each of a person's pending requests took, because the
+ * person is being erased.
+ *
+ * Erasure removes a pending row by FK cascade, not through `deleteJoinRequest`,
+ * so without this a request that never became a member would keep its place on
+ * the link for ever, against the rule that such a request gives it back.
+ * Through the erasure transaction's client, so a use is never returned for an
+ * erasure that rolled back. No group lock: the decrement is one atomic
+ * statement, and taking a lock per group inside an erasure is a deadlock risk
+ * this does not need.
+ *
+ * Returns how many uses were given back.
+ */
+export async function returnJoinLinkUsesForErasure(
+  userId: string,
+  db: GroupDb = prisma
+): Promise<number> {
+  const pending = await db.resparkableGroupMember.findMany({
+    where: { userId, joinedAt: null, joinLinkId: { not: null } },
+    select: { joinLinkId: true },
+  });
+  let returned = 0;
+  for (const { joinLinkId } of pending) {
+    if (!joinLinkId) continue;
+    const result = await db.resparkableGroupJoinLink.updateMany({
+      where: { id: joinLinkId, useCount: { gt: 0 } },
+      data: { useCount: { decrement: 1 } },
+    });
+    returned += result.count;
+  }
+  return returned;
+}
+
+/**
+ * Delete a group because its last joined member is leaving, if they still are.
+ *
+ * The service counts joined members first, but that count is read outside any
+ * lock, and an open join link can admit somebody between it and the delete: the
+ * newcomer would be told they had joined a group that then vanished with them in
+ * it. So the count is taken again here behind the group lock redemption and
+ * approval take, and the space goes only if nobody but the leaver has joined.
+ *
+ * Returns whether the space was deleted. `false` means somebody joined in the
+ * meantime, and the caller treats the leave as an ordinary one.
+ */
+export async function deleteGroupSpaceIfLastMember(
+  groupId: string,
+  spaceId: string,
+  leaverUserId: string
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    await lockGroup(tx, groupId);
+    const others = await tx.resparkableGroupMember.count({
+      where: { groupId, joinedAt: { not: null }, userId: { not: leaverUserId } },
+    });
+    if (others > 0) return false;
+    await deleteGroupSpace(spaceId, tx);
+    return true;
   });
 }
 

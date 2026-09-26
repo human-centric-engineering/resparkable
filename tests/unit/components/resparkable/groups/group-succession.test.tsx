@@ -30,12 +30,17 @@ import { apiClient } from '@/lib/api/client';
 
 const AT = (day: number) => `2026-09-0${day}T10:00:00.000Z`;
 
-const ADMIN = { userId: 'user_a', role: 'admin', joinedAt: AT(1) };
-const VIEWER = { userId: 'user_v', role: 'viewer', joinedAt: AT(2) };
-const MEMBER = { userId: 'user_m', role: 'member', joinedAt: AT(3) };
+const ADMIN = { userId: 'user_a', role: 'admin', joinedAt: AT(1), requestedAt: null };
+const VIEWER = { userId: 'user_v', role: 'viewer', joinedAt: AT(2), requestedAt: null };
+const MEMBER = { userId: 'user_m', role: 'member', joinedAt: AT(3), requestedAt: null };
 
 function renderSuccession(
-  members: Array<{ userId: string; role: string; joinedAt: string | null }>,
+  members: Array<{
+    userId: string;
+    role: string;
+    joinedAt: string | null;
+    requestedAt: string | null;
+  }>,
   viewersCanInheritAdmin = true
 ) {
   return render(
@@ -88,7 +93,11 @@ describe('GroupSuccession', () => {
   });
 
   it('does not count a pending admin row as a second admin', () => {
-    renderSuccession([ADMIN, { userId: 'user_p', role: 'admin', joinedAt: null }, VIEWER]);
+    renderSuccession([
+      ADMIN,
+      { userId: 'user_p', role: 'admin', joinedAt: null, requestedAt: '2026-09-05T10:00:00.000Z' },
+      VIEWER,
+    ]);
 
     expect(screen.getByText(/You are the only admin/)).toBeInTheDocument();
   });

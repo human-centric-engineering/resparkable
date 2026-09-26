@@ -784,6 +784,16 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'that re-created it would mint an invitation nobody sent. Exported ' +
         'through the same cross-subject collector, minus the digest.',
     },
+    {
+      model: 'ResparkableGroupJoinLink',
+      owner: 'framework:resparkable',
+      reason:
+        'A join link to a group on this installation (§23.11). Not ' +
+        'transferable for the invitation’s reason: its digest is a live ' +
+        'credential to a group the far side has never heard of, and importing ' +
+        'it would publish a way into a workspace nobody there opened. It names ' +
+        'no person, so there is nothing of the subject’s on it to export either.',
+    },
   ],
 
   crossBoundaryEdges: [

@@ -111,17 +111,36 @@ describe('GroupDetail and deletion', () => {
       spaceId: 'spc_group_1',
       maxMembers: 50,
       viewersCanInheritAdmin: true,
+      joinRefusedFullAt: null,
     },
     yourRole: 'admin',
     latestDigest: null,
     members: [
-      { userId: 'user_a', role: 'admin', joinedAt: '2026-09-01T10:00:00.000Z' },
-      { userId: 'user_b', role: 'member', joinedAt: '2026-09-02T10:00:00.000Z' },
+      {
+        userId: 'user_a',
+        role: 'admin',
+        joinedAt: '2026-09-01T10:00:00.000Z',
+        requestedAt: null,
+      },
+      {
+        userId: 'user_b',
+        role: 'member',
+        joinedAt: '2026-09-02T10:00:00.000Z',
+        requestedAt: null,
+      },
     ],
   };
 
   it('offers deletion to an admin, in its own section', () => {
-    render(<GroupDetail detail={DETAIL} invites={[]} budget={null} viewerUserId="user_a" />);
+    render(
+      <GroupDetail
+        detail={DETAIL}
+        invites={[]}
+        joinLinks={[]}
+        budget={null}
+        viewerUserId="user_a"
+      />
+    );
 
     const heading = screen.getByRole('heading', { name: 'Delete this group' });
     // Not inside the member list, where "leave" lives.
@@ -134,6 +153,7 @@ describe('GroupDetail and deletion', () => {
       <GroupDetail
         detail={{ ...DETAIL, yourRole: 'member' }}
         invites={[]}
+        joinLinks={[]}
         budget={null}
         viewerUserId="user_a"
       />

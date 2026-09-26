@@ -227,7 +227,9 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // reads every table the brain has, and on import inflates and plans an
     // archive; `/ideate` makes a chat-completion call; `/chat` holds an SSE
     // connection open for a tool loop; `/grants/[id]/invite` and
-    // `/groups/[id]/invites` send mail to somebody else; and the two public
+    // `/groups/[id]/invites` send mail to somebody else; `/groups/[id]/join-links`
+    // (POST only) mints a bearer credential to a whole workspace and
+    // `/groups/join` redeems one (§23.11, phase 57); and the two public
     // share-reader rules, which are the
     // exception to everything else in this list — see below).
     // Asserting the exact set keeps the original intent: a stray rule still
@@ -263,6 +265,13 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         // same way: on the `/invites` suffix, so creating a group, listing
         // members and changing roles stay on the section's 100/min.
         String(/^\/api\/v1\/resparkable\/groups\/[^/]+\/invites$/),
+        // Join-link minting (POST only; `skip` falls through on every other
+        // method) and redemption (§23.11, phase 57), both daily caps for the
+        // same reason the invite ones are: each is a bearer credential to a
+        // whole workspace, and 100/min is the wrong shape for "how many of
+        // these should exist at once", not "how fast can they be created".
+        String(/^\/api\/v1\/resparkable\/groups\/[^/]+\/join-links$/),
+        String(/^\/api\/v1\/resparkable\/groups\/join$/),
         String(/^\/api\/v1\/resparkable\/search(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/reindex(?:\/|$)/),
         String(/^\/api\/v1\/resparkable\/connections\/sweep(?:\/|$)/),

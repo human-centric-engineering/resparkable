@@ -116,6 +116,14 @@ export const RESPARKABLE_ROUTES = {
   groupInvite: (token: string): string => `${BASE}/groups/invite/${encodeURIComponent(token)}`,
 
   /**
+   * Where a group JOIN LINK lands (§23.11, phase 57). Separate from
+   * `groupInvite` for the same reason that is separate from `invite`: a join
+   * link names nobody, an invitation names an address, and one page serving
+   * both would have to look a token up in two tables to find out which it was.
+   */
+  groupJoin: (token: string): string => `${BASE}/groups/join/${encodeURIComponent(token)}`,
+
+  /**
    * Your groups: who is in them, who has been invited, and how to leave.
    *
    * **Not where you work in one.** Opening a group's brain is a workspace
