@@ -219,12 +219,14 @@ describe('the group half (phase 46)', () => {
     });
   });
 
-  it('exports a pending membership rather than hiding it', async () => {
+  it('exports a pending membership rather than hiding it, with when they asked', async () => {
     vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
       {
         groupId: 'grp_1',
         role: 'member',
         joinedAt: null,
+        requestedAt: NOW,
+        invitedByUserId: null,
         createdAt: NOW,
         group: { name: 'Study Group B' },
       },
@@ -236,16 +238,91 @@ describe('the group half (phase 46)', () => {
     });
 
     // `joinedAt: null` is a request waiting on an admin (§23.11). It is a fact
-    // about this person and it stays in the answer.
+    // about this person and it stays in the answer, along with `requestedAt`
+    // so "asked on Monday, still waiting" is answerable from the export alone.
+    // A request to join through a link names no inviter, so `invitedAt` is
+    // null here too: nobody invited them.
     expect(data.groupMemberships).toEqual([
       {
         groupId: 'grp_1',
         groupName: 'Study Group B',
         role: 'member',
         joinedAt: null,
-        invitedAt: NOW,
+        requestedAt: NOW,
+        invitedAt: null,
       },
     ]);
+  });
+
+  it('gives invitedAt as the join date for a member an inviter is on record for', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      {
+        groupId: 'grp_1',
+        role: 'member',
+        joinedAt: NOW,
+        requestedAt: null,
+        invitedByUserId: 'user_admin',
+        createdAt: NOW,
+        group: { name: 'Study Group B' },
+      },
+    ] as never);
+
+    const data = await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+    });
+
+    expect(data.groupMemberships[0]).toMatchObject({ invitedAt: NOW });
+  });
+
+  it('gives invitedAt as null for somebody who asked through a link and was then let in by an invitation', async () => {
+    const asked = new Date('2026-09-01T00:00:00.000Z');
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      {
+        groupId: 'grp_1',
+        role: 'member',
+        joinedAt: NOW,
+        requestedAt: asked,
+        // Set by accepting the invitation, on a row the join link created.
+        invitedByUserId: 'user_admin',
+        createdAt: asked,
+        group: { name: 'Study Group B' },
+      },
+    ] as never);
+
+    const data = await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+    });
+
+    // The row's createdAt is the day they asked. Reporting it as the day they
+    // were invited would be a false date in an Art. 15 answer; the invitation
+    // and its own date are in groupInvites.
+    expect(data.groupMemberships[0]).toMatchObject({ requestedAt: asked, invitedAt: null });
+  });
+
+  it('gives invitedAt as null for a member with no inviter on record: the founder, a join-link joiner, or an erased inviter', async () => {
+    vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([
+      {
+        groupId: 'grp_1',
+        role: 'admin',
+        joinedAt: NOW,
+        requestedAt: null,
+        invitedByUserId: null,
+        createdAt: NOW,
+        group: { name: 'Study Group B' },
+      },
+    ] as never);
+
+    const data = await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+    });
+
+    // "Invited" would be a false statement for the founder, for anybody who
+    // came in through a join link, and for a member whose inviter has since
+    // erased their account and taken the reference with them (SetNull).
+    expect(data.groupMemberships[0]).toMatchObject({ invitedAt: null });
   });
 
   it('carries the group’s name and none of its content', async () => {
@@ -254,6 +331,8 @@ describe('the group half (phase 46)', () => {
         groupId: 'grp_1',
         role: 'admin',
         joinedAt: NOW,
+        requestedAt: null,
+        invitedByUserId: 'user_founder',
         createdAt: NOW,
         group: { name: 'Study Group B' },
       },
@@ -276,6 +355,13 @@ describe('the group half (phase 46)', () => {
     expect(select).toBeDefined();
     expect(select).not.toHaveProperty('id');
     expect(select?.group).toEqual({ select: { name: true } });
+    // requestedAt travels with joinedAt: both are facts about this person's
+    // request to join, and the select is an allowlist a future column must
+    // opt into rather than fall through. invitedByUserId is read too, though
+    // never returned raw: it only decides whether invitedAt is the join date
+    // or null.
+    expect(select).toMatchObject({ requestedAt: true, invitedByUserId: true });
+    expect(data.groupMemberships[0]).not.toHaveProperty('invitedByUserId');
   });
 
   it('reads invitations in both directions, and labels which is which', async () => {

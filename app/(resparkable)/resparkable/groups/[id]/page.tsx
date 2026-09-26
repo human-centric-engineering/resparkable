@@ -9,6 +9,7 @@ import {
   groupBudgetSchema,
   groupDetailSchema,
   groupInvitesSchema,
+  groupJoinLinksSchema,
 } from '@/lib/framework/resparkable/ui/payloads';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
 
@@ -22,7 +23,7 @@ export const metadata: Metadata = {
  *
  * ## Three reads, and why that is not the N+1 rule being bent
  *
- * The invitations list is admin-only at the route. Folding it into the detail
+ * The invitations and join-link lists are admin-only at their routes. Folding it into the detail
  * payload would mean either refusing the whole page to a member, or a detail
  * endpoint that returns a different shape depending on who asked. Two
  * endpoints keep the permission where the route already enforces it and let a
@@ -63,15 +64,19 @@ export default async function ResparkableGroupPage({
   // Only for an admin, because only an admin's request would be answered. A
   // failure here is not a page failure: the group still renders, without the
   // list somebody may not be entitled to anyway.
-  const invites =
-    detail.data.yourRole === 'admin'
-      ? await readResparkable(RESPARKABLE_API.groupInvites(id), groupInvitesSchema, null)
-      : null;
+  const isAdmin = detail.data.yourRole === 'admin';
+  const [invites, joinLinks] = isAdmin
+    ? await Promise.all([
+        readResparkable(RESPARKABLE_API.groupInvites(id), groupInvitesSchema, null),
+        readResparkable(RESPARKABLE_API.groupJoinLinks(id), groupJoinLinksSchema, null),
+      ])
+    : [null, null];
 
   return (
     <GroupDetail
       detail={detail.data}
       invites={invites?.ok ? invites.data : []}
+      joinLinks={joinLinks?.ok ? joinLinks.data : []}
       budget={budget.ok ? budget.data : null}
       viewerUserId={session?.user.id ?? ''}
     />

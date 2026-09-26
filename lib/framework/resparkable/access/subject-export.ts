@@ -133,7 +133,19 @@ export interface GroupMembershipRecord {
   role: string;
   /** Null while a request to join is still pending approval (§23.11). */
   joinedAt: Date | null;
-  invitedAt: Date;
+  /** When they asked to join through a join link, or null if they did not. */
+  requestedAt: Date | null;
+  /**
+   * When the membership was created, if an inviter is on record for it; null
+   * when none is. That covers the founder and anybody who came in through a join
+   * link, of whom "invited" would be a false statement (phase 57), and also a
+   * member whose inviter has since erased their account, since that reference
+   * is cleared with them. Null too for somebody who asked through a link and
+   * was then let in by an invitation: the row dates from the asking, and the
+   * invitation's own date is in `groupInvites`. `joinedAt` and `requestedAt` are the dates that hold
+   * for everybody.
+   */
+  invitedAt: Date | null;
 }
 
 /** One invitation, either addressed to the subject or sent by them. */
@@ -481,6 +493,8 @@ export async function collectResparkableCrossSubjectData(
         groupId: true,
         role: true,
         joinedAt: true,
+        requestedAt: true,
+        invitedByUserId: true,
         // When they were emailed that they are the group's only admin: a
         // record of something done with their address, so theirs to see.
         soleAdminNotifiedAt: true,
@@ -538,7 +552,13 @@ export async function collectResparkableCrossSubjectData(
       groupName: member.group.name,
       role: member.role,
       joinedAt: member.joinedAt,
-      invitedAt: member.createdAt,
+      requestedAt: member.requestedAt,
+      // A row a join link created keeps `requestedAt`, so its `createdAt` is
+      // when they asked, not when anybody invited them, even after an
+      // invitation let them in. That invitation, with its own date, is in
+      // `groupInvites`.
+      invitedAt:
+        member.invitedByUserId !== null && member.requestedAt === null ? member.createdAt : null,
     })),
     // An invite the subject sent to their own address would otherwise appear
     // twice. `received` wins, because "somebody invited me" is the fact the

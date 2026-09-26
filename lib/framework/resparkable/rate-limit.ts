@@ -8,7 +8,7 @@
  * one import and one call. When Resparkable adds a fifth expensive route, hosts get
  * it on upgrade without editing anything.
  *
- * ## Why these eleven routes need their own caps at all
+ * ## Why these routes need their own caps at all
  *
  * `/api/v1/**` already inherits 100/min keyed on the session user from
  * `proxy.ts`, and CLAUDE.md is explicit that handlers must not call section
@@ -38,6 +38,10 @@
  *     it is the only daily one.
  *   - **`/groups/[id]/invites`** is the same odd one out, one release later
  *     (§23.3), and shares its tier.
+ *   - **`/groups/[id]/join-links`** (POST) and **`/groups/join`** are daily
+ *     too (§23.11, phase 57): minting, because every live link is a credential
+ *     to a whole workspace, and redeeming, because the token is a path a
+ *     signed-in stranger presents.
  *
  * None of these is a per-second interaction — a person searches a few times a
  * minute and reindexes once a week — so the caps are comfortably above real use
@@ -206,6 +210,32 @@ const resparkableInviteLimiter = createRateLimiter({
 });
 
 /**
+ * Join-link minting: 20/day per user (§23.11).
+ *
+ * Not about spend or inboxes. An unbounded set of live join links is an
+ * unbounded set of bearer credentials to one workspace, each of which somebody
+ * has to find and revoke. Twenty a day is far past what an admin mints by hand.
+ */
+const resparkableJoinLinkLimiter = createRateLimiter({
+  interval: DAY,
+  maxRequests: 20,
+  uniqueTokenPerInterval: 500,
+});
+
+/**
+ * Join-link redemption: 30/day per user (§23.11).
+ *
+ * The token is 192 bits and that is the real defence against guessing. This
+ * cap is so a signed-in loop cannot make the attempt at scale at all, and is
+ * still well above anybody joining groups by hand.
+ */
+const resparkableJoinLimiter = createRateLimiter({
+  interval: DAY,
+  maxRequests: 30,
+  uniqueTokenPerInterval: 500,
+});
+
+/**
  * Register Resparkable's tiers and rules.
  *
  * Idempotent: both registrars dedupe (by identical limiter instance and by rule
@@ -223,6 +253,8 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitTier('resparkable-vault', resparkableVaultLimiter);
   registerRateLimitTier('resparkable-public', resparkablePublicLimiter);
   registerRateLimitTier('resparkable-invite', resparkableInviteLimiter);
+  registerRateLimitTier('resparkable-join-link', resparkableJoinLinkLimiter);
+  registerRateLimitTier('resparkable-join', resparkableJoinLimiter);
 
   // Keyed on the session user, not the IP: this is authenticated, per-person
   // work, and IP keying would make one household share a search budget.
@@ -268,6 +300,22 @@ export function registerResparkableRateLimits(): void {
   registerRateLimitRule({
     match: /^\/api\/v1\/resparkable\/groups\/[^/]+\/invites$/,
     tier: 'resparkable-invite',
+    key: 'session-user',
+  });
+
+  // Minting only. `skip` falls through to the next matching rule, which is the
+  // section's 100/min, so an admin listing the group's links does not spend the
+  // daily cap.
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/groups\/[^/]+\/join-links$/,
+    tier: 'resparkable-join-link',
+    key: 'session-user',
+    skip: (request) => request.method !== 'POST',
+  });
+
+  registerRateLimitRule({
+    match: /^\/api\/v1\/resparkable\/groups\/join$/,
+    tier: 'resparkable-join',
     key: 'session-user',
   });
 

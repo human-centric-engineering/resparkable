@@ -31,12 +31,14 @@ import { ForbiddenError, NotFoundError, ValidationError } from '@/lib/api/errors
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
+import { findAccountNames, listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
 import {
+  permissionsFor,
   resolveGroupMembership,
   updateGroupSettings,
+  visibleMemberRows,
 } from '@/lib/framework/resparkable/services/membership';
 import { deleteGroupSchema, updateGroupSchema } from '@/lib/framework/resparkable/validations';
 
@@ -51,6 +53,15 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
     listGroupMembers(id),
     getLatestGroupDigest(resolved.scope),
   ]);
+  const visible = visibleMemberRows(members, resolved.scope.role);
+
+  // The account name of each person asking to join, so the admin deciding
+  // whether to let them in can tell who they are. Only requests, and only for
+  // an admin (they are the only ones `visibleMemberRows` shows requests to).
+  // The name and never the address (decided 2026-09-25).
+  const requesterNames = await findAccountNames(
+    visible.filter((member) => member.joinedAt === null).map((member) => member.userId)
+  );
 
   log.info('Resparkable group read', { groupId: id, members: members.length });
 
@@ -63,16 +74,25 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       spaceId: resolved.membership.group.spaceId,
       maxMembers: resolved.membership.group.maxMembers,
       viewersCanInheritAdmin: resolved.membership.group.viewersCanInheritAdmin,
+      // When a join link last turned somebody away because the group was full.
+      // Admins only: it is how they are told (§23.11), and to anybody else it
+      // is a fact about the group's administration they cannot act on.
+      joinRefusedFullAt: permissionsFor(resolved.scope.role).administer
+        ? resolved.membership.group.joinRefusedFullAt
+        : null,
     },
     yourRole: resolved.membership.role,
     // Members by user id and role, and no addresses. Every member can see who
     // else is in the group, which §23.4 makes unavoidable and correct; handing
     // out everybody's email address is a separate decision nobody made. The
     // client resolves display names through the platform's own user surface.
-    members: members.map((member) => ({
+    // Requests to join go to admins only: see `visibleMemberRows`.
+    members: visible.map((member) => ({
       userId: member.userId,
       role: member.role,
       joinedAt: member.joinedAt,
+      requestedAt: member.requestedAt,
+      name: member.joinedAt === null ? (requesterNames.get(member.userId) ?? null) : null,
     })),
     // The group's newest weekly digest (§23.8), read by every member. It names
     // nobody and ranks nobody: see `services/group-digest.ts`.

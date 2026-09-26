@@ -61,6 +61,8 @@ const EXPECTED: Array<{ path: string; tier: string }> = [
   // the reader would be uncapped.
   { path: '/api/v1/resparkable/public/abc', tier: 'resparkable-public' },
   { path: '/s/abc', tier: 'resparkable-public' },
+  { path: '/api/v1/resparkable/groups/grp_1/join-links', tier: 'resparkable-join-link' },
+  { path: '/api/v1/resparkable/groups/join', tier: 'resparkable-join' },
 ];
 
 /** The paths whose rules are keyed on IP rather than the session. */
@@ -84,6 +86,8 @@ describe('registerResparkableRateLimits', () => {
         'resparkable-audio',
         'resparkable-image',
         'resparkable-public',
+        'resparkable-join-link',
+        'resparkable-join',
       ])
     );
   });
@@ -143,6 +147,50 @@ describe('registerResparkableRateLimits', () => {
         expect(matches, `${String(rule.match)} must not match ${path}`).toBe(false);
       }
     }
+  });
+
+  it('spends the join-link cap on POST only: an admin listing links falls through to the section cap', () => {
+    // §23.11 decision 8: minting a link is what earns the daily cap, because
+    // every live link is a bearer credential somebody has to find and revoke.
+    // Listing them costs nothing extra, so the rule's `skip` predicate lets
+    // every other method fall through to the section's ordinary 100/min.
+    registerResparkableRateLimits();
+
+    const rule = mockedRule.mock.calls
+      .map((call) => call[0])
+      .find(
+        (candidate) =>
+          candidate.match instanceof RegExp &&
+          candidate.match.test('/api/v1/resparkable/groups/grp_1/join-links')
+      );
+
+    expect(rule, 'no rule matches the join-links path').toBeDefined();
+    expect(rule?.tier).toBe('resparkable-join-link');
+    expect(typeof rule?.skip).toBe('function');
+
+    const post = new Request('https://example.test/x', { method: 'POST' });
+    const get = new Request('https://example.test/x', { method: 'GET' });
+    // `skip` returning true means "do not apply this tier" — so POST (the
+    // mint) must NOT be skipped, and GET (the list) must be.
+    expect(rule?.skip?.(post)).toBe(false);
+    expect(rule?.skip?.(get)).toBe(true);
+  });
+
+  it('caps join-link redemption on every method, with no skip', () => {
+    registerResparkableRateLimits();
+
+    const rule = mockedRule.mock.calls
+      .map((call) => call[0])
+      .find(
+        (candidate) =>
+          candidate.match instanceof RegExp &&
+          candidate.match.test('/api/v1/resparkable/groups/join')
+      );
+
+    expect(rule, 'no rule matches the redemption path').toBeDefined();
+    expect(rule?.tier).toBe('resparkable-join');
+    expect(rule?.key).toBe('session-user');
+    expect(rule?.skip).toBeUndefined();
   });
 
   it('does not cap the plain capture path — it is cheap and must stay fast', () => {

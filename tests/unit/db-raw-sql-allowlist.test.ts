@@ -139,8 +139,11 @@ const ALLOWLIST: ReadonlyArray<{ file: string; calls: number; why: string }> = [
   },
   {
     file: 'lib/framework/resparkable/repo/groups.ts',
-    calls: 1,
-    why: 'sole-admin detection as one aggregate rather than a per-group query',
+    calls: 2,
+    why:
+      'sole-admin detection as one aggregate rather than a per-group query; and a SELECT ... FOR NO KEY UPDATE ' +
+      'on one group row by id (phase 57), the lock that serialises joining against the member cap. It ' +
+      'reads only the id of a row the service has already resolved, so it returns nothing RLS would hide',
   },
   {
     file: 'lib/framework/resparkable/repo/jobs.ts',

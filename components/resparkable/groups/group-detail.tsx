@@ -20,6 +20,13 @@
  * grant nothing until accepted, because membership is write access to an entire
  * brain. Two objects, two lifetimes, two lists.
  *
+ * ## Members and requests are two lists
+ *
+ * A request to join (a `request` join link, phase 57) is a membership row with
+ * no `joinedAt`, and it is not a member: it resolves to no scope and cannot read
+ * anything. So it is not counted against the cap, not listed as a member, and
+ * shown to admins in its own list with the two answers an admin can give.
+ *
  * ## Deleting the group
  *
  * Its own section at the bottom, admins only, and never beside "leave": see
@@ -35,13 +42,15 @@
 
 import * as React from 'react';
 import { useRouter } from 'next/navigation';
-import { Mail, UserMinus, X } from 'lucide-react';
+import { Check, Mail, UserMinus, X } from 'lucide-react';
 
 import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
 import { GroupBudget } from '@/components/resparkable/groups/group-budget';
+import { GroupJoinLinks } from '@/components/resparkable/groups/group-join-links';
 import { GroupSuccession } from '@/components/resparkable/groups/group-succession';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
+import { ClientDate } from '@/components/ui/client-date';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import {
@@ -57,6 +66,7 @@ import type {
   GroupBudgetWire,
   GroupDetailWire,
   GroupInviteWire,
+  GroupJoinLinkWire,
 } from '@/lib/framework/resparkable/ui/payloads';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
@@ -66,6 +76,8 @@ const ROLES = ['admin', 'member', 'viewer'] as const;
 export interface GroupDetailProps {
   detail: GroupDetailWire;
   invites: GroupInviteWire[];
+  /** The group's join links. Admins only; empty for everybody else. */
+  joinLinks: GroupJoinLinkWire[];
   /** The group's credits, or `null` when they could not be read. */
   budget: GroupBudgetWire | null;
   /** The signed-in user, so the member list can say which row is you. */
@@ -75,12 +87,18 @@ export interface GroupDetailProps {
 export function GroupDetail({
   detail,
   invites: initialInvites,
+  joinLinks,
   budget,
   viewerUserId,
 }: GroupDetailProps): React.ReactElement {
   const router = useRouter();
-  const [members, setMembers] = React.useState(detail.members);
+  const [allMembers, setMembers] = React.useState(detail.members);
+  const members = allMembers.filter((member) => member.joinedAt !== null);
+  const requests = allMembers.filter((member) => member.joinedAt === null);
   const [invites, setInvites] = React.useState(initialInvites);
+  const [maxMembers, setMaxMembers] = React.useState(detail.group.maxMembers);
+  const [limitDraft, setLimitDraft] = React.useState(String(detail.group.maxMembers));
+  const [refusedFullAt, setRefusedFullAt] = React.useState(detail.group.joinRefusedFullAt);
   const [email, setEmail] = React.useState('');
   const [inviteRole, setInviteRole] = React.useState<string>('member');
   const { state, message, run } = useSaveStatus();
@@ -129,7 +147,7 @@ export function GroupDetail({
   }
 
   async function changeRole(userId: string, role: string): Promise<void> {
-    const previous = members;
+    const previous = allMembers;
     setMembers((prev) => prev.map((row) => (row.userId === userId ? { ...row, role } : row)));
 
     const ok = await run(() =>
@@ -141,7 +159,7 @@ export function GroupDetail({
   }
 
   async function remove(userId: string): Promise<void> {
-    const previous = members;
+    const previous = allMembers;
     setMembers((prev) => prev.filter((row) => row.userId !== userId));
 
     const ok = await run(() => apiClient.delete(RESPARKABLE_API.groupMember(groupId, userId)));
@@ -159,6 +177,42 @@ export function GroupDetail({
     }
   }
 
+  /**
+   * Change the member limit. The server clears the "turned away" notice on any
+   * change, whichever way it moved, so the page does the same on success.
+   */
+  async function saveLimit(event: React.FormEvent): Promise<void> {
+    event.preventDefault();
+    const next = Number(limitDraft);
+    if (!Number.isInteger(next) || next === maxMembers) return;
+
+    const ok = await run(() =>
+      apiClient.patch(RESPARKABLE_API.group(groupId), { body: { maxMembers: next } })
+    );
+    if (ok) {
+      setMaxMembers(next);
+      setRefusedFullAt(null);
+    } else {
+      setLimitDraft(String(maxMembers));
+    }
+  }
+
+  async function answerRequest(userId: string, approve: boolean): Promise<void> {
+    const previous = allMembers;
+    const now = new Date().toISOString();
+    setMembers((prev) =>
+      approve
+        ? prev.map((row) => (row.userId === userId ? { ...row, joinedAt: now } : row))
+        : prev.filter((row) => row.userId !== userId)
+    );
+
+    const url = RESPARKABLE_API.groupJoinRequest(groupId, userId);
+    const ok = await run(() => (approve ? apiClient.post(url) : apiClient.delete(url)));
+    // A full group refuses the approval, and the message says so. Rolling back
+    // is what keeps the request on screen for the admin to answer later.
+    if (!ok) setMembers(previous);
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -173,8 +227,45 @@ export function GroupDetail({
 
       <section>
         <h3 className="mb-2 text-sm font-medium">
-          Members ({members.length} of {detail.group.maxMembers})
+          Members ({members.length} of {maxMembers})
         </h3>
+        {isAdmin && (
+          <form className="mb-2 flex items-end gap-2" onSubmit={(event) => void saveLimit(event)}>
+            <div>
+              <label
+                className="text-muted-foreground mb-1 flex items-center gap-1 text-xs"
+                htmlFor="group-member-limit"
+              >
+                Member limit
+                <FieldHelp title="Member limit">
+                  <p>
+                    The most people who can be in the group. Somebody using a join link when the
+                    group is full is turned away, and you are told here.
+                  </p>
+                  <p>It does not stop you inviting somebody by email.</p>
+                </FieldHelp>
+              </label>
+              <Input
+                id="group-member-limit"
+                type="number"
+                min={1}
+                max={500}
+                inputMode="numeric"
+                className="h-8 w-20"
+                value={limitDraft}
+                onChange={(event) => setLimitDraft(event.target.value)}
+              />
+            </div>
+            <Button
+              type="submit"
+              size="sm"
+              variant="outline"
+              disabled={Number(limitDraft) === maxMembers || state === 'saving'}
+            >
+              Save
+            </Button>
+          </form>
+        )}
         <ul className="flex flex-col gap-1.5">
           {members.map((member) => {
             const isYou = member.userId === viewerUserId;
@@ -233,6 +324,59 @@ export function GroupDetail({
           })}
         </ul>
       </section>
+
+      {/* Only while the group is still full: once there is room, by either route
+          the notice suggests, it has nothing left to ask of the admin. */}
+      {isAdmin && refusedFullAt !== null && members.length >= maxMembers && (
+        <p className="border-border/60 rounded-md border px-3 py-2 text-xs">
+          Somebody was turned away because the group is full, most recently on{' '}
+          <ClientDate date={refusedFullAt} />. To make room, raise the member limit or remove
+          someone.
+        </p>
+      )}
+
+      {isAdmin && requests.length > 0 && (
+        <section>
+          <h3 className="mb-2 text-sm font-medium">Asking to join ({requests.length})</h3>
+          <p className="text-muted-foreground mb-2 text-[11px]">
+            They clicked a join link that needs an admin to let them in. They cannot see anything in
+            the group until you do.
+          </p>
+          <ul className="flex flex-col gap-1.5">
+            {requests.map((request) => (
+              <li
+                key={request.userId}
+                className="border-border/60 flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+              >
+                <span className="min-w-0 truncate text-sm">
+                  {request.name ?? 'An account with no name'}
+                  <span className="text-muted-foreground ml-2 text-[11px] capitalize">
+                    {request.role}
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void answerRequest(request.userId, true)}
+                  >
+                    <Check className="mr-1 h-3.5 w-3.5" aria-hidden="true" />
+                    Let in
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void answerRequest(request.userId, false)}
+                    aria-label={`Turn down ${request.name ?? 'this request'}`}
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section>
         <h3 className="mb-2 flex items-center gap-1.5 text-sm font-medium">
@@ -349,6 +493,8 @@ export function GroupDetail({
           )}
         </section>
       )}
+
+      {isAdmin && <GroupJoinLinks groupId={groupId} links={joinLinks} />}
 
       <SaveStatus state={state} message={message} />
 

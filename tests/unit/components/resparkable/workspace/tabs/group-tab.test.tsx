@@ -43,12 +43,14 @@ import type {
   GroupBudgetWire,
   GroupDetailWire,
   GroupInviteWire,
+  GroupJoinLinkWire,
 } from '@/lib/framework/resparkable/ui/payloads';
 
 const GROUP_ID = 'group_1';
 const DETAIL_ENDPOINT = RESPARKABLE_API.group(GROUP_ID);
 const BUDGET_ENDPOINT = RESPARKABLE_API.groupBudget(GROUP_ID);
 const INVITES_ENDPOINT = RESPARKABLE_API.groupInvites(GROUP_ID);
+const JOIN_LINKS_ENDPOINT = RESPARKABLE_API.groupJoinLinks(GROUP_ID);
 
 function detailFixture(overrides: Partial<GroupDetailWire> = {}): GroupDetailWire {
   return {
@@ -60,6 +62,7 @@ function detailFixture(overrides: Partial<GroupDetailWire> = {}): GroupDetailWir
       spaceId: 'grp_space_1',
       maxMembers: 50,
       viewersCanInheritAdmin: true,
+      joinRefusedFullAt: null,
     },
     yourRole: 'member',
     members: [],
@@ -89,6 +92,20 @@ const INVITES: GroupInviteWire[] = [
     expiresAt: null,
     revokedAt: null,
     acceptedAt: null,
+  },
+];
+
+const JOIN_LINKS: GroupJoinLinkWire[] = [
+  {
+    id: 'link_1',
+    tokenPrefix: 'abc123',
+    role: 'member',
+    approval: 'request',
+    maxUses: null,
+    useCount: 0,
+    expiresAt: null,
+    revokedAt: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
   },
 ];
 
@@ -169,21 +186,24 @@ describe('GroupTab', () => {
     expect(propsOf().budget).toBeNull();
   });
 
-  it('fetches the invites only for an admin', async () => {
+  it('fetches the invites and join links only for an admin', async () => {
     mockGet({
       [DETAIL_ENDPOINT]: detailFixture({ yourRole: 'admin' }),
       [BUDGET_ENDPOINT]: budgetFixture(),
       [INVITES_ENDPOINT]: INVITES,
+      [JOIN_LINKS_ENDPOINT]: JOIN_LINKS,
     });
 
     render(<GroupTab id={GROUP_ID} />);
 
     await screen.findByTestId('group-detail');
     await waitFor(() => expect(propsOf().invites).toEqual(INVITES));
+    await waitFor(() => expect(propsOf().joinLinks).toEqual(JOIN_LINKS));
     expect(apiClient.get).toHaveBeenCalledWith(INVITES_ENDPOINT);
+    expect(apiClient.get).toHaveBeenCalledWith(JOIN_LINKS_ENDPOINT);
   });
 
-  it('never fetches the invites for a non-admin', async () => {
+  it('never fetches the invites or join links for a non-admin', async () => {
     mockGet({
       [DETAIL_ENDPOINT]: detailFixture({ yourRole: 'member' }),
       [BUDGET_ENDPOINT]: budgetFixture(),
@@ -193,7 +213,9 @@ describe('GroupTab', () => {
 
     expect(await screen.findByTestId('group-detail')).toBeInTheDocument();
     expect(apiClient.get).not.toHaveBeenCalledWith(INVITES_ENDPOINT);
+    expect(apiClient.get).not.toHaveBeenCalledWith(JOIN_LINKS_ENDPOINT);
     expect(propsOf().invites).toEqual([]);
+    expect(propsOf().joinLinks).toEqual([]);
   });
 
   it('reads the viewer id from the cached session, not a second request', async () => {

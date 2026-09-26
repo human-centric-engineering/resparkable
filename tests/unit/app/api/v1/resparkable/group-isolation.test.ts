@@ -167,7 +167,12 @@ const OTHER_ROUTES: Record<string, string> = {
   'groups/[id]/budget/route.ts': 'As above. The per-person half is admin-only in the service.',
   'groups/[id]/budget/top-up/route.ts': 'As above. The giver’s own space is their session’s.',
   'groups/[id]/budget/members/[userId]/route.ts': 'As above. Admin only in the service.',
+  'groups/[id]/join-links/route.ts': 'As above. Admin only in the service.',
+  'groups/[id]/join-links/[linkId]/route.ts': 'As above. Admin only in the service.',
+  'groups/[id]/join-requests/[userId]/route.ts': 'As above. Admin only in the service.',
   'groups/invites/accept/route.ts': 'Binds an invitation token to the session. Not in a space.',
+  'groups/join/route.ts':
+    'Redeems a join link for the session. Not in a space: it writes a membership row and reads nothing in the group.',
   'invites/accept/route.ts': 'Binds a share invitation to the session. Not in a space.',
   'public/[token]/route.ts': 'A public link. The token is the whole authority.',
   'spaces/route.ts': 'Lists the workspaces the caller can open, for the switcher.',

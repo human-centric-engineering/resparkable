@@ -1029,7 +1029,16 @@ export const groupsListSchema = z.array(groupListItemSchema);
 export const groupMemberSchema = z.object({
   userId: z.string(),
   role: z.string(),
+  /** Null is a request to join still waiting on an admin (phase 57). */
   joinedAt: z.string().nullable(),
+  /** When they asked, for anybody who came in through a `request` link. */
+  requestedAt: z.string().nullable(),
+  /**
+   * The account name of somebody asking to join, for the admin deciding on
+   * them. `null` for everybody else, and for an account with no name. Optional
+   * because `GET /groups/[id]/members` does not carry it.
+   */
+  name: z.string().nullable().optional(),
 });
 
 export const groupDetailSchema = z.object({
@@ -1041,6 +1050,8 @@ export const groupDetailSchema = z.object({
     spaceId: z.string(),
     maxMembers: z.number(),
     viewersCanInheritAdmin: z.boolean(),
+    /** Admins only; `null` for everybody else. See the route. */
+    joinRefusedFullAt: z.string().nullable(),
   }),
   yourRole: z.string(),
   members: z.array(groupMemberSchema),
@@ -1062,6 +1073,47 @@ export const groupInviteSchema = z.object({
 });
 
 export const groupInvitesSchema = z.array(groupInviteSchema);
+
+/** A join link, from `GET /resparkable/groups/[id]/join-links`. Never the token. */
+export const groupJoinLinkSchema = z.object({
+  id: z.string(),
+  tokenPrefix: z.string(),
+  role: z.string(),
+  approval: z.string(),
+  maxUses: z.number().nullable(),
+  useCount: z.number(),
+  expiresAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+export const groupJoinLinksSchema = z.array(groupJoinLinkSchema);
+
+/** A freshly minted link: the one response that carries the token and URL. */
+export const mintedJoinLinkSchema = groupJoinLinkSchema.extend({
+  token: z.string(),
+  url: z.string(),
+});
+
+/**
+ * `POST /resparkable/groups/join`. One `outcome`, because a request to join is
+ * neither joined nor refused. `groupName` is absent for `unknown`, which says
+ * nothing about any group.
+ */
+export const redeemJoinLinkResponseSchema = z.object({
+  outcome: z.enum([
+    'joined',
+    'requested',
+    'already_member',
+    'already_requested',
+    'group_full',
+    'unknown',
+  ]),
+  groupId: z.string().optional(),
+  groupName: z.string().optional(),
+});
+
+export type RedeemJoinLinkResponse = z.infer<typeof redeemJoinLinkResponseSchema>;
 
 /**
  * `GET /resparkable/groups/[id]/budget` (phase 50). `admin` is `null` for
@@ -1100,3 +1152,5 @@ export type GroupBudgetWire = z.infer<typeof groupBudgetSchema>;
 export type GroupListItemWire = z.infer<typeof groupListItemSchema>;
 export type GroupDetailWire = z.infer<typeof groupDetailSchema>;
 export type GroupInviteWire = z.infer<typeof groupInviteSchema>;
+export type GroupJoinLinkWire = z.infer<typeof groupJoinLinkSchema>;
+export type MintedJoinLinkWire = z.infer<typeof mintedJoinLinkSchema>;

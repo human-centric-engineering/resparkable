@@ -1914,11 +1914,17 @@ model ResparkableGroup {
   /// and there is no route by which a group acquires a second one.
   spaceId String
 
-  /// The member cap (§23.11). **Nothing enforces it in phase 46**: the column
-  /// lands here because adding it later means a second migration on this table
-  /// for one integer, and phase 57 is what reads it when there is a join link
-  /// to cap.
+  /// The member cap (§23.11). Counts joined members only, and governs the two
+  /// ways a join link lets somebody in: redemption and approval. Invitations are
+  /// not capped, because an admin naming one person is a decision the cap exists
+  /// to stand in for (phase-57-plan.md decision 7).
   maxMembers Int @default(50)
+
+  /// When a join link last turned somebody away because the group was full.
+  /// Shown to admins on the group page, which is how "tells the admin" is met
+  /// without an email (§23.13 allows three, and this is not one). Cleared when
+  /// an admin changes `maxMembers`.
+  joinRefusedFullAt DateTime?
 
   /// Whether a viewer may inherit the admin role when the last admin's account
   /// is erased. `true` by default: the longest-standing joined member inherits,
@@ -1954,9 +1960,10 @@ model ResparkableGroup {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  space   ResparkableSpace         @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
-  members ResparkableGroupMember[]
-  invites ResparkableGroupInvite[]
+  space     ResparkableSpace           @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
+  members   ResparkableGroupMember[]
+  invites   ResparkableGroupInvite[]
+  joinLinks ResparkableGroupJoinLink[]
 
   /// "Which group owns this space?", the read every scope resolution makes.
   @@index([spaceId])
@@ -1999,10 +2006,22 @@ model ResparkableGroupMember {
   invitedByUserId String?
 
   /// **Null means pending approval, not "joined at an unknown time"** (§23.11).
-  /// A pending row resolves to no scope at all, which is what phase 57's
-  /// request-to-join flow writes. In phase 46 every row is written with a value,
-  /// because the only route in is accepting an invite.
+  /// A pending row resolves to no scope at all. Written null only by redeeming a
+  /// `request` join link; approval stamps it.
   joinedAt DateTime?
+
+  /// When this person asked to join through a `request` link. Null for anybody
+  /// who came in by invitation or through an `open` link. Kept after approval,
+  /// so "asked on Monday, let in on Wednesday" stays answerable.
+  requestedAt DateTime?
+
+  /// The `request` link this row was filed through, so that turning the request
+  /// down, or its author withdrawing it, gives that link its use back. Without
+  /// it, strangers holding a forwarded link could use up every place on it and
+  /// the people it was meant for would be told it no longer works. Null for
+  /// anybody who did not come in through a `request` link. `SetNull` because a
+  /// link going (with its group) must not take a membership with it.
+  joinLinkId String?
 
   /// When this member was emailed that they are the group's only admin, and
   /// what happens to the role if they close their account. Once per membership:
@@ -2026,7 +2045,8 @@ model ResparkableGroupMember {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  group ResparkableGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group    ResparkableGroup          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  joinLink ResparkableGroupJoinLink? @relation(fields: [joinLinkId], references: [id], onDelete: SetNull)
 
   /// One membership per person per group. Re-inviting somebody who is already in
   /// is an update, not a second row: two live memberships with different roles
@@ -2035,6 +2055,9 @@ model ResparkableGroupMember {
   /// The scope resolution read: "which groups is this actor in?", which the
   /// switcher and every group request path make.
   @@index([userId])
+  /// For the `SetNull` when a join link goes (with its group): without it,
+  /// Postgres scans the whole member table once per deleted link.
+  @@index([joinLinkId])
   @@map("framework_resparkable_group_member")
 }
 
@@ -2106,4 +2129,61 @@ model ResparkableGroupInvite {
   /// The invitee's read: "what am I invited to?", by address.
   @@index([email])
   @@map("framework_resparkable_group_invite")
+}
+
+/// A link that lets whoever holds it join a group (§23.11, phase 57).
+///
+/// ## A forwarded join link is the whole thing
+///
+/// An invitation names an address, so a forwarded invitation email is useless
+/// without that mailbox. A join link names nobody, so it is a bearer credential
+/// to a whole workspace and takes §13's public-link discipline rather than the
+/// invite's: 192 random bits, sha256 at rest, a prefix for the UI, an expiry, a
+/// revocation and a use limit.
+///
+/// **No person on this row.** Every admin sees and can revoke every link, and
+/// "who minted it" is phase 58's audit log's question. Without a user column the
+/// table needs no hand-written FK, no drift probe, and no Art. 15 section
+/// (phase-57-plan.md decision 1).
+model ResparkableGroupJoinLink {
+  id      String @id @default(cuid())
+  groupId String
+
+  /// sha256 hex of the token, minted as `randomBytes(24).toString('base64url')`.
+  /// The only copy that exists after minting. Not a cuid: cuids are
+  /// timestamp-prefixed and monotonic, the wrong shape for a secret.
+  tokenHash   String @unique
+  /// First few characters of the token, so an admin can tell two links apart.
+  tokenPrefix String @db.VarChar(12)
+
+  /// `member` or `viewer`, fixed at mint. **Never `admin`**: there is no link
+  /// that makes its holder an administrator of somebody's workspace. Refused at
+  /// the boundary and again in the service.
+  role String @default("member") @db.VarChar(16)
+
+  /// `open` (the link is the decision) or `request` (redeeming files a pending
+  /// membership an admin approves). `request` by default for `member`.
+  approval String @default("request") @db.VarChar(16)
+
+  /// How many people may redeem it. `null` is unlimited, and still stops at the
+  /// group's `maxMembers`.
+  maxUses  Int?
+  /// Redemptions that wrote a membership row. A second redemption by somebody
+  /// already in, or already waiting, writes nothing and counts nothing.
+  useCount Int  @default(0)
+
+  /// 30 days by default, 365 max. `null` requires an explicit "never expires".
+  expiresAt DateTime?
+  revokedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  group    ResparkableGroup         @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  /// Requests to join still waiting on an admin, filed through this link.
+  requests ResparkableGroupMember[]
+
+  /// The admin's list: "what links does this group have?", newest first.
+  @@index([groupId, createdAt])
+  @@map("framework_resparkable_group_join_link")
 }

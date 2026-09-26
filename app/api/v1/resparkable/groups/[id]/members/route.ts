@@ -20,7 +20,10 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
 import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
-import { resolveGroupMembership } from '@/lib/framework/resparkable/services/membership';
+import {
+  resolveGroupMembership,
+  visibleMemberRows,
+} from '@/lib/framework/resparkable/services/membership';
 
 export const GET = withAuth<{ id: string }>(async (request, session, { params }) => {
   const log = await getRouteLogger(request);
@@ -29,7 +32,8 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
   const resolved = await resolveGroupMembership(session.user.id, id);
   if (!resolved) throw new NotFoundError('Group not found');
 
-  const members = await listGroupMembers(id);
+  // Requests to join are an admin's to see: see `visibleMemberRows`.
+  const members = visibleMemberRows(await listGroupMembers(id), resolved.scope.role);
 
   log.info('Resparkable group members list', { groupId: id, count: members.length });
 
@@ -39,6 +43,7 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       userId: member.userId,
       role: member.role,
       joinedAt: member.joinedAt,
+      requestedAt: member.requestedAt,
     })),
     { count: members.length }
   );

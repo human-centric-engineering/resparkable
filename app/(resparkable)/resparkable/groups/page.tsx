@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 
 import { GroupsView } from '@/components/resparkable/groups/groups-view';
 import { LoadError } from '@/components/resparkable/ui/load-error';
+import { getServerSession } from '@/lib/auth/utils';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { groupsListSchema } from '@/lib/framework/resparkable/ui/payloads';
 import { readResparkable } from '@/lib/framework/resparkable/ui/server-read';
@@ -20,11 +21,16 @@ export const metadata: Metadata = {
  * switcher's own list is read with `null` in the layout.
  */
 export default async function ResparkableGroupsPage() {
-  const result = await readResparkable(RESPARKABLE_API.GROUPS, groupsListSchema, null);
+  const [session, result] = await Promise.all([
+    getServerSession(),
+    readResparkable(RESPARKABLE_API.GROUPS, groupsListSchema, null),
+  ]);
 
   if (!result.ok) {
     return <LoadError what="your groups" message={result.message} />;
   }
 
-  return <GroupsView initial={result.data} />;
+  // The viewer's id from the server, as the group page does, so withdrawing a
+  // request never waits on the client session loading.
+  return <GroupsView initial={result.data} viewerUserId={session?.user.id ?? ''} />;
 }

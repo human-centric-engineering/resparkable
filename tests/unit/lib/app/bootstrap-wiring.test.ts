@@ -101,13 +101,15 @@ describe('rate-limit auto-wire (lib/app/rate-limit.ts → middleware realm)', ()
     // The count is deliberately loose about *which* rules exist — the exact set
     // is asserted once, in `defaults.test.ts`. What this file protects is the
     // namespace property below, so it only needs to know the seam is filled.
-    // Twelve authenticated sub-caps plus the two public share-reader rules
+    // Fourteen authenticated sub-caps plus the two public share-reader rules
     // (Release 2 phase 11), which are the only IP-keyed ones and the only ones
-    // whose matcher sits outside `/api/v1/resparkable/`. The last two are the
-    // share invite (phase 13) and the group invite (phase 46), which share the
-    // one daily tier in the tier: both send mail to somebody else's inbox rather
-    // than spending this deployment's budget.
-    expect(appRules).toHaveLength(14);
+    // whose matcher sits outside `/api/v1/resparkable/`. Four of the fourteen
+    // are daily rather than per-minute: the share invite (phase 13) and the
+    // group invite (phase 46), which send mail to somebody else's inbox rather
+    // than spend this deployment's budget, and join-link minting and
+    // redemption (§23.11, phase 57), which are bearer credentials to a whole
+    // workspace rather than a per-request cost.
+    expect(appRules).toHaveLength(16);
     // Every rule stays inside one of Resparkable's two namespaces. The second
     // one, `/s/`, is a short prefix on the site root — exactly the shape that
     // shadows things by accident — so it is spelled out here rather than

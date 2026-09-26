@@ -18,6 +18,28 @@ release process.
 
 ### Added
 
+- **Group join links (Release 9, phase 57).** A link that lets whoever holds it
+  join a group, without the admin typing addresses (§23.11). New model
+  `ResparkableGroupJoinLink` (sha256 `tokenHash`, `tokenPrefix`, `role` of
+  `member` or `viewer` and never `admin`, `approval` of `open` or `request`,
+  `maxUses`, `useCount`, `expiresAt`, `revokedAt`; no user column).
+  `ResparkableGroupMember` gains `requestedAt`, and `ResparkableGroup` gains
+  `joinRefusedFullAt`; `maxMembers` is now enforced on joining through a link.
+  New routes: `GET`/`POST /api/v1/resparkable/groups/[id]/join-links` and
+  `DELETE .../join-links/[linkId]` (admin), `POST`/`DELETE
+  .../join-requests/[userId]` (approve or turn down, admin), and `POST
+  /api/v1/resparkable/groups/join` (redeem). `GET /groups/[id]` returns pending
+  requests to admins only, with `requestedAt` and the requester's account
+  name (never their address), and `joinRefusedFullAt` for
+  admins. Two new rate-limit tiers, `resparkable-join-link` (minting, 20/day)
+  and `resparkable-join` (redeeming, 30/day). A pending member can withdraw
+  their request through `DELETE /groups/[id]/members/[their id]`.
+  `ResparkableGroupMember.joinLinkId` records the link a waiting request came
+  through, so turning it down, withdrawing it, or erasing its author's account
+  gives the link its use back.
+  Somebody waiting who then accepts an invitation, or uses a link that joins
+  straight away, is let in at that invitation's or link's role.
+
 - **The group digest (Release 9, phase 50).** A group gets a weekly digest of
   its work, never of its people (§23.8). New job kind `group_digest` (groups
   only, the group's Monday 09:00, demand-gated from its first run via the new
@@ -1729,6 +1751,11 @@ release process.
 
 
 ### Fixed
+
+- **Removing a pending request no longer deletes the group.** `removeMember`
+  counted only joined members for "last member out", so an admin who was a
+  group's only joined member, removing a request to join, deleted the group.
+  Unreachable before phase 57, since nothing wrote a pending row.
 
 - **A share from a group to a person never appeared on that person's
   `/shared` list.** The owner lookup only found people, so the row was dropped
