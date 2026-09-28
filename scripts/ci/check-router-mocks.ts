@@ -1,5 +1,5 @@
 /**
- * Hand-rolled `next/navigation` router mocks check — CLI.
+ * Hand-rolled `next/navigation` router mocks check: CLI.
  *
  * The rules, and why this is needed at all, live in `scripts/ci/router-mocks.ts`.
  * This file only walks `tests/` and hands file contents over.
@@ -7,7 +7,7 @@
  * ## Why the whole tree, every time
  *
  * Deliberately repo-wide rather than scoped to a branch's diff. Both invariants
- * are meant to hold at zero, so a whole-repo count *is* the check — and a
+ * are meant to hold at zero, so a whole-repo count *is* the check, and a
  * diff-scoped version is blind to every pre-existing violation until someone
  * happens to re-touch those exact lines. That is not hypothetical: the first
  * version of this check was diff-scoped and could not see the files it was
@@ -31,7 +31,7 @@ const ROOT = 'tests';
 
 /**
  * The factory's own definition necessarily writes a complete router out, so it
- * is exempt from the `literal` rule — and from that rule only. See
+ * is exempt from the `literal` rule, and from that rule only. See
  * `ScanOptions.allowCompleteLiteral`.
  */
 const COMPLETE_LITERAL_ALLOWED = new Set(['tests/types/mocks.ts']);
@@ -57,12 +57,12 @@ export function main(root = process.cwd()): number {
 
   // Zero files means the check did not look, not that the suite is clean. Run
   // from anywhere but the repo root, `readdirSync` throws and this would
-  // otherwise print an all-clear naming a count of nothing — the sibling
+  // otherwise print an all-clear naming a count of nothing. The sibling
   // barrel and lockfile checks fail loudly in the same situation, and an
   // all-clear that overstates its own coverage is the failure mode this whole
   // check exists to prevent.
   if (files.length === 0) {
-    console.error(`Found no .ts/.tsx files under ${ROOT}/ — is this the repo root?`);
+    console.error(`Found no .ts/.tsx files under ${ROOT}/. Is this the repo root?`);
     console.error(`Looked under ${root}.`);
     return 1;
   }
@@ -114,7 +114,12 @@ export function main(root = process.cwd()): number {
   return 0;
 }
 
-// `process.exitCode`, not `process.exit()` — stderr is asynchronous when it is
+// `process.exitCode`, not `process.exit()`: stderr is asynchronous when it is
 // a pipe, which it is under both `npm run` and GitHub Actions, and exiting
 // discards whatever is still queued.
-process.exitCode = main();
+//
+// Guarded on the entry point, as `check-missing-tests.ts` is, so importing a
+// helper from here does not run the whole scan as a side effect.
+if (process.argv[1] !== undefined && process.argv[1].endsWith('check-router-mocks.ts')) {
+  process.exitCode = main();
+}

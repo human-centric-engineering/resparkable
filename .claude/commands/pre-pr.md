@@ -332,15 +332,15 @@ Flag imports of `@/lib/prisma`, `@/lib/db`, or `@prisma/client` — and any usag
 npm run check:router-mocks
 ```
 
-Run by `npm run validate` (Step 1) and by CI, so this is normally already answered by the time you get here — run it directly only when Step 1 was skipped. It must print `Router mocks OK (N files ... scanned)`; any `file:line` it prints is a finding.
+Run by `npm run validate` (Step 1) and by CI, so this is normally already answered by the time you get here. Run it directly only when Step 1 was skipped. It must print `Router mocks OK (N files ... scanned)`; any `file:line` it prints is a finding.
 
-Flags a router built by hand instead of with `createMockRouter()` from `@/tests/types/mocks`. **Repo-wide, not over the diff** — both invariants are meant to hold at zero, so a whole-repo count _is_ the check, and a diff-scoped one is blind to every pre-existing violation until someone happens to re-touch those exact lines. That blindness is not hypothetical twice over: the first version of this check was diff-scoped and could not see the 23 files it was written to catch, and its replacement reported CLEAN over 16 complete literals and 17 casts it could not parse.
+Flags a router built by hand instead of with `createMockRouter()` from `@/tests/types/mocks`. **Repo-wide, not over the diff**: both invariants are meant to hold at zero, so a whole-repo count _is_ the check, and a diff-scoped one is blind to every pre-existing violation until someone happens to re-touch those exact lines. That blindness is not hypothetical twice over: the first version of this check was diff-scoped and could not see the 23 files it was written to catch, and its replacement reported CLEAN over 16 complete literals and 17 casts it could not parse.
 
-The **cast** is always wrong: `AppRouterInstance` gains required members between Next minors, and a double cast does not satisfy the new member — it hides that the mock is missing it, so the literal keeps compiling while the component receives an incomplete router. `tests/types/mocks.ts` is deliberately **not** exempt from this rule: a real cast added there (say, by a fork extending the factory) is exactly what needs catching.
+The **cast** is always wrong: `AppRouterInstance` gains required members between Next minors, and a double cast does not satisfy the new member; it hides that the mock is missing it, so the literal keeps compiling while the component receives an incomplete router. `tests/types/mocks.ts` is deliberately **not** exempt from this rule: a real cast added there (say, by a fork extending the factory) is exactly what needs catching.
 
 The **six-member literal** means the author intended a complete router, so it should use the factory. A minimal stub (`push`/`replace` only, for a component that reads nothing else) is fine and deliberately not flagged.
 
-Nothing type-checks a `vi.mock` factory, so neither form fails the build — this scan is the only thing that catches them. The rules, and every shape that has defeated a version of this check, live in `scripts/ci/router-mocks.ts` and are held there by `tests/unit/scripts/ci/router-mocks.test.ts`. See `.context/testing/mocking.md`.
+Nothing type-checks a `vi.mock` factory, so neither form fails the build. This scan is the only thing that catches them. The rules, and every shape that has defeated a version of this check, live in `scripts/ci/router-mocks.ts` and are held there by `tests/unit/scripts/ci/router-mocks.test.ts`. See `.context/testing/mocking.md`.
 
 ### Step 5: Check .context/ documentation
 
@@ -461,7 +461,7 @@ Output a clear summary in this format:
 - [ ] Unvalidated request bodies: {count found or CLEAN}
 - [ ] Bare fetch() instead of serverFetch(): {count found or CLEAN}
 - [ ] Direct Prisma outside API routes: {count found or CLEAN}
-- [ ] Hand-rolled router mocks: {CLEAN or N violation(s) — `npm run check:router-mocks`}
+- [ ] Hand-rolled router mocks: {CLEAN or N violation(s): `npm run check:router-mocks`}
 
 ### Documentation Check
 - [ ] Stale content in changed docs: {CLEAN or issues found}

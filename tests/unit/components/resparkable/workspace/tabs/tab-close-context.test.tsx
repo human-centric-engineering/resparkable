@@ -6,7 +6,7 @@
  * The seam that lets content inside a tab close that tab without knowing which
  * tab, or which pane, it is in. What it carries is an already-resolved
  * callback rather than an id, because "close me" is `closeTab(leafId, tabId)`
- * for a docked tab and `closeFloatingPanel(panelId)` for a detached one — two
+ * for a docked tab and `closeFloatingPanel(panelId)` for a detached one: two
  * actions in two id spaces that no single id could express.
  *
  * Test Coverage:
@@ -61,7 +61,7 @@ describe('useOptionalTabClose', () => {
 
   it('reaches a consumer nested well below the provider', async () => {
     // The real consumer is `ArchiveControls`, several components down inside a
-    // detail view — a context rather than a prop is the whole point.
+    // detail view. A context rather than a prop is the whole point.
     const user = userEvent.setup();
     const close = vi.fn();
 

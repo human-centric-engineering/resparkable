@@ -1,7 +1,7 @@
 /**
  * Tests for the router-mock check's CLI.
  *
- * The rules are covered in `router-mocks.test.ts`; this covers the WIRING —
+ * The rules are covered in `router-mocks.test.ts`; this covers the WIRING:
  * which files are walked, which one gets the factory exemption, and what the
  * operator is told when the walk finds nothing at all.
  *
@@ -67,7 +67,10 @@ describe('scripts/ci/check-router-mocks', () => {
 
   async function run(): Promise<void> {
     vi.resetModules();
-    await import('@/scripts/ci/check-router-mocks');
+    // Importing no longer runs the scan (the entry point is guarded on
+    // `process.argv[1]`), so call `main()` and set the exit code as the CLI does.
+    const { main } = await import('@/scripts/ci/check-router-mocks');
+    process.exitCode = main();
   }
 
   beforeEach(() => {
@@ -124,7 +127,7 @@ describe('scripts/ci/check-router-mocks', () => {
   describe('which files are walked', () => {
     it('reads .ts and .tsx, including setup.ts and helpers', async () => {
       // Deliberately not narrowed to `*.test.ts`: an earlier version was, and
-      // could not see `tests/setup.ts` — the single highest-risk file, since
+      // could not see `tests/setup.ts`, the single highest-risk file, since
       // its router is the suite-wide default.
       tree({ 'setup.ts': COMPLETE_LITERAL, 'helpers/thing.ts': ROUTER_CAST });
       await run();
@@ -178,7 +181,7 @@ describe('scripts/ci/check-router-mocks', () => {
       await run();
       expect(process.exitCode).toBe(1);
       expect(out()).toContain('Found no .ts/.tsx files under tests/');
-      expect(out()).toContain('is this the repo root?');
+      expect(out()).toContain('Is this the repo root?');
     });
 
     it('fails when tests/ cannot be read at all', async () => {

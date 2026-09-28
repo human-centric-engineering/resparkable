@@ -231,7 +231,7 @@ export type MockRouter = ReturnType<typeof useRouter> & {
  * another sweep, and spares forks repeating it.
  *
  * Two things defeat that. A cast suppresses the error rather than fixing it,
- * so the literal rots in silence, and the spelling varies — the suite's real
+ * so the literal rots in silence, and the spelling varies: the suite's real
  * offenders wrote `as unknown as ReturnType<typeof vi.fn>`, not the
  * `ReturnType<typeof useRouter>` form the first check looked for. An
  * incomplete literal inside a `vi.mock` factory has the same effect, because
@@ -240,8 +240,8 @@ export type MockRouter = ReturnType<typeof useRouter> & {
  * `tests/unit/types/mocks.test.ts` asserts it still does.
  *
  * Scope is an enforced invariant, not a claim: `npm run check:router-mocks`
- * (part of `npm run validate`) scans every `.ts`/`.tsx` under `tests/` —
- * including `setup.ts`, `helpers/` and `mocks/`, not just `*.test.ts` — for
+ * (part of `npm run validate`) scans every `.ts`/`.tsx` under `tests/`
+ * (including `setup.ts`, `helpers/` and `mocks/`, not just `*.test.ts`) for
  * both shapes, and must come back clean. This file is exempt from the literal
  * rule and only that rule: it is the factory, so it necessarily writes the
  * complete router out, but a cast added here by a fork extending it is exactly

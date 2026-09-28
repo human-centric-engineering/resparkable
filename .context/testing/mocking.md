@@ -361,12 +361,12 @@ vi.mock('next/navigation', async () => {
 ```
 
 **What is and isn't converted.** Two invariants, both enforced by
-`npm run check:router-mocks` — part of `npm run validate`, and its own CI step —
+`npm run check:router-mocks` (part of `npm run validate`, and its own CI step)
 across every `.ts`/`.tsx` under `tests/`, with `setup.ts`, `helpers/` and
 `mocks/` included, not only `*.test.ts`. No cast that switches off the type
 check on a router, and no object literal that supplies all six router methods.
 Minimal stubs supplying two or three members for a component that reads nothing
-else are deliberately allowed — convert one as soon as its component might read
+else are deliberately allowed. Convert one as soon as its component might read
 more of the router than the stub provides. Run the check for the current state;
 do not trust a count written down here, including this one.
 
@@ -376,8 +376,8 @@ target type names the router, whatever is being cast. That matters because the
 first version grepped for the literal string
 `as unknown as ReturnType<typeof useRouter>`, while every real offender in the
 suite wrote `as unknown as ReturnType<typeof vi.fn>` instead and went unseen.
-`as unknown as ReturnType<typeof vi.fn>` on anything else — `apiClient.post`,
-`useSearchParams` — is untouched by this rule.
+`as unknown as ReturnType<typeof vi.fn>` on anything else (`apiClient.post`,
+`useSearchParams`) is untouched by this rule.
 
 **`bfcacheId` is a fixed string, not a spy.** Its real behaviour is to _change_
 on a fresh push/replace navigation. A test asserting that a

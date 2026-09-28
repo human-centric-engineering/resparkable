@@ -642,7 +642,7 @@ release process.
   every other kind too. So the gate reads `source = 'user'`, and a system write
   does not wake a dormant brain.
 
-- **`npm run check:router-mocks` — hand-rolled `next/navigation` router mocks
+- **`npm run check:router-mocks`: hand-rolled `next/navigation` router mocks
   now fail the build.** The rules live in `scripts/ci/router-mocks.ts`
   (`scanRouterMocks`), the CLI in `scripts/ci/check-router-mocks.ts`; it is
   chained into `npm run validate` and has its own CI step. It replaces a
@@ -652,19 +652,22 @@ release process.
   requiring a colon (so a shorthand `refresh,` was invisible) and grepped for
   one literal cast spelling (so the `ReturnType<typeof vi.fn>` form every real
   offender used went unseen). Parsing with the TypeScript compiler removes both
-  classes of blind spot. The 17 affected test files now build their router with
-  `createMockRouter()`. Forks inheriting `validate` get the check for free.
+  classes of blind spot. It also flags a partial router cast as it is handed to
+  `vi.mocked(useRouter).mockReturnValue(...)` (`{ push } as never`), where
+  neither the value nor the target type names the router. The 20 affected test
+  files now build their router with `createMockRouter()`. Forks inheriting
+  `validate` get the check for free.
 
 - **A detail tab closes when the record it is about is deleted.**
   `components/resparkable/workspace/tabs/tab-close-context.tsx` adds
-  `TabCloseProvider` and `useOptionalTabClose()` — a context carrying an
+  `TabCloseProvider` and `useOptionalTabClose()`, a context carrying an
   already-resolved `close()` rather than an id, because closing resolves to
   `closeTab(leafId, tabId)` for a docked tab and `closeFloatingPanel(panelId)`
   for a detached one, and a detached tab has no live `leafId` to pass. Bound by
   `WorkspacePane` and `FloatingTabWindow`; deliberately absent on the
   route-backed tab, whose content navigates instead because the browser URL is
   that tab's identity. `ArchiveControls` consumes it in `destroy()` and gains no
-  new props, so its nine call sites are untouched — `redirectTo` already marks
+  new props, so its nine call sites are untouched: `redirectTo` already marks
   the two detail views, and a list row still leaves its list tab open.
   Previously such a tab refetched, 404'd, and sat on its "not found" empty state.
 

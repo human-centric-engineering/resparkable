@@ -292,7 +292,7 @@ describe('ArchiveControls', () => {
       await destroy(user);
 
       // `useResparkableRefresh` falls back to `router.refresh()` with no
-      // boundary above it, which is what this asserts on — the announcement
+      // boundary above it, which is what this asserts on. The announcement
       // happening at all is the point, not which arm it took.
       await waitFor(() => {
         expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -342,7 +342,7 @@ describe('ArchiveControls', () => {
 
     it('navigates instead of closing for the route-backed tab, which has no closer', async () => {
       // The one tab in the tree whose identity IS the browser URL. It renders
-      // the real server page, so nothing can hand it a closer — and it does
+      // the real server page, so nothing can hand it a closer, and it does
       // not need one: moving the URL changes that tab and nothing else, which
       // is pane-local in exactly the way the old blanket "never push inside
       // the workspace" rule assumed was impossible.
@@ -378,9 +378,9 @@ describe('ArchiveControls', () => {
 
       await destroy(user);
 
-      await waitFor(() => {
-        expect(mockDelete).toHaveBeenCalled();
-      });
+      // Wait for the failure to surface, not just for the call: asserting
+      // straight after the call could run before the rejection is handled.
+      expect(await screen.findByText('boom')).toBeInTheDocument();
       // A tab that vanishes on a failed delete takes the error message with it.
       expect(close).not.toHaveBeenCalled();
       expect(mockRefresh).not.toHaveBeenCalled();

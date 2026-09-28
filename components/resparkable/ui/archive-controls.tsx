@@ -60,7 +60,7 @@ export interface ArchiveControlsProps {
   noun: string;
   archived: boolean;
   /**
-   * Set this when the surface rendering these controls is *about* this item —
+   * Set this when the surface rendering these controls is *about* this item:
    * a detail view rather than a row in a list.
    *
    * It carries a URL because that is what a plain page under `app/` needs
@@ -131,7 +131,7 @@ export function ArchiveControls({
     onDone?.();
 
     // Four situations, and `redirectTo` is what separates the first from the
-    // rest. It marks "this surface is *about* the thing just deleted" — only
+    // rest. It marks "this surface is *about* the thing just deleted"; only
     // the two detail views pass it. A list row deleted from a list must leave
     // the list alone; the surface outlives the row.
     if (!redirectTo) {
@@ -145,7 +145,7 @@ export function ArchiveControls({
     //
     // Announce first so panes showing the same thing catch up, then close this
     // one. Both are state updates on providers above this component, so React
-    // batches them into one render in which the tab is already gone — the
+    // batches them into one render in which the tab is already gone: the
     // refetch that used to leave it sitting on its "not found" empty state
     // never runs.
     if (closeSelf) {
@@ -162,13 +162,13 @@ export function ArchiveControls({
     }
 
     // The route-backed tab. The browser URL *is* this tab, so navigating
-    // changes this tab and nothing else — pane-local, which is what the old
+    // changes this tab and nothing else. Pane-local, which is what the old
     // blanket "never push inside the workspace" rule could not express.
     // `notify` rather than `refresh`: with no boundary above it, `refresh`
     // would be a `router.refresh()` into a 404 immediately before the push,
     // flashing the not-found page on the way out.
     // Guarded because `change` is undefined for a collection with no mapped
-    // change type — `refresh` takes that as "no announcement", `notify` does not.
+    // change type: `refresh` takes that as "no announcement", `notify` does not.
     if (change) notify(change);
     router.push(withActiveSpace(redirectTo));
   }

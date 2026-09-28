@@ -390,7 +390,7 @@ jobs:
         if: needs.config.outputs.code == 'true'
         run: |
           npm run check:router-mocks || {
-            echo "::error::A test builds a next/navigation router by hand instead of with createMockRouter() — see the step log for file:line."
+            echo "::error::A test builds a next/navigation router by hand instead of with createMockRouter(). See the step log for file:line."
             exit 1
           }
       # Fork-owned CI checks seam. A fork adds an `app:ci-checks` script to

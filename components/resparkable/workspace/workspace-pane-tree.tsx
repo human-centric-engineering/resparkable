@@ -129,15 +129,17 @@ function WorkspacePane({
   const activeTab = leaf.tabs.find((tab) => tab.id === leaf.activeTabId) ?? null;
   const isRouteTab = activeTab?.source === 'route';
 
-  // Resolved here because this is the lowest component that knows both ids —
+  // Resolved here because this is the lowest component that knows both ids:
   // `TabContent` is handed the tab and nothing about which pane holds it.
-  // Left to the React Compiler rather than wrapped in a `useCallback`, which
-  // it cannot preserve through `activeTab` being found by a `.find()` on each
-  // render (`react-hooks/preserve-manual-memoization`).
-  const activeTabId = activeTab?.id;
-  const closeActiveTab = (): void => {
-    if (activeTabId) closeTab(leaf.id, activeTabId);
-  };
+  // Memoized on the leaf's own ids rather than on `activeTab`, which a
+  // `.find()` rebuilds each render (and which the compiler's lint then cannot
+  // preserve), so `TabCloseProvider` consumers do not re-render on every
+  // render of the pane. `leaf.activeTabId` is the id `activeTab` was found by.
+  const leafId = leaf.id;
+  const activeTabId = leaf.activeTabId;
+  const closeActiveTab = React.useCallback((): void => {
+    if (activeTabId) closeTab(leafId, activeTabId);
+  }, [closeTab, leafId, activeTabId]);
   // `buildRouteForTab` returns a full, navigable href — Graph's and
   // Search's carry a query string (`?focusType=…&focus=…`, `?q=…`) that
   // `SectionHeader`'s lookup (`findSectionHelp`, plain-pathname matching)

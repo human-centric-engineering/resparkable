@@ -1,16 +1,16 @@
 /**
- * Hand-rolled `next/navigation` router mocks — rules.
+ * Hand-rolled `next/navigation` router mocks: rules.
  *
  * WHY THIS EXISTS: `AppRouterInstance` gains required members between Next
- * minors — 16.3.0 added `bfcacheId` — and nothing type-checks a `vi.mock`
+ * minors (16.3.0 added `bfcacheId`), and nothing type-checks a `vi.mock`
  * factory. A test that writes the router out by hand therefore keeps compiling
  * while handing the component under test an object the real router is no longer
  * shaped like. `createMockRouter()` (`tests/types/mocks.ts`) exists so there is
  * one place to add the next member; this check is what keeps the suite going
  * through it.
  *
- * Two invariants, both across every `.ts`/`.tsx` under `tests/` — `setup.ts`,
- * `helpers/` and `mocks/` included, not only `*.test.ts`:
+ * Two invariants, both across every `.ts`/`.tsx` under `tests/` (`setup.ts`,
+ * `helpers/` and `mocks/` included, not only `*.test.ts`):
  *
  * 1. **No object literal supplying all six router methods.** Six members means
  *    the author meant "a complete router", which is the factory's job. A
@@ -28,7 +28,7 @@
  * having a parser:
  *
  * - It collected members with `/([A-Za-z_$][\w$]*)\s*:/`, so a **shorthand**
- *   member (`refresh,` — no colon) was never counted. Ten files wrote `refresh`
+ *   member (`refresh,`, no colon) was never counted. Ten files wrote `refresh`
  *   that way and five wrote `push`; all sixteen read as five-of-six and passed.
  * - It **anchored** on `prefetch\s*:` to find a literal at all, so a literal
  *   whose `prefetch` was shorthand would not even have been located.
@@ -79,7 +79,7 @@ export interface ScanOptions {
    * Suppresses the `literal` rule only.
    *
    * For `tests/types/mocks.ts`, which necessarily writes the complete router
-   * out — it is the factory. The `cast` rule still applies there, deliberately:
+   * out: it is the factory. The `cast` rule still applies there, deliberately:
    * a real cast added by a fork extending the factory is exactly what needs
    * catching, and the JSDoc mentioning one is a comment, so it is not a node.
    */
@@ -90,7 +90,7 @@ export interface ScanOptions {
  * `.tsx` must parse as TSX.
  *
  * Read as `ScriptKind.TS`, a JSX tag is a type assertion and the tree from
- * there on is nonsense — silently, with no error surfaced. Fifteen of the
+ * there on is nonsense, silently, with no error surfaced. Fifteen of the
  * sixteen files this check was written to catch are `.tsx`, so getting this
  * wrong would have reproduced the CLEAN it replaces.
  */
@@ -118,22 +118,33 @@ function memberName(member: ts.ObjectLiteralElementLike): string | null {
   return null;
 }
 
-/** Whether the factory is called anywhere inside this literal. */
+/**
+ * Whether this literal spreads the factory's result (`...createMockRouter()`).
+ *
+ * Only a direct spread counts. The factory's name appearing somewhere deeper,
+ * say as one member's value (`prefetch: createMockRouter().prefetch`), still
+ * leaves the other five written by hand.
+ */
 function usesFactory(literal: ts.ObjectLiteralExpression): boolean {
-  let found = false;
-  const visit = (node: ts.Node): void => {
-    if (found) return;
-    if (ts.isIdentifier(node) && node.text === FACTORY) {
-      found = true;
-      return;
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(literal, visit);
-  return found;
+  return literal.properties.some(
+    (member) => ts.isSpreadAssignment(member) && isFactoryCall(member.expression)
+  );
 }
 
-/** Unwraps casts, parens and `!` to reach the thing actually being cast. */
+function isFactoryCall(node: ts.Expression): boolean {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isIdentifier(node.expression) &&
+    node.expression.text === FACTORY
+  );
+}
+
+function skipParens(node: ts.Expression): ts.Expression {
+  let current = node;
+  while (ts.isParenthesizedExpression(current)) current = current.expression;
+  return current;
+}
+
 function innermostOperand(node: ts.Expression): ts.Expression {
   let current: ts.Expression = node;
   for (;;) {
@@ -160,11 +171,52 @@ function isCast(node: ts.Node): node is CastExpression {
 
 /**
  * `X as unknown as T` is two nested casts, and reporting both would double every
- * finding. The outer one is the whole expression, so the inner is skipped.
+ * finding. Only the outermost cast of a chain is considered, and it is judged on
+ * every link (see `chainTargetsRouter`), so skipping the inner ones loses nothing.
+ * Parentheses are looked through: `(X as unknown) as T` is the same chain.
  */
 function isInnerCastOfChain(node: CastExpression): boolean {
-  const parent = node.parent;
-  return parent !== undefined && isCast(parent) && parent.expression === node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  return (
+    parent !== undefined && isCast(parent) && skipParens(parent.expression) === skipParens(node)
+  );
+}
+
+/** The value a router mock is handed to: `vi.mocked(useRouter).mockReturnValue(HERE)`. */
+const ROUTER_RETURN_SETTER = /^(?:mockReturnValue|mockReturnValueOnce)$/;
+const MOCKED_USE_ROUTER = /^vi\.mocked\(\s*(?:[\w$]+\.)*useRouter\s*\)$/;
+
+function isReturnedFromMockedUseRouter(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
+  let current: ts.Node = node;
+  while (current.parent !== undefined && ts.isParenthesizedExpression(current.parent)) {
+    current = current.parent;
+  }
+  const call = current.parent;
+  if (call === undefined || !ts.isCallExpression(call)) return false;
+  if (!call.arguments.some((argument) => argument === current)) return false;
+  const callee = call.expression;
+  return (
+    ts.isPropertyAccessExpression(callee) &&
+    ROUTER_RETURN_SETTER.test(callee.name.text) &&
+    MOCKED_USE_ROUTER.test(callee.expression.getText(sourceFile))
+  );
+}
+
+/**
+ * Whether any link of the cast chain rooted at `node` targets the router, or
+ * the chain as a whole is the router value handed to a mocked `useRouter`
+ * (`vi.mocked(useRouter).mockReturnValue({ push } as never)`).
+ */
+function chainTargetsRouter(node: CastExpression, sourceFile: ts.SourceFile): boolean {
+  if (isFactoryCall(innermostOperand(node.expression))) return false;
+  if (isReturnedFromMockedUseRouter(node, sourceFile)) return true;
+  let current: ts.Expression = node;
+  while (isCast(current)) {
+    if (castTargetsRouter(current, sourceFile)) return true;
+    current = skipParens(current.expression);
+  }
+  return false;
 }
 
 /**
@@ -174,29 +226,37 @@ function isInnerCastOfChain(node: CastExpression): boolean {
  * first and the documented invariant names only the second:
  *
  * - the thing being cast **is** `useRouter` (or `navigation.useRouter`), no
- *   matter what it is cast to — this is what catches
+ *   matter what it is cast to. This is what catches
  *   `useRouter as unknown as ReturnType<typeof vi.fn>`;
- * - the target type names the router, no matter what is being cast — this is
+ * - the target type names the router, no matter what is being cast. This is
  *   what catches `{} as unknown as ReturnType<typeof useRouter>`.
  *
  * Scoping to `useRouter` rather than banning `as unknown as ReturnType<typeof
  * vi.fn>` outright is not politeness. The suite has 104 of those casts and 87
- * are on something else entirely — `apiClient.post`, `useSearchParams`,
+ * are on something else entirely: `apiClient.post`, `useSearchParams`,
  * `headers`. A rule broad enough to catch the router ones flags all 87.
  */
 function castTargetsRouter(node: CastExpression, sourceFile: ts.SourceFile): boolean {
   const operand = innermostOperand(node.expression).getText(sourceFile);
   if (operand === 'useRouter' || operand.endsWith('.useRouter')) return true;
 
+  // Matched as words anywhere in the target, not as one exact spelling, so a
+  // namespaced `typeof navigation.useRouter`, an inline
+  // `import('next/navigation').AppRouterInstance`, and the repo's own
+  // `MockRouter` alias are all caught. A cast to `MockRouter` hides a missing
+  // member exactly as a cast to the Next type does.
   const target = node.type.getText(sourceFile);
-  return /ReturnType\s*<\s*typeof\s+useRouter\s*>/.test(target) || target === 'AppRouterInstance';
+  return (
+    /ReturnType\s*<\s*typeof\s+(?:[\w$]+\.)*useRouter\s*>/.test(target) ||
+    /\b(?:AppRouterInstance|MockRouter)\b/.test(target)
+  );
 }
 
 /**
  * Every hand-rolled router mock in one file.
  *
- * Findings are returned in source order. The parse is a parse only — no
- * program, no type-checker, no `tsconfig` resolution — so this stays fast
+ * Findings are returned in source order. The parse is a parse only (no
+ * program, no type-checker, no `tsconfig` resolution), so this stays fast
  * enough to run over the whole suite on every `npm run validate`.
  */
 export function scanRouterMocks(
@@ -237,14 +297,14 @@ export function scanRouterMocks(
       }
     }
 
-    if (isCast(node) && !isInnerCastOfChain(node) && castTargetsRouter(node, sourceFile)) {
+    if (isCast(node) && !isInnerCastOfChain(node) && chainTargetsRouter(node, sourceFile)) {
       violations.push({
         file,
         ...at(node),
         rule: 'cast',
         message:
           'Cast switches off the type check on a router mock. ' +
-          `Use \`vi.mocked(useRouter)\` and \`${FACTORY}()\` instead — a cast ` +
+          `Use \`vi.mocked(useRouter)\` and \`${FACTORY}()\` instead: a cast ` +
           'hides a missing member rather than failing on it.',
       });
     }

@@ -39,6 +39,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import { GroupDetail } from '@/components/resparkable/groups/group-detail';
 import { apiClient } from '@/lib/api/client';
+import { createMockRouter } from '@/tests/types/mocks';
 
 const push = vi.fn();
 const refresh = vi.fn();
@@ -99,7 +100,7 @@ function renderDetail(
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(useRouter).mockReturnValue({ push, refresh } as never);
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push, refresh }));
 });
 
 describe('GroupDetail', () => {

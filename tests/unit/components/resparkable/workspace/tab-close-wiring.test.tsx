@@ -6,7 +6,7 @@
  * `tab-close-context.test.tsx` covers the seam itself. This covers the part
  * that can actually be wrong: whether "close me" resolves to the right action
  * for where the tab lives. There are three answers and they are not
- * interchangeable —
+ * interchangeable:
  *
  * - a docked tab closes with `closeTab(leafId, tabId)`;
  * - a detached tab closes with `closeFloatingPanel(panelId)`, because it is no
@@ -124,7 +124,7 @@ describe('a detached tab', () => {
     expect(screen.getByTestId('leaf-tab-count')).toHaveTextContent('0');
 
     // The window renders the same `TabContent`, so the probe appears twice
-    // only if the pane still holds a tab — it does not, so this is the
+    // only if the pane still holds a tab. It does not, so this is the
     // window's copy.
     await user.click(screen.getByRole('button', { name: 'close this tab' }));
 

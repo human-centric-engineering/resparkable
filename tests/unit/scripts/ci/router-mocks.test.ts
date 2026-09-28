@@ -1,5 +1,5 @@
 /**
- * Router-mock scanner tests — the rules.
+ * Router-mock scanner tests: the rules.
  *
  * This file is the artefact behind an instruction the old scanner only asserted:
  * "re-test it against those shapes before trusting a CLEAN." Each shape that
@@ -11,7 +11,7 @@
  * The real checker walks `tests/`, which includes this file. A parser sees a
  * template literal as one token and emits no `ObjectLiteralExpression` inside
  * it, so these shapes are invisible to it and the checker needs no exemption
- * for its own tests — pinned by the last case in this file.
+ * for its own tests, pinned by the last case in this file.
  *
  * **Never write a bare six-member router literal, or a `useRouter` cast, in
  * this file's own TypeScript.** It would be a real violation, and the checker
@@ -36,7 +36,7 @@ const literals = (source: string, file?: string) =>
 const casts = (source: string, file?: string) =>
   scan(source, file).filter((violation) => violation.rule === 'cast');
 
-describe('scanRouterMocks — complete-literal rule', () => {
+describe('scanRouterMocks: complete-literal rule', () => {
   describe('the five shapes that have defeated a version of this check', () => {
     it('flags shape 1: useRouter: vi.fn(() => ({ ... }))', () => {
       const source = `
@@ -79,7 +79,7 @@ describe('scanRouterMocks — complete-literal rule', () => {
 
     it('flags shape 4: a hoisted literal referenced by the factory', () => {
       // Anchoring on `useRouter` rather than on the members misses this
-      // entirely — the literal and the mock factory are different statements.
+      // entirely: the literal and the mock factory are different statements.
       const source = `
         const mockRouter = {
           push: vi.fn(),
@@ -188,6 +188,16 @@ describe('scanRouterMocks — complete-literal rule', () => {
       `;
       expect(literals(source)).toEqual([]);
     });
+
+    it('still flags a literal that only uses the factory for one member', () => {
+      const source = `
+        const router = {
+          push, replace, refresh, back, forward,
+          prefetch: createMockRouter().prefetch,
+        };
+      `;
+      expect(literals(source)).toHaveLength(1);
+    });
   });
 
   describe('member collection', () => {
@@ -253,7 +263,7 @@ describe('scanRouterMocks — complete-literal rule', () => {
   });
 });
 
-describe('scanRouterMocks — cast rule', () => {
+describe('scanRouterMocks: cast rule', () => {
   it('flags the documented form, a cast to the router type', () => {
     const source = `const router = useRouter as unknown as ReturnType<typeof useRouter>;`;
     expect(casts(source)).toHaveLength(1);
@@ -261,7 +271,7 @@ describe('scanRouterMocks — cast rule', () => {
 
   it('flags the form every real violation used, a cast to ReturnType<typeof vi.fn>', () => {
     // The previous rule was a grep for the literal string of the form above, so
-    // this — which defeats the type check just as thoroughly — went unseen in
+    // this (which defeats the type check just as thoroughly) went unseen in
     // all 17 files that used it.
     const source = `const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;`;
     expect(casts(source)).toHaveLength(1);
@@ -280,6 +290,50 @@ describe('scanRouterMocks — cast rule', () => {
   it('flags a cast to AppRouterInstance', () => {
     const source = `const router = stub as unknown as AppRouterInstance;`;
     expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags a cast to the router type through a namespace import', () => {
+    const source = `const router = {} as unknown as ReturnType<typeof navigation.useRouter>;`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags a cast to an inline-imported AppRouterInstance', () => {
+    const source = `const router = stub as unknown as import('next/navigation').AppRouterInstance;`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it("flags a cast to the repo's own MockRouter alias", () => {
+    // `MockRouter` is `ReturnType<typeof useRouter> & ...`, so a cast to it
+    // hides a missing member exactly as a cast to the Next type does.
+    const source = `const router = { push } as unknown as MockRouter;`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags a partial router cast as it is handed to a mocked useRouter', () => {
+    // The target is `never` and the operand an object literal, so neither the
+    // operand nor the target names the router. Where the value goes does.
+    const source = `vi.mocked(useRouter).mockReturnValue({ push, refresh } as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags the same through mockReturnValueOnce', () => {
+    const source = `vi.mocked(useRouter).mockReturnValueOnce({ push } as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags a router cast that is the inner link of an unflagged chain', () => {
+    const source = `const r = { push } as MockRouter as unknown as ReturnType<typeof vi.fn>;`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('reports a parenthesized chained cast once, not twice', () => {
+    const source = `const m = (useRouter as unknown) as ReturnType<typeof vi.fn>;`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it("does not flag a cast of the factory's own result", () => {
+    const source = `const router = createMockRouter() as MockRouter;`;
+    expect(casts(source)).toEqual([]);
   });
 
   it('reports a chained cast once, not twice', () => {
@@ -304,6 +358,11 @@ describe('scanRouterMocks — cast rule', () => {
       expect(casts(source)).toEqual([]);
     });
 
+    it('does not flag a cast handed to some other mocked hook', () => {
+      const source = `vi.mocked(useSearchParams).mockReturnValue(params as never);`;
+      expect(casts(source)).toEqual([]);
+    });
+
     it('does not flag vi.mocked(useRouter)', () => {
       const source = `vi.mocked(useRouter).mockReturnValue(createMockRouter());`;
       expect(casts(source)).toEqual([]);
@@ -323,10 +382,10 @@ describe('scanRouterMocks — cast rule', () => {
   });
 });
 
-describe('scanRouterMocks — wiring', () => {
+describe('scanRouterMocks: wiring', () => {
   it('parses .tsx as TSX, so JSX does not mangle the tree', () => {
     // Read as ScriptKind.TS, `<Thing />` is a type assertion and everything
-    // after it is nonsense — silently. Fifteen of the sixteen files this check
+    // after it is nonsense, silently. Fifteen of the sixteen files this check
     // was written to catch are .tsx.
     const source = `
       function Harness() {
@@ -394,7 +453,7 @@ describe('formatViolation', () => {
 describe('the checker does not need to exempt its own tests', () => {
   it('finds nothing in this file, whose every violating shape is a template literal', () => {
     // If this ever fails, someone has written a real router mock in this file
-    // rather than a quoted one — or the immunity the docblock relies on has
+    // rather than a quoted one, or the immunity the docblock relies on has
     // been lost, which would mean the checker now needs a self-exemption. A
     // checker that exempts itself is the same shape as the bug it was fixing.
     const self = readFileSync('tests/unit/scripts/ci/router-mocks.test.ts', 'utf8');

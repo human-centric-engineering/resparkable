@@ -336,7 +336,7 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
           frame around the content, doing the "distinct from the shell"
           job it was added for without doing it twice to what's inside. */}
       <div className="bg-background min-h-0 flex-1 overflow-y-auto p-3">
-        {/* Closing a detached tab is `closeFloatingPanel`, not `closeTab` —
+        {/* Closing a detached tab is `closeFloatingPanel`, not `closeTab`:
             this tab is no longer in the pane tree, so a `closeTab` keyed on
             `originLeafId` would silently do nothing. */}
         <TabCloseProvider close={closeSelf}>
