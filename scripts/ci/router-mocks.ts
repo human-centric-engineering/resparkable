@@ -96,15 +96,24 @@ const IGNORE_DIRECTIVE = /router-mocks-ignore:\s*\S/;
 
 function isIgnored(node: ts.Node, sourceFile: ts.SourceFile): boolean {
   const text = sourceFile.text;
+  const lineOf = (position: number): number =>
+    sourceFile.getLineAndCharacterOfPosition(position).line;
+  // Only a directive ending on the line directly above the flagged node counts.
+  // Ancestors are walked only to find it when it is attached to the enclosing
+  // statement (`// ...` then `it.each([{ ... }])` on the next line); one above
+  // a multi-line `vi.mock` factory does not reach a literal further down it.
+  const targetLine = lineOf(node.getStart(sourceFile)) - 1;
   for (
     let current: ts.Node | undefined = node;
     current !== undefined && !ts.isSourceFile(current);
     current = current.parent
   ) {
     const ranges = ts.getLeadingCommentRanges(text, current.getFullStart()) ?? [];
-    if (ranges.some((range) => IGNORE_DIRECTIVE.test(text.slice(range.pos, range.end)))) {
-      return true;
-    }
+    const directive = ranges.some(
+      (range) =>
+        lineOf(range.end) === targetLine && IGNORE_DIRECTIVE.test(text.slice(range.pos, range.end))
+    );
+    if (directive) return true;
     if (ts.isStatement(current)) break;
   }
   return false;
@@ -229,22 +238,59 @@ function isInnerCastOfChain(node: CastExpression): boolean {
 }
 
 /** The value a router mock is handed to: `vi.mocked(useRouter).mockReturnValue(HERE)`. */
-const ROUTER_RETURN_SETTER = /^(?:mockReturnValue|mockReturnValueOnce)$/;
-const MOCKED_USE_ROUTER = /^vi\.mocked\(\s*(?:[\w$]+\.)*useRouter\s*\)$/;
+const RETURN_SETTER = /^(?:mockReturnValue|mockReturnValueOnce)$/;
+const IMPLEMENTATION_SETTER = /^(?:mockImplementation|mockImplementationOnce)$/;
+const MOCKED_USE_ROUTER = /^vi\.mocked\s*(?:<[^>]*>)?\(\s*(?:[\w$]+\.)*useRouter\s*\)$/;
 
-function isReturnedFromMockedUseRouter(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
-  let current: ts.Node = node;
+/** `vi.mocked(useRouter)` in any spelling, or `vi.spyOn(navigation, 'useRouter')`. */
+function isMockedUseRouter(expression: ts.Expression, sourceFile: ts.SourceFile): boolean {
+  if (MOCKED_USE_ROUTER.test(expression.getText(sourceFile))) return true;
+  if (!ts.isCallExpression(expression)) return false;
+  const [, method] = expression.arguments;
+  return (
+    expression.expression.getText(sourceFile) === 'vi.spyOn' &&
+    method !== undefined &&
+    ts.isStringLiteralLike(method) &&
+    method.text === 'useRouter'
+  );
+}
+
+function outsideParens(node: ts.Node): ts.Node {
+  let current = node;
   while (current.parent !== undefined && ts.isParenthesizedExpression(current.parent)) {
     current = current.parent;
   }
+  return current;
+}
+
+/**
+ * Whether `node` is the router a mocked `useRouter` hands out: the argument of
+ * `.mockReturnValue(...)`, or what an implementation passed to
+ * `.mockImplementation(...)` returns (`() => X` or `() => { return X; }`).
+ */
+function isReturnedFromMockedUseRouter(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
+  let current = outsideParens(node);
+  let setter = RETURN_SETTER;
+
+  const parent = current.parent;
+  if (parent !== undefined && ts.isArrowFunction(parent) && parent.body === current) {
+    current = outsideParens(parent);
+    setter = IMPLEMENTATION_SETTER;
+  } else if (parent !== undefined && ts.isReturnStatement(parent)) {
+    const fn = parent.parent?.parent;
+    if (fn === undefined || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) return false;
+    current = outsideParens(fn);
+    setter = IMPLEMENTATION_SETTER;
+  }
+
   const call = current.parent;
   if (call === undefined || !ts.isCallExpression(call)) return false;
   if (!call.arguments.some((argument) => argument === current)) return false;
   const callee = call.expression;
   return (
     ts.isPropertyAccessExpression(callee) &&
-    ROUTER_RETURN_SETTER.test(callee.name.text) &&
-    MOCKED_USE_ROUTER.test(callee.expression.getText(sourceFile))
+    setter.test(callee.name.text) &&
+    isMockedUseRouter(callee.expression, sourceFile)
   );
 }
 

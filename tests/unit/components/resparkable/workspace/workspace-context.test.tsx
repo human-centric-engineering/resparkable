@@ -517,61 +517,61 @@ describe('closeTabsAbout', () => {
     expect(leaf.tabs.map((tab) => tab.kind)).toEqual(['projects', 'project']);
   });
 
-  it('never closes the route-backed tab, and reports it was about the record', () => {
+  it('never closes the route-backed tab, even when it is about the record', () => {
+    // Its identity is the browser URL, so closing it would leave the URL
+    // pointing at a page nothing shows. `ArchiveControls` navigates it when
+    // the delete came from that page; otherwise it is left as it is.
     const { result } = renderWorkspace();
 
     act(() => {
       result.current.syncRouteTab('project', { id: 'p1' });
     });
 
-    let outcome: { routeTabWasAbout: boolean } | undefined;
     act(() => {
-      outcome = result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
     });
 
-    expect(outcome).toEqual({ routeTabWasAbout: true });
     const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
     expect(leaf.tabs).toHaveLength(1);
     expect(leaf.tabs[0].source).toBe('route');
   });
 
-  it('reports false when the route-backed tab is about a different record', () => {
+  it('closes a board tab by its slug', () => {
     const { result } = renderWorkspace();
 
     act(() => {
-      result.current.syncRouteTab('project', { id: 'p2' });
+      result.current.openTab('board', { slug: 'roadmap' });
+      result.current.openTab('board', { slug: 'backlog' });
     });
 
-    let outcome: { routeTabWasAbout: boolean } | undefined;
     act(() => {
-      outcome = result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+      result.current.closeTabsAbout({ type: 'board', id: 'b1', slug: 'roadmap' });
     });
 
-    expect(outcome).toEqual({ routeTabWasAbout: false });
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs.map((tab) => tab.params.slug)).toEqual(['backlog']);
   });
 
-  it('leaves the tree and the stored state unchanged in content when nothing matched', () => {
-    // Not a `toBe` identity check: `useLocalStorage`'s same-tab broadcast
-    // round-trips every write (including this provider's own) through
-    // `JSON.stringify`/`JSON.parse`, so even a no-op `closeTabsAbout` ends up
-    // with a freshly parsed, structurally-identical tree rather than the
-    // exact prior reference. What `closeTabsAbout`'s own no-op branch
-    // guarantees is that no *tab* goes missing, not pointer equality this
-    // far up the stack.
+  it('writes nothing at all when nothing matched', () => {
+    // `useLocalStorage`'s setter serializes and broadcasts the whole tree even
+    // for an unchanged result, so the no-match case skips the write outright.
+    // The same tree reference afterwards is what proves no write happened: a
+    // write would have round-tripped through the same-tab broadcast and come
+    // back as a freshly parsed copy.
     const { result } = renderWorkspace();
 
     act(() => {
       result.current.openTab('projects');
     });
     const rootBefore = result.current.root;
-    const storedBefore = storedState();
+    const storedBefore = window.localStorage.getItem(STORAGE_KEY);
 
     act(() => {
       result.current.closeTabsAbout({ type: 'project', id: 'does-not-exist' });
     });
 
-    expect(result.current.root).toEqual(rootBefore);
-    expect(storedState()).toEqual(storedBefore);
+    expect(result.current.root).toBe(rootBefore);
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(storedBefore);
   });
 });
 

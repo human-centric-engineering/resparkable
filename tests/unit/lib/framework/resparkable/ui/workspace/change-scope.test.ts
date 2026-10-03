@@ -29,7 +29,6 @@ import {
   isTabAbout,
   keysForChange,
   keysForTab,
-  listKindForRecord,
 } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
@@ -207,10 +206,28 @@ describe('isTabAbout', () => {
     expect(isTabAbout('projects', {}, { type: 'project', id: 'p1' })).toBe(false);
   });
 
-  it('is false for a kind with no record scope at all, such as board', () => {
-    // `board`'s param is a slug, not an id, and it has no `record` entry:
-    // it is a detail tab by URL shape but not one `closeTabsAbout` can target.
-    expect(isTabAbout('board', { slug: 'roadmap' }, { type: 'project', id: 'p1' })).toBe(false);
+  it('matches a board tab by slug, since its tab carries the slug and not the id', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1', slug: 'roadmap' })
+    ).toBe(true);
+  });
+
+  it('is false for a board tab when the deleted board has a different slug', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1', slug: 'backlog' })
+    ).toBe(false);
+  });
+
+  it('is false for a board tab when the delete names no slug at all', () => {
+    // A board deleted from somewhere that only knows its id cannot be matched
+    // to a tab keyed by slug, and must not match every board tab by accident.
+    expect(isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1' })).toBe(false);
+  });
+
+  it('is false for a board tab when the record is not a board', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'project', id: 'p1', slug: 'roadmap' })
+    ).toBe(false);
   });
 
   it('is false, not a throw, for an unknown tab kind', () => {
@@ -218,17 +235,5 @@ describe('isTabAbout', () => {
       isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })
     ).not.toThrow();
     expect(isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })).toBe(false);
-  });
-});
-
-describe('listKindForRecord', () => {
-  it('maps the record types that have a route-backed list to their list tab kind', () => {
-    expect(listKindForRecord('project')).toBe('projects');
-    expect(listKindForRecord('entity')).toBe('entities');
-  });
-
-  it('returns undefined for a record type with no list page of its own', () => {
-    expect(listKindForRecord('thought')).toBeUndefined();
-    expect(listKindForRecord('board')).toBeUndefined();
   });
 });

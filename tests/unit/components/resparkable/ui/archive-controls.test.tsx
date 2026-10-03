@@ -52,7 +52,18 @@ vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
   useOptionalWorkspace: vi.fn(() => null),
 }));
 
+// Whether the control renders under a tab boundary: `true` is a launcher or
+// floating tab, `false` (inside a workspace) is the route-backed page. The
+// real hook reads a context only a full `TabRefreshBoundary` provides.
+vi.mock('@/components/resparkable/workspace/tabs/tab-refresh-context', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('@/components/resparkable/workspace/tabs/tab-refresh-context')
+  >()),
+  useIsInTab: vi.fn(() => true),
+}));
+
 import { apiClient } from '@/lib/api/client';
+import { useIsInTab } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 
 const mockDelete = vi.mocked(apiClient.delete);
 const mockPost = vi.mocked(apiClient.post);
@@ -65,7 +76,7 @@ function fakeWorkspace(
   overrides: Partial<Pick<WorkspaceContextValue, 'closeTabsAbout'>> = {}
 ): WorkspaceContextValue {
   return {
-    closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
+    closeTabsAbout: vi.fn(),
     ...overrides,
   } as unknown as WorkspaceContextValue;
 }
@@ -76,6 +87,7 @@ describe('ArchiveControls', () => {
     mockDelete.mockResolvedValue(undefined);
     mockPost.mockResolvedValue(undefined);
     mockUseOptionalWorkspace.mockReturnValue(null);
+    vi.mocked(useIsInTab).mockReturnValue(true);
     vi.mocked(useRouter).mockReturnValue(
       createMockRouter({
         refresh: mockRefresh,
@@ -268,9 +280,10 @@ describe('ArchiveControls', () => {
    * Inside the workspace, destroying a record closes every tab about it
    * (`closeTabsAbout`), wherever each sits: not just the one the delete was
    * pressed in, and regardless of whether `redirectTo` was passed. The
-   * route-backed tab is the one exception: it can't be closed (its identity
-   * is the URL), so it navigates instead, and only when it was actually
-   * about the deleted record.
+   * route-backed tab can't be closed (its identity is the URL), so it
+   * navigates instead, but only when the delete came from that page. One
+   * about the record in another pane is left alone, since navigating it
+   * would bring it to the front and pull focus there.
    */
   describe('inside a workspace tab', () => {
     async function destroy(user: ReturnType<typeof userEvent.setup>) {
@@ -282,9 +295,7 @@ describe('ArchiveControls', () => {
       // The regression that matters: a list row has no `redirectTo`, but a
       // destroy from a list must still close any detail tab open elsewhere.
       const user = userEvent.setup();
-      const workspace = fakeWorkspace({
-        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
-      });
+      const workspace = fakeWorkspace();
       mockUseOptionalWorkspace.mockReturnValue(workspace);
       render(
         <ArchiveControls
@@ -305,11 +316,12 @@ describe('ArchiveControls', () => {
       expect(mockPush).not.toHaveBeenCalled();
     });
 
-    it('calls closeTabsAbout even when redirectTo is set, for tabs elsewhere about the same record', async () => {
+    it('closes tabs about the record from a detail tab and refreshes, without moving the URL', async () => {
+      // A launcher-opened or floating detail tab (under a tab boundary) passes
+      // `redirectTo`, but the URL belongs to the route-backed tab, which may
+      // be showing something else entirely in another pane.
       const user = userEvent.setup();
-      const workspace = fakeWorkspace({
-        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
-      });
+      const workspace = fakeWorkspace();
       mockUseOptionalWorkspace.mockReturnValue(workspace);
       render(
         <ArchiveControls
@@ -327,82 +339,64 @@ describe('ArchiveControls', () => {
       await waitFor(() => {
         expect(workspace.closeTabsAbout).toHaveBeenCalledWith({ type: 'project', id: 'proj_1' });
       });
-    });
-
-    it('pushes redirectTo and does not refresh when the route tab was about the record', async () => {
-      const user = userEvent.setup();
-      const workspace = fakeWorkspace({
-        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: true })),
-      });
-      mockUseOptionalWorkspace.mockReturnValue(workspace);
-      render(
-        <ArchiveControls
-          collection={RESPARKABLE_API.PROJECTS}
-          id="proj_1"
-          label="Q4 launch"
-          noun="project"
-          archived={false}
-          redirectTo="/resparkable/projects"
-        />
-      );
-
-      await destroy(user);
-
-      await waitFor(() => {
-        expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
-      });
-      // No `router.refresh()` first. That would refresh into a 404
-      // immediately before navigating away, flashing the not-found page.
-      expect(mockRefresh).not.toHaveBeenCalled();
-    });
-
-    it('pushes the record type’s list route when the route tab was about it and no redirectTo was given', async () => {
-      const user = userEvent.setup();
-      const workspace = fakeWorkspace({
-        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: true })),
-      });
-      mockUseOptionalWorkspace.mockReturnValue(workspace);
-      render(
-        <ArchiveControls
-          collection={RESPARKABLE_API.PROJECTS}
-          id="proj_1"
-          label="Q4 launch"
-          noun="project"
-          archived={false}
-        />
-      );
-
-      await destroy(user);
-
-      await waitFor(() => {
-        expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
-      });
-      expect(mockRefresh).not.toHaveBeenCalled();
-    });
-
-    it('refreshes instead of pushing when the route tab was not about the record', async () => {
-      const user = userEvent.setup();
-      const workspace = fakeWorkspace({
-        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
-      });
-      mockUseOptionalWorkspace.mockReturnValue(workspace);
-      render(
-        <ArchiveControls
-          collection={RESPARKABLE_API.PROJECTS}
-          id="proj_1"
-          label="Q4 launch"
-          noun="project"
-          archived={false}
-          redirectTo="/resparkable/projects"
-        />
-      );
-
-      await destroy(user);
-
-      await waitFor(() => {
-        expect(mockRefresh).toHaveBeenCalledTimes(1);
-      });
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
       expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('passes a board’s slug, since its tabs are keyed by slug rather than id', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.BOARDS}
+          id="board_1"
+          slug="roadmap"
+          label="Q4 launch"
+          noun="board"
+          archived={false}
+          compact
+        />
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(workspace.closeTabsAbout).toHaveBeenCalledWith({
+          type: 'board',
+          id: 'board_1',
+          slug: 'roadmap',
+        });
+      });
+    });
+
+    it('leaves the route-backed page for redirectTo when the delete came from that page', async () => {
+      // Where this control renders is the signal, not the stored tree (which
+      // other browser windows share): no tab boundary above it means it IS the
+      // route-backed page, which would 404 on a refresh.
+      const user = userEvent.setup();
+      vi.mocked(useIsInTab).mockReturnValue(false);
+      const workspace = fakeWorkspace();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+          redirectTo="/resparkable/projects"
+        />
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
+      });
+      // A refresh first would be a `router.refresh()` into a 404.
+      expect(mockRefresh).not.toHaveBeenCalled();
+      expect(workspace.closeTabsAbout).toHaveBeenCalledWith({ type: 'project', id: 'proj_1' });
     });
 
     it('does not call closeTabsAbout when archiving, only when destroying', async () => {

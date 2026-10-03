@@ -132,11 +132,12 @@ export interface WorkspaceContextValue {
    * calls, so no tab is left on "not found" for something that no longer
    * exists, including one moved while the delete was in flight.
    *
-   * The tree's one `source: 'route'` tab is never closed here: its identity
-   * is the browser URL, so it has to navigate instead. Whether it was about
-   * `record` comes back as `routeTabWasAbout`, for the caller to act on.
+   * The tree's one `source: 'route'` tab is never closed: its identity is the
+   * browser URL. If the delete came from that page, `ArchiveControls`
+   * navigates it; if from anywhere else, it is left as it is rather than
+   * brought to the front and focused, which is what navigating would do.
    */
-  closeTabsAbout: (record: ResparkableRecord) => { routeTabWasAbout: boolean };
+  closeTabsAbout: (record: ResparkableRecord) => void;
   activateTab: (leafId: string, tabId: string) => void;
   reorderTab: (leafId: string, tabId: string, toIndex: number) => void;
   /** Splits `leafId` and focuses the new, empty sibling pane. */
@@ -255,26 +256,34 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     [setState]
   );
 
+  // The latest committed state, for the one action that checks it before
+  // deciding whether to write at all. Kept in an effect, not assigned during
+  // render.
+  const stateRef = React.useRef(state);
+  React.useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
   const closeTabsAbout = React.useCallback<WorkspaceContextValue['closeTabsAbout']>(
     (record) => {
-      let routeTabWasAbout = false;
-      // `useLocalStorage`'s setter runs this updater synchronously, against the
-      // latest state, before it returns. That is what makes the answer below
-      // available to the caller, and what makes it current rather than as of
-      // the caller's last render.
-      setState((prev) => {
-        const about = (tab: TabState): boolean => isTabAbout(tab.kind, tab.params, record);
-        routeTabWasAbout = listLeaves(prev.root).some((leaf) =>
-          leaf.tabs.some((tab) => tab.source === 'route' && about(tab))
-        );
-        const root = closeTabsWhere(prev.root, (tab) => tab.source !== 'route' && about(tab));
-        const floatingPanels = removeFloatingPanelsWhere(prev.floatingPanels, (panel) =>
-          about(panel.tab)
-        );
-        if (root === prev.root && floatingPanels === prev.floatingPanels) return prev;
-        return { ...prev, root, floatingPanels };
-      });
-      return { routeTabWasAbout };
+      const about = (tab: TabState): boolean => isTabAbout(tab.kind, tab.params, record);
+      const closes = (tab: TabState): boolean => tab.source !== 'route' && about(tab);
+
+      // Checked against a read of the current state first, and the write
+      // skipped outright when nothing matches, which is the common case (a
+      // list row deleted with no detail tab open): `useLocalStorage`'s setter
+      // serializes and broadcasts the whole tree even for an unchanged result.
+      const current = stateRef.current;
+      const anythingToClose =
+        listLeaves(current.root).some((leaf) => leaf.tabs.some(closes)) ||
+        current.floatingPanels.some((panel) => about(panel.tab));
+      if (!anythingToClose) return;
+
+      setState((prev) => ({
+        ...prev,
+        root: closeTabsWhere(prev.root, closes),
+        floatingPanels: removeFloatingPanelsWhere(prev.floatingPanels, (panel) => about(panel.tab)),
+      }));
     },
     [setState]
   );

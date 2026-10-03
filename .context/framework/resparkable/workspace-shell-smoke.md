@@ -193,9 +193,13 @@ project permanently from its detail tab.
   window closes.
 - Navigate the browser directly to `/resparkable/projects/<id>` and delete.
   That tab goes to the projects list, because for the route-backed tab the URL
-  is its identity. Do the same but delete from a launcher tab or list in another
-  pane: the route-backed tab still goes to the projects list. _Wrong:_ another
-  pane's content changing, or the not-found page flashing before the navigation.
+  is its identity. _Wrong:_ another pane's content changing, or the not-found
+  page flashing before the navigation.
+- With that route-backed project tab open but not selected in one pane, delete
+  the same project from another pane. Nothing in the first pane changes and
+  focus stays where you are. _Wrong:_ the first pane switching to show the
+  Projects list, or focus jumping to it.
+- Open a board, then delete it from the Boards list. The board's tab closes.
 
 **17. A route-backed tab still refreshes properly. new** Navigate the browser
 directly to `/resparkable/inbox` (address bar, not the Launcher), then triage a

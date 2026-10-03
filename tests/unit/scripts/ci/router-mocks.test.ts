@@ -316,6 +316,31 @@ describe('scanRouterMocks: cast rule', () => {
     expect(casts(source)).toHaveLength(1);
   });
 
+  it('flags a partial router cast returned from mockImplementation', () => {
+    const source = `vi.mocked(useRouter).mockImplementation(() => ({ push }) as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags one returned from a block-bodied implementation', () => {
+    const source = `vi.mocked(useRouter).mockImplementationOnce(() => { return { push } as never; });`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags one handed to vi.spyOn(navigation, "useRouter")', () => {
+    const source = `vi.spyOn(navigation, 'useRouter').mockReturnValue({ push } as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags one handed to vi.mocked with an explicit type argument', () => {
+    const source = `vi.mocked<typeof useRouter>(useRouter).mockReturnValue({ push } as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('does not flag a cast inside an implementation that is not its return value', () => {
+    const source = `vi.mocked(useRouter).mockImplementation(() => { const n = 1 as never; return createMockRouter(); });`;
+    expect(casts(source)).toEqual([]);
+  });
+
   it('flags the same through mockReturnValueOnce', () => {
     const source = `vi.mocked(useRouter).mockReturnValueOnce({ push } as never);`;
     expect(casts(source)).toHaveLength(1);
@@ -495,6 +520,25 @@ describe('scanRouterMocks: false positives have a way out', () => {
   it('ignores a directive with no reason', () => {
     const source = `
       // router-mocks-ignore:
+      const row = { ${SIX} };
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('does not let a directive above a multi-line factory reach a literal further down it', () => {
+    const source = `
+      // router-mocks-ignore: the factory's first member is a false positive
+      vi.mock('next/navigation', () => ({
+        useRouter: () => ({ ${SIX} }),
+      }));
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('does not count a directive two lines above', () => {
+    const source = `
+      // router-mocks-ignore: too far away
+
       const row = { ${SIX} };
     `;
     expect(literals(source)).toHaveLength(1);

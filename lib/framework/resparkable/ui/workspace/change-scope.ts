@@ -106,6 +106,12 @@ interface TabChangeScope {
    * which of `TabParams` carries its id.
    */
   record?: { type: ResparkableChangeType; param: 'id' };
+  /**
+   * What the tab is *about*, for closing it when that record is deleted, when
+   * that is not `record`. Only `board` needs it: its tab carries the slug, so
+   * it has no `record` (see below), but it is still about one board.
+   */
+  subject?: { type: ResparkableChangeType; param: 'slug' };
 }
 
 /**
@@ -142,7 +148,7 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   goals: { collections: ['goal', 'area'] },
   areas: { collections: ['area'] },
   boards: { collections: ['board', 'project', 'tag'] },
-  board: { collections: ['board', 'task', 'tag'] },
+  board: { collections: ['board', 'task', 'tag'], subject: { type: 'board', param: 'slug' } },
   documents: { collections: ['document'] },
   entities: { collections: ['entity'] },
   entity: { collections: ['link'], record: { type: 'entity', param: 'id' } },
@@ -213,10 +219,14 @@ export function keysForTab(kind: TabKind, params: TabParams): string[] {
   return keys;
 }
 
-/** One named record: the `type` and `id` a permanent delete removes. */
+/**
+ * One named record: the `type` and `id` a permanent delete removes, and its
+ * `slug` when it has one, for a tab keyed by the slug rather than the id.
+ */
 export interface ResparkableRecord {
   type: ResparkableChangeType;
   id: string;
+  slug?: string;
 }
 
 /**
@@ -231,25 +241,17 @@ export interface ResparkableRecord {
 export function isTabAbout(kind: TabKind, params: TabParams, record: ResparkableRecord): boolean {
   // Defaulted for the same reason as in `keysForTab` above.
   const scope = TAB_CHANGE_SCOPES[kind] ?? { collections: [] };
-  return (
-    scope.record !== undefined &&
-    scope.record.type === record.type &&
-    params[scope.record.param] === record.id
-  );
-}
-
-/**
- * Where the route-backed tab goes when the record it is about is deleted from
- * somewhere else: the list of that type. Only the record types a route-backed
- * detail page exists for appear; a note has no page of its own.
- */
-const LIST_KIND_FOR_RECORD: Partial<Record<ResparkableChangeType, TabKind>> = {
-  project: 'projects',
-  entity: 'entities',
-};
-
-export function listKindForRecord(type: ResparkableChangeType): TabKind | undefined {
-  return LIST_KIND_FOR_RECORD[type];
+  if (scope.record) {
+    return scope.record.type === record.type && params[scope.record.param] === record.id;
+  }
+  if (scope.subject) {
+    return (
+      scope.subject.type === record.type &&
+      record.slug !== undefined &&
+      params[scope.subject.param] === record.slug
+    );
+  }
+  return false;
 }
 
 /** Exported for the coverage test, so a new `TabKind` cannot arrive unscoped. */

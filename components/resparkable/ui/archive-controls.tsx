@@ -42,21 +42,25 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
-import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import {
+  useIsInTab,
+  useResparkableRefresh,
+} from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
 import { resparkableApi, withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
-import {
-  changeTypeForCollection,
-  listKindForRecord,
-} from '@/lib/framework/resparkable/ui/workspace/change-scope';
-import { buildRouteForTab } from '@/lib/framework/resparkable/ui/workspace/tab-registry';
+import { changeTypeForCollection } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 
 export interface ArchiveControlsProps {
   /** One of the `RESPARKABLE_API` collection constants. */
   collection: string;
   id: string;
+  /**
+   * The record's slug, for a record whose tabs are keyed by it rather than by
+   * the id (a board). Lets a permanent delete close those tabs too.
+   */
+  slug?: string;
   /** Shown in the confirmation, so the dialog names what is about to go. */
   label: string;
   /** Singular noun for the copy — "project", "person", "area". */
@@ -68,9 +72,10 @@ export interface ArchiveControlsProps {
    * pass it.
    *
    * It matters on a plain page under `app/`, which would 404 on a refresh, and
-   * on the workspace's route-backed tab, whose identity is the URL. Every other
-   * tab about the item is closed by the workspace instead (`closeTabsAbout`),
-   * whether or not this is set, so a list row needs nothing here.
+   * on the workspace's route-backed tab when the delete is made from that page,
+   * whose identity is the URL. Every other tab about the item is closed by the
+   * workspace instead (`closeTabsAbout`), whether or not this is set, so a list
+   * row needs nothing here.
    */
   redirectTo?: string;
   /**
@@ -87,6 +92,7 @@ export interface ArchiveControlsProps {
 export function ArchiveControls({
   collection,
   id,
+  slug,
   label,
   noun,
   archived,
@@ -98,6 +104,7 @@ export function ArchiveControls({
   const refresh = useResparkableRefresh();
   const notify = useNotifyDataChange();
   const workspace = useOptionalWorkspace();
+  const inTab = useIsInTab();
   const { state, message, run } = useSaveStatus();
 
   // Archiving, restoring and deleting all change the same row, and this
@@ -144,24 +151,21 @@ export function ArchiveControls({
     // state updates on providers above this component, so React batches them
     // into one render in which the closed tabs are already gone and never
     // refetch into "not found".
-    const routeTabWasAbout = change?.id
-      ? workspace.closeTabsAbout({ type: change.type, id: change.id }).routeTabWasAbout
-      : false;
+    if (change?.id) workspace.closeTabsAbout({ type: change.type, id: change.id, slug });
 
     // The route-backed tab cannot be closed, because the browser URL *is* that
-    // tab. If it was about this record it navigates instead: to `redirectTo`
-    // when the delete came from that page, else to the record type's list.
-    // Navigating changes that tab and nothing else.
-    const listKind = change ? listKindForRecord(change.type) : undefined;
-    const target = routeTabWasAbout
-      ? (redirectTo ?? (listKind ? buildRouteForTab(listKind) : null))
-      : null;
-    if (target) {
+    // tab, so when the delete came from that page it goes to `redirectTo`.
+    // That is known from where this control renders (no tab boundary above
+    // it), not from the stored tree, which another browser window sharing it
+    // may have pointed somewhere else. Navigating changes that tab and nothing
+    // else. A route-backed tab about the record but in another pane is left as
+    // it is: navigating it would bring it to the front and pull focus there.
+    if (!inTab && redirectTo) {
       // `notify` rather than `refresh`: with no boundary above the route-backed
       // tab, `refresh` would be a `router.refresh()` into a 404 immediately
       // before the push, flashing the not-found page on the way out.
       if (change) notify(change);
-      router.push(withActiveSpace(target));
+      router.push(withActiveSpace(redirectTo));
       return;
     }
 
