@@ -41,6 +41,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
+import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
+import { useIsRouteTab } from '@/components/resparkable/workspace/tabs/route-tab-context';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
@@ -52,12 +54,27 @@ export interface ArchiveControlsProps {
   /** One of the `RESPARKABLE_API` collection constants. */
   collection: string;
   id: string;
+  /**
+   * The record's slug, for a record whose tabs are keyed by it rather than by
+   * the id (a board). Lets a permanent delete close those tabs too.
+   */
+  slug?: string;
   /** Shown in the confirmation, so the dialog names what is about to go. */
   label: string;
   /** Singular noun for the copy — "project", "person", "area". */
   noun: string;
   archived: boolean;
-  /** Where to go after a destroy, when the current page was the item's own. */
+  /**
+   * Where to go after a destroy when the surface showing these controls is a
+   * page *about* this item, which cannot outlive it. Only the two detail views
+   * pass it.
+   *
+   * It matters on a plain page under `app/`, which would 404 on a refresh, and
+   * on the workspace's route-backed tab when the delete is made from that page,
+   * whose identity is the URL. Every other tab about the item is closed by the
+   * workspace instead (`closeTabsAbout`), whether or not this is set, so a list
+   * row needs nothing here.
+   */
   redirectTo?: string;
   /**
    * Icon-only, for rows rather than pages.
@@ -73,6 +90,7 @@ export interface ArchiveControlsProps {
 export function ArchiveControls({
   collection,
   id,
+  slug,
   label,
   noun,
   archived,
@@ -82,7 +100,9 @@ export function ArchiveControls({
 }: ArchiveControlsProps): React.ReactElement {
   const router = useRouter();
   const refresh = useResparkableRefresh();
+  const notify = useNotifyDataChange();
   const workspace = useOptionalWorkspace();
+  const inRouteTab = useIsRouteTab();
   const { state, message, run } = useSaveStatus();
 
   // Archiving, restoring and deleting all change the same row, and this
@@ -111,18 +131,43 @@ export function ArchiveControls({
     const ok = await run(() =>
       resparkableApi.delete(`${RESPARKABLE_API.itemPath(collection, id)}?permanent=true`)
     );
-    if (ok) {
-      onDone?.();
-      // A detail *page* for a row that no longer exists would 404 on refresh,
-      // which is what `redirectTo` is for. Inside the workspace it is the wrong
-      // move: the URL is the tree's single route-backed tab, so navigating
-      // replaces whatever some *other* pane was showing while the pane you
-      // acted in carries on displaying the deleted row. Announcing the change
-      // instead lets this pane's own detail tab refetch and land on the "not
-      // found" empty state it already implements, and touches nothing else.
-      if (redirectTo && !workspace) router.push(withActiveSpace(redirectTo));
+    if (!ok) return;
+    onDone?.();
+
+    // A plain page under `app/`, outside the shell. A detail page would 404 on
+    // a refresh, so it goes somewhere that still exists; a list refreshes.
+    if (!workspace) {
+      if (redirectTo) router.push(withActiveSpace(redirectTo));
       else refresh(change);
+      return;
     }
+
+    // Inside the workspace, every tab about this record closes, docked or
+    // floating, wherever each one is now: not just the one the delete was
+    // pressed in, and not wherever this one was when the request went out.
+    // It is announced as well, so the lists showing it drop the row. Both are
+    // state updates on providers above this component, so React batches them
+    // into one render in which the closed tabs are already gone and never
+    // refetch into "not found".
+    if (change?.id) workspace.closeTabsAbout({ type: change.type, id: change.id, slug });
+
+    // The route-backed tab cannot be closed, because the browser URL *is* that
+    // tab, so when the delete came from that page it goes to `redirectTo`.
+    // That is known from where this control renders (`RouteTabMarker`), not
+    // from the stored tree, which another browser window sharing it may have
+    // pointed somewhere else. Navigating changes that tab and nothing
+    // else. A route-backed tab about the record but in another pane is left as
+    // it is: navigating it would bring it to the front and pull focus there.
+    if (inRouteTab && redirectTo) {
+      // `notify` rather than `refresh`: with no boundary above the route-backed
+      // tab, `refresh` would be a `router.refresh()` into a 404 immediately
+      // before the push, flashing the not-found page on the way out.
+      if (change) notify(change);
+      router.push(withActiveSpace(redirectTo));
+      return;
+    }
+
+    refresh(change);
   }
 
   return (

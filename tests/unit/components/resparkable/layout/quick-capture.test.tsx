@@ -93,11 +93,11 @@ vi.mock('@/lib/hooks/use-voice-recording', () => ({
 
 import { apiClient } from '@/lib/api/client';
 import { uploadDocument } from '@/components/resparkable/documents/upload-request';
+import { createMockRouter } from '@/tests/types/mocks';
 
 const mockedUpload = vi.mocked(uploadDocument);
 
 const mockedPost = apiClient.post as ReturnType<typeof vi.fn>;
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 
 const refresh = vi.fn();
 
@@ -127,14 +127,7 @@ beforeEach(() => {
   hookState.error = null;
   hookState.supported = true;
   mockedPost.mockResolvedValue({ id: 'thought_1' });
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh }));
 });
 
 function textarea(): HTMLTextAreaElement {

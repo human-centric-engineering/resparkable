@@ -642,6 +642,41 @@ release process.
   every other kind too. So the gate reads `source = 'user'`, and a system write
   does not wake a dormant brain.
 
+- **`npm run check:router-mocks`: hand-rolled `next/navigation` router mocks
+  now fail the build.** The rules live in `scripts/ci/router-mocks.ts`
+  (`scanRouterMocks`), the CLI in `scripts/ci/check-router-mocks.ts`; it is
+  chained into `npm run validate` and has its own CI step. It replaces a
+  regex-and-brace-matching scanner that lived inside `/pre-pr` check 4m and was
+  only ever run by hand. That scanner reported CLEAN over 16 complete six-member
+  router literals and 17 casts, because it collected members with a regex
+  requiring a colon (so a shorthand `refresh,` was invisible) and grepped for
+  one literal cast spelling (so the `ReturnType<typeof vi.fn>` form every real
+  offender used went unseen). Parsing with the TypeScript compiler removes both
+  classes of blind spot. It also flags a partial router cast as it is handed to
+  `vi.mocked(useRouter).mockReturnValue(...)` (`{ push } as never`), where
+  neither the value nor the target type names the router. The 20 affected test
+  files now build their router with `createMockRouter()`. Forks inheriting
+  `validate` get the check for free. A file about the pages router only
+  (`next/router`) is skipped, and a genuine false positive takes a
+  `// router-mocks-ignore: <why>` comment on the line above, reason required.
+
+- **Deleting a record closes every tab about it.** `WorkspaceContextValue`
+  gains `closeTabsAbout(record)`, which closes every docked or floating tab
+  whose subject is that record (`isTabAbout` in
+  `lib/framework/resparkable/ui/workspace/change-scope.ts`), wherever each one
+  is at the moment of the call. A board's tabs are matched by slug, so
+  `ArchiveControls` gains an optional `slug` prop, which the Boards list
+  passes. The route-backed tab is never closed, because the URL is its
+  identity: a delete made from that page navigates it to `redirectTo`, known
+  from the new `RouteTabMarker` / `useIsRouteTab()`
+  (`components/resparkable/workspace/tabs/route-tab-context.tsx`) that
+  `WorkspacePane` wraps around it, and one about the record in another pane is
+  left as it is rather than brought to the front. Backed by two new pure
+  helpers, `closeTabsWhere` (`split-tree.ts`) and `removeFloatingPanelsWhere`
+  (`floating-panels.ts`). A list showing the record is not about it and stays
+  open. Previously the detail tab refetched, 404'd, and sat on its "not found"
+  empty state, and so did any other tab showing the same record.
+
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains
   `day`, `status` and `includeArchived`, so Plan's day, Projects' status filter

@@ -41,10 +41,10 @@ vi.mock('@/lib/api/client', () => ({
 }));
 
 import { apiClient } from '@/lib/api/client';
+import { createMockRouter } from '@/tests/types/mocks';
 
 const mockedPost = apiClient.post as ReturnType<typeof vi.fn>;
 const mockedPatch = apiClient.patch as ReturnType<typeof vi.fn>;
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const refresh = vi.fn();
 
 function area(overrides: Partial<AreaWire> = {}): AreaWire {
@@ -91,14 +91,7 @@ beforeEach(() => {
   localStorage.setItem('resparkable.create-mode.v1', JSON.stringify('form'));
   mockedPost.mockResolvedValue({});
   mockedPatch.mockResolvedValue({});
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh }));
 });
 
 async function selectOption(

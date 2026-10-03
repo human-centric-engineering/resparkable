@@ -106,6 +106,12 @@ interface TabChangeScope {
    * which of `TabParams` carries its id.
    */
   record?: { type: ResparkableChangeType; param: 'id' };
+  /**
+   * What the tab is *about*, for closing it when that record is deleted, when
+   * that is not `record`. Only `board` needs it: its tab carries the slug, so
+   * it has no `record` (see below), but it is still about one board.
+   */
+  subject?: { type: ResparkableChangeType; param: 'slug' };
 }
 
 /**
@@ -142,7 +148,7 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   goals: { collections: ['goal', 'area'] },
   areas: { collections: ['area'] },
   boards: { collections: ['board', 'project', 'tag'] },
-  board: { collections: ['board', 'task', 'tag'] },
+  board: { collections: ['board', 'task', 'tag'], subject: { type: 'board', param: 'slug' } },
   documents: { collections: ['document'] },
   entities: { collections: ['entity'] },
   entity: { collections: ['link'], record: { type: 'entity', param: 'id' } },
@@ -211,6 +217,41 @@ export function keysForTab(kind: TabKind, params: TabParams): string[] {
     keys.push(`${scope.record.type}:${UNKNOWN_ID}`);
   }
   return keys;
+}
+
+/**
+ * One named record: the `type` and `id` a permanent delete removes, and its
+ * `slug` when it has one, for a tab keyed by the slug rather than the id.
+ */
+export interface ResparkableRecord {
+  type: ResparkableChangeType;
+  id: string;
+  slug?: string;
+}
+
+/**
+ * Whether a tab of this kind and params is *about* `record`, which is to say
+ * a detail tab whose own subject it is. A list that merely shows it is not:
+ * the list outlives the row, the detail does not.
+ *
+ * Read by `closeTabsAbout` in `workspace-context.tsx`, so that deleting a
+ * record closes every tab about it, wherever each one sits, rather than only
+ * the one the delete was pressed in.
+ */
+export function isTabAbout(kind: TabKind, params: TabParams, record: ResparkableRecord): boolean {
+  // Defaulted for the same reason as in `keysForTab` above.
+  const scope = TAB_CHANGE_SCOPES[kind] ?? { collections: [] };
+  if (scope.record) {
+    return scope.record.type === record.type && params[scope.record.param] === record.id;
+  }
+  if (scope.subject) {
+    return (
+      scope.subject.type === record.type &&
+      record.slug !== undefined &&
+      params[scope.subject.param] === record.slug
+    );
+  }
+  return false;
 }
 
 /** Exported for the coverage test, so a new `TabKind` cannot arrive unscoped. */

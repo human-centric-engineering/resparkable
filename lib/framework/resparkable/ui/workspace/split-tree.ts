@@ -233,17 +233,62 @@ export function extractTab(
 
     removed = node.tabs[index];
     const tabs = [...node.tabs.slice(0, index), ...node.tabs.slice(index + 1)];
-    if (node.activeTabId !== tabId) return { ...node, tabs };
-
-    const nextActive = tabs[index] ?? tabs[index - 1] ?? null;
-    return { ...node, tabs, activeTabId: nextActive?.id ?? null };
+    return { ...node, tabs, activeTabId: handOffActive(node, new Set([tabId])) };
   });
   return { root: nextRoot, tab: removed };
+}
+
+/**
+ * The leaf's active tab once the tabs in `closing` are gone: unchanged if it
+ * survives, else the nearest survivor to its right, else to its left, else
+ * `null` (the launcher). The one rule both `extractTab` and `closeTabsWhere`
+ * follow, so removal never jumps focus across the strip.
+ */
+function handOffActive(leaf: LeafNode, closing: ReadonlySet<string>): string | null {
+  const { tabs, activeTabId } = leaf;
+  if (activeTabId === null || !closing.has(activeTabId)) return activeTabId;
+  const index = tabs.findIndex((tab) => tab.id === activeTabId);
+  const right = tabs.slice(index + 1).find((tab) => !closing.has(tab.id));
+  const left = tabs
+    .slice(0, index)
+    .reverse()
+    .find((tab) => !closing.has(tab.id));
+  return (right ?? left)?.id ?? null;
 }
 
 /** Closes `tabId` out of leaf `leafId`, discarding it. See `extractTab`. */
 export function closeTab(root: PaneNode, leafId: string, tabId: string): PaneNode {
   return extractTab(root, leafId, tabId).root;
+}
+
+/**
+ * Closes every tab, in every leaf, that `shouldClose` picks.
+ *
+ * Keyed on what a tab *is* rather than on where it sits, which is the point:
+ * a caller closing "every tab about this deleted record" cannot know which
+ * leaves hold one, and a tab moved since the caller last looked is still
+ * found. An active tab that closes hands over by `handOffActive`, the same
+ * rule `extractTab` follows. Returns the tree unchanged when nothing matched.
+ */
+export function closeTabsWhere(root: PaneNode, shouldClose: (tab: TabState) => boolean): PaneNode {
+  if (root.kind === 'leaf') {
+    // `shouldClose` is asked once per tab; everything below reads the set.
+    const closing = new Set(root.tabs.filter(shouldClose).map((tab) => tab.id));
+    if (closing.size === 0) return root;
+    return {
+      ...root,
+      tabs: root.tabs.filter((tab) => !closing.has(tab.id)),
+      activeTabId: handOffActive(root, closing),
+    };
+  }
+
+  let changed = false;
+  const children = root.children.map((child) => {
+    const next = closeTabsWhere(child, shouldClose);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...root, children } : root;
 }
 
 /**

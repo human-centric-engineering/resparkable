@@ -245,8 +245,10 @@ the single worst failure mode of this skill.
 
 **1 · `/pre-pr`.** Take its output as a work-list. Formatting and lint: run
 `npm run format` / `npm run lint:fix` rather than hand-editing. Type errors: fix
-at the source, never with `@ts-expect-error`. Its anti-pattern scan (4a–4l) is
-mechanical and its findings are almost all auto-fixable — the exceptions are 4f
+at the source, never with `@ts-expect-error`. Its anti-pattern scan (4a–4m) is
+mechanical and its findings are almost all auto-fixable. 4m no longer arrives
+as a scan finding at all, but as an `npm run validate` failure with an exact
+file:line list. The exceptions are 4f
 (missing tests, route to gate 2's tooling) and its documentation/CHANGELOG checks
 in step 5, which are reminders, not gates: judge whether the branch really changed
 the public surface (`VERSIONING.md`) before adding a CHANGELOG bullet, and don't

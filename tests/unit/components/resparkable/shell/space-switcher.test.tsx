@@ -28,6 +28,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 import { SpaceSwitcher } from '@/components/resparkable/shell/space-switcher';
 import type { OpenableSpaceWire } from '@/lib/framework/resparkable/ui/payloads';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
   usePathname: vi.fn(),
@@ -66,7 +67,7 @@ function at(pathname: string, search = ''): void {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(useRouter).mockReturnValue({ push } as never);
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push }));
   at('/resparkable');
 });
 

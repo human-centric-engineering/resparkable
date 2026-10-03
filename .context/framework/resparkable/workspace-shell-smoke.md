@@ -173,6 +173,34 @@ pane first (so it holds focus), then click a project link in the **left** pane.
 - _Wrong:_ the address bar changing. That would replace whatever the
   route-backed tab was showing, in some other pane.
 
+**16c. Deleting a record closes every tab about it, and nothing else. new**
+Open a project in the left pane and the Projects list in the right. Delete the
+project permanently from its detail tab.
+
+- The detail tab closes. The Projects list in the other pane refetches and the
+  row is gone from it.
+- _Wrong:_ the tab staying open on "Project not found".
+- _Wrong:_ the tab closing but the other pane still listing the project. The
+  close and the announcement are one action; only one of them landing means
+  `refresh(change)` was dropped.
+- Open the same project in **two** places (a pane and a floating window), then
+  delete from one. Both close. _Wrong:_ the other one sitting on "not found",
+  which is a close by position rather than by subject.
+- Open the project's detail tab, then delete its row from the **list** tab
+  instead. The list refetches and stays open, and the detail tab closes.
+  _Wrong:_ the list tab closing. A list is not about the row it shows.
+- Drag a project tab out into a floating window and delete from there. The
+  window closes.
+- Navigate the browser directly to `/resparkable/projects/<id>` and delete.
+  That tab goes to the projects list, because for the route-backed tab the URL
+  is its identity. _Wrong:_ another pane's content changing, or the not-found
+  page flashing before the navigation.
+- With that route-backed project tab open but not selected in one pane, delete
+  the same project from another pane. Nothing in the first pane changes and
+  focus stays where you are. _Wrong:_ the first pane switching to show the
+  Projects list, or focus jumping to it.
+- Open a board, then delete it from the Boards list. The board's tab closes.
+
 **17. A route-backed tab still refreshes properly. new** Navigate the browser
 directly to `/resparkable/inbox` (address bar, not the Launcher), then triage a
 thought there.
