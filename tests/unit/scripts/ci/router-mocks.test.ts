@@ -442,6 +442,74 @@ describe('scanRouterMocks: wiring', () => {
   });
 });
 
+describe('scanRouterMocks: false positives have a way out', () => {
+  const SIX =
+    'push: vi.fn(), replace: vi.fn(), refresh: vi.fn(), back: vi.fn(), forward: vi.fn(), prefetch: vi.fn()';
+
+  it('does not flag a pages-router mock, which createMockRouter cannot build', () => {
+    const source = `
+      import { useRouter } from 'next/router';
+      vi.mock('next/router', () => ({ useRouter: () => ({ ${SIX} }) }));
+      const mocked = useRouter as unknown as ReturnType<typeof vi.fn>;
+    `;
+    expect(scan(source)).toEqual([]);
+  });
+
+  it('still flags a file that mocks both routers', () => {
+    const source = `
+      vi.mock('next/router', () => ({}));
+      vi.mock('next/navigation', () => ({ useRouter: () => ({ ${SIX} }) }));
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('does not count a module name quoted in a template literal', () => {
+    const source = ['const fixture = `next/router`;', `const router = { ${SIX} };`].join('\n');
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('skips a literal under an ignore directive that gives a reason', () => {
+    const source = `
+      // router-mocks-ignore: an it.each row keyed by method name, not a router
+      const row = { ${SIX} };
+    `;
+    expect(literals(source)).toEqual([]);
+  });
+
+  it('skips a cast under an ignore directive that gives a reason', () => {
+    const source = `
+      // router-mocks-ignore: asserting the checker's own message
+      const mocked = useRouter as unknown as ReturnType<typeof vi.fn>;
+    `;
+    expect(casts(source)).toEqual([]);
+  });
+
+  it('honours a directive above the statement, not only above the node', () => {
+    const source = `
+      // router-mocks-ignore: a table of method names
+      it.each([{ ${SIX} }])('row', () => {});
+    `;
+    expect(literals(source)).toEqual([]);
+  });
+
+  it('ignores a directive with no reason', () => {
+    const source = `
+      // router-mocks-ignore:
+      const row = { ${SIX} };
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('does not let a directive reach past the statement it sits on', () => {
+    const source = `
+      // router-mocks-ignore: only the first statement
+      const first = 1;
+      const row = { ${SIX} };
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+});
+
 describe('formatViolation', () => {
   it('renders path:line:col with the rule and message', () => {
     const source = `const mocked = useRouter as unknown as Mock;`;

@@ -17,6 +17,7 @@ import {
   activateTab,
   closeLeaf,
   closeTab,
+  closeTabsWhere,
   createLeaf,
   detachTab,
   extractTab,
@@ -230,6 +231,147 @@ describe('detachTab', () => {
     const { root: next, tab: removed } = detachTab(root, 'a', 't1');
     expect(next).toEqual(root);
     expect(removed).toBeNull();
+  });
+});
+
+describe('closeTabsWhere', () => {
+  /** A project tab naming a specific record, so `shouldClose` can target it by id. */
+  function projectTab(id: string, projectId: string): TabState {
+    return tab(id, { kind: 'project', params: { id: projectId } });
+  }
+
+  it('closes matching tabs across multiple leaves of a split', () => {
+    const root: PaneNode = {
+      kind: 'split',
+      id: 'split-1',
+      direction: 'horizontal',
+      children: [
+        openTabInLeaf(
+          openTabInLeaf(createLeaf('a'), 'a', projectTab('t1', 'p1')),
+          'a',
+          projectTab('t2', 'p2')
+        ),
+        openTabInLeaf(
+          openTabInLeaf(createLeaf('b'), 'b', projectTab('t3', 'p1')),
+          'b',
+          tab('t4', { kind: 'entity', params: { id: 'e1' } })
+        ),
+      ],
+      sizes: [50, 50],
+    };
+
+    const next = closeTabsWhere(
+      root,
+      (candidate) => candidate.kind === 'project' && candidate.params.id === 'p1'
+    ) as SplitNode;
+
+    expect((next.children[0] as LeafNode).tabs.map((t) => t.id)).toEqual(['t2']);
+    expect((next.children[1] as LeafNode).tabs.map((t) => t.id)).toEqual(['t4']);
+  });
+
+  it('hands the active tab to the nearest surviving tab on its right', () => {
+    const root = activateTab(
+      openTabInLeaf(
+        openTabInLeaf(
+          openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')),
+          'a',
+          distinctTab('t2')
+        ),
+        'a',
+        distinctTab('t3')
+      ),
+      'a',
+      't2'
+    );
+
+    const next = closeTabsWhere(root, (candidate) => candidate.id === 't2') as LeafNode;
+
+    expect(next.tabs.map((t) => t.id)).toEqual(['t1', 't3']);
+    expect(next.activeTabId).toBe('t3');
+  });
+
+  it('falls back to the nearest surviving tab on its left when nothing survives to the right', () => {
+    const root = activateTab(
+      openTabInLeaf(openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')), 'a', distinctTab('t2')),
+      'a',
+      't2'
+    );
+
+    const next = closeTabsWhere(root, (candidate) => candidate.id === 't2') as LeafNode;
+
+    expect(next.tabs.map((t) => t.id)).toEqual(['t1']);
+    expect(next.activeTabId).toBe('t1');
+  });
+
+  it('activates null when the active tab closes and nothing at all survives', () => {
+    const root = openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1'));
+
+    const next = closeTabsWhere(root, (candidate) => candidate.id === 't1') as LeafNode;
+
+    expect(next.tabs).toEqual([]);
+    expect(next.activeTabId).toBeNull();
+  });
+
+  it('hands over past two adjacent matching tabs, including the active one', () => {
+    const root = activateTab(
+      openTabInLeaf(
+        openTabInLeaf(
+          openTabInLeaf(
+            openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')),
+            'a',
+            distinctTab('t2')
+          ),
+          'a',
+          distinctTab('t3')
+        ),
+        'a',
+        distinctTab('t4')
+      ),
+      'a',
+      't2'
+    );
+
+    const next = closeTabsWhere(
+      root,
+      (candidate) => candidate.id === 't2' || candidate.id === 't3'
+    ) as LeafNode;
+
+    expect(next.tabs.map((t) => t.id)).toEqual(['t1', 't4']);
+    expect(next.activeTabId).toBe('t4');
+  });
+
+  it('leaves activeTabId untouched when the removed tab was not the active one', () => {
+    const root = activateTab(
+      openTabInLeaf(
+        openTabInLeaf(
+          openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')),
+          'a',
+          distinctTab('t2')
+        ),
+        'a',
+        distinctTab('t3')
+      ),
+      'a',
+      't3'
+    );
+
+    const next = closeTabsWhere(root, (candidate) => candidate.id === 't1') as LeafNode;
+
+    expect(next.activeTabId).toBe('t3');
+  });
+
+  it('returns the identical tree, leaf by leaf, when nothing matches', () => {
+    const root: PaneNode = {
+      kind: 'split',
+      id: 'split-1',
+      direction: 'horizontal',
+      children: [openTabInLeaf(createLeaf('a'), 'a', distinctTab('t1')), createLeaf('b')],
+      sizes: [50, 50],
+    };
+
+    const next = closeTabsWhere(root, () => false);
+
+    expect(next).toBe(root);
   });
 });
 

@@ -370,6 +370,13 @@ else are deliberately allowed. Convert one as soon as its component might read
 more of the router than the stub provides. Run the check for the current state;
 do not trust a count written down here, including this one.
 
+A file about the **pages** router (`next/router` and not `next/navigation`) is
+skipped: its mock has the same method names but is a different type, which
+`createMockRouter()` does not build. For any other genuine false positive, such
+as an `it.each` row keyed by method name, put
+`// router-mocks-ignore: <why>` on the line above it. The reason is required;
+the directive does nothing without one.
+
 The cast rule is scoped to the router rather than to a spelling. It fires when
 the thing being cast **is** `useRouter`, whatever the target type, and when the
 target type names the router, whatever is being cast. That matters because the

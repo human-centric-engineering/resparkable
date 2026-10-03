@@ -87,6 +87,51 @@ export interface ScanOptions {
 }
 
 /**
+ * The opt-out for a genuine false positive, written on the line above the
+ * flagged code (or above the statement holding it). The reason is required:
+ * `// router-mocks-ignore:` with nothing after it does not count, so every
+ * exemption in the suite says why it is one.
+ */
+const IGNORE_DIRECTIVE = /router-mocks-ignore:\s*\S/;
+
+function isIgnored(node: ts.Node, sourceFile: ts.SourceFile): boolean {
+  const text = sourceFile.text;
+  for (
+    let current: ts.Node | undefined = node;
+    current !== undefined && !ts.isSourceFile(current);
+    current = current.parent
+  ) {
+    const ranges = ts.getLeadingCommentRanges(text, current.getFullStart()) ?? [];
+    if (ranges.some((range) => IGNORE_DIRECTIVE.test(text.slice(range.pos, range.end)))) {
+      return true;
+    }
+    if (ts.isStatement(current)) break;
+  }
+  return false;
+}
+
+/**
+ * Whether the file is about the *pages* router (`next/router`) and not the App
+ * Router at all. Its router mock has the same six method names, but it is a
+ * different type that `createMockRouter()` does not build, so neither rule
+ * applies to it. Read from string-literal nodes, so a module name quoted in a
+ * template-literal fixture does not count.
+ */
+function mocksOnlyPagesRouter(sourceFile: ts.SourceFile): boolean {
+  let pages = false;
+  let navigation = false;
+  const visit = (node: ts.Node): void => {
+    if (ts.isStringLiteral(node)) {
+      if (node.text === 'next/router') pages = true;
+      if (node.text === 'next/navigation') navigation = true;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return pages && !navigation;
+}
+
+/**
  * `.tsx` must parse as TSX.
  *
  * Read as `ScriptKind.TS`, a JSX tag is a type assertion and the tree from
@@ -273,6 +318,7 @@ export function scanRouterMocks(
   );
 
   const violations: RouterMockViolation[] = [];
+  if (mocksOnlyPagesRouter(sourceFile)) return violations;
 
   const at = (node: ts.Node): { line: number; column: number } => {
     const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -284,7 +330,11 @@ export function scanRouterMocks(
       const names = new Set(
         node.properties.map(memberName).filter((name): name is string => name !== null)
       );
-      if (ROUTER_METHODS.every((method) => names.has(method)) && !usesFactory(node)) {
+      if (
+        ROUTER_METHODS.every((method) => names.has(method)) &&
+        !usesFactory(node) &&
+        !isIgnored(node, sourceFile)
+      ) {
         violations.push({
           file,
           ...at(node),
@@ -297,7 +347,12 @@ export function scanRouterMocks(
       }
     }
 
-    if (isCast(node) && !isInnerCastOfChain(node) && chainTargetsRouter(node, sourceFile)) {
+    if (
+      isCast(node) &&
+      !isInnerCastOfChain(node) &&
+      chainTargetsRouter(node, sourceFile) &&
+      !isIgnored(node, sourceFile)
+    ) {
       violations.push({
         file,
         ...at(node),

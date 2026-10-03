@@ -247,6 +247,42 @@ export function closeTab(root: PaneNode, leafId: string, tabId: string): PaneNod
 }
 
 /**
+ * Closes every tab, in every leaf, that `shouldClose` picks.
+ *
+ * Keyed on what a tab *is* rather than on where it sits, which is the point:
+ * a caller closing "every tab about this deleted record" cannot know which
+ * leaves hold one, and a tab moved since the caller last looked is still
+ * found. An active tab that closes hands over to the nearest survivor on its
+ * right, else its left, the same rule `extractTab` follows. Returns the tree
+ * unchanged when nothing matched.
+ */
+export function closeTabsWhere(root: PaneNode, shouldClose: (tab: TabState) => boolean): PaneNode {
+  if (root.kind === 'leaf') {
+    if (!root.tabs.some(shouldClose)) return root;
+    const tabs = root.tabs.filter((tab) => !shouldClose(tab));
+    let activeTabId = root.activeTabId;
+    if (activeTabId !== null && !tabs.some((tab) => tab.id === activeTabId)) {
+      const index = root.tabs.findIndex((tab) => tab.id === activeTabId);
+      const right = root.tabs.slice(index + 1).find((tab) => !shouldClose(tab));
+      const left = root.tabs
+        .slice(0, index)
+        .reverse()
+        .find((tab) => !shouldClose(tab));
+      activeTabId = (right ?? left)?.id ?? null;
+    }
+    return { ...root, tabs, activeTabId };
+  }
+
+  let changed = false;
+  const children = root.children.map((child) => {
+    const next = closeTabsWhere(child, shouldClose);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...root, children } : root;
+}
+
+/**
  * Detaches `tabId` out of leaf `leafId` for a floating panel — the same
  * removal `extractTab` performs, but refuses the tree's one `source: 'route'`
  * tab first. That tab mirrors the current URL (`setRouteTab`'s invariant)

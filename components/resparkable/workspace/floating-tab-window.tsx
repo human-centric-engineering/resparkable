@@ -74,7 +74,6 @@ import { Dock, X } from 'lucide-react';
 
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { useWorkspaceOverlay } from '@/components/resparkable/workspace/workspace-overlay-context';
-import { TabCloseProvider } from '@/components/resparkable/workspace/tabs/tab-close-context';
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { Tip } from '@/components/ui/tooltip';
 import { findLeaf } from '@/lib/framework/resparkable/ui/workspace/split-tree';
@@ -129,12 +128,6 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
   const resizeRef = React.useRef<ResizeState | null>(null);
   const [liveRect, setLiveRect] = React.useState<LiveRect | null>(null);
   const persistTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const { closeFloatingPanel } = workspace;
-  const closeSelf = React.useCallback(
-    () => closeFloatingPanel(panel.id),
-    [closeFloatingPanel, panel.id]
-  );
 
   React.useEffect(
     () => () => {
@@ -336,12 +329,7 @@ export function FloatingTabWindow({ panel }: FloatingTabWindowProps): React.Reac
           frame around the content, doing the "distinct from the shell"
           job it was added for without doing it twice to what's inside. */}
       <div className="bg-background min-h-0 flex-1 overflow-y-auto p-3">
-        {/* Closing a detached tab is `closeFloatingPanel`, not `closeTab`:
-            this tab is no longer in the pane tree, so a `closeTab` keyed on
-            `originLeafId` would silently do nothing. */}
-        <TabCloseProvider close={closeSelf}>
-          <TabContent tab={panel.tab} />
-        </TabCloseProvider>
+        <TabContent tab={panel.tab} />
       </div>
 
       <div

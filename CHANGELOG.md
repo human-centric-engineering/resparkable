@@ -656,20 +656,22 @@ release process.
   `vi.mocked(useRouter).mockReturnValue(...)` (`{ push } as never`), where
   neither the value nor the target type names the router. The 20 affected test
   files now build their router with `createMockRouter()`. Forks inheriting
-  `validate` get the check for free.
+  `validate` get the check for free. A file about the pages router only
+  (`next/router`) is skipped, and a genuine false positive takes a
+  `// router-mocks-ignore: <why>` comment on the line above, reason required.
 
-- **A detail tab closes when the record it is about is deleted.**
-  `components/resparkable/workspace/tabs/tab-close-context.tsx` adds
-  `TabCloseProvider` and `useOptionalTabClose()`, a context carrying an
-  already-resolved `close()` rather than an id, because closing resolves to
-  `closeTab(leafId, tabId)` for a docked tab and `closeFloatingPanel(panelId)`
-  for a detached one, and a detached tab has no live `leafId` to pass. Bound by
-  `WorkspacePane` and `FloatingTabWindow`; deliberately absent on the
-  route-backed tab, whose content navigates instead because the browser URL is
-  that tab's identity. `ArchiveControls` consumes it in `destroy()` and gains no
-  new props, so its nine call sites are untouched: `redirectTo` already marks
-  the two detail views, and a list row still leaves its list tab open.
-  Previously such a tab refetched, 404'd, and sat on its "not found" empty state.
+- **Deleting a record closes every tab about it.** `WorkspaceContextValue`
+  gains `closeTabsAbout(record)`, which closes every docked or floating tab
+  whose subject is that record (`isTabAbout` in
+  `lib/framework/resparkable/ui/workspace/change-scope.ts`), wherever each one
+  is at the moment of the call, and reports whether the route-backed tab was
+  about it. That tab is never closed, because the URL is its identity;
+  `ArchiveControls.destroy()` navigates it instead, to `redirectTo` or else to
+  the record type's list (`listKindForRecord`). Backed by two new pure helpers,
+  `closeTabsWhere` (`split-tree.ts`) and `removeFloatingPanelsWhere`
+  (`floating-panels.ts`). A list showing the record is not about it and stays
+  open. Previously the detail tab refetched, 404'd, and sat on its "not found"
+  empty state, and so did any other tab showing the same record.
 
 - **Workspace tabs hold their own filter state, and name themselves.**
   `TabParams` (`lib/framework/resparkable/ui/workspace/tab-registry.ts`) gains

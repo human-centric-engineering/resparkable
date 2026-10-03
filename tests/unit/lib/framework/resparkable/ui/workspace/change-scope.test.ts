@@ -26,8 +26,10 @@ import {
   WRITING_CAPABILITY_SLUGS,
   changeTypeForCollection,
   changesForCapabilities,
+  isTabAbout,
   keysForChange,
   keysForTab,
+  listKindForRecord,
 } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
@@ -182,5 +184,51 @@ describe('an unknown tab kind', () => {
     // so it took the whole shell down rather than the one unrenderable tab.
     expect(() => keysForTab('not-a-kind' as TabKind, {})).not.toThrow();
     expect(keysForTab('not-a-kind' as TabKind, {})).toEqual([]);
+  });
+});
+
+describe('isTabAbout', () => {
+  it('is true for a detail tab whose own record matches, by kind and id', () => {
+    expect(isTabAbout('project', { id: 'p1' }, { type: 'project', id: 'p1' })).toBe(true);
+    expect(isTabAbout('note', { id: 't1' }, { type: 'thought', id: 't1' })).toBe(true);
+  });
+
+  it('is false for a detail tab about a different record of the same type', () => {
+    expect(isTabAbout('project', { id: 'p1' }, { type: 'project', id: 'p2' })).toBe(false);
+  });
+
+  it('is false when the record type does not match the tab kind’s own record type', () => {
+    // A `note` tab is about a `thought`, never a `project`, even with a
+    // matching id: the two id spaces are unrelated.
+    expect(isTabAbout('note', { id: 'p1' }, { type: 'project', id: 'p1' })).toBe(false);
+  });
+
+  it('is false for a list tab, which is never about any one record', () => {
+    expect(isTabAbout('projects', {}, { type: 'project', id: 'p1' })).toBe(false);
+  });
+
+  it('is false for a kind with no record scope at all, such as board', () => {
+    // `board`'s param is a slug, not an id, and it has no `record` entry:
+    // it is a detail tab by URL shape but not one `closeTabsAbout` can target.
+    expect(isTabAbout('board', { slug: 'roadmap' }, { type: 'project', id: 'p1' })).toBe(false);
+  });
+
+  it('is false, not a throw, for an unknown tab kind', () => {
+    expect(() =>
+      isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })
+    ).not.toThrow();
+    expect(isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })).toBe(false);
+  });
+});
+
+describe('listKindForRecord', () => {
+  it('maps the record types that have a route-backed list to their list tab kind', () => {
+    expect(listKindForRecord('project')).toBe('projects');
+    expect(listKindForRecord('entity')).toBe('entities');
+  });
+
+  it('returns undefined for a record type with no list page of its own', () => {
+    expect(listKindForRecord('thought')).toBeUndefined();
+    expect(listKindForRecord('board')).toBeUndefined();
   });
 });

@@ -6,7 +6,7 @@
  * §11 draws a hard line between archiving (reversible, `DELETE`) and destroying
  * (irreversible, `DELETE ...?permanent=true`), and this component's whole job is
  * to keep that line visible: archiving has no confirmation, destroying always
- * does. Restoring is not just an un-archive either — it goes through a distinct
+ * does. Restoring is not just an un-archive either: it goes through a distinct
  * endpoint because it re-queues the item for indexing, which is why the copy
  * beside it warns that meaning-search lags behind.
  *
@@ -19,6 +19,10 @@
  * - A failed archive call does not call onDone or refresh (SaveStatus carries the error)
  * - `compact` swaps visible text for icon-only, but keeps full-sentence aria-labels
  * - The restore-and-reindex note only appears for an archived, non-compact row
+ * - Inside a workspace tab, a destroy calls `workspace.closeTabsAbout`
+ *   (whether or not `redirectTo` is set), and the route-backed tab (the one
+ *   tab that can't be closed) navigates instead, only when it was about the
+ *   deleted record
  *
  * @see components/resparkable/ui/archive-controls.tsx
  */
@@ -29,28 +33,49 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { ArchiveControls } from '@/components/resparkable/ui/archive-controls';
-import { TabCloseProvider } from '@/components/resparkable/workspace/tabs/tab-close-context';
-import { WorkspaceProvider } from '@/components/resparkable/workspace/workspace-context';
+import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { createMockRouter } from '@/tests/types/mocks';
+import type { WorkspaceContextValue } from '@/components/resparkable/workspace/workspace-context';
 
 vi.mock('@/lib/api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   APIClientError: class APIClientError extends Error {},
 }));
 
+// `useOptionalWorkspace` is mocked at the module boundary rather than
+// rendered through a real `WorkspaceProvider`: the plain-page tests need it to
+// return `null` (no workspace), and the "inside a workspace tab" tests below
+// need a `closeTabsAbout` spy to assert against, which a real provider has no
+// seam for.
+vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
+  useOptionalWorkspace: vi.fn(() => null),
+}));
+
 import { apiClient } from '@/lib/api/client';
 
 const mockDelete = vi.mocked(apiClient.delete);
 const mockPost = vi.mocked(apiClient.post);
+const mockUseOptionalWorkspace = vi.mocked(useOptionalWorkspace);
 const mockRefresh = vi.fn();
 const mockPush = vi.fn();
+
+/** A workspace stub carrying only what `ArchiveControls` reads off it. */
+function fakeWorkspace(
+  overrides: Partial<Pick<WorkspaceContextValue, 'closeTabsAbout'>> = {}
+): WorkspaceContextValue {
+  return {
+    closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
+    ...overrides,
+  } as unknown as WorkspaceContextValue;
+}
 
 describe('ArchiveControls', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDelete.mockResolvedValue(undefined);
     mockPost.mockResolvedValue(undefined);
+    mockUseOptionalWorkspace.mockReturnValue(null);
     vi.mocked(useRouter).mockReturnValue(
       createMockRouter({
         refresh: mockRefresh,
@@ -240,124 +265,85 @@ describe('ArchiveControls', () => {
   });
 
   /**
-   * Inside the workspace, a detail view's own tab should not survive the thing
-   * it is about. It used to: the destroy announced the change, the tab
-   * refetched, got a 404, and sat on its "not found" empty state until someone
-   * closed it by hand.
-   *
-   * `redirectTo` is the guard for all of this. It means "this surface is about
-   * this item", which is true of the two detail views and false of every list.
+   * Inside the workspace, destroying a record closes every tab about it
+   * (`closeTabsAbout`), wherever each sits: not just the one the delete was
+   * pressed in, and regardless of whether `redirectTo` was passed. The
+   * route-backed tab is the one exception: it can't be closed (its identity
+   * is the URL), so it navigates instead, and only when it was actually
+   * about the deleted record.
    */
   describe('inside a workspace tab', () => {
-    function renderInTab(props: { redirectTo?: string; archived?: boolean }, close: () => void) {
-      return render(
-        <TabCloseProvider close={close}>
-          <ArchiveControls
-            collection={RESPARKABLE_API.PROJECTS}
-            id="proj_1"
-            label="Q4 launch"
-            noun="project"
-            archived={props.archived ?? false}
-            {...(props.redirectTo ? { redirectTo: props.redirectTo } : {})}
-          />
-        </TabCloseProvider>
-      );
-    }
-
     async function destroy(user: ReturnType<typeof userEvent.setup>) {
       await user.click(screen.getByRole('button', { name: /delete q4 launch permanently/i }));
       await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
     }
 
-    it('closes its own tab instead of leaving it on "not found"', async () => {
+    it('calls closeTabsAbout for a list row (no redirectTo) and refreshes without pushing', async () => {
+      // The regression that matters: a list row has no `redirectTo`, but a
+      // destroy from a list must still close any detail tab open elsewhere.
       const user = userEvent.setup();
-      const close = vi.fn();
-      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+      const workspace = fakeWorkspace({
+        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
+      });
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+        />
+      );
 
       await destroy(user);
 
       await waitFor(() => {
-        expect(close).toHaveBeenCalledTimes(1);
+        expect(workspace.closeTabsAbout).toHaveBeenCalledWith({ type: 'project', id: 'proj_1' });
       });
-      // Not the URL. That is the tree's single route-backed tab, and moving it
-      // would replace whatever some *other* pane was showing.
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
       expect(mockPush).not.toHaveBeenCalled();
     });
 
-    it('announces the change as well, so other panes showing it catch up', async () => {
+    it('calls closeTabsAbout even when redirectTo is set, for tabs elsewhere about the same record', async () => {
       const user = userEvent.setup();
-      const close = vi.fn();
-      renderInTab({ redirectTo: '/resparkable/projects' }, close);
-
-      await destroy(user);
-
-      // `useResparkableRefresh` falls back to `router.refresh()` with no
-      // boundary above it, which is what this asserts on. The announcement
-      // happening at all is the point, not which arm it took.
-      await waitFor(() => {
-        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      const workspace = fakeWorkspace({
+        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
       });
-    });
-
-    it('does NOT close the tab for a list row, which has no redirectTo', async () => {
-      // The regression that matters. Without the `redirectTo` guard, deleting
-      // one project from a Projects list would close the Projects tab.
-      const user = userEvent.setup();
-      const close = vi.fn();
-      renderInTab({}, close);
-
-      await destroy(user);
-
-      await waitFor(() => {
-        expect(mockRefresh).toHaveBeenCalledTimes(1);
-      });
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('does not close the tab when archiving, only when destroying', async () => {
-      const user = userEvent.setup();
-      const close = vi.fn();
-      renderInTab({ redirectTo: '/resparkable/projects' }, close);
-
-      await user.click(screen.getByRole('button', { name: /archive q4 launch/i }));
-
-      await waitFor(() => {
-        expect(mockRefresh).toHaveBeenCalledTimes(1);
-      });
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('does not close the tab when restoring', async () => {
-      const user = userEvent.setup();
-      const close = vi.fn();
-      renderInTab({ redirectTo: '/resparkable/projects', archived: true }, close);
-
-      await user.click(screen.getByRole('button', { name: /restore q4 launch/i }));
-
-      await waitFor(() => {
-        expect(mockRefresh).toHaveBeenCalledTimes(1);
-      });
-      expect(close).not.toHaveBeenCalled();
-    });
-
-    it('navigates instead of closing for the route-backed tab, which has no closer', async () => {
-      // The one tab in the tree whose identity IS the browser URL. It renders
-      // the real server page, so nothing can hand it a closer, and it does
-      // not need one: moving the URL changes that tab and nothing else, which
-      // is pane-local in exactly the way the old blanket "never push inside
-      // the workspace" rule assumed was impossible.
-      const user = userEvent.setup();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
       render(
-        <WorkspaceProvider>
-          <ArchiveControls
-            collection={RESPARKABLE_API.PROJECTS}
-            id="proj_1"
-            label="Q4 launch"
-            noun="project"
-            archived={false}
-            redirectTo="/resparkable/projects"
-          />
-        </WorkspaceProvider>
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+          redirectTo="/resparkable/projects"
+        />
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(workspace.closeTabsAbout).toHaveBeenCalledWith({ type: 'project', id: 'proj_1' });
+      });
+    });
+
+    it('pushes redirectTo and does not refresh when the route tab was about the record', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace({
+        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: true })),
+      });
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+          redirectTo="/resparkable/projects"
+        />
       );
 
       await destroy(user);
@@ -365,24 +351,126 @@ describe('ArchiveControls', () => {
       await waitFor(() => {
         expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
       });
-      // No `router.refresh()` first. That would be a refresh into a 404
+      // No `router.refresh()` first. That would refresh into a 404
       // immediately before navigating away, flashing the not-found page.
       expect(mockRefresh).not.toHaveBeenCalled();
     });
 
-    it('leaves the tab open when the delete fails', async () => {
+    it('pushes the record type’s list route when the route tab was about it and no redirectTo was given', async () => {
       const user = userEvent.setup();
-      const close = vi.fn();
+      const workspace = fakeWorkspace({
+        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: true })),
+      });
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+        />
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockPush).toHaveBeenCalledWith('/resparkable/projects');
+      });
+      expect(mockRefresh).not.toHaveBeenCalled();
+    });
+
+    it('refreshes instead of pushing when the route tab was not about the record', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace({
+        closeTabsAbout: vi.fn(() => ({ routeTabWasAbout: false })),
+      });
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+          redirectTo="/resparkable/projects"
+        />
+      );
+
+      await destroy(user);
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(mockPush).not.toHaveBeenCalled();
+    });
+
+    it('does not call closeTabsAbout when archiving, only when destroying', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /archive q4 launch/i }));
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(workspace.closeTabsAbout).not.toHaveBeenCalled();
+    });
+
+    it('does not call closeTabsAbout when restoring', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={true}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /restore q4 launch/i }));
+
+      await waitFor(() => {
+        expect(mockRefresh).toHaveBeenCalledTimes(1);
+      });
+      expect(workspace.closeTabsAbout).not.toHaveBeenCalled();
+    });
+
+    it('calls neither closeTabsAbout nor refresh when the delete fails', async () => {
+      const user = userEvent.setup();
+      const workspace = fakeWorkspace();
+      mockUseOptionalWorkspace.mockReturnValue(workspace);
       mockDelete.mockRejectedValueOnce(new Error('boom'));
-      renderInTab({ redirectTo: '/resparkable/projects' }, close);
+      render(
+        <ArchiveControls
+          collection={RESPARKABLE_API.PROJECTS}
+          id="proj_1"
+          label="Q4 launch"
+          noun="project"
+          archived={false}
+          redirectTo="/resparkable/projects"
+        />
+      );
 
       await destroy(user);
 
       // Wait for the failure to surface, not just for the call: asserting
       // straight after the call could run before the rejection is handled.
       expect(await screen.findByText('boom')).toBeInTheDocument();
-      // A tab that vanishes on a failed delete takes the error message with it.
-      expect(close).not.toHaveBeenCalled();
+      expect(workspace.closeTabsAbout).not.toHaveBeenCalled();
       expect(mockRefresh).not.toHaveBeenCalled();
     });
   });

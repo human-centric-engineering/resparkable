@@ -52,6 +52,14 @@ export function removeFloatingPanel(panels: FloatingPanel[], panelId: string): F
   return panels.filter((panel) => panel.id !== panelId);
 }
 
+/** Removes every panel `shouldRemove` picks. The same array back when none matched. */
+export function removeFloatingPanelsWhere(
+  panels: FloatingPanel[],
+  shouldRemove: (panel: FloatingPanel) => boolean
+): FloatingPanel[] {
+  return panels.some(shouldRemove) ? panels.filter((panel) => !shouldRemove(panel)) : panels;
+}
+
 export function moveFloatingPanel(
   panels: FloatingPanel[],
   panelId: string,

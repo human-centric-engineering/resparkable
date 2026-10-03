@@ -173,28 +173,29 @@ pane first (so it holds focus), then click a project link in the **left** pane.
 - _Wrong:_ the address bar changing. That would replace whatever the
   route-backed tab was showing, in some other pane.
 
-**16c. Deleting a record closes its own tab, and only its own. new** Open a
-project in the left pane and the Projects list in the right. Delete the project
-permanently from its detail tab.
+**16c. Deleting a record closes every tab about it, and nothing else. new**
+Open a project in the left pane and the Projects list in the right. Delete the
+project permanently from its detail tab.
 
 - The detail tab closes. The Projects list in the other pane refetches and the
   row is gone from it.
-- _Wrong:_ the tab staying open on "Project not found". That is the state this
-  replaced: strictly better than the URL push it replaced in turn, but still a
-  tab about something that no longer exists.
+- _Wrong:_ the tab staying open on "Project not found".
 - _Wrong:_ the tab closing but the other pane still listing the project. The
   close and the announcement are one action; only one of them landing means
   `refresh(change)` was dropped.
-- Now delete a row from the **list** tab instead. The list refetches and the
-  list tab stays open. _Wrong:_ the list tab closing. The surface outlives the
-  row, and `redirectTo` is what separates the two cases.
+- Open the same project in **two** places (a pane and a floating window), then
+  delete from one. Both close. _Wrong:_ the other one sitting on "not found",
+  which is a close by position rather than by subject.
+- Open the project's detail tab, then delete its row from the **list** tab
+  instead. The list refetches and stays open, and the detail tab closes.
+  _Wrong:_ the list tab closing. A list is not about the row it shows.
 - Drag a project tab out into a floating window and delete from there. The
-  window closes. _Wrong:_ nothing happening, which is `closeTab` being called
-  with a leaf id that no longer holds this tab.
+  window closes.
 - Navigate the browser directly to `/resparkable/projects/<id>` and delete.
   That tab goes to the projects list, because for the route-backed tab the URL
-  is its identity. _Wrong:_ another pane's content changing, or the not-found
-  page flashing before the navigation.
+  is its identity. Do the same but delete from a launcher tab or list in another
+  pane: the route-backed tab still goes to the projects list. _Wrong:_ another
+  pane's content changing, or the not-found page flashing before the navigation.
 
 **17. A route-backed tab still refreshes properly. new** Navigate the browser
 directly to `/resparkable/inbox` (address bar, not the Launcher), then triage a

@@ -26,6 +26,7 @@ import {
   activateTab as activateTabInTree,
   closeLeaf as closeLeafInTree,
   closeTab as closeTabInTree,
+  closeTabsWhere,
   createLeaf,
   detachTab as detachTabInTree,
   findLeaf,
@@ -47,10 +48,15 @@ import {
   moveFloatingPanel as moveFloatingPanelInList,
   nextZIndex,
   removeFloatingPanel,
+  removeFloatingPanelsWhere,
   resizeFloatingPanel as resizeFloatingPanelInList,
   updateFloatingPanelTab,
   type FloatingPanel,
 } from '@/lib/framework/resparkable/ui/workspace/floating-panels';
+import {
+  isTabAbout,
+  type ResparkableRecord,
+} from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import type {
   TabKind,
   TabParams,
@@ -120,6 +126,17 @@ export interface WorkspaceContextValue {
   /** Opens (or focuses, if already open) a tab in the focused pane. */
   openTab: (kind: TabKind, params?: TabParams, opts?: OpenTabOptions) => void;
   closeTab: (leafId: string, tabId: string) => void;
+  /**
+   * Closes every tab about `record` (see `isTabAbout`), docked or floating,
+   * wherever each one is at the moment of the call. What a permanent delete
+   * calls, so no tab is left on "not found" for something that no longer
+   * exists, including one moved while the delete was in flight.
+   *
+   * The tree's one `source: 'route'` tab is never closed here: its identity
+   * is the browser URL, so it has to navigate instead. Whether it was about
+   * `record` comes back as `routeTabWasAbout`, for the caller to act on.
+   */
+  closeTabsAbout: (record: ResparkableRecord) => { routeTabWasAbout: boolean };
   activateTab: (leafId: string, tabId: string) => void;
   reorderTab: (leafId: string, tabId: string, toIndex: number) => void;
   /** Splits `leafId` and focuses the new, empty sibling pane. */
@@ -234,6 +251,30 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
   const closeTab = React.useCallback<WorkspaceContextValue['closeTab']>(
     (leafId, tabId) => {
       setState((prev) => ({ ...prev, root: closeTabInTree(prev.root, leafId, tabId) }));
+    },
+    [setState]
+  );
+
+  const closeTabsAbout = React.useCallback<WorkspaceContextValue['closeTabsAbout']>(
+    (record) => {
+      let routeTabWasAbout = false;
+      // `useLocalStorage`'s setter runs this updater synchronously, against the
+      // latest state, before it returns. That is what makes the answer below
+      // available to the caller, and what makes it current rather than as of
+      // the caller's last render.
+      setState((prev) => {
+        const about = (tab: TabState): boolean => isTabAbout(tab.kind, tab.params, record);
+        routeTabWasAbout = listLeaves(prev.root).some((leaf) =>
+          leaf.tabs.some((tab) => tab.source === 'route' && about(tab))
+        );
+        const root = closeTabsWhere(prev.root, (tab) => tab.source !== 'route' && about(tab));
+        const floatingPanels = removeFloatingPanelsWhere(prev.floatingPanels, (panel) =>
+          about(panel.tab)
+        );
+        if (root === prev.root && floatingPanels === prev.floatingPanels) return prev;
+        return { ...prev, root, floatingPanels };
+      });
+      return { routeTabWasAbout };
     },
     [setState]
   );
@@ -429,6 +470,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       focusedLeafId: state.focusedLeafId,
       openTab,
       closeTab,
+      closeTabsAbout,
       activateTab,
       reorderTab,
       splitLeaf,
@@ -451,6 +493,7 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
       state,
       openTab,
       closeTab,
+      closeTabsAbout,
       activateTab,
       reorderTab,
       splitLeaf,

@@ -213,6 +213,45 @@ export function keysForTab(kind: TabKind, params: TabParams): string[] {
   return keys;
 }
 
+/** One named record: the `type` and `id` a permanent delete removes. */
+export interface ResparkableRecord {
+  type: ResparkableChangeType;
+  id: string;
+}
+
+/**
+ * Whether a tab of this kind and params is *about* `record`, which is to say
+ * a detail tab whose own subject it is. A list that merely shows it is not:
+ * the list outlives the row, the detail does not.
+ *
+ * Read by `closeTabsAbout` in `workspace-context.tsx`, so that deleting a
+ * record closes every tab about it, wherever each one sits, rather than only
+ * the one the delete was pressed in.
+ */
+export function isTabAbout(kind: TabKind, params: TabParams, record: ResparkableRecord): boolean {
+  // Defaulted for the same reason as in `keysForTab` above.
+  const scope = TAB_CHANGE_SCOPES[kind] ?? { collections: [] };
+  return (
+    scope.record !== undefined &&
+    scope.record.type === record.type &&
+    params[scope.record.param] === record.id
+  );
+}
+
+/**
+ * Where the route-backed tab goes when the record it is about is deleted from
+ * somewhere else: the list of that type. Only the record types a route-backed
+ * detail page exists for appear; a note has no page of its own.
+ */
+const LIST_KIND_FOR_RECORD: Partial<Record<ResparkableChangeType, TabKind>> = {
+  project: 'projects',
+  entity: 'entities',
+};
+
+export function listKindForRecord(type: ResparkableChangeType): TabKind | undefined {
+  return LIST_KIND_FOR_RECORD[type];
+}
+
 /** Exported for the coverage test, so a new `TabKind` cannot arrive unscoped. */
 export const TAB_CHANGE_SCOPE_KINDS = Object.keys(TAB_CHANGE_SCOPES) as TabKind[];
 
