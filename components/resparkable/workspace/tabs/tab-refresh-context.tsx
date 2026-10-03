@@ -148,18 +148,6 @@ export function useResparkableRefresh(): (
 }
 
 /**
- * Whether this component renders inside a workspace tab's own boundary.
- *
- * Inside the workspace, `false` means the route-backed tab: the one tab that
- * renders the real page under `app/` rather than a tab adapter, and so has no
- * `TabRefreshBoundary` above it. `ArchiveControls` reads it to know that a
- * delete came from the page whose URL it would have to leave.
- */
-export function useIsInTab(): boolean {
-  return React.useContext(TabRefreshContext) !== null;
-}
-
-/**
  * The enclosing tab's refresh counter, or `0` outside any tab.
  *
  * Only `useTabFetch` should read this. It exists so a refresh re-runs every

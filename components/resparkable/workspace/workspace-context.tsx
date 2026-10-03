@@ -256,34 +256,23 @@ export function WorkspaceProvider({ children }: WorkspaceProviderProps): React.R
     [setState]
   );
 
-  // The latest committed state, for the one action that checks it before
-  // deciding whether to write at all. Kept in an effect, not assigned during
-  // render.
-  const stateRef = React.useRef(state);
-  React.useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
   const closeTabsAbout = React.useCallback<WorkspaceContextValue['closeTabsAbout']>(
     (record) => {
       const about = (tab: TabState): boolean => isTabAbout(tab.kind, tab.params, record);
       const closes = (tab: TabState): boolean => tab.source !== 'route' && about(tab);
 
-      // Checked against a read of the current state first, and the write
-      // skipped outright when nothing matches, which is the common case (a
-      // list row deleted with no detail tab open): `useLocalStorage`'s setter
-      // serializes and broadcasts the whole tree even for an unchanged result.
-      const current = stateRef.current;
-      const anythingToClose =
-        listLeaves(current.root).some((leaf) => leaf.tabs.some(closes)) ||
-        current.floatingPanels.some((panel) => about(panel.tab));
-      if (!anythingToClose) return;
-
-      setState((prev) => ({
-        ...prev,
-        root: closeTabsWhere(prev.root, closes),
-        floatingPanels: removeFloatingPanelsWhere(prev.floatingPanels, (panel) => about(panel.tab)),
-      }));
+      // Decided inside the updater, against the latest state, so a tab opened
+      // or moved in the same tick is still found. `useLocalStorage`'s setter
+      // writes and broadcasts even when this returns `prev` unchanged; that
+      // cost is the hook's, shared with every other no-op action here.
+      setState((prev) => {
+        const root = closeTabsWhere(prev.root, closes);
+        const floatingPanels = removeFloatingPanelsWhere(prev.floatingPanels, (panel) =>
+          about(panel.tab)
+        );
+        if (root === prev.root && floatingPanels === prev.floatingPanels) return prev;
+        return { ...prev, root, floatingPanels };
+      });
     },
     [setState]
   );

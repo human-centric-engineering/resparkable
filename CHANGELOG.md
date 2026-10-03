@@ -664,12 +664,13 @@ release process.
   gains `closeTabsAbout(record)`, which closes every docked or floating tab
   whose subject is that record (`isTabAbout` in
   `lib/framework/resparkable/ui/workspace/change-scope.ts`), wherever each one
-  is at the moment of the call, and writes nothing when none matches. A board's
-  tabs are matched by slug, so `ArchiveControls` gains an optional `slug` prop,
-  which the Boards list passes. The route-backed tab is never closed, because
-  the URL is its identity: a delete made from that page navigates it to
-  `redirectTo`, known from `useIsInTab()` (new, in `tab-refresh-context.tsx`)
-  rather than from the stored tree, and one about the record in another pane is
+  is at the moment of the call. A board's tabs are matched by slug, so
+  `ArchiveControls` gains an optional `slug` prop, which the Boards list
+  passes. The route-backed tab is never closed, because the URL is its
+  identity: a delete made from that page navigates it to `redirectTo`, known
+  from the new `RouteTabMarker` / `useIsRouteTab()`
+  (`components/resparkable/workspace/tabs/route-tab-context.tsx`) that
+  `WorkspacePane` wraps around it, and one about the record in another pane is
   left as it is rather than brought to the front. Backed by two new pure
   helpers, `closeTabsWhere` (`split-tree.ts`) and `removeFloatingPanelsWhere`
   (`floating-panels.ts`). A list showing the record is not about it and stays

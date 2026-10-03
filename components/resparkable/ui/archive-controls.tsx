@@ -42,10 +42,8 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { useNotifyDataChange } from '@/components/resparkable/workspace/data-change-context';
-import {
-  useIsInTab,
-  useResparkableRefresh,
-} from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import { useIsRouteTab } from '@/components/resparkable/workspace/tabs/route-tab-context';
+import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { useOptionalWorkspace } from '@/components/resparkable/workspace/workspace-context';
 import { Button } from '@/components/ui/button';
 import { resparkableApi, withActiveSpace } from '@/lib/framework/resparkable/api/client';
@@ -104,7 +102,7 @@ export function ArchiveControls({
   const refresh = useResparkableRefresh();
   const notify = useNotifyDataChange();
   const workspace = useOptionalWorkspace();
-  const inTab = useIsInTab();
+  const inRouteTab = useIsRouteTab();
   const { state, message, run } = useSaveStatus();
 
   // Archiving, restoring and deleting all change the same row, and this
@@ -155,12 +153,12 @@ export function ArchiveControls({
 
     // The route-backed tab cannot be closed, because the browser URL *is* that
     // tab, so when the delete came from that page it goes to `redirectTo`.
-    // That is known from where this control renders (no tab boundary above
-    // it), not from the stored tree, which another browser window sharing it
-    // may have pointed somewhere else. Navigating changes that tab and nothing
+    // That is known from where this control renders (`RouteTabMarker`), not
+    // from the stored tree, which another browser window sharing it may have
+    // pointed somewhere else. Navigating changes that tab and nothing
     // else. A route-backed tab about the record but in another pane is left as
     // it is: navigating it would bring it to the front and pull focus there.
-    if (!inTab && redirectTo) {
+    if (inRouteTab && redirectTo) {
       // `notify` rather than `refresh`: with no boundary above the route-backed
       // tab, `refresh` would be a `router.refresh()` into a 404 immediately
       // before the push, flashing the not-found page on the way out.

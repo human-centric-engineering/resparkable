@@ -331,6 +331,11 @@ describe('scanRouterMocks: cast rule', () => {
     expect(casts(source)).toHaveLength(1);
   });
 
+  it('flags one handed to a deep vi.mocked(useRouter, true)', () => {
+    const source = `vi.mocked(useRouter, true).mockReturnValue({ push } as never);`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
   it('flags one handed to vi.mocked with an explicit type argument', () => {
     const source = `vi.mocked<typeof useRouter>(useRouter).mockReturnValue({ push } as never);`;
     expect(casts(source)).toHaveLength(1);

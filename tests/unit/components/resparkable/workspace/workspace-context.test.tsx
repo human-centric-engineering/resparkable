@@ -552,26 +552,37 @@ describe('closeTabsAbout', () => {
     expect(leaf.tabs.map((tab) => tab.params.slug)).toEqual(['backlog']);
   });
 
-  it('writes nothing at all when nothing matched', () => {
-    // `useLocalStorage`'s setter serializes and broadcasts the whole tree even
-    // for an unchanged result, so the no-match case skips the write outright.
-    // The same tree reference afterwards is what proves no write happened: a
-    // write would have round-tripped through the same-tab broadcast and come
-    // back as a freshly parsed copy.
+  it('leaves the tree unchanged in content when nothing matched', () => {
+    // Content, not identity: the decision is made inside the updater so it
+    // sees the latest state, and `useLocalStorage`'s setter writes and
+    // broadcasts even an unchanged result, which round-trips the tree through
+    // JSON. What matters is that no tab goes missing.
     const { result } = renderWorkspace();
 
     act(() => {
       result.current.openTab('projects');
+      result.current.openTab('project', { id: 'p2' });
     });
     const rootBefore = result.current.root;
-    const storedBefore = window.localStorage.getItem(STORAGE_KEY);
 
     act(() => {
       result.current.closeTabsAbout({ type: 'project', id: 'does-not-exist' });
     });
 
-    expect(result.current.root).toBe(rootBefore);
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(storedBefore);
+    expect(result.current.root).toEqual(rootBefore);
+  });
+
+  it('closes a tab opened in the same tick as the call', () => {
+    // The decision is made against the latest state, not the last render.
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('project', { id: 'p1' });
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs).toHaveLength(0);
   });
 });
 

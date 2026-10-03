@@ -29,6 +29,7 @@ import * as React from 'react';
 
 import { Launcher } from '@/components/resparkable/workspace/launcher';
 import { TabStrip } from '@/components/resparkable/workspace/tab-strip';
+import { RouteTabMarker } from '@/components/resparkable/workspace/tabs/route-tab-context';
 import { TabContent } from '@/components/resparkable/workspace/tabs/tab-content';
 import { PaneToolbar } from '@/components/resparkable/workspace/toolbar';
 import { useWorkspace } from '@/components/resparkable/workspace/workspace-context';
@@ -196,7 +197,11 @@ function WorkspacePane({
                 route-backed tab the address bar happens to match instead of
                 no header at all. */}
             {href && <SectionHeader href={href} />}
-            {isRouteTab && routeContent ? routeContent : <TabContent tab={activeTab} />}
+            {isRouteTab && routeContent ? (
+              <RouteTabMarker>{routeContent}</RouteTabMarker>
+            ) : (
+              <TabContent tab={activeTab} />
+            )}
           </div>
         ) : (
           <Launcher leafId={leaf.id} />

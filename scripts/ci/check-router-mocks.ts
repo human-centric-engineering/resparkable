@@ -74,7 +74,10 @@ export function main(root = process.cwd()): number {
     let source: string;
     try {
       source = readFileSync(posix.join(root, file), 'utf8');
-    } catch {
+    } catch (error) {
+      // A directory named like a source file (`fixtures.ts/`) comes back from
+      // the recursive listing too, and is nothing to scan.
+      if (error instanceof Error && 'code' in error && error.code === 'EISDIR') continue;
       // Reported rather than skipped: "I could not look" and "there is nothing
       // there" are different answers, and only one of them is a pass.
       unreadable.push(file);

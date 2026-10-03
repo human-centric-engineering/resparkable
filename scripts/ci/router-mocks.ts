@@ -240,7 +240,8 @@ function isInnerCastOfChain(node: CastExpression): boolean {
 /** The value a router mock is handed to: `vi.mocked(useRouter).mockReturnValue(HERE)`. */
 const RETURN_SETTER = /^(?:mockReturnValue|mockReturnValueOnce)$/;
 const IMPLEMENTATION_SETTER = /^(?:mockImplementation|mockImplementationOnce)$/;
-const MOCKED_USE_ROUTER = /^vi\.mocked\s*(?:<[^>]*>)?\(\s*(?:[\w$]+\.)*useRouter\s*\)$/;
+const MOCKED_USE_ROUTER =
+  /^vi\.mocked\s*(?:<[^>]*>)?\(\s*(?:[\w$]+\.)*useRouter\s*(?:,\s*(?:true|\{[^}]*\})\s*)?\)$/;
 
 /** `vi.mocked(useRouter)` in any spelling, or `vi.spyOn(navigation, 'useRouter')`. */
 function isMockedUseRouter(expression: ts.Expression, sourceFile: ts.SourceFile): boolean {

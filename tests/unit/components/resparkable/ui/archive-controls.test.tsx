@@ -52,18 +52,15 @@ vi.mock('@/components/resparkable/workspace/workspace-context', () => ({
   useOptionalWorkspace: vi.fn(() => null),
 }));
 
-// Whether the control renders under a tab boundary: `true` is a launcher or
-// floating tab, `false` (inside a workspace) is the route-backed page. The
-// real hook reads a context only a full `TabRefreshBoundary` provides.
-vi.mock('@/components/resparkable/workspace/tabs/tab-refresh-context', async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import('@/components/resparkable/workspace/tabs/tab-refresh-context')
-  >()),
-  useIsInTab: vi.fn(() => true),
+// Whether the control renders inside the route-backed tab (`RouteTabMarker`).
+// `false` is everywhere else: a launcher or floating tab, a pane, or a plain
+// page outside the shell.
+vi.mock('@/components/resparkable/workspace/tabs/route-tab-context', () => ({
+  useIsRouteTab: vi.fn(() => false),
 }));
 
 import { apiClient } from '@/lib/api/client';
-import { useIsInTab } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
+import { useIsRouteTab } from '@/components/resparkable/workspace/tabs/route-tab-context';
 
 const mockDelete = vi.mocked(apiClient.delete);
 const mockPost = vi.mocked(apiClient.post);
@@ -87,7 +84,7 @@ describe('ArchiveControls', () => {
     mockDelete.mockResolvedValue(undefined);
     mockPost.mockResolvedValue(undefined);
     mockUseOptionalWorkspace.mockReturnValue(null);
-    vi.mocked(useIsInTab).mockReturnValue(true);
+    vi.mocked(useIsRouteTab).mockReturnValue(false);
     vi.mocked(useRouter).mockReturnValue(
       createMockRouter({
         refresh: mockRefresh,
@@ -317,7 +314,7 @@ describe('ArchiveControls', () => {
     });
 
     it('closes tabs about the record from a detail tab and refreshes, without moving the URL', async () => {
-      // A launcher-opened or floating detail tab (under a tab boundary) passes
+      // A launcher-opened or floating detail tab (not the route-backed one) passes
       // `redirectTo`, but the URL belongs to the route-backed tab, which may
       // be showing something else entirely in another pane.
       const user = userEvent.setup();
@@ -372,10 +369,10 @@ describe('ArchiveControls', () => {
 
     it('leaves the route-backed page for redirectTo when the delete came from that page', async () => {
       // Where this control renders is the signal, not the stored tree (which
-      // other browser windows share): no tab boundary above it means it IS the
+      // other browser windows share): inside `RouteTabMarker` it IS the
       // route-backed page, which would 404 on a refresh.
       const user = userEvent.setup();
-      vi.mocked(useIsInTab).mockReturnValue(false);
+      vi.mocked(useIsRouteTab).mockReturnValue(true);
       const workspace = fakeWorkspace();
       mockUseOptionalWorkspace.mockReturnValue(workspace);
       render(

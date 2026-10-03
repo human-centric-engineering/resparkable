@@ -202,5 +202,22 @@ describe('scripts/ci/check-router-mocks', () => {
       expect(out()).toContain('Could not read:');
       expect(out()).toContain('tests/unit/a.test.tsx');
     });
+
+    it('skips a directory whose name looks like a source file', async () => {
+      // The recursive listing returns directories too, so `fixtures.ts/` is
+      // in it; reading one fails with EISDIR, which is not an unreadable file.
+      mockReaddirSync.mockImplementation(() => ['unit/fixtures.ts', 'unit/b.test.ts']);
+      mockReadFileSync.mockImplementation((path: string) => {
+        if (String(path).endsWith('fixtures.ts')) {
+          throw Object.assign(new Error('EISDIR: illegal operation on a directory'), {
+            code: 'EISDIR',
+          });
+        }
+        return CLEAN;
+      });
+      await run();
+      expect(process.exitCode).toBe(0);
+      expect(out()).not.toContain('Could not read:');
+    });
   });
 });

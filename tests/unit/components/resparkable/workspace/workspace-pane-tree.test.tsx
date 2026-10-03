@@ -32,6 +32,7 @@ import {
 } from '@/components/resparkable/workspace/workspace-overlay-context';
 import { WorkspacePaneTree } from '@/components/resparkable/workspace/workspace-pane-tree';
 import { apiClient } from '@/lib/api/client';
+import { useIsRouteTab } from '@/components/resparkable/workspace/tabs/route-tab-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
 vi.mock('@/lib/api/client', async () => {
@@ -167,6 +168,18 @@ describe('WorkspacePaneTree — the route-backed tab', () => {
     // `Launcher`, which fetches its own inbox count.
     const calledPaths = vi.mocked(apiClient.get).mock.calls.map((call) => String(call[0]));
     expect(calledPaths).not.toContain(RESPARKABLE_API.TODAY);
+  });
+
+  it('marks routeContent as the route-backed tab, so a control inside it may move the URL', async () => {
+    function Probe(): React.ReactElement {
+      return <div>{useIsRouteTab() ? 'marked as route tab' : 'not marked'}</div>;
+    }
+    const user = userEvent.setup();
+    renderTree(<Probe />);
+
+    await user.click(screen.getByText('sync route to today'));
+
+    expect(screen.getByText('marked as route tab')).toBeInTheDocument();
   });
 
   it('falls back to TabContent for a launcher-opened tab even when routeContent is set', async () => {
