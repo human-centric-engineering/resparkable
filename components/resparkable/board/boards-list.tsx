@@ -96,6 +96,7 @@ export function BoardsList({ boards, projects, tags }: BoardsListProps): React.R
                 <ArchiveControls
                   collection={RESPARKABLE_API.BOARDS}
                   id={board.id}
+                  slug={board.slug}
                   label={board.name}
                   noun="board"
                   archived={board.archivedAt !== null}

@@ -18,6 +18,7 @@ import {
   MIN_FLOATING_PANEL_WIDTH,
   nextZIndex,
   removeFloatingPanel,
+  removeFloatingPanelsWhere,
   resizeFloatingPanel,
   updateFloatingPanelTab,
   type FloatingPanel,
@@ -87,6 +88,31 @@ describe('nextZIndex / bringFloatingPanelToFront', () => {
   it('is a no-op for an id that is not there', () => {
     const panels = [panel('p1', { z: 1 })];
     expect(bringFloatingPanelToFront(panels, 'missing')).toEqual(panels);
+  });
+});
+
+describe('removeFloatingPanelsWhere', () => {
+  it('removes every panel shouldRemove picks, leaving the rest untouched', () => {
+    const panels = [panel('p1'), panel('p2'), panel('p3')];
+
+    const next = removeFloatingPanelsWhere(panels, (candidate) => candidate.id !== 'p2');
+
+    expect(next.map((p) => p.id)).toEqual(['p2']);
+  });
+
+  it('returns the input array itself when nothing matched', () => {
+    const panels = [panel('p1'), panel('p2')];
+
+    // Identity, not deep equality: `workspace-context.tsx` compares identities
+    // to skip a `localStorage` write and re-render when a delete touched no
+    // floating panel at all.
+    expect(removeFloatingPanelsWhere(panels, () => false)).toBe(panels);
+  });
+
+  it('removes every panel when shouldRemove matches them all', () => {
+    const panels = [panel('p1'), panel('p2')];
+
+    expect(removeFloatingPanelsWhere(panels, () => true)).toEqual([]);
   });
 });
 

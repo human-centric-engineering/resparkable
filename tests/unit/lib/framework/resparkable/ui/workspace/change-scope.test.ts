@@ -26,6 +26,7 @@ import {
   WRITING_CAPABILITY_SLUGS,
   changeTypeForCollection,
   changesForCapabilities,
+  isTabAbout,
   keysForChange,
   keysForTab,
 } from '@/lib/framework/resparkable/ui/workspace/change-scope';
@@ -182,5 +183,57 @@ describe('an unknown tab kind', () => {
     // so it took the whole shell down rather than the one unrenderable tab.
     expect(() => keysForTab('not-a-kind' as TabKind, {})).not.toThrow();
     expect(keysForTab('not-a-kind' as TabKind, {})).toEqual([]);
+  });
+});
+
+describe('isTabAbout', () => {
+  it('is true for a detail tab whose own record matches, by kind and id', () => {
+    expect(isTabAbout('project', { id: 'p1' }, { type: 'project', id: 'p1' })).toBe(true);
+    expect(isTabAbout('note', { id: 't1' }, { type: 'thought', id: 't1' })).toBe(true);
+  });
+
+  it('is false for a detail tab about a different record of the same type', () => {
+    expect(isTabAbout('project', { id: 'p1' }, { type: 'project', id: 'p2' })).toBe(false);
+  });
+
+  it('is false when the record type does not match the tab kind’s own record type', () => {
+    // A `note` tab is about a `thought`, never a `project`, even with a
+    // matching id: the two id spaces are unrelated.
+    expect(isTabAbout('note', { id: 'p1' }, { type: 'project', id: 'p1' })).toBe(false);
+  });
+
+  it('is false for a list tab, which is never about any one record', () => {
+    expect(isTabAbout('projects', {}, { type: 'project', id: 'p1' })).toBe(false);
+  });
+
+  it('matches a board tab by slug, since its tab carries the slug and not the id', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1', slug: 'roadmap' })
+    ).toBe(true);
+  });
+
+  it('is false for a board tab when the deleted board has a different slug', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1', slug: 'backlog' })
+    ).toBe(false);
+  });
+
+  it('is false for a board tab when the delete names no slug at all', () => {
+    // A board deleted from somewhere that only knows its id cannot be matched
+    // to a tab keyed by slug, and must not match every board tab by accident.
+    expect(isTabAbout('board', { slug: 'roadmap' }, { type: 'board', id: 'b1' })).toBe(false);
+  });
+
+  it('is false for a board tab when the record is not a board', () => {
+    expect(
+      isTabAbout('board', { slug: 'roadmap' }, { type: 'project', id: 'p1', slug: 'roadmap' })
+    ).toBe(false);
+  });
+
+  it('is false, not a throw, for an unknown tab kind', () => {
+    expect(() =>
+      isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })
+    ).not.toThrow();
+    expect(isTabAbout('not-a-kind' as TabKind, {}, { type: 'project', id: 'p1' })).toBe(false);
   });
 });

@@ -46,12 +46,11 @@ vi.mock('@/lib/auth/client', () => ({
   useSession: () => mockUseSession(),
 }));
 
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const mockedSearchParams = useSearchParams as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedRouter.mockReturnValue(createMockRouter());
+  vi.mocked(useRouter).mockReturnValue(createMockRouter());
   mockedSearchParams.mockReturnValue(new URLSearchParams());
   vi.mocked(usePathname).mockReturnValue(RESPARKABLE_ROUTES.TODAY);
   mockUseSession.mockReturnValue({

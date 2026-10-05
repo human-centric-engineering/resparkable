@@ -9,14 +9,15 @@
 ## Template Structure
 
 ```typescript
-// __tests__/components/forms/login-form.test.tsx
+// tests/unit/components/forms/login-form.test.tsx
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LoginForm } from '@/components/forms/login-form';
 import { authClient } from '@/lib/auth/client';
 
-// Mock Next.js router
+// A minimal router stub: fine, because this form reads nothing else. Anything
+// more complete goes through `createMockRouter()`; see "Mock Next.js Router".
 vi.mock('next/navigation', () => ({
   useRouter: () => ({
     push: vi.fn(),
@@ -218,23 +219,45 @@ await waitFor(
 
 ### Mock Next.js Router
 
-```typescript
-const mockPush = vi.fn();
-const mockRefresh = vi.fn();
+`tests/setup.ts` already mocks `next/navigation` suite-wide, with a router built
+by `createMockRouter()`. Most files need no `vi.mock` of their own. Just point
+the existing mock at a router carrying the spies the test asserts on:
 
-vi.mock('next/navigation', () => ({
-  useRouter: () => ({
-    push: mockPush,
-    replace: vi.fn(),
-    refresh: mockRefresh,
-    back: vi.fn(),
-  }),
-  useSearchParams: () => new URLSearchParams(),
-  usePathname: () => '/current-path',
-}));
+```typescript
+import { useRouter } from 'next/navigation';
+import { createMockRouter } from '@/tests/types/mocks';
+
+const push = vi.fn();
+
+beforeEach(() => {
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push }));
+});
 
 // In test: verify navigation
-expect(mockPush).toHaveBeenCalledWith('/dashboard');
+expect(push).toHaveBeenCalledWith('/dashboard');
+```
+
+**Never write the router out as an object literal.** `AppRouterInstance` gains
+required members between Next minors (16.3.0 added `bfcacheId`), and nothing
+type-checks a `vi.mock` factory, so a hand-rolled router keeps compiling while
+handing the component an object the real router is no longer shaped like.
+`npm run check:router-mocks` fails the build on one. A two-or-three-member stub
+for a component that reads nothing else is fine and deliberately not flagged.
+
+If a file does need its own factory (because it also stubs `useSearchParams`,
+say), import the factory _inside_ it. `vi.mock` is hoisted above the import
+block, so a top-level import referenced in the factory can be a
+use-before-initialization error:
+
+```typescript
+vi.mock('next/navigation', async () => {
+  const { createMockRouter } = await import('@/tests/types/mocks');
+  return {
+    useRouter: vi.fn(() => createMockRouter()),
+    useSearchParams: vi.fn(() => new URLSearchParams()),
+    usePathname: vi.fn(() => '/current-path'),
+  };
+});
 ```
 
 ### Mock better-auth Client

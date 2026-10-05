@@ -44,9 +44,9 @@ vi.mock('@/lib/api/client', () => ({
 }));
 
 import { apiClient } from '@/lib/api/client';
+import { createMockRouter } from '@/tests/types/mocks';
 
 const mockedPatch = apiClient.patch as ReturnType<typeof vi.fn>;
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const refresh = vi.fn();
 
 /** The shipped defaults, which sum to exactly 1. */
@@ -84,14 +84,7 @@ function settings(overrides: Partial<SpaceSettings> = {}): SpaceSettings {
 beforeEach(() => {
   vi.clearAllMocks();
   mockedPatch.mockResolvedValue({});
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh }));
 });
 
 describe('SpaceSettingsForm', () => {

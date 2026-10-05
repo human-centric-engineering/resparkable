@@ -453,6 +453,139 @@ describe('syncRouteTab', () => {
   });
 });
 
+describe('closeTabsAbout', () => {
+  it('closes every docked tab about the record, across leaves, leaving others', () => {
+    const { result } = renderWorkspace();
+    const leaf1Id = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('project', { id: 'p1' });
+      result.current.openTab('project', { id: 'p2' });
+      result.current.splitLeaf(leaf1Id, 'horizontal');
+    });
+    const leaf2Id = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('project', { id: 'p1' });
+      result.current.openTab('projects');
+    });
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    const leaf1 = findLeaf(result.current.root, leaf1Id) as LeafNode;
+    const leaf2 = findLeaf(result.current.root, leaf2Id) as LeafNode;
+    expect(leaf1.tabs.map((tab) => tab.params.id)).toEqual(['p2']);
+    expect(leaf2.tabs.map((tab) => tab.kind)).toEqual(['projects']);
+  });
+
+  it('closes a floating panel about the record', () => {
+    const { result } = renderWorkspace();
+    const leafId = result.current.focusedLeafId;
+
+    act(() => {
+      result.current.openTab('project', { id: 'p1' });
+    });
+    const tabId = (findLeaf(result.current.root, leafId) as LeafNode).tabs[0].id;
+
+    act(() => {
+      result.current.detachTab(leafId, tabId, { x: 0, y: 0 });
+    });
+    expect(result.current.floatingPanels).toHaveLength(1);
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    expect(result.current.floatingPanels).toHaveLength(0);
+  });
+
+  it('leaves a Projects list tab and a tab about a different project alone', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('projects');
+      result.current.openTab('project', { id: 'p2' });
+    });
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs.map((tab) => tab.kind)).toEqual(['projects', 'project']);
+  });
+
+  it('never closes the route-backed tab, even when it is about the record', () => {
+    // Its identity is the browser URL, so closing it would leave the URL
+    // pointing at a page nothing shows. `ArchiveControls` navigates it when
+    // the delete came from that page; otherwise it is left as it is.
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.syncRouteTab('project', { id: 'p1' });
+    });
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs).toHaveLength(1);
+    expect(leaf.tabs[0].source).toBe('route');
+  });
+
+  it('closes a board tab by its slug', () => {
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('board', { slug: 'roadmap' });
+      result.current.openTab('board', { slug: 'backlog' });
+    });
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'board', id: 'b1', slug: 'roadmap' });
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs.map((tab) => tab.params.slug)).toEqual(['backlog']);
+  });
+
+  it('leaves the tree unchanged in content when nothing matched', () => {
+    // Content, not identity: the decision is made inside the updater so it
+    // sees the latest state, and `useLocalStorage`'s setter writes and
+    // broadcasts even an unchanged result, which round-trips the tree through
+    // JSON. What matters is that no tab goes missing.
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('projects');
+      result.current.openTab('project', { id: 'p2' });
+    });
+    const rootBefore = result.current.root;
+
+    act(() => {
+      result.current.closeTabsAbout({ type: 'project', id: 'does-not-exist' });
+    });
+
+    expect(result.current.root).toEqual(rootBefore);
+  });
+
+  it('closes a tab opened in the same tick as the call', () => {
+    // The decision is made against the latest state, not the last render.
+    const { result } = renderWorkspace();
+
+    act(() => {
+      result.current.openTab('project', { id: 'p1' });
+      result.current.closeTabsAbout({ type: 'project', id: 'p1' });
+    });
+
+    const leaf = findLeaf(result.current.root, result.current.focusedLeafId) as LeafNode;
+    expect(leaf.tabs).toHaveLength(0);
+  });
+});
+
 describe('showLauncher', () => {
   it('clears the active tab without closing it, so the launcher shows over open tabs', () => {
     const { result } = renderWorkspace();

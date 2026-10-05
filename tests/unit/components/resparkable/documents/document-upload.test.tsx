@@ -45,12 +45,12 @@ import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
 import { DocumentUpload } from '@/components/resparkable/documents/document-upload';
+import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('next/navigation', () => ({
   useRouter: vi.fn(),
 }));
 
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const refresh = vi.fn();
 
 /**
@@ -94,14 +94,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   MockXHR.instances = [];
   vi.stubGlobal('XMLHttpRequest', MockXHR);
-  mockedRouter.mockReturnValue({
-    push: vi.fn(),
-    replace: vi.fn(),
-    refresh,
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh }));
 });
 
 afterEach(() => {

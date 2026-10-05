@@ -84,21 +84,14 @@ vi.mock('@/components/ui/select', () => {
 });
 
 import { GraphControls } from '@/components/resparkable/graph/graph-controls';
+import { createMockRouter } from '@/tests/types/mocks';
 
-const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;
 const mockedSearchParams = useSearchParams as unknown as ReturnType<typeof vi.fn>;
 const push = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockedRouter.mockReturnValue({
-    push,
-    replace: vi.fn(),
-    refresh: vi.fn(),
-    back: vi.fn(),
-    forward: vi.fn(),
-    prefetch: vi.fn(),
-  });
+  vi.mocked(useRouter).mockReturnValue(createMockRouter({ push }));
   mockedSearchParams.mockReturnValue(new URLSearchParams('focusType=task&focus=task_1&depth=2'));
 });
 
