@@ -124,6 +124,29 @@ export async function listCommentsFor(
 }
 
 /**
+ * Whether this viewer may add to the thread on one item, answered by the same
+ * resolver `addComment` asks. For a caller that renders a thread without
+ * knowing the reader's role, such as a group member's own project page
+ * (phase 58), so the composer is shown exactly when a write would succeed.
+ */
+export async function canCommentOn(
+  viewer: ResparkableViewer,
+  ref: { entityType: string; entityId: string },
+  now: Date = new Date()
+): Promise<boolean> {
+  const entityType = shareableTypeOf(ref);
+  if (!entityType) return false;
+  const access = await resolveResparkableAccess({
+    viewer,
+    entityType,
+    entityId: ref.entityId,
+    need: 'read',
+    now,
+  });
+  return access.ok && access.permissions.comment;
+}
+
+/**
  * Write a comment.
  *
  * Returns `null` for every refusal — no access, read-only access, a cascaded

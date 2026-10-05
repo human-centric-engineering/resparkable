@@ -59,6 +59,12 @@ export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableV
   return {
     userId: session.user.id,
     email: session.user.email.toLowerCase(),
-    group: personal ? null : { spaceId: scope.spaceId, canWrite: permissionsFor(scope.role).write },
+    group: personal
+      ? null
+      : {
+          spaceId: scope.spaceId,
+          canWrite: permissionsFor(scope.role).write,
+          canAdminister: permissionsFor(scope.role).administer,
+        },
   };
 }

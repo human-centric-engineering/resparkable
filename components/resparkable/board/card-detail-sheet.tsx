@@ -39,6 +39,7 @@
  */
 
 import * as React from 'react';
+import { GroupCommentThread } from '@/components/resparkable/groups/group-comment-thread';
 import { Plus, Share2, Trash2 } from 'lucide-react';
 
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
@@ -307,6 +308,8 @@ function CardDetailBody({
         )}
 
         <SaveStatus state={state} message={message} />
+
+        <GroupCommentThread entityType="task" entityId={taskId} />
       </div>
     </>
   );

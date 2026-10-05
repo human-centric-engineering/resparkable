@@ -151,6 +151,68 @@ describe('CommentThread', () => {
       await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
       expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument();
     });
+
+    it('renders the compose form from the GET’s meta.canComment when the prop is omitted', async () => {
+      // The group member's own project (phase 58): the caller renders the
+      // thread without knowing the reader's role, so the server's answer
+      // alongside the comments is what decides.
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [], meta: { canComment: true } })
+      );
+
+      render(<CommentThread entityType="project" entityId="item-1" />);
+
+      await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
+    });
+
+    it('hides the compose form when meta.canComment is false and the prop is omitted', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [], meta: { canComment: false } })
+      );
+
+      render(<CommentThread entityType="project" entityId="item-1" />);
+
+      await waitFor(() =>
+        expect(screen.getByText('Nothing has been said yet.')).toBeInTheDocument()
+      );
+      expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument();
+    });
+
+    it('hides the compose form when meta is missing entirely and the prop is omitted', async () => {
+      // No `meta` at all — treated the same as `canComment: false`, never as
+      // "assume yes".
+      mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [] }));
+
+      render(<CommentThread entityType="project" entityId="item-1" />);
+
+      await waitFor(() =>
+        expect(screen.getByText('Nothing has been said yet.')).toBeInTheDocument()
+      );
+      expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument();
+    });
+
+    it('lets an explicit canComment={false} prop override a true meta.canComment', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [], meta: { canComment: true } })
+      );
+
+      render(<CommentThread entityType="project" entityId="item-1" canComment={false} />);
+
+      await waitFor(() =>
+        expect(screen.getByText('Nothing has been said yet.')).toBeInTheDocument()
+      );
+      expect(screen.queryByLabelText('Write a comment')).not.toBeInTheDocument();
+    });
+
+    it('lets an explicit canComment={true} prop override a false meta.canComment', async () => {
+      mockFetch.mockResolvedValueOnce(
+        jsonResponse({ success: true, data: [], meta: { canComment: false } })
+      );
+
+      render(<CommentThread entityType="project" entityId="item-1" canComment={true} />);
+
+      await waitFor(() => expect(screen.getByLabelText('Write a comment')).toBeInTheDocument());
+    });
   });
 
   describe('edit button', () => {

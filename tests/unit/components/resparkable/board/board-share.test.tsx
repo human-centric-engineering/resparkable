@@ -35,6 +35,8 @@ import userEvent from '@testing-library/user-event';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+  // The card sheet's group thread reads the workspace from the URL.
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('@/lib/api/client', () => ({

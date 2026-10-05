@@ -53,6 +53,7 @@ vi.mock('@/lib/framework/resparkable/repo/comments', () => ({
 
 import {
   addComment,
+  canCommentOn,
   listCommentsFor,
   removeComment,
   updateComment,
@@ -305,6 +306,53 @@ describe('addComment', () => {
   });
 });
 
+describe('canCommentOn', () => {
+  it('is true for a writing group member on their own space’s item', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'space',
+      ownerId: 'space_g',
+      permissions: { read: true, comment: true, moderate: false },
+      redact: [],
+      via: null,
+    });
+    const groupMember = {
+      userId: 'user_member',
+      email: 'member@example.com',
+      group: { spaceId: 'space_g', canWrite: true, canAdminister: false },
+    };
+
+    expect(await canCommentOn(groupMember, REF, NOW)).toBe(true);
+  });
+
+  it('is false for a group viewer', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'space',
+      ownerId: 'space_g',
+      permissions: { read: true, comment: false, moderate: false },
+      redact: [],
+      via: null,
+    });
+    const groupViewer = {
+      userId: 'user_viewer',
+      email: 'viewer@example.com',
+      group: { spaceId: 'space_g', canWrite: false, canAdminister: false },
+    };
+
+    expect(await canCommentOn(groupViewer, REF, NOW)).toBe(false);
+  });
+
+  it('is false for an unshareable type, without resolving anything', async () => {
+    // Narrowed by the same guard the other entry points use, so a `thought`
+    // costs no query before it is refused.
+    expect(await canCommentOn(GRANTEE, { entityType: 'thought', entityId: 'th_1' }, NOW)).toBe(
+      false
+    );
+    expect(resolveResparkableAccess).not.toHaveBeenCalled();
+  });
+});
+
 describe('updateComment', () => {
   it('puts the author id in the query, so only the author can edit', async () => {
     await updateComment(GRANTEE, REF, 'c_1', 'Changed my mind', NOW);
@@ -360,7 +408,10 @@ describe('updateComment', () => {
     // A personal grant lowered to viewer and a group member demoted to viewer
     // both resolve `need: 'comment'` as a denial. One rule, in the resolver.
     resolveResparkableAccess.mockResolvedValue(DENIED);
-    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: false } };
+    const groupViewer = {
+      ...GRANTEE,
+      group: { spaceId: 'space_b', canWrite: false, canAdminister: false },
+    };
 
     expect(await updateComment(GRANTEE, REF, 'c_1', 'Changed my mind', NOW)).toBeNull();
     expect(await updateComment(groupViewer, REF, 'c_1', 'Changed my mind', NOW)).toBeNull();
@@ -368,7 +419,10 @@ describe('updateComment', () => {
   });
 
   it('lets a group member who can write edit their own', async () => {
-    const groupMember = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: true } };
+    const groupMember = {
+      ...GRANTEE,
+      group: { spaceId: 'space_b', canWrite: true, canAdminister: false },
+    };
 
     await updateComment(groupMember, REF, 'c_1', 'Changed my mind', NOW);
 
@@ -378,7 +432,10 @@ describe('updateComment', () => {
 
 describe('removeComment', () => {
   it('lets a group viewer take back their own comment, filtered to their own', async () => {
-    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_b', canWrite: false } };
+    const groupViewer = {
+      ...GRANTEE,
+      group: { spaceId: 'space_b', canWrite: false, canAdminister: false },
+    };
 
     await removeComment(groupViewer, REF, 'c_1', NOW);
 
@@ -428,7 +485,7 @@ describe('removeComment', () => {
     const ownerInGroup = {
       userId: 'user_a',
       email: 'a@example.com',
-      group: { spaceId: 'space_b', canWrite: true },
+      group: { spaceId: 'space_b', canWrite: true, canAdminister: false },
     };
 
     await removeComment(ownerInGroup, REF, 'c_1', NOW);
@@ -440,5 +497,81 @@ describe('removeComment', () => {
     deleteComment.mockResolvedValue(null);
 
     expect(await removeComment(GRANTEE, REF, 'c_someone_else', NOW)).toBeNull();
+  });
+
+  it('lets a group admin delete another member’s comment, unfiltered by author', async () => {
+    // `canAdminister` is phase 58's `moderate`, the same switch `owner` sets
+    // for a personal brain.
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'space',
+      ownerId: 'space_g',
+      permissions: { read: true, comment: true, moderate: true },
+      redact: [],
+      via: null,
+    });
+    const admin = {
+      userId: 'user_admin',
+      email: 'admin@example.com',
+      group: { spaceId: 'space_g', canWrite: true, canAdminister: true },
+    };
+
+    await removeComment(admin, REF, 'c_other', NOW);
+
+    expect(deleteComment).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: 'space_g' }),
+      { entityType: 'project', entityId: 'p_1' },
+      'c_other',
+      undefined
+    );
+  });
+
+  it('restricts a plain group member to their own comment, so another member’s stays', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'space',
+      ownerId: 'space_g',
+      permissions: { read: true, comment: true, moderate: false },
+      redact: [],
+      via: null,
+    });
+    const member = {
+      userId: 'user_member',
+      email: 'member@example.com',
+      group: { spaceId: 'space_g', canWrite: true, canAdminister: false },
+    };
+    // The filter is the member's own id, not the target comment's author, so a
+    // repo matching on both finds nothing to delete.
+    deleteComment.mockResolvedValue(null);
+
+    expect(await removeComment(member, REF, 'c_other', NOW)).toBeNull();
+    expect(deleteComment).toHaveBeenCalledWith(
+      expect.objectContaining({ spaceId: 'space_g' }),
+      { entityType: 'project', entityId: 'p_1' },
+      'c_other',
+      'user_member'
+    );
+  });
+
+  it('hydrates another member’s comment with canDelete true for an admin, canEdit false', async () => {
+    resolveResparkableAccess.mockResolvedValue({
+      ok: true,
+      basis: 'space',
+      ownerId: 'space_g',
+      permissions: { read: true, comment: true, moderate: true },
+      redact: [],
+      via: null,
+    });
+    const admin = {
+      userId: 'user_admin',
+      email: 'admin@example.com',
+      group: { spaceId: 'space_g', canWrite: true, canAdminister: true },
+    };
+    listComments.mockResolvedValue([row({ id: 'c_other', authorUserId: 'user_other' })]);
+    deleteComment.mockResolvedValue(row({ id: 'c_other', authorUserId: 'user_other' }));
+
+    const thread = await removeComment(admin, REF, 'c_other', NOW);
+
+    expect(thread?.[0]).toMatchObject({ canEdit: false, canDelete: true });
   });
 });

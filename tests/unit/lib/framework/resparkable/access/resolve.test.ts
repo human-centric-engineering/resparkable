@@ -291,7 +291,10 @@ describe('direct grants', () => {
     // nothing (§23.3). This is also what refuses a demoted member's edits:
     // `updateComment` asks for `need: 'comment'` and gets this denial.
     findLiveGrantsForRefs.mockResolvedValue([grant({ role: 'commenter' })]);
-    const groupViewer = { ...GRANTEE, group: { spaceId: 'space_g', canWrite: false } };
+    const groupViewer = {
+      ...GRANTEE,
+      group: { spaceId: 'space_g', canWrite: false, canAdminister: false },
+    };
 
     const commenting = await resolveResparkableAccess({
       viewer: groupViewer,
@@ -354,7 +357,7 @@ describe('moderation', () => {
       viewer: {
         userId: OWNER,
         email: 'a@example.com',
-        group: { spaceId: 'space_g', canWrite: true },
+        group: { spaceId: 'space_g', canWrite: true, canAdminister: false },
       },
       entityType: 'project',
       entityId: 'p_1',
@@ -387,7 +390,7 @@ describe('moderation', () => {
     const ownerInGroup = {
       userId: OWNER,
       email: 'a@example.com',
-      group: { spaceId: 'space_g', canWrite: true },
+      group: { spaceId: 'space_g', canWrite: true, canAdminister: false },
     };
 
     const many = await resolveResparkableAccessMany({
@@ -759,5 +762,97 @@ describe('resparkableVisibilityScope', () => {
 
     expect(scope.grants).toEqual([]);
     expect(scope.directRefsByType.size).toBe(0);
+  });
+});
+
+/**
+ * Phase 58, §23.13: a member on an item in their own group's space. Before
+ * this basis existed nothing in a group was `owner`-held, so every member fell
+ * through to the grant lookup and could not comment on their own group's work.
+ */
+describe('resolveResparkableAccess: the space basis', () => {
+  const GROUP_SPACE = 'space_g';
+  const member = (canWrite: boolean, canAdminister: boolean) => ({
+    ...GRANTEE,
+    group: { spaceId: GROUP_SPACE, canWrite, canAdminister },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    findEntityOwner.mockResolvedValue(GROUP_SPACE);
+  });
+
+  it('lets a member read and comment, with nothing redacted, and asks for no grant', async () => {
+    const result = await resolveResparkableAccess({
+      viewer: member(true, false),
+      entityType: 'project',
+      entityId: 'p_1',
+      need: 'comment',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      basis: 'space',
+      permissions: { read: true, comment: true, moderate: false },
+      redact: [],
+    });
+    // Membership was resolved where the scope was minted; no grant query runs.
+    expect(findLiveGrantsForRefs).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin moderate, which is what succeeds "the owner" in a group', async () => {
+    const result = await resolveResparkableAccess({
+      viewer: member(true, true),
+      entityType: 'task',
+      entityId: 't_1',
+    });
+
+    expect(result.permissions.moderate).toBe(true);
+  });
+
+  it('lets a group viewer read the thread and not add to it', async () => {
+    const reading = await resolveResparkableAccess({
+      viewer: member(false, false),
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+    const commenting = await resolveResparkableAccess({
+      viewer: member(false, false),
+      entityType: 'project',
+      entityId: 'p_1',
+      need: 'comment',
+    });
+
+    expect(reading).toMatchObject({ ok: true, basis: 'space' });
+    expect(reading.permissions.comment).toBe(false);
+    expect(commenting.ok).toBe(false);
+  });
+
+  it('does not apply to an item in a different group’s space', async () => {
+    // A member of group G reading an item group H owns has no space basis on
+    // it; only a grant from H to G could let them in.
+    findEntityOwner.mockResolvedValue('space_h');
+    findLiveGrantsForRefs.mockResolvedValue([]);
+
+    const result = await resolveResparkableAccess({
+      viewer: member(true, true),
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(findLiveGrantsForRefs).toHaveBeenCalled();
+  });
+
+  it('is never reached from a personal workspace', async () => {
+    findLiveGrantsForRefs.mockResolvedValue([]);
+
+    const result = await resolveResparkableAccess({
+      viewer: GRANTEE,
+      entityType: 'project',
+      entityId: 'p_1',
+    });
+
+    expect(result.ok).toBe(false);
   });
 });

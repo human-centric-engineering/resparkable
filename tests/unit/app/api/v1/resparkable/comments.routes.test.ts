@@ -49,6 +49,7 @@ vi.mock('@/lib/auth/guards', () => ({
 
 vi.mock('@/lib/framework/resparkable/services/comments', () => ({
   listCommentsFor: vi.fn(),
+  canCommentOn: vi.fn().mockResolvedValue(false),
   addComment: vi.fn(),
   updateComment: vi.fn(),
   removeComment: vi.fn(),
@@ -75,6 +76,7 @@ import { POST as ACCEPT_POST } from '@/app/api/v1/resparkable/invites/accept/rou
 import { POST as INVITE_POST } from '@/app/api/v1/resparkable/grants/[id]/invite/route';
 import {
   addComment,
+  canCommentOn,
   listCommentsFor,
   removeComment,
   updateComment,
@@ -131,6 +133,21 @@ describe('GET /api/v1/resparkable/comments', () => {
 
     const body = await response.json();
     expect(body.meta.count).toBe(1);
+  });
+
+  it('says whether the reader may add to the thread, so a group page can show the composer', async () => {
+    // Phase 58: a member's own project page renders the thread without knowing
+    // the reader's role, and takes this answer instead.
+    vi.mocked(listCommentsFor).mockResolvedValue([COMMENT]);
+    vi.mocked(canCommentOn).mockResolvedValue(true);
+
+    const response = await invoke(
+      COMMENTS_GET,
+      req(`http://localhost/api/v1/resparkable/comments?entityType=project&entityId=${PROJECT_ID}`)
+    );
+
+    const body = await response.json();
+    expect(body.meta.canComment).toBe(true);
   });
 
   it('404s when the basis carries no comments', async () => {
