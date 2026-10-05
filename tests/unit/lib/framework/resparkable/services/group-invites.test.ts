@@ -72,6 +72,7 @@ function group() {
     lowBalanceAlertCredits: null,
     largeRunAlertPercent: null,
     largeRunAlertedAt: null,
+    storageQuotaBytes: null,
     createdAt: NOW,
     updatedAt: NOW,
   };
@@ -87,6 +88,7 @@ function asAdmin(): void {
       invitedByUserId: null,
       soleAdminNotifiedAt: null,
       dailyCreditCap: null,
+      feedSeenAt: null,
       joinedAt: NOW,
       requestedAt: null,
       joinLinkId: null,

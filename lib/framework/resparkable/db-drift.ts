@@ -287,23 +287,64 @@ const GROUP_USER_KEYS = [
     constraint: 'framework_resparkable_group_invite_invitedByUserId_fkey',
     action: 'ON DELETE SET NULL',
   },
+  // Phase 58's audit log. Both null out: erasing either person keeps the
+  // record of what happened to the group and drops who.
+  {
+    table: 'framework_resparkable_group_audit_entry',
+    constraint: 'framework_resparkable_group_audit_entry_actorUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+  {
+    table: 'framework_resparkable_group_audit_entry',
+    constraint: 'framework_resparkable_group_audit_entry_subjectUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
 ] as const;
 
-/** B13 in one query: all three keys exist, each with the action it needs. */
-const groupUserKeysHaveTheirActions: Probe = async () => {
-  const rows = await prisma.$queryRaw<Array<{ conname: string; def: string }>>`
-    SELECT c.conname, pg_get_constraintdef(c.oid) AS def
-      FROM pg_constraint c
-      JOIN pg_class t ON t.oid = c.conrelid
-      JOIN pg_namespace n ON n.oid = t.relnamespace
-     WHERE n.nspname = current_schema()
-       AND c.contype = 'f'
-       AND t.relname IN ('framework_resparkable_group_member', 'framework_resparkable_group_invite')
-  `;
+/**
+ * B15's inventory: phase 58's task assignee. SetNull, because losing a member
+ * must not delete the card (§23.13). A Cascade here would delete a group's
+ * tasks when the person they were assigned to closed their account.
+ */
+const ASSIGNEE_USER_KEYS = [
+  {
+    table: 'framework_resparkable_task',
+    constraint: 'framework_resparkable_task_assignedToUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+] as const;
+
+interface UserKey {
+  readonly table: string;
+  readonly constraint: string;
+  readonly action: string;
+}
+
+/** One query per probe: every listed key exists, each with the action it needs. */
+function userKeysHaveTheirActions(keys: readonly UserKey[]): Probe {
+  const tables = [...new Set(keys.map((key) => key.table))];
+  return async () => {
+    const rows = await prisma.$queryRaw<Array<{ conname: string; def: string }>>`
+      SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = current_schema()
+         AND c.contype = 'f'
+         AND t.relname = ANY(${tables})
+    `;
+    return checkKeyActions(keys, rows);
+  };
+}
+
+function checkKeyActions(
+  keys: readonly UserKey[],
+  rows: ReadonlyArray<{ conname: string; def: string }>
+): { ok: boolean; note?: string } {
   const byName = new Map(rows.map((row) => [row.conname, row.def]));
 
-  const missing = GROUP_USER_KEYS.filter((key) => !byName.has(key.constraint));
-  const wrongAction = GROUP_USER_KEYS.filter(
+  const missing = keys.filter((key) => !byName.has(key.constraint));
+  const wrongAction = keys.filter(
     (key) => byName.has(key.constraint) && !byName.get(key.constraint)?.includes(key.action)
   );
 
@@ -318,7 +359,7 @@ const groupUserKeysHaveTheirActions: Probe = async () => {
     return { ok: false, note: parts.join('; ') };
   }
   return { ok: true };
-};
+}
 
 /**
  * `generatedColumnExists` was a local copy here until Resparkable shipped it in
@@ -581,10 +622,20 @@ export function registerResparkableDriftProbes(): void {
   //
   // See GROUP_USER_KEYS for why one of the three cascades and two null out.
   registerAppDriftProbe({
-    name: 'B13 framework_resparkable_group_*_fkey (3 hand-written FKs → user, Cascade + SetNull)',
+    name: 'B13 framework_resparkable_group_*_fkey (5 hand-written FKs → user, Cascade + SetNull)',
     kind: 'FK constraints',
-    table: 'framework_resparkable_group_member, framework_resparkable_group_invite',
-    probe: groupUserKeysHaveTheirActions,
+    table:
+      'framework_resparkable_group_member, framework_resparkable_group_invite, framework_resparkable_group_audit_entry',
+    probe: userKeysHaveTheirActions(GROUP_USER_KEYS),
+  });
+
+  // B15: a task's assignee (phase 58, §23.13). SetNull, so a member closing
+  // their account clears the assignment and keeps the card.
+  registerAppDriftProbe({
+    name: 'B15 framework_resparkable_task_assignedToUserId_fkey (hand-written FK → user, SetNull)',
+    kind: 'FK constraints',
+    table: 'framework_resparkable_task',
+    probe: userKeysHaveTheirActions(ASSIGNEE_USER_KEYS),
   });
 
   // B14: a grant names a person or a group, never both and never neither

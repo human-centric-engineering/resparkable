@@ -289,7 +289,14 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         // would be angriest to lose, and an expired boost reads as zero anyway.
         manualBoost: 'A user-set priority override, not credential material.',
       },
-      softRefs: [AUTHORED_BY],
+      softRefs: [
+        AUTHORED_BY,
+        // A group member, on this installation (§23.13). Personal tasks, the
+        // only ones that transfer as owned, always carry null here; a value
+        // that does not resolve on the far side is cleared rather than kept
+        // pointing at a stranger.
+        { idColumn: 'assignedToUserId', model: 'User', onUnresolved: 'null' },
+      ],
     },
 
     {
@@ -783,6 +790,18 @@ export const resparkableTransferPolicies: TransferPolicySet = {
         'credential for a group the far side has never heard of, and an import ' +
         'that re-created it would mint an invitation nobody sent. Exported ' +
         'through the same cross-subject collector, minus the digest.',
+    },
+    {
+      model: 'ResparkableGroupAuditEntry',
+      owner: 'framework:resparkable',
+      reason:
+        'A record of administering a group on this installation (§23.13): who ' +
+        'changed whose role, removed whom, minted which link. Not transferable ' +
+        'for the membership row’s reason: it describes other people’s ' +
+        'group, and importing it would assert a history nobody on the far side ' +
+        'can check. The subject’s own part of it, what they did and what was ' +
+        'done to them, is EXPORTED through `access/subject-export.ts` as ' +
+        '`groupAdminRecord`.',
     },
     {
       model: 'ResparkableGroupJoinLink',

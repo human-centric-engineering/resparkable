@@ -184,6 +184,7 @@ const GROUP = {
   lowBalanceAlertCredits: null,
   largeRunAlertPercent: null,
   largeRunAlertedAt: null,
+  storageQuotaBytes: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };
@@ -196,6 +197,7 @@ const MEMBERSHIP = {
   invitedByUserId: null,
   soleAdminNotifiedAt: null,
   dailyCreditCap: null,
+  feedSeenAt: null,
   joinedAt: new Date('2026-08-01T00:00:00.000Z'),
   requestedAt: null,
   joinLinkId: null,

@@ -516,7 +516,24 @@ model ResparkableTask {
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
   space ResparkableSpace @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
 
+  /// Who in the group is doing this (§23.13, phase 58). Null in a personal
+  /// space, and the only value a personal space accepts.
+  ///
+  /// The assignee must be a joined member of the space's group, checked in the
+  /// service against the scope minted at the boundary, never in a repo `WHERE`
+  /// (D5). Leaving a group clears the leaver's assignments in the same
+  /// transaction as the membership row, so nothing is silently reassigned.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️  Hand-written FK to `"user"("id")`,
+  /// ON DELETE **SetNull** (losing a member must not delete the card), probe
+  /// B15. `User` is Sunrise-owned, so there is no relation field here.
+  ///
+  /// The filter "assigned to me" returns rows and never a count: no aggregate
+  /// over members renders anywhere in a group space (§23.8, §23.13).
+  assignedToUserId String?
+
   @@index([spaceId, status])
+  @@index([spaceId, assignedToUserId])
   @@index([spaceId, archivedAt])
   @@index([spaceId, visibility])
   @@index([spaceId, priorityScore(sort: Desc)])
@@ -1957,13 +1974,20 @@ model ResparkableGroup {
   /// "large" and the admins get an email per run.
   largeRunAlertedAt DateTime?
 
+  /// The most the group's retained document originals may total, in bytes
+  /// (§23.13, phase 58). Null means the default, 2 GiB
+  /// (`DEFAULT_GROUP_STORAGE_QUOTA_BYTES`). Set by an admin through the group
+  /// settings `PATCH`. A personal space has no total, only the per-file cap.
+  storageQuotaBytes BigInt?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  space     ResparkableSpace           @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
-  members   ResparkableGroupMember[]
-  invites   ResparkableGroupInvite[]
-  joinLinks ResparkableGroupJoinLink[]
+  space        ResparkableSpace             @relation(fields: [spaceId], references: [spaceId], onDelete: Cascade)
+  members      ResparkableGroupMember[]
+  invites      ResparkableGroupInvite[]
+  joinLinks    ResparkableGroupJoinLink[]
+  auditEntries ResparkableGroupAuditEntry[]
 
   /// "Which group owns this space?", the read every scope resolution makes.
   @@index([spaceId])
@@ -2041,6 +2065,12 @@ model ResparkableGroupMember {
   /// Rolling rather than calendar: a cap that resets at a midnight is a cap a
   /// loop can spend twice across it.
   dailyCreditCap Float?
+
+  /// When this member last read the group's activity feed (§23.10, phase 59).
+  /// Decides what is **styled** as new, never what a query returns: it is not
+  /// a filter in `repo/**`, does not reach `SpaceScope`, and no `WHERE` gains a
+  /// term from it (test 13l compares the SQL). Null means never opened.
+  feedSeenAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2186,4 +2216,57 @@ model ResparkableGroupJoinLink {
   /// The admin's list: "what links does this group have?", newest first.
   @@index([groupId, createdAt])
   @@map("framework_resparkable_group_join_link")
+}
+
+/// An administrative action one person took that landed on another (§23.13,
+/// phase 58): role changes, removals and leaving, settings, join links,
+/// approvals, invitations, budget changes.
+///
+/// **Not content.** `ResparkableEvent` records what happened to the brain;
+/// this records administering it. Nor is it `AiAdminAuditLog`, because a group
+/// admin is not a deployment operator.
+///
+/// **The one surface where a person's name beside an action is correct.**
+/// §23.8 protects people from having their work counted; it has never
+/// protected an administrator from a record of administering. Admins read
+/// every entry; any other member reads the entries where they are the subject.
+///
+/// Append-only: the repo inserts and lists, and nothing updates or deletes a
+/// row. Written inside the transaction of the action it records, so the two
+/// cannot disagree.
+///
+/// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️  `actorUserId` and `subjectUserId` carry
+/// hand-written FKs to `"user"("id")`, both ON DELETE **SetNull**, probe B13:
+/// erasing either person keeps the record of what happened and drops who.
+model ResparkableGroupAuditEntry {
+  id      String @id @default(cuid())
+  groupId String
+
+  /// Who acted. Null after erasure, or for an action the system took (a
+  /// successor promoted when the last admin's account was erased).
+  actorUserId String?
+
+  /// Who it landed on, when it landed on a person. Null for an action on the
+  /// group itself (a settings change, a link minted) and after erasure.
+  subjectUserId String?
+
+  /// role_changed | member_removed | member_left | settings_changed |
+  /// join_link_minted | join_link_revoked | join_approved | join_rejected |
+  /// invite_issued | invite_revoked | budget_changed | member_cap_changed |
+  /// topped_up
+  action String @db.VarChar(32)
+
+  /// What changed, in the action's own shape (`{ from, to }` for a role).
+  /// Never content from the brain.
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  group ResparkableGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// The group page's admin record, newest first.
+  @@index([groupId, createdAt(sort: Desc)])
+  /// A member's own entries: what was done to them.
+  @@index([groupId, subjectUserId])
+  @@map("framework_resparkable_group_audit_entry")
 }

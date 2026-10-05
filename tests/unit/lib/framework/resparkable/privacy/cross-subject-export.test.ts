@@ -55,6 +55,7 @@ vi.mock('@/lib/db/client', () => {
       resparkableComment: reader(),
       resparkableGroupMember: reader(),
       resparkableGroupInvite: reader(),
+      resparkableGroupAuditEntry: reader(),
       resparkableGroup: reader(),
       // The tables phase 48's group contributions read.
       resparkableArea: reader(),
@@ -94,6 +95,7 @@ beforeEach(() => {
   vi.mocked(prisma.resparkableComment.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.resparkableGroupMember.findMany).mockResolvedValue([] as never);
   vi.mocked(prisma.resparkableGroupInvite.findMany).mockResolvedValue([] as never);
+  vi.mocked(prisma.resparkableGroupAuditEntry.findMany).mockResolvedValue([] as never);
 });
 
 describe('collectResparkableCrossSubjectData', () => {
@@ -192,6 +194,7 @@ describe('collectResparkableCrossSubjectData', () => {
       groupMemberships: [],
       groupInvites: [],
       groupContributions: [],
+      groupAdminRecord: [],
     });
     // An unfiltered `OR: []` would match every grant in the installation. This
     // is the one failure mode here worth spending a branch on.
@@ -535,5 +538,56 @@ describe('collectGroupContributions (phase 48, §23.6)', () => {
     });
 
     expect(data.groupContributions).toEqual([]);
+  });
+});
+
+describe('groupAdminRecord: the subject’s part in groups’ administrative records', () => {
+  it('matches entries they did and entries done to them, and names nobody else', async () => {
+    vi.mocked(prisma.resparkableGroupAuditEntry.findMany).mockResolvedValue([
+      {
+        groupId: 'grp_1',
+        action: 'role_changed',
+        actorUserId: 'user_admin',
+        createdAt: new Date('2026-10-01T10:00:00Z'),
+        group: { name: 'Study group' },
+      },
+      {
+        groupId: 'grp_1',
+        action: 'join_approved',
+        actorUserId: 'user_1',
+        createdAt: new Date('2026-10-02T10:00:00Z'),
+        group: { name: 'Study group' },
+      },
+    ] as never);
+
+    const result = await collectResparkableCrossSubjectData({
+      userId: 'user_1',
+      email: 'someone@example.com',
+    });
+
+    expect(vi.mocked(prisma.resparkableGroupAuditEntry.findMany).mock.calls[0][0]?.where).toEqual({
+      OR: [{ actorUserId: 'user_1' }, { subjectUserId: 'user_1' }],
+    });
+    // The other person in each entry is not named: an allowlist with no
+    // `subjectUserId` and no `metadata`.
+    const select = vi.mocked(prisma.resparkableGroupAuditEntry.findMany).mock.calls[0][0]?.select;
+    expect(select).not.toHaveProperty('subjectUserId');
+    expect(select).not.toHaveProperty('metadata');
+    expect(result.groupAdminRecord).toEqual([
+      {
+        groupId: 'grp_1',
+        groupName: 'Study group',
+        action: 'role_changed',
+        part: 'subject',
+        at: new Date('2026-10-01T10:00:00Z'),
+      },
+      {
+        groupId: 'grp_1',
+        groupName: 'Study group',
+        action: 'join_approved',
+        part: 'acted',
+        at: new Date('2026-10-02T10:00:00Z'),
+      },
+    ]);
   });
 });

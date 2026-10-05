@@ -178,6 +178,7 @@ function memberRow(overrides: Record<string, unknown> = {}) {
     invitedByUserId: null,
     soleAdminNotifiedAt: null,
     dailyCreditCap: null,
+    feedSeenAt: null,
     joinedAt: NOW,
     requestedAt: null,
     joinLinkId: null,

@@ -129,6 +129,13 @@ export function initAppSubjectSources(): void {
           'Invitations to a group addressed to the subject, including ones never accepted.',
       },
       {
+        model: 'ResparkableGroupAuditEntry',
+        section: 'groupAdminRecord',
+        disposition: 'export' as const,
+        description:
+          'Your part in groups\u2019 administrative records: changes you made as an admin, and changes admins made to your membership.',
+      },
+      {
         // The first source in the tier that returns SOME of a table's rows.
         // Core's `scopeNote` is not available to a tier declaration (Sunrise ask
         // #47), so the narrowing is the description: core prints it in the
