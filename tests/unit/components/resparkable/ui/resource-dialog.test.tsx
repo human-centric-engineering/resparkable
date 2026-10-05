@@ -20,6 +20,10 @@
  * - The submit button is disabled while the request is in flight
  * - submitLabel defaults to "Create" / "Save changes" based on id, and a custom
  *   submitLabel overrides both
+ * - rev (phase 58): sent in the PATCH body when given; a 409 shows
+ *   EDIT_CONFLICT_MESSAGE, broadcasts the conflicting record as changed, and
+ *   keeps the user's typed value instead of closing the dialog; a non-409
+ *   error still shows its own message rather than the conflict copy
  *
  * @see components/resparkable/ui/resource-dialog.tsx
  */
@@ -30,8 +34,13 @@ import userEvent from '@testing-library/user-event';
 import { useForm } from 'react-hook-form';
 import { useRouter } from 'next/navigation';
 
-import { ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import { EDIT_CONFLICT_MESSAGE, ResourceDialog } from '@/components/resparkable/ui/resource-dialog';
+import {
+  DataChangeProvider,
+  useDataRevision,
+} from '@/components/resparkable/workspace/data-change-context';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
+import { keysForChange } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { createMockRouter } from '@/tests/types/mocks';
 
 vi.mock('@/lib/api/client', () => ({
@@ -39,7 +48,7 @@ vi.mock('@/lib/api/client', () => ({
   APIClientError: class APIClientError extends Error {},
 }));
 
-import { apiClient } from '@/lib/api/client';
+import { apiClient, APIClientError } from '@/lib/api/client';
 
 const mockPost = vi.mocked(apiClient.post);
 const mockPatch = vi.mocked(apiClient.patch);
@@ -51,10 +60,12 @@ interface Values {
 
 function Harness({
   id,
+  rev,
   onOpenChange,
   submitLabel,
 }: {
   id?: string;
+  rev?: number;
   onOpenChange: (open: boolean) => void;
   submitLabel?: string;
 }) {
@@ -66,6 +77,7 @@ function Harness({
       onOpenChange={onOpenChange}
       collection={RESPARKABLE_API.PROJECTS}
       id={id}
+      rev={rev}
       title={id ? 'Edit project' : 'New project'}
       form={form}
       toBody={(values) => ({ name: values.name })}
@@ -74,6 +86,13 @@ function Harness({
       <input aria-label="Name" {...form.register('name')} />
     </ResourceDialog>
   );
+}
+
+/** Surfaces a change-scope revision count so a test can observe a broadcast
+ * without reaching into the refresh plumbing itself. */
+function RevisionProbe({ watchKeys }: { watchKeys: string[] }) {
+  const revision = useDataRevision(watchKeys);
+  return <div data-testid="revision">{revision}</div>;
 }
 
 describe('ResourceDialog', () => {
@@ -175,5 +194,84 @@ describe('ResourceDialog', () => {
 
     expect(screen.getByRole('button', { name: 'Save & close' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ResourceDialog — rev (optimistic concurrency, phase 58)', () => {
+  const projectChangeKeys = keysForChange({ type: 'project', id: 'proj_1' });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPost.mockResolvedValue({ id: 'new_1' });
+    mockPatch.mockResolvedValue({ id: 'proj_1' });
+    vi.mocked(useRouter).mockReturnValue(createMockRouter({ refresh: mockRefresh }));
+  });
+
+  it('includes rev in the PATCH body when the caller supplies one', async () => {
+    const user = userEvent.setup();
+    render(<Harness id="proj_1" rev={5} onOpenChange={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenCalledWith(
+        RESPARKABLE_API.itemPath(RESPARKABLE_API.PROJECTS, 'proj_1'),
+        { body: { name: 'Q4 launch', rev: 5 } }
+      );
+    });
+  });
+
+  it('on a 409 shows EDIT_CONFLICT_MESSAGE, broadcasts the record as changed, keeps the typed value, and does not save', async () => {
+    const conflict = Object.assign(new APIClientError('ignored by the handler'), { status: 409 });
+    mockPatch.mockRejectedValueOnce(conflict);
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+
+    render(
+      <DataChangeProvider>
+        <Harness id="proj_1" rev={5} onOpenChange={onOpenChange} />
+        <RevisionProbe watchKeys={projectChangeKeys} />
+      </DataChangeProvider>
+    );
+
+    // The user's own edit, still in the box when the conflict lands.
+    const input = screen.getByLabelText('Name');
+    await user.clear(input);
+    await user.type(input, 'My own retitle');
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    // Shows the fixed conflict copy rather than the server's own message.
+    await waitFor(() => {
+      expect(screen.getByText(EDIT_CONFLICT_MESSAGE)).toBeInTheDocument();
+    });
+    expect(screen.queryByText('ignored by the handler')).not.toBeInTheDocument();
+
+    // Broadcasts the project as changed, so a detail tab showing proj_1
+    // (and the projects list) know to refetch.
+    expect(screen.getByTestId('revision')).toHaveTextContent('2');
+
+    // The dialog stays open with what the user typed, not reset or closed.
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(input).toHaveValue('My own retitle');
+  });
+
+  it('shows its own message, not the conflict copy, for a non-409 error', async () => {
+    const validationError = Object.assign(new APIClientError('That name is too long.'), {
+      status: 400,
+    });
+    mockPatch.mockRejectedValueOnce(validationError);
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+
+    render(<Harness id="proj_1" rev={5} onOpenChange={onOpenChange} />);
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('That name is too long.')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(EDIT_CONFLICT_MESSAGE)).not.toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 });

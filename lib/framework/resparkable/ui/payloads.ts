@@ -224,6 +224,8 @@ export const searchHitsSchema = z.array(searchHitSchema);
 
 export const projectSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
@@ -244,6 +246,8 @@ export type ProjectWire = z.infer<typeof projectSchema>;
 
 export const goalSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   title: z.string(),
   description: z.string().nullable(),
   horizon: z.string(),
@@ -263,6 +267,8 @@ export type GoalWire = z.infer<typeof goalSchema>;
 
 export const areaSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
@@ -279,6 +285,8 @@ export type AreaWire = z.infer<typeof areaSchema>;
 
 export const entitySchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   kind: z.string(),
@@ -1154,3 +1162,18 @@ export type GroupDetailWire = z.infer<typeof groupDetailSchema>;
 export type GroupInviteWire = z.infer<typeof groupInviteSchema>;
 export type GroupJoinLinkWire = z.infer<typeof groupJoinLinkSchema>;
 export type MintedJoinLinkWire = z.infer<typeof mintedJoinLinkSchema>;
+
+/** One entry of a group's admin record (phase 58). See `services/group-audit.ts`. */
+export const groupAuditEntrySchema = z.object({
+  id: z.string(),
+  action: z.string(),
+  actorName: z.string().nullable(),
+  subjectName: z.string().nullable(),
+  aboutYou: z.boolean(),
+  byYou: z.boolean(),
+  metadata: z.unknown(),
+  createdAt: isoDate,
+});
+
+export const groupAuditEntriesSchema = z.array(groupAuditEntrySchema);
+export type GroupAuditEntryWire = z.infer<typeof groupAuditEntrySchema>;

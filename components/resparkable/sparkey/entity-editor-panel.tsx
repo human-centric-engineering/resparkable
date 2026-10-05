@@ -62,6 +62,8 @@ function useEditMode(): [CreateMode, (mode: CreateMode) => void] {
 export interface EntityEditorPanelProps<TValues extends FieldValues> {
   entityType: EditableEntityType;
   entityId: string;
+  /** The row's edit token, sent with the form's save (phase 58). */
+  rev?: number;
   collection: string;
   form: UseFormReturn<TValues>;
   toBody: (values: TValues) => Record<string, unknown>;
@@ -73,6 +75,7 @@ export interface EntityEditorPanelProps<TValues extends FieldValues> {
 export function EntityEditorPanel<TValues extends FieldValues>({
   entityType,
   entityId,
+  rev,
   collection,
   form,
   toBody,
@@ -113,6 +116,7 @@ export function EntityEditorPanel<TValues extends FieldValues>({
             <ResourceFormBody
               collection={collection}
               id={entityId}
+              {...(rev !== undefined ? { rev } : {})}
               form={form}
               toBody={toBody}
               onSaved={onSaved}

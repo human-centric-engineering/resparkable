@@ -115,6 +115,7 @@ export function AreaForm({ open, onOpenChange, area }: AreaFormProps): React.Rea
       entityType="area"
       collection={RESPARKABLE_API.AREAS}
       existingId={area?.id}
+      {...(area?.rev !== undefined ? { rev: area.rev } : {})}
       editTitle="Edit this part of your life"
       editDescription="A standing part of your life — Career, Health, Family. Not a project and not a client."
       form={form}

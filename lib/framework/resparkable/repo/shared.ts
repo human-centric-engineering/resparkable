@@ -82,3 +82,22 @@ export type WithoutOwner<T> = Omit<T, 'spaceId' | 'id' | 'createdAt' | 'updatedA
 
 /** Re-exported for repo modules so they import one path, not two. */
 export type { ArchiveVisibility, SpaceScope };
+
+/**
+ * Optimistic concurrency on the seven `rev`-carrying models (§23.13, phase 58).
+ *
+ * `revWhere(expectedRev)` adds the `rev` a writer read to the update's `WHERE`,
+ * so a row somebody else changed in the meantime matches nothing and the
+ * update misses (`nullOnMiss` turns that into `null`; the service then tells a
+ * conflict from a deletion by reading the row again). Absent, it adds nothing,
+ * and the write is last-write-wins exactly as before: agents, MCP tools and
+ * the inbox write through the same functions and have never read a `rev`.
+ *
+ * `REV_BUMP` goes into every update's `data`, so the token moves on every
+ * write through these functions, whoever made it.
+ */
+export function revWhere(expectedRev: number | undefined): { rev?: number } {
+  return expectedRev === undefined ? {} : { rev: expectedRev };
+}
+
+export const REV_BUMP = { rev: { increment: 1 } } as const;

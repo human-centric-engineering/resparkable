@@ -106,6 +106,7 @@ export function EntityForm({ open, onOpenChange, entity }: EntityFormProps): Rea
       onOpenChange={onOpenChange}
       collection={RESPARKABLE_API.ENTITIES}
       {...(entity ? { id: entity.id } : {})}
+      {...(entity?.rev !== undefined ? { rev: entity.rev } : {})}
       title={entity ? 'Edit' : 'Add a person or company'}
       description="Somebody or something your work involves. Things get linked to them; they don’t own anything themselves."
       form={form}

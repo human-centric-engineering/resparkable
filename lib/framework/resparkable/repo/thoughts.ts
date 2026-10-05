@@ -30,6 +30,8 @@ import {
   pageArgs,
   type ListOptions,
   type WithoutOwner,
+  revWhere,
+  REV_BUMP,
 } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableThought, Prisma } from '@prisma/client';
 
@@ -150,16 +152,18 @@ export async function captureThought(
 export async function updateThought(
   scope: SpaceScope,
   id: string,
-  data: ThoughtUpdateData
+  data: ThoughtUpdateData,
+  /** The `rev` the writer read, when it sent one (phase 58). See `revWhere`. */
+  expectedRev?: number
 ): Promise<ResparkableThought | null> {
   const update = () =>
     prisma.resparkableThought.update({
-      where: { id, ...spaceWhere(scope) },
+      where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
       // are semantic (see embedding/indexer.ts).
-      data: { ...data, indexedHash: null },
+      data: { ...data, ...REV_BUMP, indexedHash: null },
     });
 
   // Reclassifying is the one edit the hash gate cannot carry (phase 9e).

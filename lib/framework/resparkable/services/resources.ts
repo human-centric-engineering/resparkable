@@ -19,6 +19,7 @@
 
 import type { z } from 'zod';
 
+import { ConflictError } from '@/lib/api/errors';
 import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as boards from '@/lib/framework/resparkable/repo/boards';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
@@ -110,6 +111,40 @@ function definedOnly<T extends object>(input: T): T {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) as T;
 }
 
+/**
+ * An update that honours the `rev` its writer read (§23.13, phase 58).
+ *
+ * Checked twice, for two different races. Against `before`, the row this op
+ * already read, which catches the common case (somebody saved while you had
+ * the form open) without touching the write. Then by the repo's `WHERE`, which
+ * catches a save landing between that read and this write; a miss there is
+ * told apart from a deletion by reading the row again. A conflict is a 409
+ * carrying the current row, so the form can show what changed rather than
+ * silently overwriting somebody mid-sentence.
+ *
+ * With no `rev`, the write is last-write-wins exactly as before.
+ */
+async function revisedUpdate<T extends { rev: number }>(
+  name: string,
+  before: T,
+  rev: number | undefined,
+  write: (expectedRev: number | undefined) => Promise<T | null>,
+  reread: () => Promise<T | null>
+): Promise<T | null> {
+  if (rev !== undefined && before.rev !== rev) throw revConflict(name, before);
+  const row = await write(rev);
+  if (row || rev === undefined) return row;
+  const current = await reread();
+  if (current) throw revConflict(name, current);
+  return null;
+}
+
+function revConflict(name: string, current: unknown): ConflictError {
+  return new ConflictError(`This ${name} was changed by someone else since you opened it.`, {
+    current,
+  });
+}
+
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
 const taskResourceOps: ResparkableResource<
@@ -149,7 +184,7 @@ const taskResourceOps: ResparkableResource<
     return task;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await tasks.findTask(scope, id);
     if (!before) return null;
 
@@ -164,7 +199,13 @@ const taskResourceOps: ResparkableResource<
       Object.assign(data, { completedAt: null });
     }
 
-    const task = await tasks.updateTask(scope, id, data);
+    const task = await revisedUpdate(
+      'task',
+      before,
+      rev,
+      (expectedRev) => tasks.updateTask(scope, id, data, expectedRev),
+      () => tasks.findTask(scope, id)
+    );
     if (!task) return null;
 
     // The status-change payload is what lets a board say how long a card has sat
@@ -256,7 +297,7 @@ const projectResourceOps: ResparkableResource<
     return project;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await projects.findProject(scope, id);
     if (!before) return null;
 
@@ -277,7 +318,13 @@ const projectResourceOps: ResparkableResource<
       Object.assign(data, { closedAt: new Date() });
     }
 
-    const project = await projects.updateProject(scope, id, data);
+    const project = await revisedUpdate(
+      'project',
+      before,
+      rev,
+      (expectedRev) => projects.updateProject(scope, id, data, expectedRev),
+      () => projects.findProject(scope, id)
+    );
     if (!project) return null;
 
     await recordResparkableEvent(scope, {
@@ -361,7 +408,7 @@ const goalResourceOps: ResparkableResource<
     return goal;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await goals.findGoal(scope, id);
     if (!before) return null;
 
@@ -374,11 +421,14 @@ const goalResourceOps: ResparkableResource<
       exists: goals.findGoalBySlug,
     });
 
-    const goal = await goals.updateGoal(scope, id, {
-      ...definedOnly(input),
-      slug,
-      lastActivityAt: new Date(),
-    });
+    const data = { ...definedOnly(input), slug, lastActivityAt: new Date() };
+    const goal = await revisedUpdate(
+      'goal',
+      before,
+      rev,
+      (expectedRev) => goals.updateGoal(scope, id, data, expectedRev),
+      () => goals.findGoal(scope, id)
+    );
     if (!goal) return null;
     await recordResparkableEvent(scope, {
       kind: eventKindForUpdate(before, goal),
@@ -447,7 +497,7 @@ const areaResourceOps: ResparkableResource<
     return area;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await areas.findArea(scope, id);
     if (!before) return null;
     const slug = await resolveSlugOnUpdate(scope, {
@@ -455,7 +505,14 @@ const areaResourceOps: ResparkableResource<
       requested: input.slug,
       exists: areas.findAreaBySlug,
     });
-    const area = await areas.updateArea(scope, id, { ...definedOnly(input), slug });
+    const data = { ...definedOnly(input), slug };
+    const area = await revisedUpdate(
+      'area',
+      before,
+      rev,
+      (expectedRev) => areas.updateArea(scope, id, data, expectedRev),
+      () => areas.findArea(scope, id)
+    );
     if (!area) return null;
     await recordResparkableEvent(scope, { kind: 'updated', entityType: 'area', entityId: area.id });
     return area;
@@ -528,10 +585,17 @@ const thoughtResourceOps: ResparkableResource<
     return thought;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await thoughts.findThought(scope, id);
     if (!before) return null;
-    const thought = await thoughts.updateThought(scope, id, definedOnly(input));
+    const data = definedOnly(input);
+    const thought = await revisedUpdate(
+      'note',
+      before,
+      rev,
+      (expectedRev) => thoughts.updateThought(scope, id, data, expectedRev),
+      () => thoughts.findThought(scope, id)
+    );
     if (!thought) return null;
     await recordResparkableEvent(scope, {
       kind: 'updated',
@@ -620,7 +684,7 @@ const entityResourceOps: ResparkableResource<
     return entity;
   },
 
-  async update(scope, id, input) {
+  async update(scope, id, { rev, ...input }) {
     const before = await entities.findEntity(scope, id);
     if (!before) return null;
     const slug = await resolveSlugOnUpdate(scope, {
@@ -630,11 +694,14 @@ const entityResourceOps: ResparkableResource<
     });
     // Editing a client IS engagement with them — this is what stops the stale
     // digest nagging about someone you just updated (§11).
-    const entity = await entities.updateEntity(scope, id, {
-      ...definedOnly(input),
-      slug,
-      lastActivityAt: new Date(),
-    });
+    const data = { ...definedOnly(input), slug, lastActivityAt: new Date() };
+    const entity = await revisedUpdate(
+      'person',
+      before,
+      rev,
+      (expectedRev) => entities.updateEntity(scope, id, data, expectedRev),
+      () => entities.findEntity(scope, id)
+    );
     if (!entity) return null;
     await recordResparkableEvent(scope, {
       kind: 'updated',

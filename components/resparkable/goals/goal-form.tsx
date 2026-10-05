@@ -275,6 +275,7 @@ export function GoalForm({
       entityType="goal"
       collection={RESPARKABLE_API.GOALS}
       existingId={goal?.id}
+      {...(goal?.rev !== undefined ? { rev: goal.rev } : {})}
       editTitle="Edit goal"
       editDescription="Projects and tasks that serve it get ranked higher."
       form={form}

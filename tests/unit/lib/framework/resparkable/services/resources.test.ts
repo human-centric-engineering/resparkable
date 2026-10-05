@@ -150,6 +150,7 @@ import {
   timeBlockResource,
 } from '@/lib/framework/resparkable/services/resources';
 import { resolveSlugOnUpdate, resolveUniqueSlug } from '@/lib/framework/resparkable/services/slug';
+import { ConflictError } from '@/lib/api/errors';
 import { assertDefined } from '@/tests/helpers/assertions';
 import type {
   ResparkableArea,
@@ -1946,5 +1947,177 @@ describe('taskResource.update — the status-change payload', () => {
     const event = vi.mocked(recordResparkableEvent).mock.calls[0]?.[1];
     // Absent, not `undefined` — the reader filters on the key's presence.
     expect(event).not.toHaveProperty('metadata');
+  });
+});
+
+describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §23.13)', () => {
+  it('passes a matching rev through to the repo as expectedRev, and never includes rev in the data', async () => {
+    // Arrange
+    vi.mocked(tasks.findTask).mockResolvedValue(fakeTask({ id: 'task_1', rev: 3 }));
+    vi.mocked(tasks.updateTask).mockResolvedValue(fakeTask({ id: 'task_1', rev: 4 }));
+
+    // Act
+    await taskResource.update(scope, 'task_1', {
+      rev: 3,
+      notes: 'progress',
+    });
+
+    // Assert
+    const call = vi.mocked(tasks.updateTask).mock.calls[0];
+    expect(call?.[3]).toBe(3);
+    expect(call?.[2]).not.toHaveProperty('rev');
+  });
+
+  it('throws a 409 ConflictError carrying the already-read row when rev does not match, and never calls the repo update', async () => {
+    // Arrange
+    const before = fakeTask({ id: 'task_1', rev: 3 });
+    vi.mocked(tasks.findTask).mockResolvedValue(before);
+
+    // Act / Assert
+    await expect(taskResource.update(scope, 'task_1', { rev: 2 })).rejects.toMatchObject(
+      new ConflictError('This task was changed by someone else since you opened it.', {
+        current: before,
+      })
+    );
+    expect(tasks.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('rereads and throws a 409 with the fresh row when a matching-rev write misses but the row still exists', async () => {
+    // Arrange — the row was changed by someone else between the read above
+    // and this write landing; the repo's own WHERE (rev: 3) then matches
+    // nothing, so updateTask misses even though `before` looked fine.
+    const before = fakeTask({ id: 'task_1', rev: 3 });
+    const current = fakeTask({ id: 'task_1', rev: 7 });
+    vi.mocked(tasks.findTask).mockResolvedValueOnce(before).mockResolvedValueOnce(current);
+    vi.mocked(tasks.updateTask).mockResolvedValue(null);
+
+    // Act / Assert
+    await expect(taskResource.update(scope, 'task_1', { rev: 3 })).rejects.toMatchObject(
+      new ConflictError('This task was changed by someone else since you opened it.', {
+        current,
+      })
+    );
+    expect(tasks.findTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null without a conflict when a matching-rev write misses and the row is gone', async () => {
+    // Arrange — the row was deleted, not merely edited, between the read and
+    // the write: the reread also comes back empty.
+    vi.mocked(tasks.findTask)
+      .mockResolvedValueOnce(fakeTask({ id: 'task_1', rev: 3 }))
+      .mockResolvedValueOnce(null);
+    vi.mocked(tasks.updateTask).mockResolvedValue(null);
+
+    // Act
+    const result = await taskResource.update(scope, 'task_1', {
+      rev: 3,
+    });
+
+    // Assert
+    expect(result).toBeNull();
+    expect(tasks.findTask).toHaveBeenCalledTimes(2);
+    expect(recordResparkableEvent).not.toHaveBeenCalled();
+  });
+
+  it('passes undefined as expectedRev and never rereads when the caller sends no rev at all', async () => {
+    // Arrange — last-write-wins: a miss here is an ordinary not-found, not a
+    // conflict, so there is nothing to reread.
+    vi.mocked(tasks.findTask).mockResolvedValue(fakeTask({ id: 'task_1', rev: 3 }));
+    vi.mocked(tasks.updateTask).mockResolvedValue(null);
+
+    // Act
+    const result = await taskResource.update(scope, 'task_1', { notes: 'no rev sent' });
+
+    // Assert
+    expect(result).toBeNull();
+    const call = vi.mocked(tasks.updateTask).mock.calls[0];
+    expect(call?.[3]).toBeUndefined();
+    expect(tasks.findTask).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revisedUpdate — optimistic concurrency on project.update (phase 58, §23.13)', () => {
+  it('passes a matching rev through to the repo as expectedRev, and never includes rev in the data', async () => {
+    // Arrange
+    vi.mocked(projects.findProject).mockResolvedValue(
+      fakeProject({ id: 'proj_1', rev: 3, slug: 'acme' })
+    );
+    vi.mocked(projects.updateProject).mockResolvedValue(fakeProject({ id: 'proj_1', rev: 4 }));
+
+    // Act
+    await projectResource.update(scope, 'proj_1', {
+      rev: 3,
+      name: 'Acme v2',
+    });
+
+    // Assert
+    const call = vi.mocked(projects.updateProject).mock.calls[0];
+    expect(call?.[3]).toBe(3);
+    expect(call?.[2]).not.toHaveProperty('rev');
+  });
+
+  it('throws a 409 ConflictError carrying the already-read row when rev does not match, and never calls the repo update', async () => {
+    // Arrange
+    const before = fakeProject({ id: 'proj_1', rev: 3, slug: 'acme' });
+    vi.mocked(projects.findProject).mockResolvedValue(before);
+
+    // Act / Assert
+    await expect(projectResource.update(scope, 'proj_1', { rev: 2 })).rejects.toMatchObject(
+      new ConflictError('This project was changed by someone else since you opened it.', {
+        current: before,
+      })
+    );
+    expect(projects.updateProject).not.toHaveBeenCalled();
+  });
+
+  it('rereads and throws a 409 with the fresh row when a matching-rev write misses but the row still exists', async () => {
+    // Arrange
+    const before = fakeProject({ id: 'proj_1', rev: 3, slug: 'acme' });
+    const current = fakeProject({ id: 'proj_1', rev: 7, slug: 'acme' });
+    vi.mocked(projects.findProject).mockResolvedValueOnce(before).mockResolvedValueOnce(current);
+    vi.mocked(projects.updateProject).mockResolvedValue(null);
+
+    // Act / Assert
+    await expect(projectResource.update(scope, 'proj_1', { rev: 3 })).rejects.toMatchObject(
+      new ConflictError('This project was changed by someone else since you opened it.', {
+        current,
+      })
+    );
+    expect(projects.findProject).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null without a conflict when a matching-rev write misses and the row is gone', async () => {
+    // Arrange
+    vi.mocked(projects.findProject)
+      .mockResolvedValueOnce(fakeProject({ id: 'proj_1', rev: 3, slug: 'acme' }))
+      .mockResolvedValueOnce(null);
+    vi.mocked(projects.updateProject).mockResolvedValue(null);
+
+    // Act
+    const result = await projectResource.update(scope, 'proj_1', {
+      rev: 3,
+    });
+
+    // Assert
+    expect(result).toBeNull();
+    expect(projects.findProject).toHaveBeenCalledTimes(2);
+    expect(recordResparkableEvent).not.toHaveBeenCalled();
+  });
+
+  it('passes undefined as expectedRev and never rereads when the caller sends no rev at all', async () => {
+    // Arrange
+    vi.mocked(projects.findProject).mockResolvedValue(
+      fakeProject({ id: 'proj_1', rev: 3, slug: 'acme' })
+    );
+    vi.mocked(projects.updateProject).mockResolvedValue(null);
+
+    // Act
+    const result = await projectResource.update(scope, 'proj_1', { name: 'no rev sent' });
+
+    // Assert
+    expect(result).toBeNull();
+    const call = vi.mocked(projects.updateProject).mock.calls[0];
+    expect(call?.[3]).toBeUndefined();
+    expect(projects.findProject).toHaveBeenCalledTimes(1);
   });
 });

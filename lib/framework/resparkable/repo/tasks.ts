@@ -21,6 +21,8 @@ import {
   type ListOptions,
   type SortDirection,
   type WithoutOwner,
+  revWhere,
+  REV_BUMP,
 } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableTask, Prisma } from '@prisma/client';
 
@@ -234,10 +236,15 @@ export async function createTask(
 export async function updateTask(
   scope: SpaceScope,
   id: string,
-  data: TaskUpdateData
+  data: TaskUpdateData,
+  /** The `rev` the writer read, when it sent one (phase 58). See `revWhere`. */
+  expectedRev?: number
 ): Promise<ResparkableTask | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTask.update({ where: { id, ...spaceWhere(scope) }, data })
+    prisma.resparkableTask.update({
+      where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
+      data: { ...data, ...REV_BUMP },
+    })
   );
 }
 

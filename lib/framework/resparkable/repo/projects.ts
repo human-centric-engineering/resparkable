@@ -24,6 +24,8 @@ import {
   pageArgs,
   type ListOptions,
   type WithoutOwner,
+  revWhere,
+  REV_BUMP,
 } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableProject, Prisma } from '@prisma/client';
 
@@ -113,16 +115,18 @@ export async function createProject(
 export async function updateProject(
   scope: SpaceScope,
   id: string,
-  data: ProjectUpdateData
+  data: ProjectUpdateData,
+  /** The `rev` the writer read, when it sent one (phase 58). See `revWhere`. */
+  expectedRev?: number
 ): Promise<ResparkableProject | null> {
   return nullOnMiss(() =>
     prisma.resparkableProject.update({
-      where: { id, ...spaceWhere(scope) },
+      where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
       // are semantic (see embedding/indexer.ts).
-      data: { ...data, indexedHash: null },
+      data: { ...data, ...REV_BUMP, indexedHash: null },
     })
   );
 }
