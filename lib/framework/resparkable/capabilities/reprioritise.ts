@@ -41,6 +41,7 @@ export class ResparkableReprioritiseCapability extends ResparkableCapability<
   AgentReprioritiseInput,
   ReprioritiseData
 > {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentReprioritiseSchema;

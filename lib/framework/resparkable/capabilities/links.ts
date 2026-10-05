@@ -60,6 +60,7 @@ export class ResparkableLinkEntitiesCapability extends ResparkableCapability<
   CreateLinkInput,
   LinkData
 > {
+  readonly writes = true;
   readonly slug = linkSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = linkSpec.functionDefinition;
   /**
@@ -135,6 +136,7 @@ export class ResparkableFindConnectionsCapability extends ResparkableCapability<
   AgentFindConnectionsInput,
   ConnectionsData
 > {
+  readonly writes = false;
   readonly slug = findSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = findSpec.functionDefinition;
   protected readonly schema = agentFindConnectionsSchema;

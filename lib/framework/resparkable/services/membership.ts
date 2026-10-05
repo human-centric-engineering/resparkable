@@ -83,6 +83,7 @@ import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { slugify } from '@/lib/framework/resparkable/services/slug';
 import { planErasureSuccession } from '@/lib/framework/resparkable/services/succession';
+import { ForbiddenError } from '@/lib/api/errors';
 import { logger } from '@/lib/logging';
 
 /**
@@ -256,6 +257,23 @@ export function permissionsFor(role: SpaceRole): GroupPermissions {
     administer: role === 'admin' || role === 'owner',
     write: role !== 'viewer',
   };
+}
+
+/** What a viewer is told when they try to change something. */
+export const VIEWER_READ_ONLY_MESSAGE =
+  'You can read this workspace but not change it. Ask an admin to make you a member.';
+
+/**
+ * The one predicate every write path asks before changing a space's content.
+ *
+ * Three chokepoints call it, not each route (phase-58-59-plan.md Decision 1):
+ * `requestSpaceScope` for a non-`GET` request, `POST /capture` for the scope it
+ * resolves from the body, and `ResparkableCapability.execute` for a capability
+ * declared as writing. A 403 rather than §16.2's 404, because a viewer is a
+ * member: they can already see the space, so the refusal tells them nothing.
+ */
+export function assertCanWrite(scope: SpaceScope): void {
+  if (!permissionsFor(scope.role).write) throw new ForbiddenError(VIEWER_READ_ONLY_MESSAGE);
 }
 
 /**

@@ -39,6 +39,7 @@ export class ResparkableGetContextDigestCapability extends ResparkableCapability
   ResparkableEntityContext,
   ContextDigest
 > {
+  readonly writes = false;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = resparkableEntityContextSchema;

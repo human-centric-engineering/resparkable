@@ -105,6 +105,7 @@ import {
   RESPARKABLE_SCHEDULE_SPACE_KEY,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
+import { WRITING_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/ui/workspace/change-scope';
 import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
 import { buildContextDigest } from '@/lib/framework/resparkable/services/context-digest';
@@ -195,13 +196,13 @@ const ALL_SERVICES = [
 ];
 
 /** A live membership row for the actor these tests use. */
-function groupMembership() {
+function groupMembership(role: 'admin' | 'member' | 'viewer' = 'member') {
   const at = new Date('2026-09-01T10:00:00.000Z');
   return {
     id: 'mem_1',
     groupId: 'grp_1',
     userId: 'user-a',
-    role: 'member',
+    role,
     invitedByUserId: null,
     joinedAt: at,
     createdAt: at,
@@ -358,5 +359,73 @@ describe('every Resparkable capability refuses an ownerless run', () => {
     expect(resparkableCapabilityHandlers().map((h) => h.slug)).toContain(
       'resparkable_capture_for_token'
     );
+  });
+});
+
+/**
+ * Test 13o, the capability chokepoint. Chat and every MCP key reach a space
+ * through `execute`, never a route, so a viewer's refusal has to live there.
+ * Swept over every capability, so one added later is covered by declaring
+ * `writes` (which the base class makes it do) rather than by being remembered.
+ */
+describe('a group viewer runs no capability that writes', () => {
+  const viewerContext = {
+    userId: 'user-a',
+    agentId: 'agent-1',
+    scope: { [RESPARKABLE_SCHEDULE_SPACE_KEY]: 'spc_group_1' },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(findMembershipBySpace).mockResolvedValue(groupMembership('viewer') as never);
+  });
+
+  const handlers = resparkableCapabilityHandlers().filter(
+    (h): h is typeof h & { writes: boolean } => 'writes' in h
+  );
+
+  for (const handler of handlers.filter((h) => h.writes)) {
+    it(`${handler.slug} returns viewer_read_only and touches nothing`, async () => {
+      const args = handler.validate(VALID_ARGS[handler.slug]);
+
+      const result = await handler.execute(args, viewerContext);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('viewer_read_only');
+      for (const service of ALL_SERVICES) {
+        expect(service, `${handler.slug} reached a service as a viewer`).not.toHaveBeenCalled();
+      }
+    });
+  }
+
+  for (const handler of handlers.filter((h) => !h.writes)) {
+    it(`${handler.slug} is not refused to a viewer, since it only reads`, async () => {
+      const args = handler.validate(VALID_ARGS[handler.slug]);
+
+      // The mocked services return nothing, so a read may throw past the
+      // gate; either way the refusal is what must not happen.
+      const result = await handler.execute(args, viewerContext).catch(() => null);
+
+      expect(result?.error?.code).not.toBe('viewer_read_only');
+    });
+  }
+
+  it('marks every capability the change table names as a writer as writing', () => {
+    // `WRITING_CAPABILITY_SLUGS` is the tier's other list of writers (what a
+    // chat turn invalidates). A capability in it declared read-only would let
+    // a viewer write through chat while the UI refreshed as if it had.
+    const declared = new Map(handlers.map((h) => [h.slug, h.writes]));
+    // The token capability is the one writer without `writes` (see below).
+    for (const slug of WRITING_CAPABILITY_SLUGS.filter(
+      (s) => s !== 'resparkable_capture_for_token'
+    )) {
+      expect(declared.get(slug), slug).toBe(true);
+    }
+  });
+
+  it('sweeps every Resparkable capability but the token one', () => {
+    // The token capability extends `BaseCapability` directly (see above) and
+    // refuses group spaces itself, so it is the only one without `writes`.
+    expect(resparkableCapabilityHandlers().length - handlers.length).toBe(1);
   });
 });

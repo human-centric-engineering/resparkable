@@ -41,6 +41,7 @@ export class ResparkableGetGroupDigestInputsCapability extends ResparkableCapabi
   AgentGroupDigestInputsInput,
   GroupDigestInputs
 > {
+  readonly writes = false;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentGroupDigestInputsSchema;

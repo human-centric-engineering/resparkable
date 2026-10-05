@@ -23,7 +23,10 @@ import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
-import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
+import {
+  assertCanWrite,
+  resolveActiveSpaceScope,
+} from '@/lib/framework/resparkable/services/membership';
 import { captureSchema } from '@/lib/framework/resparkable/validations';
 
 export const POST = withAuth(async (request, session) => {
@@ -37,6 +40,9 @@ export const POST = withAuth(async (request, session) => {
   // See the schema's own note, and test 13e.
   const scope = await resolveActiveSpaceScope(session.user.id, spaceId ?? null);
   if (!scope) throw new NotFoundError('Workspace not found');
+  // This route skips `requestSpaceScope` on purpose (above), so it asks the
+  // viewer question itself: a viewer captures into nobody's group.
+  assertCanWrite(scope);
 
   const { thought, deduped } = await captureThought(scope, input);
 

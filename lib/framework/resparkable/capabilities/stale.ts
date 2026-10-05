@@ -44,6 +44,7 @@ export class ResparkableGetStaleDigestCapability extends ResparkableCapability<
   StaleDigestArgs,
   StaleDigest
 > {
+  readonly writes = false;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentStaleDigestSchema;

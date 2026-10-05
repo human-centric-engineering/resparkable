@@ -57,6 +57,7 @@ export class ResparkableSearchCapability extends ResparkableCapability<
   AgentSearchInput,
   SearchData
 > {
+  readonly writes = false;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentSearchSchema;
