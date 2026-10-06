@@ -43,7 +43,10 @@ export async function sendMembershipChangedNotice(notice: MembershipNotice): Pro
     ]);
     if (!subject) return;
 
-    const changedByName = actor?.name ?? actor?.email ?? 'A group admin';
+    // The admin's name, never their address: a member who was just removed
+    // learns who to ask, not how to reach them outside the group (§23.13,
+    // and the member lists' "names, never addresses" rule).
+    const changedByName = actor?.name ?? 'A group admin';
     const result = await sendEmail({
       to: subject.email,
       // The group's name and nothing in it. See the template's header.

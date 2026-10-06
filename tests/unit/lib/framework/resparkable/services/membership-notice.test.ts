@@ -91,3 +91,17 @@ describe('sendMembershipChangedNotice', () => {
     expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain('@example.com');
   });
 });
+
+describe('sendMembershipChangedNotice: naming the admin', () => {
+  it('names an admin with no name set as "A group admin", never by their address', async () => {
+    vi.mocked(findOwnerContact).mockImplementation(async (scope) =>
+      scope.spaceId === 'user_priya' ? SUBJECT : { ...ADMIN, name: null }
+    );
+
+    await sendMembershipChangedNotice(notice('removed'));
+
+    const sent = vi.mocked(sendEmail).mock.calls[0][0];
+    expect(JSON.stringify(sent.react)).not.toContain('sam@example.com');
+    expect(JSON.stringify(sent.react)).toContain('A group admin');
+  });
+});
