@@ -59,6 +59,7 @@ export class ResparkableCaptureContextCapability extends ResparkableCapability<
   AgentCaptureContextInput,
   CaptureContextData
 > {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentCaptureContextSchema;

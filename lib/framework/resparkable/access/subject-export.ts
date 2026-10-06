@@ -201,6 +201,21 @@ export interface ResparkableCrossSubjectData {
   groupInvites: GroupInviteRecord[];
   /** What they wrote in each group workspace. See {@link GROUP_CONTRIBUTIONS_SCOPE_NOTE}. */
   groupContributions: GroupContributionRecord[];
+  /**
+   * Their part in groups' administrative records (§23.13): what they did as
+   * an admin, and what admins did to them. The other person in each entry is
+   * not named: it is the subject's export, not a copy of the group's log.
+   */
+  groupAdminRecord: GroupAdminRecordEntry[];
+}
+
+export interface GroupAdminRecordEntry {
+  groupId: string;
+  groupName: string;
+  action: string;
+  /** `acted` when the subject did it, `subject` when it was done to them. */
+  part: 'acted' | 'subject';
+  at: Date;
 }
 
 /**
@@ -222,6 +237,7 @@ export interface ResparkableCrossSubjectData {
 export const RESPARKABLE_CROSS_SUBJECT_MODELS = [
   'ResparkableGroupMember',
   'ResparkableGroupInvite',
+  'ResparkableGroupAuditEntry',
 ] as const;
 
 /**
@@ -452,6 +468,7 @@ export async function collectResparkableCrossSubjectData(
       groupMemberships: [],
       groupInvites: [],
       groupContributions: [],
+      groupAdminRecord: [],
     };
   }
   const actorUserId = viewer.userId;
@@ -527,7 +544,22 @@ export async function collectResparkableCrossSubjectData(
     }),
   ]);
 
-  const contributions = await collectGroupContributions(actorUserId, memberships);
+  const [contributions, adminRecord] = await Promise.all([
+    collectGroupContributions(actorUserId, memberships),
+    prisma.resparkableGroupAuditEntry.findMany({
+      where: { OR: [{ actorUserId }, { subjectUserId: actorUserId }] },
+      // Allowlisted, and no `metadata` or other person's id: the subject's
+      // part of the record, not the record.
+      select: {
+        groupId: true,
+        action: true,
+        actorUserId: true,
+        createdAt: true,
+        group: { select: { name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
+  ]);
 
   return {
     // An allowlisted `select` rather than an `omit`, unlike every owner-scoped
@@ -574,5 +606,12 @@ export async function collectResparkableCrossSubjectData(
       revokedAt: invite.revokedAt,
     })),
     groupContributions: contributions,
+    groupAdminRecord: adminRecord.map((entry) => ({
+      groupId: entry.groupId,
+      groupName: entry.group.name,
+      action: entry.action,
+      part: entry.actorUserId === actorUserId ? 'acted' : 'subject',
+      at: entry.createdAt,
+    })),
   };
 }

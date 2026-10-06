@@ -224,6 +224,8 @@ export const searchHitsSchema = z.array(searchHitSchema);
 
 export const projectSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
@@ -244,6 +246,8 @@ export type ProjectWire = z.infer<typeof projectSchema>;
 
 export const goalSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   title: z.string(),
   description: z.string().nullable(),
   horizon: z.string(),
@@ -263,6 +267,8 @@ export type GoalWire = z.infer<typeof goalSchema>;
 
 export const areaSchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   description: z.string().nullable(),
@@ -279,6 +285,8 @@ export type AreaWire = z.infer<typeof areaSchema>;
 
 export const entitySchema = z.object({
   id: z.string(),
+  /** The edit token a form sends back on save (phase 58). See `ResourceFormBody`. */
+  rev: z.number().int().optional(),
   name: z.string(),
   slug: z.string(),
   kind: z.string(),
@@ -324,6 +332,8 @@ export type DocumentWire = z.infer<typeof documentSchema>;
 
 export const taskSchema = z.object({
   id: z.string(),
+  /** A group member, or null (phase 58). Optional for older payloads. */
+  assignedToUserId: z.string().nullable().optional(),
   title: z.string(),
   notes: z.string().nullable(),
   projectId: z.string().nullable(),
@@ -1034,9 +1044,8 @@ export const groupMemberSchema = z.object({
   /** When they asked, for anybody who came in through a `request` link. */
   requestedAt: z.string().nullable(),
   /**
-   * The account name of somebody asking to join, for the admin deciding on
-   * them. `null` for everybody else, and for an account with no name. Optional
-   * because `GET /groups/[id]/members` does not carry it.
+   * The member's account name (phase 58; requests to join since phase 57).
+   * `null` for an account with no name. Never an address.
    */
   name: z.string().nullable().optional(),
 });
@@ -1059,6 +1068,8 @@ export const groupDetailSchema = z.object({
   latestDigest: z
     .object({ id: z.string(), title: z.string(), body: z.string(), generatedAt: z.string() })
     .nullable(),
+  /** The shared shelf's usage (phase 58). Optional for older payloads. */
+  storage: z.object({ usedBytes: z.number(), quotaBytes: z.number().nullable() }).optional(),
 });
 
 /** A pending invitation, from `GET /resparkable/groups/[id]/invites`. */
@@ -1154,3 +1165,40 @@ export type GroupDetailWire = z.infer<typeof groupDetailSchema>;
 export type GroupInviteWire = z.infer<typeof groupInviteSchema>;
 export type GroupJoinLinkWire = z.infer<typeof groupJoinLinkSchema>;
 export type MintedJoinLinkWire = z.infer<typeof mintedJoinLinkSchema>;
+
+/** One entry of a group's admin record (phase 58). See `services/group-audit.ts`. */
+export const groupAuditEntrySchema = z.object({
+  id: z.string(),
+  action: z.string(),
+  actorName: z.string().nullable(),
+  subjectName: z.string().nullable(),
+  aboutYou: z.boolean(),
+  byYou: z.boolean(),
+  metadata: z.unknown(),
+  createdAt: isoDate,
+});
+
+export const groupAuditEntriesSchema = z.array(groupAuditEntrySchema);
+export type GroupAuditEntryWire = z.infer<typeof groupAuditEntrySchema>;
+
+/** One line of the group activity feed (phase 59). See `services/feed.ts`. */
+export const feedItemSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  entityType: z.string(),
+  entityId: z.string(),
+  title: z.string().nullable(),
+  actorName: z.string().nullable(),
+  byYou: z.boolean(),
+  system: z.boolean(),
+  createdAt: isoDate,
+});
+
+export const feedPageSchema = z.object({
+  items: z.array(feedItemSchema),
+  nextCursor: z.string().nullable(),
+  seenAt: isoDate.nullable(),
+});
+
+export type FeedItemWire = z.infer<typeof feedItemSchema>;
+export type FeedPageWire = z.infer<typeof feedPageSchema>;

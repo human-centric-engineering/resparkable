@@ -31,9 +31,15 @@ import { cn } from '@/lib/utils';
 export interface BoardColumnProps {
   column: BoardColumnWire;
   onOpenCard: (card: BoardCardWire) => void;
+  /** The card's assignee by name, in a group workspace (phase 58). */
+  assigneeNameFor?: (card: BoardCardWire) => string | null;
 }
 
-export function BoardColumn({ column, onOpenCard }: BoardColumnProps): React.ReactElement {
+export function BoardColumn({
+  column,
+  onOpenCard,
+  assigneeNameFor,
+}: BoardColumnProps): React.ReactElement {
   // Prefixed so a column id can never collide with a task id in the same DnD
   // context — the two live in one namespace and a bare status would be ambiguous.
   const { setNodeRef, isOver } = useDroppable({ id: `column:${column.status}` });
@@ -89,6 +95,7 @@ export function BoardColumn({ column, onOpenCard }: BoardColumnProps): React.Rea
               card={card}
               onOpen={onOpenCard}
               columnLabel={column.label}
+              assigneeName={assigneeNameFor?.(card) ?? null}
             />
           ))}
         </ul>

@@ -176,6 +176,13 @@ export const appAlwaysRunTests: AppAlwaysRunTest[] = [
       'to an export disposition. A schema file is not in the import graph, so adding ' +
       'a model would not select the test that fails until it is declared.',
   },
+  {
+    path: 'tests/unit/lib/framework/resparkable/rev-coverage.test.ts',
+    reason:
+      'parses `prisma/schema/framework-resparkable.prisma` to hold every model with a ' +
+      '`rev` column to an edit-conflict decision (phase 58). A schema file is not in ' +
+      'the import graph, so a new `rev` would not select the test that fails.',
+  },
 ];
 
 /**

@@ -199,7 +199,11 @@ describe('listSharedWithMe', () => {
     const inGroup = {
       userId: 'user_b',
       email: 'b@example.com',
-      group: { spaceId: 'spc_ffffffffffffffffffffffffffffffff', canWrite: false },
+      group: {
+        spaceId: 'spc_ffffffffffffffffffffffffffffffff',
+        canWrite: false,
+        canAdminister: false,
+      },
     };
     resparkableVisibilityScope.mockResolvedValue(scopeOf([grant({ role: 'commenter' })]));
 

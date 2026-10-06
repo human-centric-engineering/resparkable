@@ -65,6 +65,7 @@ export class ResparkableUpsertProjectCapability extends ResparkableCapability<
   AgentUpsertProjectInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = projectSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = projectSpec.functionDefinition;
   protected readonly schema = agentUpsertProjectSchema;
@@ -97,6 +98,7 @@ export class ResparkableUpsertAreaCapability extends ResparkableCapability<
   AgentUpsertAreaInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = areaSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = areaSpec.functionDefinition;
   protected readonly schema = agentUpsertAreaSchema;
@@ -129,6 +131,7 @@ export class ResparkableUpsertGoalCapability extends ResparkableCapability<
   AgentUpsertGoalInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = goalSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = goalSpec.functionDefinition;
   protected readonly schema = agentUpsertGoalSchema;
@@ -166,6 +169,7 @@ export class ResparkableUpsertEntityCapability extends ResparkableCapability<
   AgentUpsertEntityInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = entitySpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = entitySpec.functionDefinition;
   protected readonly schema = agentUpsertEntitySchema;
@@ -204,6 +208,7 @@ export class ResparkableUpsertTimeBlockCapability extends ResparkableCapability<
   AgentUpsertTimeBlockInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = timeBlockSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = timeBlockSpec.functionDefinition;
   protected readonly schema = agentUpsertTimeBlockSchema;

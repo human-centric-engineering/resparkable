@@ -62,6 +62,7 @@
  */
 
 import * as React from 'react';
+import { Newspaper } from 'lucide-react';
 
 import { useDataRevision } from '@/components/resparkable/workspace/data-change-context';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
@@ -73,6 +74,7 @@ import {
   type NavItem,
 } from '@/lib/framework/resparkable/ui/nav-groups';
 import { countsSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { useActiveSpaceId } from '@/lib/framework/resparkable/ui/use-active-space';
 import {
   resolveTabForPathname,
   type TabKind,
@@ -125,6 +127,7 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
   const inboxRevision = useDataRevision(['thought']);
   const [counts] = useTabFetch(RESPARKABLE_API.COUNTS, countsSchema, inboxRevision);
   const inboxCount = counts.status === 'ready' ? counts.data.inbox : 0;
+  const inGroup = useActiveSpaceId() !== null;
 
   return (
     <div className="lattice-field-hex @container flex h-full flex-col gap-6 overflow-y-auto p-6 [contain:paint]">
@@ -132,6 +135,26 @@ export function Launcher({ leafId }: LauncherProps): React.ReactElement {
         <h2 className="font-display text-lg font-semibold">Open a tab</h2>
         <p className="text-muted-foreground mt-1 text-sm">Ask Sparkey, or pick a view</p>
       </div>
+      {inGroup && (
+        // The group's own views, which have no page in the navigation: only a
+        // group workspace has a feed (§23.10, phase 59).
+        <div>
+          <div className="term-label text-muted-foreground mb-2 px-1">This group</div>
+          <div className="grid grid-cols-1 gap-2 @sm:grid-cols-2 @2xl:grid-cols-3 @4xl:grid-cols-4">
+            <button
+              type="button"
+              onClick={() => {
+                workspace.focusLeaf(leafId);
+                workspace.openTab('feed');
+              }}
+              className="bg-card border-border hover:border-primary/50 hover:bg-accent flex flex-col items-start gap-3 rounded-lg border p-4 text-left transition-colors"
+            >
+              <Newspaper className="text-primary h-5 w-5 shrink-0" aria-hidden="true" />
+              <span className="text-sm font-semibold">What&apos;s new</span>
+            </button>
+          </div>
+        </div>
+      )}
       {LAUNCHER_GROUPS.map((group) => (
         <div key={group.label}>
           <div className="term-label text-muted-foreground mb-2 px-1">{group.label}</div>

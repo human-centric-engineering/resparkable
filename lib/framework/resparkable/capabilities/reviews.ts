@@ -46,6 +46,7 @@ export class ResparkableWriteReviewCapability extends ResparkableCapability<
   CreateReviewInput,
   ReviewData
 > {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   /** The route's schema unchanged, so a workflow-written review and an HTTP-written one agree. */

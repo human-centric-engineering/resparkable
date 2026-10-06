@@ -26,6 +26,7 @@ import { Link2, ListTodo, MessageCircle, Pencil } from 'lucide-react';
 import { ShareButton } from '@/components/resparkable/share/share-button';
 import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { ContextChatDrawer } from '@/components/resparkable/chat/context-chat-drawer';
+import { GroupCommentThread } from '@/components/resparkable/groups/group-comment-thread';
 import { ProjectForm } from '@/components/resparkable/projects/project-form';
 import { SnoozeMenu } from '@/components/resparkable/controls/snooze-menu';
 import { TaskRow } from '@/components/resparkable/today/task-row';
@@ -159,6 +160,8 @@ export function ProjectDetail({ view, areas }: ProjectDetailProps): React.ReactE
           />
         </CardContent>
       </Card>
+
+      <GroupCommentThread entityType="project" entityId={project.id} />
 
       <ArchiveControls
         collection={RESPARKABLE_API.PROJECTS}

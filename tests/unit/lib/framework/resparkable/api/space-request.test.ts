@@ -16,15 +16,21 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@/lib/framework/resparkable/services/membership', () => ({
+// The resolver is mocked; the role predicate is real, because the viewer gate
+// is the behaviour under test and a mocked predicate would test the mock.
+vi.mock('@/lib/framework/resparkable/services/membership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/services/membership')>()),
   resolveActiveSpaceScope: vi.fn(),
 }));
 
-import { NotFoundError } from '@/lib/api/errors';
+import { ForbiddenError, NotFoundError } from '@/lib/api/errors';
 import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
 
 const PERSONAL = { spaceId: 'user_a', actorUserId: 'user_a', role: 'owner' };
+const AS_VIEWER = { spaceId: 'spc_g', actorUserId: 'user_a', role: 'viewer' };
+const AS_MEMBER = { spaceId: 'spc_g', actorUserId: 'user_a', role: 'member' };
+const URL_IN_GROUP = 'https://example.test/api/v1/resparkable/tasks?space=spc_g';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,5 +109,75 @@ describe('requestSpaceScope', () => {
     // This file mints nothing and narrows nothing. If it ever did, it would be
     // a second trust boundary sitting outside `services/membership.ts`.
     expect(scope).toBe(groupScope);
+  });
+});
+
+/**
+ * Test 13o, the route chokepoint: a viewer reads and writes nothing (§23.3).
+ * Every content route resolves its workspace here, so refusing here is what
+ * makes the role real on every route, including ones added later.
+ */
+describe('requestSpaceScope: the viewer gate', () => {
+  it.each(['POST', 'PATCH', 'PUT', 'DELETE'])(
+    'refuses a viewer a %s with a 403',
+    async (method) => {
+      vi.mocked(resolveActiveSpaceScope).mockResolvedValue(AS_VIEWER as never);
+
+      const call = requestSpaceScope(new Request(URL_IN_GROUP, { method }), 'user_a');
+
+      // 403, not 404: a viewer is a member and can already see the space.
+      await expect(call).rejects.toBeInstanceOf(ForbiddenError);
+    }
+  );
+
+  it.each(['GET', 'HEAD'])('lets a viewer %s', async (method) => {
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValue(AS_VIEWER as never);
+
+    await expect(
+      requestSpaceScope(new Request(URL_IN_GROUP, { method }), 'user_a')
+    ).resolves.toEqual(AS_VIEWER);
+  });
+
+  it('lets a viewer make a non-GET the route declares a read', async () => {
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValue(AS_VIEWER as never);
+
+    await expect(
+      requestSpaceScope(new Request(URL_IN_GROUP, { method: 'POST' }), 'user_a', {
+        access: 'read',
+      })
+    ).resolves.toEqual(AS_VIEWER);
+  });
+
+  it('refuses a viewer a GET the route declares a write', async () => {
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValue(AS_VIEWER as never);
+
+    await expect(
+      requestSpaceScope(new Request(URL_IN_GROUP), 'user_a', { access: 'write' })
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
+  it('lets a member and an owner write', async () => {
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValueOnce(AS_MEMBER as never);
+    await expect(
+      requestSpaceScope(new Request(URL_IN_GROUP, { method: 'POST' }), 'user_a')
+    ).resolves.toEqual(AS_MEMBER);
+
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValueOnce(PERSONAL as never);
+    await expect(
+      requestSpaceScope(
+        new Request('https://example.test/api/v1/resparkable/tasks', { method: 'POST' }),
+        'user_a'
+      )
+    ).resolves.toEqual(PERSONAL);
+  });
+
+  it('still answers a non-member with a 404, never a 403', async () => {
+    // The gate runs after membership: a write from somebody outside the space
+    // must not learn that the space exists.
+    vi.mocked(resolveActiveSpaceScope).mockResolvedValue(null);
+
+    await expect(
+      requestSpaceScope(new Request(URL_IN_GROUP, { method: 'POST' }), 'user_a')
+    ).rejects.toBeInstanceOf(NotFoundError);
   });
 });

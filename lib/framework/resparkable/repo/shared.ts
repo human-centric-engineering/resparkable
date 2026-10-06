@@ -82,3 +82,36 @@ export type WithoutOwner<T> = Omit<T, 'spaceId' | 'id' | 'createdAt' | 'updatedA
 
 /** Re-exported for repo modules so they import one path, not two. */
 export type { ArchiveVisibility, SpaceScope };
+
+/**
+ * Optimistic concurrency on the seven `rev`-carrying models (§23.13, phase 58).
+ *
+ * `revWhere(expectedRev)` adds the `rev` a writer read to the update's `WHERE`,
+ * so a row somebody else changed in the meantime matches nothing and the
+ * update misses (`nullOnMiss` turns that into `null`; the service then tells a
+ * conflict from a deletion by reading the row again). Absent, it adds nothing,
+ * and the write is last-write-wins exactly as before: agents, MCP tools and
+ * the inbox write through the same functions and have never read a `rev`.
+ *
+ * `REV_BUMP` goes into an update's `data` unless the caller passes
+ * `{ bumpRev: false }`, so the token moves whenever a field a person edits
+ * changes, whoever made the change. Bookkeeping writes opt out: touching a
+ * project's `lastActivityAt` because one of its tasks moved, snoozing, and
+ * marking a note promoted change nothing an edit form shows, and moving the
+ * token for them would give the person editing a 409 over nothing.
+ */
+export function revWhere(expectedRev: number | undefined): { rev?: number } {
+  return expectedRev === undefined ? {} : { rev: expectedRev };
+}
+
+export const REV_BUMP = { rev: { increment: 1 } } as const;
+
+export interface RevisedUpdateOptions {
+  /** `false` for a bookkeeping write that must not move the token. */
+  bumpRev?: boolean;
+}
+
+/** `REV_BUMP`, or nothing for a bookkeeping write. */
+export function revBump(options: RevisedUpdateOptions = {}): { rev?: { increment: number } } {
+  return options.bumpRev === false ? {} : REV_BUMP;
+}

@@ -33,6 +33,7 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   createJoinLink: vi.fn(),
   deleteJoinRequest: vi.fn(),
   findJoinLinkByTokenHash: vi.fn(),
+  findMembership: vi.fn(),
   listJoinLinks: vi.fn(),
   redeemJoinLink: vi.fn(),
   revokeJoinLink: vi.fn(),
@@ -40,6 +41,12 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
 vi.mock('@/lib/framework/resparkable/services/membership', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   resolveGroupMembership: vi.fn(),
+}));
+// Audit writes go through this service; mocked so the join-link tests do not
+// pay for a real database call, and so the audit assertions below check what
+// was actually sent rather than whatever a real insert happened to tolerate.
+vi.mock('@/lib/framework/resparkable/services/group-audit', () => ({
+  recordGroupAudit: vi.fn(),
 }));
 vi.mock('@/lib/env', () => ({ env: { NEXT_PUBLIC_APP_URL: 'https://app.example.com' } }));
 vi.mock('@/lib/logging', () => ({
@@ -49,12 +56,14 @@ vi.mock('@/lib/logging', () => ({
 import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
 import * as repo from '@/lib/framework/resparkable/repo/groups';
 import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
 import {
   approveGroupJoinRequest,
   defaultApprovalFor,
   mintJoinLink,
   redeemJoinLinkToken,
   rejectGroupJoinRequest,
+  revokeGroupJoinLink,
 } from '@/lib/framework/resparkable/services/group-join-links';
 import { resolveGroupMembership } from '@/lib/framework/resparkable/services/membership';
 import type { CreateJoinLinkInput } from '@/lib/framework/resparkable/validations';
@@ -77,6 +86,7 @@ function group(overrides: Record<string, unknown> = {}) {
     lowBalanceAlertCredits: null,
     largeRunAlertPercent: null,
     largeRunAlertedAt: null,
+    storageQuotaBytes: null,
     createdAt: NOW,
     updatedAt: NOW,
     ...overrides,
@@ -93,6 +103,7 @@ function resolvedAs(role: 'admin' | 'member' | 'viewer') {
       invitedByUserId: null,
       soleAdminNotifiedAt: null,
       dailyCreditCap: null,
+      feedSeenAt: null,
       joinedAt: NOW,
       requestedAt: null,
       joinLinkId: null,
@@ -430,14 +441,96 @@ describe('approveGroupJoinRequest', () => {
     expect(result).toEqual({ ok: false, reason: 'group_full' });
   });
 
-  it('succeeds for an admin approving a pending request under the cap', async () => {
+  it('succeeds for an admin approving a pending request under the cap, and reports the role the pending row carried', async () => {
     vi.mocked(resolveGroupMembership).mockResolvedValue(resolvedAs('admin'));
+    // The role is read from the pending membership BEFORE approval: it was
+    // fixed by the link the person came through, not by anything the admin
+    // chooses now.
+    vi.mocked(repo.findMembership).mockResolvedValue({ role: 'viewer' } as never);
     vi.mocked(repo.approveJoinRequest).mockResolvedValue('approved');
 
     const result = await approveGroupJoinRequest('user_a', 'grp_1', 'user_b', NOW);
 
-    expect(result).toEqual({ ok: true });
+    expect(result).toEqual({ ok: true, groupName: 'Study Group B', role: 'viewer' });
+    expect(repo.findMembership).toHaveBeenCalledWith('user_b', 'grp_1');
     expect(repo.approveJoinRequest).toHaveBeenCalledWith('grp_1', 'user_b', NOW);
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      action: 'join_approved',
+      metadata: { role: 'viewer' },
+    });
+  });
+
+  it('falls back to "member" when the pending row cannot be read back', async () => {
+    // A defensive fallback for a race rather than the common case: the pending
+    // row vanished between the read and the approve (which still succeeded on
+    // its own compare-and-set). Reporting nothing is worse than a reasonable
+    // default.
+    vi.mocked(resolveGroupMembership).mockResolvedValue(resolvedAs('admin'));
+    vi.mocked(repo.findMembership).mockResolvedValue(null);
+    vi.mocked(repo.approveJoinRequest).mockResolvedValue('approved');
+
+    const result = await approveGroupJoinRequest('user_a', 'grp_1', 'user_b', NOW);
+
+    expect(result).toEqual({ ok: true, groupName: 'Study Group B', role: 'member' });
+  });
+});
+
+describe('join-link admin-record entries', () => {
+  it('mints with an entry naming the role and approval, but never the token', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(resolvedAs('admin'));
+    vi.mocked(repo.createJoinLink).mockResolvedValue(link());
+
+    await mintJoinLink('user_a', 'grp_1', VALID_INPUT, NOW);
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      action: 'join_link_minted',
+      metadata: { role: 'member', approval: 'request', maxUses: null },
+    });
+    const metadata = vi.mocked(recordGroupAudit).mock.calls[0]?.[0];
+    expect(JSON.stringify(metadata)).not.toMatch(/[A-Za-z0-9_-]{32,}/);
+  });
+
+  it('revokes with an entry naming no role or approval, just the action', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(resolvedAs('admin'));
+    vi.mocked(repo.revokeJoinLink).mockResolvedValue({ count: 1 });
+
+    await revokeGroupJoinLink('user_a', 'grp_1', 'link_1', NOW);
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      action: 'join_link_revoked',
+    });
+  });
+
+  it('rejects with an entry naming the subject and no metadata', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(resolvedAs('admin'));
+    vi.mocked(repo.deleteJoinRequest).mockResolvedValue(true);
+
+    await rejectGroupJoinRequest('user_a', 'grp_1', 'user_b');
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      action: 'join_rejected',
+    });
+  });
+
+  it('writes no entry for a refused mint, revoke, approval or rejection', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(null);
+
+    await mintJoinLink('user_stranger', 'grp_1', VALID_INPUT, NOW);
+    await revokeGroupJoinLink('user_stranger', 'grp_1', 'link_1', NOW);
+    await approveGroupJoinRequest('user_stranger', 'grp_1', 'user_b', NOW);
+    await rejectGroupJoinRequest('user_stranger', 'grp_1', 'user_b');
+
+    expect(recordGroupAudit).not.toHaveBeenCalled();
   });
 });
 

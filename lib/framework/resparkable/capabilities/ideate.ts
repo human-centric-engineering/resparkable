@@ -46,6 +46,7 @@ interface IdeateData {
 }
 
 export class ResparkableIdeateCapability extends ResparkableCapability<IdeateInput, IdeateData> {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   /** The route's schema unchanged — the two paths must agree on the floor and the cap. */

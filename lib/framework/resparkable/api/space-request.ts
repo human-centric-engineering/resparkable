@@ -33,7 +33,10 @@
  */
 
 import { NotFoundError } from '@/lib/api/errors';
-import { resolveActiveSpaceScope } from '@/lib/framework/resparkable/services/membership';
+import {
+  assertCanWrite,
+  resolveActiveSpaceScope,
+} from '@/lib/framework/resparkable/services/membership';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
 
@@ -52,7 +55,8 @@ import { readSpaceTarget } from '@/lib/framework/resparkable/ui/active-space';
  */
 export async function requestSpaceScope(
   request: Request,
-  actorUserId: string
+  actorUserId: string,
+  options: RequestSpaceScopeOptions = {}
 ): Promise<SpaceScope> {
   const target = readSpaceTarget(new URL(request.url).searchParams);
   const scope = await resolveActiveSpaceScope(actorUserId, target);
@@ -63,5 +67,24 @@ export async function requestSpaceScope(
     throw new NotFoundError('Workspace not found');
   }
 
+  // A viewer reads and writes nothing (§23.3). Asked here because every
+  // content route already passes through, so a route added later is covered
+  // without its author remembering (phase-58-59-plan.md Decision 1, test 13o).
+  const access = options.access ?? (READ_METHODS.has(request.method) ? 'read' : 'write');
+  if (access === 'write') assertCanWrite(scope);
+
   return scope;
+}
+
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+export interface RequestSpaceScopeOptions {
+  /**
+   * Whether the request changes the space. Inferred from the method when
+   * absent: anything but `GET`/`HEAD`/`OPTIONS` is a write, and a viewer is
+   * refused it. Pass `'read'` only for a non-`GET` that changes nothing in the
+   * space itself, such as marking the feed as seen, which writes the caller's
+   * own membership row.
+   */
+  access?: 'read' | 'write';
 }

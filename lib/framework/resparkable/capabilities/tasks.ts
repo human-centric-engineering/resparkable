@@ -92,6 +92,7 @@ export class ResparkableListTasksCapability extends ResparkableCapability<
   AgentListTasksInput,
   ListTasksData
 > {
+  readonly writes = false;
   readonly slug = listSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = listSpec.functionDefinition;
   protected readonly schema = agentListTasksSchema;
@@ -147,6 +148,7 @@ export class ResparkableUpsertTaskCapability extends ResparkableCapability<
   AgentUpsertTaskInput,
   UpsertData
 > {
+  readonly writes = true;
   readonly slug = upsertSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = upsertSpec.functionDefinition;
   protected readonly schema = agentUpsertTaskSchema;

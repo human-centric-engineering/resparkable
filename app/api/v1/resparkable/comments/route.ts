@@ -33,7 +33,10 @@ import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
-import { addComment, listCommentsFor } from '@/lib/framework/resparkable/services/comments';
+import {
+  addComment,
+  listCommentsWithPermission,
+} from '@/lib/framework/resparkable/services/comments';
 import {
   commentRefQuerySchema,
   createCommentSchema,
@@ -46,15 +49,18 @@ export const GET = withAuth(async (request, session) => {
 
   const query = validateQueryParams(new URL(request.url).searchParams, commentRefQuerySchema);
 
-  const comments = await listCommentsFor(viewer, query);
-  if (!comments) throw new NotFoundError('Not found');
+  const thread = await listCommentsWithPermission(viewer, query);
+  if (!thread) throw new NotFoundError('Not found');
+  // Lets a thread render its composer without its caller knowing the reader's
+  // role (phase 58), from the access the read itself resolved.
+  const { comments, canComment } = thread;
 
   log.info('Resparkable comments list', {
     entityType: query.entityType,
     count: comments.length,
   });
 
-  return successResponse(comments, { count: comments.length });
+  return successResponse(comments, { count: comments.length, canComment });
 });
 
 export const POST = withAuth(async (request, session) => {

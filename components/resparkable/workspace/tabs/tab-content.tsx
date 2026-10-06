@@ -59,6 +59,7 @@ import { TodayTab } from '@/components/resparkable/workspace/tabs/today-tab';
 import { VaultTab } from '@/components/resparkable/workspace/tabs/vault-tab';
 import { SharedItemTab } from '@/components/resparkable/workspace/tabs/shared-item-tab';
 import { SharedTab } from '@/components/resparkable/workspace/tabs/shared-tab';
+import { FeedTab } from '@/components/resparkable/workspace/tabs/feed-tab';
 import { GroupTab } from '@/components/resparkable/workspace/tabs/group-tab';
 import { GroupsTab } from '@/components/resparkable/workspace/tabs/groups-tab';
 import { SharingTab } from '@/components/resparkable/workspace/tabs/sharing-tab';
@@ -149,6 +150,8 @@ function renderTab(tab: TabState): React.ReactElement {
       );
     case 'note':
       return <NoteTab tabId={tab.id} id={tab.params.id!} />;
+    case 'feed':
+      return <FeedTab />;
     case 'capture':
       return (
         <EmptyState

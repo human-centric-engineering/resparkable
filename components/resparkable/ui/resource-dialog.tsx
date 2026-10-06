@@ -41,6 +41,7 @@
  */
 
 import * as React from 'react';
+import { z } from 'zod';
 import type { FieldValues, UseFormReturn } from 'react-hook-form';
 
 import { FormError } from '@/components/forms/form-error';
@@ -56,6 +57,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { APIClientError } from '@/lib/api/client';
 import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
@@ -64,6 +66,12 @@ export interface ResourceFormBodyProps<TValues extends FieldValues> {
   collection: string;
   /** Present for an edit, absent for a create. */
   id?: string;
+  /**
+   * The edit token of the row being edited, when it has one (phase 58). Sent
+   * with the save, so a save over somebody else's change is a 409 rather than
+   * a silent overwrite.
+   */
+  rev?: number;
   form: UseFormReturn<TValues>;
   /** Form values → request body. Per-form; see the header note. */
   toBody: (values: TValues) => Record<string, unknown>;
@@ -73,10 +81,18 @@ export interface ResourceFormBodyProps<TValues extends FieldValues> {
   onSaved: () => void;
 }
 
+/** What a person is told when somebody else saved first. */
+export const EDIT_CONFLICT_MESSAGE =
+  'Someone else changed this while you had it open. Save again to replace their version with yours, or close without saving to keep theirs.';
+
+/** The current row a 409 carries (`ConflictError` `details.current`), read without asserting. */
+const conflictDetailsSchema = z.object({ current: z.object({ rev: z.number().int() }) });
+
 /** The `<form>` itself: fields, the API-error surface, save status, submit. No dialog chrome. */
 export function ResourceFormBody<TValues extends FieldValues>({
   collection,
   id,
+  rev,
   form,
   toBody,
   children,
@@ -84,14 +100,35 @@ export function ResourceFormBody<TValues extends FieldValues>({
   onSaved,
 }: ResourceFormBodyProps<TValues>): React.ReactElement {
   const { state, message, run } = useSaveStatus();
+  // The `rev` a 409 reported, which the next save sends instead of the one the
+  // form opened with. Taken from the response rather than by refetching the
+  // row: every edit form resets its fields when its row prop changes, so a
+  // refetch would wipe what this person typed, the one thing a conflict must
+  // not do.
+  const [conflictRev, setConflictRev] = React.useState<number | undefined>(undefined);
+  const sendRev = conflictRev ?? rev;
 
   const onSubmit = form.handleSubmit(async (values) => {
     const body = toBody(values);
 
-    const ok = await run(() =>
-      id
-        ? resparkableApi.patch(RESPARKABLE_API.itemPath(collection, id), { body })
-        : resparkableApi.post(collection, { body })
+    const ok = await run(
+      () =>
+        id
+          ? resparkableApi.patch(RESPARKABLE_API.itemPath(collection, id), {
+              body: sendRev === undefined ? body : { ...body, rev: sendRev },
+            })
+          : resparkableApi.post(collection, { body }),
+      (error) => {
+        if (!(error instanceof APIClientError) || error.status !== 409 || !id) {
+          return error instanceof Error ? error.message : 'Something went wrong';
+        }
+        // Somebody else saved first. Keep what this person typed, and arm the
+        // next save with the current `rev`, so saving again is a deliberate
+        // replacement rather than an accident.
+        const details = conflictDetailsSchema.safeParse(error.details);
+        if (details.success) setConflictRev(details.data.current.rev);
+        return EDIT_CONFLICT_MESSAGE;
+      }
     );
 
     if (ok) onSaved();
@@ -128,6 +165,8 @@ export interface ResourceDialogProps<TValues extends FieldValues> {
   collection: string;
   /** Present for an edit, absent for a create. */
   id?: string;
+  /** See {@link ResourceFormBodyProps.rev}. */
+  rev?: number;
   title: string;
   description?: string;
   form: UseFormReturn<TValues>;
@@ -142,6 +181,7 @@ export function ResourceDialog<TValues extends FieldValues>({
   onOpenChange,
   collection,
   id,
+  rev,
   title,
   description,
   form,
@@ -162,6 +202,7 @@ export function ResourceDialog<TValues extends FieldValues>({
         <ResourceFormBody
           collection={collection}
           {...(id ? { id } : {})}
+          {...(rev !== undefined ? { rev } : {})}
           form={form}
           toBody={toBody}
           {...(submitLabel ? { submitLabel } : {})}

@@ -83,12 +83,12 @@ function capturedScope(): { spaceId: string; role: string } {
   return vi.mocked(captureThought).mock.calls[0]?.[0];
 }
 
-function membership() {
+function membership(role: 'admin' | 'member' | 'viewer' = 'member') {
   return {
     id: 'mem_1',
     groupId: 'grp_1',
     userId: 'user_a',
-    role: 'member',
+    role,
     invitedByUserId: null,
     joinedAt: new Date('2026-09-01T10:00:00Z'),
     createdAt: new Date('2026-09-01T10:00:00Z'),
@@ -119,6 +119,17 @@ describe('POST /capture — where a thought lands', () => {
     await invoke(req({ content: 'a thought', spaceId: GROUP_SPACE }));
 
     expect(capturedScope()).toMatchObject({ spaceId: GROUP_SPACE, role: 'member' });
+  });
+
+  it('writes nothing and 403s when the caller is a viewer of the named group (13o)', async () => {
+    // Capture skips `requestSpaceScope` (it takes its target from the body), so
+    // it asks the viewer question itself. A viewer captures into no group.
+    vi.mocked(findMembershipBySpace).mockResolvedValue(membership('viewer') as never);
+
+    const response = await invoke(req({ content: 'a thought', spaceId: GROUP_SPACE }));
+
+    expect(response.status).toBe(403);
+    expect(captureThought).not.toHaveBeenCalled();
   });
 
   it('writes nothing and 404s when the caller is not in the named group', async () => {

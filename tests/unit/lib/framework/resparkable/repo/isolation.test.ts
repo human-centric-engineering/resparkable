@@ -676,3 +676,39 @@ describe('archived rows are excluded unless asked for', () => {
     expect(call?.where).toEqual({ spaceId: 'user_a', id: 'id_1' });
   });
 });
+
+describe('updateTask / updateProject: rev where and bump (phase 58, §23.13)', () => {
+  it('adds rev to the WHERE and bumps rev in the data when updateTask is given an expectedRev', async () => {
+    await tasks.updateTask(SCOPE, 'id_1', { title: 'y' }, 4);
+
+    const call = vi.mocked(prisma.resparkableTask.update).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ id: 'id_1', spaceId: 'user_a', rev: 4 });
+    expect(call?.data).toMatchObject({ title: 'y', rev: { increment: 1 } });
+  });
+
+  it('omits rev from the WHERE but still bumps it in the data when updateTask gets no expectedRev', async () => {
+    await tasks.updateTask(SCOPE, 'id_1', { title: 'y' });
+
+    const call = vi.mocked(prisma.resparkableTask.update).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ id: 'id_1', spaceId: 'user_a' });
+    expect(call?.where).not.toHaveProperty('rev');
+    expect(call?.data).toMatchObject({ rev: { increment: 1 } });
+  });
+
+  it('adds rev to the WHERE and bumps rev in the data when updateProject is given an expectedRev', async () => {
+    await projects.updateProject(SCOPE, 'id_1', { name: 'y' }, 7);
+
+    const call = vi.mocked(prisma.resparkableProject.update).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ id: 'id_1', spaceId: 'user_a', rev: 7 });
+    expect(call?.data).toMatchObject({ name: 'y', rev: { increment: 1 } });
+  });
+
+  it('omits rev from the WHERE but still bumps it in the data when updateProject gets no expectedRev', async () => {
+    await projects.updateProject(SCOPE, 'id_1', { name: 'y' });
+
+    const call = vi.mocked(prisma.resparkableProject.update).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ id: 'id_1', spaceId: 'user_a' });
+    expect(call?.where).not.toHaveProperty('rev');
+    expect(call?.data).toMatchObject({ rev: { increment: 1 } });
+  });
+});

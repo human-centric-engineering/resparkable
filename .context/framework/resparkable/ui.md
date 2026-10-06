@@ -531,6 +531,13 @@ tree and "the pane you clicked from" means nothing there.
    Any mutating control refreshes through `useResparkableRefresh()`, any filter
    it carries goes in `TabParams` with a navigating-by-default callback prop on
    the view, and any in-content link is a `<WorkspaceLink>` — §15.
+   A tab with no page of its own (`note`, and phase 59's `feed`) is
+   `routeBacked: false` and is opened from somewhere in the shell rather than
+   from the nav: the Launcher's "This group" section offers `feed`, and only in
+   a group workspace. A view that has to keep itself current without a write
+   to react to polls through `useVisibilityPoll` (`workspace/use-visibility-poll.ts`)
+   with `If-None-Match`, never `setInterval` of its own: it stops while the page
+   is hidden, which is the whole cost argument for polling (§23.10).
 7. Client components fetch through `resparkableApi`, not core's `apiClient`. It
    is the same client with the active workspace on the path, read from the
    address bar at call time. The exceptions are deliberate and each carries its

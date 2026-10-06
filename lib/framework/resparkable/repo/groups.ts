@@ -34,6 +34,10 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import {
+  insertGroupAuditEntry,
+  type GroupAuditInput,
+} from '@/lib/framework/resparkable/repo/group-audit';
 import type {
   Prisma,
   ResparkableGroup,
@@ -170,6 +174,18 @@ export async function findMembershipBySpace(
   return prisma.resparkableGroupMember.findFirst({
     where: { userId: actorUserId, group: { spaceId } },
     include: { group: true },
+  });
+}
+
+/**
+ * Mark the activity feed read up to `at` for one member (§23.10, phase 59).
+ * Writes the member's own row and nothing in the space; it decides what is
+ * styled as new, never what a query returns.
+ */
+export async function setFeedSeenAt(groupId: string, userId: string, at: Date): Promise<void> {
+  await prisma.resparkableGroupMember.updateMany({
+    where: { groupId, userId, joinedAt: { not: null } },
+    data: { feedSeenAt: at },
   });
 }
 
@@ -384,9 +400,44 @@ export async function upsertMember(data: {
   });
 }
 
-export async function deleteMember(groupId: string, userId: string): Promise<void> {
-  await prisma.resparkableGroupMember.delete({
-    where: { groupId_userId: { groupId, userId } },
+/**
+ * A role change and its admin-record entry, in one transaction (§23.13), so
+ * the record can never disagree with what happened. Role changes are the
+ * administrative act people dispute.
+ */
+export async function updateMemberRoleWithAudit(
+  groupId: string,
+  userId: string,
+  role: string,
+  audit: GroupAuditInput
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await updateMemberRole(groupId, userId, role, tx);
+    await insertGroupAuditEntry(audit, tx);
+  });
+}
+
+/**
+ * A removal or a leave, its consequences and its admin-record entry, in one
+ * transaction (§23.13). The membership row goes; everything the person wrote
+ * stays, because it is the group's (§23.5); their assignments clear.
+ */
+export async function deleteMemberWithAudit(
+  groupId: string,
+  spaceId: string,
+  userId: string,
+  audit: GroupAuditInput
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.resparkableGroupMember.delete({ where: { groupId_userId: { groupId, userId } } });
+    // Their assignments clear rather than silently moving to somebody who did
+    // not agree to them (§23.13). In this group's space only: an assignment
+    // in another group they still belong to is untouched.
+    await tx.resparkableTask.updateMany({
+      where: { spaceId, assignedToUserId: userId },
+      data: { assignedToUserId: null },
+    });
+    await insertGroupAuditEntry(audit, tx);
   });
 }
 
@@ -1200,4 +1251,4 @@ export type GroupTx = Prisma.TransactionClient;
  * would commit even when the erasure it belongs to rolls back, leaving a person
  * promoted to admin of a group whose admin still exists.
  */
-type GroupDb = typeof prisma | GroupTx;
+export type GroupDb = typeof prisma | GroupTx;

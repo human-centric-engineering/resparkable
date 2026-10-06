@@ -49,6 +49,10 @@ import {
 import { sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 
 import { BoardColumn } from '@/components/resparkable/board/board-column';
+import {
+  memberName,
+  useActiveGroupMembers,
+} from '@/components/resparkable/groups/use-active-group-members';
 import { CardDetailSheet } from '@/components/resparkable/board/card-detail-sheet';
 import { TaskCard } from '@/components/resparkable/board/task-card';
 import { ShareButton } from '@/components/resparkable/share/share-button';
@@ -75,6 +79,16 @@ export interface BoardViewProps {
 export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement {
   const refresh = useResparkableRefresh();
   const { state, message, run } = useSaveStatus();
+  // One request for the whole board, in a group workspace; `null` otherwise.
+  const members = useActiveGroupMembers();
+  const assigneeNameFor = React.useCallback(
+    (card: BoardCardWire): string | null => {
+      const id = card.task.assignedToUserId;
+      if (!id || members === null) return null;
+      return memberName(members.find((member) => member.userId === id));
+    },
+    [members]
+  );
 
   // Local mirror of the server payload so a drag can move a card before the
   // round trip resolves.
@@ -214,7 +228,12 @@ export function BoardView({ view, allTags }: BoardViewProps): React.ReactElement
       >
         <div className="flex gap-3 overflow-x-auto pb-2">
           {columns.map((column) => (
-            <BoardColumn key={column.status} column={column} onOpenCard={setOpenCard} />
+            <BoardColumn
+              key={column.status}
+              column={column}
+              onOpenCard={setOpenCard}
+              assigneeNameFor={assigneeNameFor}
+            />
           ))}
         </div>
 

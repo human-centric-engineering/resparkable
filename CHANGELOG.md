@@ -18,6 +18,35 @@ release process.
 
 ### Added
 
+- **Group collaboration (Release 9, phase 58).** §23.13, designed in
+  `phase-58-59-plan.md`. `ResparkableTask.assignedToUserId` (hand-written FK to
+  `user`, SetNull, probe B15): a task in a group space can be assigned to a
+  joined member, checked by the service; `GET /tasks?assignedTo=me` filters to
+  your own; leaving a group clears your assignments there in the same
+  transaction; `agentUpsertTaskSchema` omits the field, so agents cannot
+  assign. A new `space` basis in `resolveResparkableAccess` lets a member read
+  and comment on their own group's items, with admins moderating; the comments
+  `GET` returns `meta.canComment`, and `CommentThread`'s `canComment` prop is
+  now optional. Optimistic concurrency on the six editable models with `rev`:
+  an update may send `rev`, a stale one is a 409 carrying the current row
+  (`ConflictError` `details.current`), and every content update increments
+  it (bookkeeping writes pass `{ bumpRev: false }`); the coverage is
+  asserted by enumeration. New model `ResparkableGroupAuditEntry`
+  and `GET /groups/[id]/audit` (admins see all, members see what concerns
+  them), exported to a subject as `groupAdminRecord`. One new email,
+  `membership-changed.tsx`, when somebody else changes your role, removes you
+  or approves your request. `ResparkableGroup.storageQuotaBytes` (default
+  2 GiB) caps a group's retained documents; an upload over it is refused with
+  reason `over_quota`, and `GET /groups/[id]` returns `storage`. Member lists
+  now carry each member's account name (never an address).
+- **Group activity feed (Release 9, phase 59).** §23.10. `GET /feed` (group
+  workspaces only, `before` and `member` filters, ETag and 304) and
+  `POST /feed/seen`, backed by `ResparkableGroupMember.feedSeenAt`. A new
+  `feed` tab kind, opened from the Launcher's "This group" section, renders
+  each event item first with the person as attribution and drops kinds it
+  cannot render. `useVisibilityPoll` is the tier's first poll and stops while
+  the page is hidden.
+
 - **Group join links (Release 9, phase 57).** A link that lets whoever holds it
   join a group, without the admin typing addresses (§23.11). New model
   `ResparkableGroupJoinLink` (sha256 `tokenHash`, `tokenPrefix`, `role` of
@@ -2612,6 +2641,14 @@ release process.
 
 
 ### Security
+
+- **A group viewer could write to the group's content.** The read-only role
+  was enforced on sharing, invitations, comments, budget and administration,
+  and nowhere on the content path. Phase 58 refuses a viewer (403) at the three
+  chokepoints every write passes through: `requestSpaceScope` for a non-`GET`
+  (a route that is a read says so with `{ access: 'read' }`), `POST /capture`,
+  and `ResparkableCapability.execute`, which now requires every capability to
+  declare `writes`. Test 13o.
 
 - **An MCP key scope Resparkable cannot read is now refused, not ignored.**
   `McpApiKey.scope` is an open map that core stores without reading, and a near

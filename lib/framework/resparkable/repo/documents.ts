@@ -71,6 +71,31 @@ export async function countDocuments(
   });
 }
 
+/**
+ * Bytes of retained originals in the space (§23.13's storage quota, phase 58):
+ * rows with a stored original only, archived ones included, because their
+ * original is still held. A document parsed and discarded (the default
+ * `documentOriginals` mode) stores nothing and counts for nothing.
+ *
+ * `excludeFileHash` leaves out the row an upload of the same bytes would take
+ * over and re-drive, so re-adding an archived or failed file is not counted
+ * twice against the quota.
+ */
+export async function sumDocumentBytes(
+  scope: SpaceScope,
+  options: { excludeFileHash?: string } = {}
+): Promise<number> {
+  const result = await prisma.resparkableDocument.aggregate({
+    where: {
+      ...spaceWhere(scope),
+      storageKey: { not: null },
+      ...(options.excludeFileHash ? { fileHash: { not: options.excludeFileHash } } : {}),
+    },
+    _sum: { byteSize: true },
+  });
+  return result._sum.byteSize ?? 0;
+}
+
 export async function findDocument(
   scope: SpaceScope,
   id: string

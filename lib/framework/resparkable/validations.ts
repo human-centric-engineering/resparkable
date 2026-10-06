@@ -181,14 +181,28 @@ export const createTaskSchema = z
     manualBoost: z.number().min(-1).max(1).optional(),
     manualBoostExpiresAt: z.coerce.date().nullish(),
     manualBoostReason: z.string().trim().max(280).nullish(),
+    /**
+     * A member of the space's group (§23.13, phase 58). Checked against
+     * membership by the service, so a non-member or a personal space is a 400.
+     */
+    assignedToUserId: z.string().trim().min(1).max(64).nullish(),
   })
   .strict();
 
-export const updateTaskSchema = createTaskSchema.partial().strict();
+/**
+ * The optimistic-concurrency token a writer read (§23.13, phase 58). Optional:
+ * a form that read the row sends it and gets a 409 if somebody changed the row
+ * since; an agent or API caller that never read it writes last-write-wins.
+ */
+const revField = z.number().int().nonnegative().optional();
+
+export const updateTaskSchema = createTaskSchema.partial().extend({ rev: revField }).strict();
 
 export const taskListQuerySchema = resparkableListQuerySchema.extend({
   status: z.enum(TASK_STATUSES).optional(),
   projectId: cuidSchema.optional(),
+  /** "Assigned to me" (phase 58). A filter that returns rows, never a count. */
+  assignedTo: z.literal('me').optional(),
   hideDeferred: z
     .enum(['true', 'false'])
     .optional()
@@ -211,7 +225,7 @@ export const createProjectSchema = z
   })
   .strict();
 
-export const updateProjectSchema = createProjectSchema.partial().strict();
+export const updateProjectSchema = createProjectSchema.partial().extend({ rev: revField }).strict();
 
 export const projectListQuerySchema = resparkableListQuerySchema.extend({
   status: z.enum(PROJECT_STATUSES).optional(),
@@ -236,7 +250,7 @@ export const createGoalSchema = z
   })
   .strict();
 
-export const updateGoalSchema = createGoalSchema.partial().strict();
+export const updateGoalSchema = createGoalSchema.partial().extend({ rev: revField }).strict();
 
 export const goalListQuerySchema = resparkableListQuerySchema.extend({
   horizon: z.enum(GOAL_HORIZONS).optional(),
@@ -259,7 +273,7 @@ export const createAreaSchema = z
   })
   .strict();
 
-export const updateAreaSchema = createAreaSchema.partial().strict();
+export const updateAreaSchema = createAreaSchema.partial().extend({ rev: revField }).strict();
 
 export type CreateAreaInput = z.infer<typeof createAreaSchema>;
 export type UpdateAreaInput = z.infer<typeof updateAreaSchema>;
@@ -283,6 +297,7 @@ export const updateThoughtSchema = z
     /** A person correcting the auto-classification (services/sensitivity.ts). */
     sensitivity: z.enum(THOUGHT_SENSITIVITY_LEVELS).optional(),
     snoozedUntil: z.coerce.date().nullish(),
+    rev: revField,
   })
   .strict();
 
@@ -369,7 +384,7 @@ export const createEntitySchema = z
   })
   .strict();
 
-export const updateEntitySchema = createEntitySchema.partial().strict();
+export const updateEntitySchema = createEntitySchema.partial().extend({ rev: revField }).strict();
 
 export const entityListQuerySchema = resparkableListQuerySchema.extend({
   kind: z.enum(ENTITY_KINDS).optional(),
@@ -1107,6 +1122,9 @@ export const agentUpsertTaskSchema = upsertSchema(
     manualBoost: true,
     manualBoostExpiresAt: true,
     manualBoostReason: true,
+    // Assigning is a person's call about another person (§23.13), and an agent
+    // holds no member's user id to name. Omitted, so it is a type error.
+    assignedToUserId: true,
   }),
   ['title']
 );
@@ -2117,6 +2135,17 @@ export const updateGroupSchema = z
      * See `services/succession.ts`.
      */
     viewersCanInheritAdmin: z.boolean().optional(),
+    /**
+     * The most the group's retained document originals may total, in bytes
+     * (phase 58). `null` returns to the default. Between 100 MB and 1 TB.
+     */
+    storageQuotaBytes: z
+      .number()
+      .int()
+      .min(100 * 1024 * 1024)
+      .max(1024 * 1024 * 1024 * 1024)
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -2259,3 +2288,15 @@ export const redeemJoinLinkSchema = z
   .strict();
 
 export type RedeemJoinLinkInput = z.infer<typeof redeemJoinLinkSchema>;
+
+/**
+ * `GET /resparkable/feed` (§23.10, phase 59). `member` filters to one person's
+ * actions and returns rows, never a count: a content question, not a tally.
+ * Not strict, like the other list queries: every workspace request also
+ * carries `?space=`, which `requestSpaceScope` reads.
+ */
+export const feedQuerySchema = z.object({
+  /** `"<iso time>|<event id>"`, as the previous page's `nextCursor` gave it. */
+  before: z.string().trim().min(3).max(120).optional(),
+  member: z.string().trim().min(1).max(64).optional(),
+});

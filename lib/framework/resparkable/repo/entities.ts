@@ -30,6 +30,9 @@ import {
   pageArgs,
   type ListOptions,
   type WithoutOwner,
+  revWhere,
+  revBump,
+  type RevisedUpdateOptions,
 } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableEntity, Prisma } from '@prisma/client';
 
@@ -94,16 +97,20 @@ export async function createEntity(
 export async function updateEntity(
   scope: SpaceScope,
   id: string,
-  data: EntityUpdateData
+  data: EntityUpdateData,
+  /** The `rev` the writer read, when it sent one (phase 58). See `revWhere`. */
+  expectedRev?: number,
+  /** `{ bumpRev: false }` for a bookkeeping write. See `revBump`. */
+  options: RevisedUpdateOptions = {}
 ): Promise<ResparkableEntity | null> {
   return nullOnMiss(() =>
     prisma.resparkableEntity.update({
-      where: { id, ...spaceWhere(scope) },
+      where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
       // `indexedHash` LAST so it always wins: any content edit re-queues the row
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
       // are semantic (see embedding/indexer.ts).
-      data: { ...data, indexedHash: null },
+      data: { ...data, ...revBump(options), indexedHash: null },
     })
   );
 }

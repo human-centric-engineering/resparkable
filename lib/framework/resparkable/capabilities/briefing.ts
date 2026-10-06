@@ -60,6 +60,7 @@ export class ResparkableGetBriefingCapability extends ResparkableCapability<
   GetBriefingArgs,
   BriefingView
 > {
+  readonly writes = false;
   readonly slug = getSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = getSpec.functionDefinition;
   protected readonly schema = agentGetBriefingSchema;
@@ -104,6 +105,7 @@ export class ResparkableGetBriefingInputsCapability extends ResparkableCapabilit
   BriefingInputsArgs,
   BriefingInputs
 > {
+  readonly writes = false;
   readonly slug = inputsSpec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = inputsSpec.functionDefinition;
   protected readonly schema = agentBriefingInputsSchema;

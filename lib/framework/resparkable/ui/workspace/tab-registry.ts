@@ -37,6 +37,7 @@ import {
   Settings,
   Share2,
   StickyNote,
+  Newspaper,
   Handshake,
   Send,
   Sun,
@@ -73,7 +74,8 @@ export type TabKind =
   | 'archive'
   | 'search'
   | 'capture'
-  | 'note';
+  | 'note'
+  | 'feed';
 
 /**
  * The small, flat set of fields any tab kind might need. Kept as one shape
@@ -143,7 +145,7 @@ export interface TabRegistryEntry {
   defaultTitle: string;
   /** Shown in the tab strip to the left of the label — see `iconForTab()`. */
   icon: LucideIcon;
-  /** False only for `note` — the one kind with no URL of its own. */
+  /** False for `note` and `feed`, the two kinds with no URL of their own. */
   routeBacked: boolean;
   /** Route-backed only: does `pathname` belong to this kind, and with what params. */
   matchRoute?: (pathname: string) => TabParams | null;
@@ -441,6 +443,14 @@ export const TAB_REGISTRY: Record<TabKind, TabRegistryEntry> = {
     kind: 'note',
     defaultTitle: 'Note',
     icon: StickyNote,
+    routeBacked: false,
+  },
+  // A group workspace's activity feed (§23.10, phase 59). No page of its own:
+  // it is opened from the Launcher, inside a group workspace only.
+  feed: {
+    kind: 'feed',
+    defaultTitle: 'What’s new',
+    icon: Newspaper,
     routeBacked: false,
   },
 };

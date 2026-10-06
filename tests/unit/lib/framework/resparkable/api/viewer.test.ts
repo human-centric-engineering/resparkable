@@ -84,11 +84,19 @@ describe('viewerFor', () => {
     // Inside a group, the group is the grantee (phase 49). The space comes off
     // the scope membership minted, never off the request.
     const scope = spaceScopeFor({ spaceId: GROUP_SPACE, actorUserId: 'user_b', role: 'member' });
-    expect(viewerFor(session(), scope).group).toEqual({ spaceId: GROUP_SPACE, canWrite: true });
+    expect(viewerFor(session(), scope).group).toEqual({
+      spaceId: GROUP_SPACE,
+      canWrite: true,
+      canAdminister: false,
+    });
   });
 
   it('marks a group viewer as unable to write, so a commenter grant does not let them comment', () => {
     const scope = spaceScopeFor({ spaceId: GROUP_SPACE, actorUserId: 'user_b', role: 'viewer' });
-    expect(viewerFor(session(), scope).group).toEqual({ spaceId: GROUP_SPACE, canWrite: false });
+    expect(viewerFor(session(), scope).group).toEqual({
+      spaceId: GROUP_SPACE,
+      canWrite: false,
+      canAdminister: false,
+    });
   });
 });

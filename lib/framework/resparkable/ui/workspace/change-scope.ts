@@ -194,6 +194,23 @@ const TAB_CHANGE_SCOPES: Record<TabKind, TabChangeScope> = {
   search: { collections: [] },
   capture: { collections: [] },
   note: { collections: [], record: { type: 'thought', param: 'id' } },
+  // Every collection, because any write in the space can be a line in it. It
+  // also polls (§23.10), so a write somebody else made arrives without this.
+  feed: {
+    collections: [
+      'thought',
+      'task',
+      'project',
+      'goal',
+      'area',
+      'entity',
+      'document',
+      'board',
+      'tag',
+      'link',
+      'timeBlock',
+    ],
+  },
 };
 
 /**

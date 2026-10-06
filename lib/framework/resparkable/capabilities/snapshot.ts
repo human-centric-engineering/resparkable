@@ -44,6 +44,7 @@ export class ResparkableGetSnapshotCapability extends ResparkableCapability<
   SnapshotArgs,
   SnapshotPayload
 > {
+  readonly writes = false;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = snapshotSchema;

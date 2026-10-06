@@ -23,6 +23,7 @@ import {
   rejectGroupJoinRequest,
   type JoinRequestRefusal,
 } from '@/lib/framework/resparkable/services/group-join-links';
+import { sendMembershipChangedNotice } from '@/lib/framework/resparkable/services/membership-notice';
 
 function refuse(reason: JoinRequestRefusal): never {
   if (reason === 'not_a_member') throw new NotFoundError('Group not found');
@@ -42,6 +43,16 @@ export const POST = withAuth<{ id: string; userId: string }>(
     if (!result.ok) refuse(result.reason);
 
     log.info('Resparkable group join request approved', { groupId: id });
+
+    // They asked and then waited: tell them they are in (§23.13's second
+    // email). A rejection is not emailed; the request simply ends.
+    await sendMembershipChangedNotice({
+      groupId: id,
+      groupName: result.groupName,
+      actorUserId: session.user.id,
+      subjectUserId: userId,
+      change: { kind: 'join_approved', role: result.role },
+    });
 
     return successResponse({ userId, approved: true });
   }

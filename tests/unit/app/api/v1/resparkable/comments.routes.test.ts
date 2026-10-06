@@ -48,7 +48,7 @@ vi.mock('@/lib/auth/guards', () => ({
 }));
 
 vi.mock('@/lib/framework/resparkable/services/comments', () => ({
-  listCommentsFor: vi.fn(),
+  listCommentsWithPermission: vi.fn(),
   addComment: vi.fn(),
   updateComment: vi.fn(),
   removeComment: vi.fn(),
@@ -75,7 +75,7 @@ import { POST as ACCEPT_POST } from '@/app/api/v1/resparkable/invites/accept/rou
 import { POST as INVITE_POST } from '@/app/api/v1/resparkable/grants/[id]/invite/route';
 import {
   addComment,
-  listCommentsFor,
+  listCommentsWithPermission,
   removeComment,
   updateComment,
 } from '@/lib/framework/resparkable/services/comments';
@@ -122,7 +122,10 @@ beforeEach(() => {
 
 describe('GET /api/v1/resparkable/comments', () => {
   it('returns the thread with a count', async () => {
-    vi.mocked(listCommentsFor).mockResolvedValue([COMMENT]);
+    vi.mocked(listCommentsWithPermission).mockResolvedValue({
+      comments: [COMMENT],
+      canComment: false,
+    });
 
     const response = await invoke(
       COMMENTS_GET,
@@ -133,8 +136,25 @@ describe('GET /api/v1/resparkable/comments', () => {
     expect(body.meta.count).toBe(1);
   });
 
+  it('says whether the reader may add to the thread, so a group page can show the composer', async () => {
+    // Phase 58: a member's own project page renders the thread without knowing
+    // the reader's role, and takes this answer instead.
+    vi.mocked(listCommentsWithPermission).mockResolvedValue({
+      comments: [COMMENT],
+      canComment: true,
+    });
+
+    const response = await invoke(
+      COMMENTS_GET,
+      req(`http://localhost/api/v1/resparkable/comments?entityType=project&entityId=${PROJECT_ID}`)
+    );
+
+    const body = await response.json();
+    expect(body.meta.canComment).toBe(true);
+  });
+
   it('404s when the basis carries no comments', async () => {
-    vi.mocked(listCommentsFor).mockResolvedValue(null);
+    vi.mocked(listCommentsWithPermission).mockResolvedValue(null);
 
     const response = await invoke(
       COMMENTS_GET,
@@ -148,14 +168,14 @@ describe('GET /api/v1/resparkable/comments', () => {
   });
 
   it('builds the viewer from the session, lower-cased', async () => {
-    vi.mocked(listCommentsFor).mockResolvedValue([]);
+    vi.mocked(listCommentsWithPermission).mockResolvedValue({ comments: [], canComment: false });
 
     await invoke(
       COMMENTS_GET,
       req(`http://localhost/api/v1/resparkable/comments?entityType=project&entityId=${PROJECT_ID}`)
     );
 
-    expect(vi.mocked(listCommentsFor).mock.calls[0][0]).toEqual({
+    expect(vi.mocked(listCommentsWithPermission).mock.calls[0][0]).toEqual({
       userId: 'user_b',
       email: 'b@example.com',
       group: null,

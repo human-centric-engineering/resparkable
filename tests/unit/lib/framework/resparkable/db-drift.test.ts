@@ -125,7 +125,7 @@ function withGroupUserKeys(rows: Array<{ conname: string; def: string }>): void 
   queryRaw.mockImplementation(() => Promise.resolve(rows));
 }
 
-/** All three of B13's keys, answered as correctly configured. */
+/** All five of B13's keys, answered as correctly configured. */
 function allGroupUserKeysHealthy(): Array<{ conname: string; def: string }> {
   return [
     {
@@ -139,6 +139,14 @@ function allGroupUserKeysHealthy(): Array<{ conname: string; def: string }> {
     {
       conname: 'framework_resparkable_group_invite_invitedByUserId_fkey',
       def: 'FOREIGN KEY ("invitedByUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+    },
+    {
+      conname: 'framework_resparkable_group_audit_entry_actorUserId_fkey',
+      def: 'FOREIGN KEY ("actorUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+    },
+    {
+      conname: 'framework_resparkable_group_audit_entry_subjectUserId_fkey',
+      def: 'FOREIGN KEY ("subjectUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
     },
   ];
 }
@@ -191,6 +199,7 @@ describe('registration', () => {
       'B12 ',
       'B13 ',
       'B14 ',
+      'B15 ',
     ]) {
       expect(names.some((name) => name.startsWith(id))).toBe(true);
     }
@@ -570,5 +579,43 @@ describe('B11 — the 23 authorship cascades, in one probe', () => {
     for (const table of CREATED_BY_TABLES) {
       expect(table.startsWith('framework_resparkable_')).toBe(true);
     }
+  });
+});
+
+describe('B15: a task assignee into "user" (phase 58)', () => {
+  it('passes when the key exists and nulls out', async () => {
+    queryRaw.mockImplementation(() =>
+      Promise.resolve([
+        {
+          conname: 'framework_resparkable_task_assignedToUserId_fkey',
+          def: 'FOREIGN KEY ("assignedToUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE SET NULL',
+        },
+      ])
+    );
+
+    expect(await probe('B15 ').probe()).toMatchObject({ ok: true });
+  });
+
+  it('fails when the key cascades, which would delete a group’s cards with a member', async () => {
+    queryRaw.mockImplementation(() =>
+      Promise.resolve([
+        {
+          conname: 'framework_resparkable_task_assignedToUserId_fkey',
+          def: 'FOREIGN KEY ("assignedToUserId") REFERENCES "user"(id) ON UPDATE CASCADE ON DELETE CASCADE',
+        },
+      ])
+    );
+
+    const result = await probe('B15 ').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('wrong action');
+  });
+
+  it('fails when the key is missing', async () => {
+    queryRaw.mockImplementation(() => Promise.resolve([]));
+
+    const result = await probe('B15 ').probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('missing');
   });
 });

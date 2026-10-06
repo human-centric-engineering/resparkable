@@ -32,6 +32,11 @@ import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn() }),
+  // `BoardView` now reads the active workspace through `useActiveGroupMembers`
+  // → `useActiveSpaceId` → `useSearchParams`, for the assignee picker (phase
+  // 58). An absent target resolves to the personal workspace, which is all
+  // these drag/drop tests need: none of them exercise a group board.
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('@/lib/api/client', () => ({

@@ -30,6 +30,7 @@
 
 import * as React from 'react';
 import { Pencil, Trash2 } from 'lucide-react';
+import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
 import { ClientDate } from '@/components/ui/client-date';
@@ -38,19 +39,28 @@ import { withActiveSpace } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { commentsSchema, type CommentWire } from '@/lib/framework/resparkable/ui/payloads';
 
+const canCommentMetaSchema = z.object({ canComment: z.boolean().optional() });
+
 export interface CommentThreadProps {
   entityType: string;
   entityId: string;
-  /** Whether this reader may write. False renders the thread read-only. */
-  canComment: boolean;
+  /**
+   * Whether this reader may write. False renders the thread read-only. Left
+   * out, the thread asks the server, which answers alongside the comments: the
+   * case for a group member's own item, where the caller does not know the
+   * reader's role (phase 58).
+   */
+  canComment?: boolean;
 }
 
 export function CommentThread({
   entityType,
   entityId,
-  canComment,
+  canComment: canCommentProp,
 }: CommentThreadProps): React.ReactElement | null {
   const [comments, setComments] = React.useState<CommentWire[] | null>(null);
+  const [serverCanComment, setServerCanComment] = React.useState(false);
+  const canComment = canCommentProp ?? serverCanComment;
   const [unavailable, setUnavailable] = React.useState(false);
   const [draft, setDraft] = React.useState('');
   const [editing, setEditing] = React.useState<{ id: string; body: string } | null>(null);
@@ -60,7 +70,7 @@ export function CommentThread({
   const ref = `entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`;
 
   const load = React.useCallback(async () => {
-    const result = await read(`${RESPARKABLE_API.COMMENTS}?${ref}`);
+    const result = await read(`${RESPARKABLE_API.COMMENTS}?${ref}`, setServerCanComment);
     // A 404 here means this basis carries no comments — a public link, which is
     // a document rather than a relationship. A cascaded grant is NOT excluded:
     // it reads the thread like any other grant, and only its ability to write
@@ -236,7 +246,10 @@ export function CommentThread({
   );
 }
 
-async function read(url: string): Promise<CommentWire[] | null> {
+async function read(
+  url: string,
+  onCanComment: (value: boolean) => void
+): Promise<CommentWire[] | null> {
   try {
     // With the active workspace, like every other read since phase 49: inside a
     // group the comment routes resolve the group's grants, and without the param
@@ -245,7 +258,12 @@ async function read(url: string): Promise<CommentWire[] | null> {
     const payload: unknown = await response.json();
     if (!response.ok || !isSuccess(payload)) return null;
     const parsed = commentsSchema.safeParse(payload.data);
-    return parsed.success ? parsed.data : null;
+    if (!parsed.success) return null;
+    const meta = canCommentMetaSchema.safeParse(
+      typeof payload === 'object' && payload !== null && 'meta' in payload ? payload.meta : null
+    );
+    onCanComment(meta.success && meta.data.canComment === true);
+    return parsed.data;
   } catch {
     return null;
   }

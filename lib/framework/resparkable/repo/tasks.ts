@@ -21,12 +21,17 @@ import {
   type ListOptions,
   type SortDirection,
   type WithoutOwner,
+  revWhere,
+  revBump,
+  type RevisedUpdateOptions,
 } from '@/lib/framework/resparkable/repo/shared';
 import type { ResparkableTask, Prisma } from '@prisma/client';
 
 export interface TaskFilters {
   status?: string;
   projectId?: string;
+  /** Tasks assigned to this person (phase 58). Rows, never a count over people. */
+  assignedToUserId?: string;
   /** Tasks due at or before this instant — the "what's overdue" read. */
   dueBefore?: Date;
   /**
@@ -57,6 +62,7 @@ function taskWhere(
     ...liveSpaceWhere(scope, includeArchived),
     ...statusWhere(filters),
     ...(filters.projectId ? { projectId: filters.projectId } : {}),
+    ...(filters.assignedToUserId ? { assignedToUserId: filters.assignedToUserId } : {}),
     ...(filters.dueBefore ? { dueAt: { lte: filters.dueBefore } } : {}),
     ...(filters.untouchedSince ? { updatedAt: { lte: filters.untouchedSince } } : {}),
     ...(filters.hideDeferred
@@ -234,10 +240,17 @@ export async function createTask(
 export async function updateTask(
   scope: SpaceScope,
   id: string,
-  data: TaskUpdateData
+  data: TaskUpdateData,
+  /** The `rev` the writer read, when it sent one (phase 58). See `revWhere`. */
+  expectedRev?: number,
+  /** `{ bumpRev: false }` for a bookkeeping write. See `revBump`. */
+  options: RevisedUpdateOptions = {}
 ): Promise<ResparkableTask | null> {
   return nullOnMiss(() =>
-    prisma.resparkableTask.update({ where: { id, ...spaceWhere(scope) }, data })
+    prisma.resparkableTask.update({
+      where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
+      data: { ...data, ...revBump(options) },
+    })
   );
 }
 

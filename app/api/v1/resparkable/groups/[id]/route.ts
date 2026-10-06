@@ -32,6 +32,7 @@ import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { findAccountNames, listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
+import { storageUsage } from '@/lib/framework/resparkable/services/storage-quota';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
 import {
@@ -55,13 +56,12 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
   ]);
   const visible = visibleMemberRows(members, resolved.scope.role);
 
-  // The account name of each person asking to join, so the admin deciding
-  // whether to let them in can tell who they are. Only requests, and only for
-  // an admin (they are the only ones `visibleMemberRows` shows requests to).
-  // The name and never the address (decided 2026-09-25).
-  const requesterNames = await findAccountNames(
-    visible.filter((member) => member.joinedAt === null).map((member) => member.userId)
-  );
+  // Account names for everybody the reader can see, and never an address
+  // (decided 2026-09-25 for requests; extended to joined members in phase 58).
+  // A group's members already see each other's ids; a name is what makes the
+  // member list, an assignee and the feed's "added by Sam" (§23.10) readable.
+  // An address stays a separate decision nobody has made.
+  const names = await findAccountNames(visible.map((member) => member.userId));
 
   log.info('Resparkable group read', { groupId: id, members: members.length });
 
@@ -92,11 +92,14 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       role: member.role,
       joinedAt: member.joinedAt,
       requestedAt: member.requestedAt,
-      name: member.joinedAt === null ? (requesterNames.get(member.userId) ?? null) : null,
+      name: names.get(member.userId) ?? null,
     })),
     // The group's newest weekly digest (§23.8), read by every member. It names
     // nobody and ranks nobody: see `services/group-digest.ts`.
     latestDigest,
+    // How much of the shared shelf is used, for every member (phase 58): an
+    // upload refused for space should not be the first anyone hears of it.
+    storage: await storageUsage(resolved.scope),
   });
 });
 

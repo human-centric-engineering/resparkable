@@ -69,6 +69,8 @@ export interface EntityFormDialogProps<TValues extends FieldValues> {
   collection: string;
   /** Present for an edit, absent for a create. */
   existingId?: string;
+  /** The row's edit token, for an edit (phase 58). See `ResourceFormBody`. */
+  rev?: number;
   editTitle: string;
   editDescription?: string;
   form: UseFormReturn<TValues>;
@@ -89,6 +91,7 @@ export function EntityFormDialog<TValues extends FieldValues>({
   entityType,
   collection,
   existingId,
+  rev,
   editTitle,
   editDescription,
   form,
@@ -122,6 +125,7 @@ export function EntityFormDialog<TValues extends FieldValues>({
         onOpenChange={onOpenChange}
         collection={collection}
         id={existingId}
+        {...(rev !== undefined ? { rev } : {})}
         title={editTitle}
         description={editDescription}
         form={form}
@@ -158,6 +162,7 @@ export function EntityFormDialog<TValues extends FieldValues>({
         <EntityEditorPanel
           entityType={entityType}
           entityId={existingId}
+          {...(rev !== undefined ? { rev } : {})}
           collection={collection}
           form={form}
           toBody={toBody}

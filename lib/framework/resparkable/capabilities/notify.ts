@@ -115,6 +115,7 @@ export function renderResparkableNotification(
 }
 
 export class ResparkableNotifyCapability extends ResparkableCapability<NotifyArgs, NotifyResult> {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentNotifySchema;

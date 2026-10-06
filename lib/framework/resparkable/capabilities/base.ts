@@ -40,8 +40,10 @@ import {
 } from '@/lib/orchestration/capabilities/base-capability';
 import { runAsSystemAuthored } from '@/lib/framework/resparkable/services/authorship';
 import {
+  permissionsFor,
   resolveActiveSpaceScope,
   resolveBackgroundSpaceScope,
+  VIEWER_READ_ONLY_MESSAGE,
 } from '@/lib/framework/resparkable/services/membership';
 import type { CapabilityContext, CapabilityResult } from '@/lib/orchestration/capabilities/types';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
@@ -305,6 +307,14 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
   readonly processesPii = true;
 
   /**
+   * Whether this capability changes the space: creates, updates, links,
+   * reviews, sends. Abstract so a capability added later cannot compile
+   * without answering, because the answer decides whether a group `viewer`
+   * may run it (phase-58-59-plan.md Decision 1, test 13o).
+   */
+  abstract readonly writes: boolean;
+
+  /**
    * Resolve the owner, mark the authorship, then delegate.
    *
    * The `catch` is narrow on purpose: a missing user is an expected condition
@@ -334,6 +344,12 @@ export abstract class ResparkableCapability<TArgs, TData> extends BaseCapability
         'This tool reads and writes one person’s notes, and this run has no owner. It cannot be used from a system-initiated run.',
         'no_user_context'
       );
+    }
+
+    // A viewer reads and writes nothing (§23.3). Asked here because chat and
+    // every MCP key reach the space through this method and no route.
+    if (this.writes && !permissionsFor(scope.role).write) {
+      return this.error(VIEWER_READ_ONLY_MESSAGE, 'viewer_read_only');
     }
 
     if (isUnattendedRun(context)) {

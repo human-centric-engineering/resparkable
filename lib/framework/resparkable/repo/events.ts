@@ -137,6 +137,20 @@ export interface EventFilters {
   entityType?: string;
   entityId?: string;
   since?: Date;
+  /**
+   * Strictly after this row in the feed's order, newest first (phase 59).
+   * Time and id together, so rows written in the same millisecond on either
+   * side of a page boundary are neither skipped nor shown twice.
+   */
+  before?: { createdAt: Date; id: string };
+  /**
+   * Only rows this person did: the feed's "what did Priya add" filter (§23.10).
+   * Returns rows and never a count. There is deliberately no index on the
+   * column, so Postgres walks `[spaceId, createdAt]` until it has a page of
+   * matches; for a quiet member in a busy group that is a long walk, which is
+   * why a filtered feed is a one-off search and is never polled.
+   */
+  actorUserId?: string;
 }
 
 export async function listEvents(
@@ -156,8 +170,18 @@ export async function listEvents(
       ...(filters.entityType ? { entityType: filters.entityType } : {}),
       ...(filters.entityId ? { entityId: filters.entityId } : {}),
       ...(filters.since ? { createdAt: { gte: filters.since } } : {}),
+      ...(filters.before
+        ? {
+            OR: [
+              { createdAt: { lt: filters.before.createdAt } },
+              { createdAt: filters.before.createdAt, id: { lt: filters.before.id } },
+            ],
+          }
+        : {}),
+      ...(filters.actorUserId ? { createdByUserId: filters.actorUserId } : {}),
     },
-    orderBy: { createdAt: 'desc' },
+    // `id` breaks ties, so a cursor of (time, id) pages without gaps.
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     ...pageArgs(options),
   });
 }

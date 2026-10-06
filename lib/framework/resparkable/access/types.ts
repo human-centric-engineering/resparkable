@@ -96,6 +96,12 @@ export interface ResparkableViewerGroup {
    * viewer writes nothing (§23.3).
    */
   canWrite: boolean;
+  /**
+   * Whether this member administers the group. On the `space` basis (an item
+   * in the group's own space) an admin may delete anybody's comment, which is
+   * what succeeds phase 13's "the owner" in a group (§23.13).
+   */
+  canAdminister: boolean;
 }
 
 /**
@@ -117,8 +123,14 @@ export interface ResparkableViewerGroup {
  * tasks. The line that does the work is basis-kind, `grant` versus `link`: a
  * named grant is a relationship and carries `ownerIdentity` and `comments`, a
  * public link is a document and carries neither.
+ *
+ * `space` (phase 58, §23.13) is a member reading an item in their own group's
+ * space. Nothing is shared and nothing is redacted: every member can already
+ * read every item there (§23.4). It exists so a member can comment, which a
+ * group item could not have before, since nothing in a group is `owner`-held.
  */
-export type ResparkableAccessBasis = 'owner' | 'grant' | 'grant-cascade' | 'link' | 'link-cascade';
+export type ResparkableAccessBasis =
+  'owner' | 'space' | 'grant' | 'grant-cascade' | 'link' | 'link-cascade';
 
 /** What the caller is trying to do. `comment` implies `read`. */
 export type ResparkableNeed = 'read' | 'comment';

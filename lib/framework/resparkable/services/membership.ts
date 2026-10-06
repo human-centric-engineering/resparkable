@@ -56,7 +56,7 @@ import {
   deleteJoinRequest,
   deleteGroupSpaceIfLastMember,
   deleteGroupSpaceIfMemberless,
-  deleteMember,
+  deleteMemberWithAudit,
   findGroupById,
   findGroupBySlug,
   findMembership,
@@ -68,6 +68,7 @@ import {
   returnJoinLinkUsesForErasure,
   updateGroup,
   updateMemberRole,
+  updateMemberRoleWithAudit,
   type GroupMemberWithGroup,
   type GroupTx,
   type GroupUpdateData,
@@ -79,10 +80,13 @@ import {
   type SpaceRole,
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
+import { insertGroupAuditEntry } from '@/lib/framework/resparkable/repo/group-audit';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit-record';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { slugify } from '@/lib/framework/resparkable/services/slug';
 import { planErasureSuccession } from '@/lib/framework/resparkable/services/succession';
+import { ForbiddenError } from '@/lib/api/errors';
 import { logger } from '@/lib/logging';
 
 /**
@@ -258,6 +262,23 @@ export function permissionsFor(role: SpaceRole): GroupPermissions {
   };
 }
 
+/** What a viewer is told when they try to change something. */
+export const VIEWER_READ_ONLY_MESSAGE =
+  'You can read this workspace but not change it. Ask an admin to make you a member.';
+
+/**
+ * The one predicate every write path asks before changing a space's content.
+ *
+ * Three chokepoints call it, not each route (phase-58-59-plan.md Decision 1):
+ * `requestSpaceScope` for a non-`GET` request, `POST /capture` for the scope it
+ * resolves from the body, and `ResparkableCapability.execute` for a capability
+ * declared as writing. A 403 rather than §16.2's 404, because a viewer is a
+ * member: they can already see the space, so the refusal tells them nothing.
+ */
+export function assertCanWrite(scope: SpaceScope): void {
+  if (!permissionsFor(scope.role).write) throw new ForbiddenError(VIEWER_READ_ONLY_MESSAGE);
+}
+
 /**
  * The member rows a caller may see: joined members for everybody, and requests
  * to join (`joinedAt: null`) only for somebody who can answer one. To anybody
@@ -347,7 +368,16 @@ export async function updateGroupSettings(
   // A new cap answers the "somebody was turned away" notice, whichever way it
   // moved: an admin who has looked at the cap has seen the notice.
   const update = 'maxMembers' in data ? { ...data, joinRefusedFullAt: null } : data;
-  return { ok: true, value: await updateGroup(groupId, update) };
+  const updated = await updateGroup(groupId, update);
+  // Which settings moved, never their values: a group's description is
+  // content, and the record is about administering, not about what was said.
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    action: 'settings_changed',
+    metadata: { fields: Object.keys(data).sort() },
+  });
+  return { ok: true, value: updated };
 }
 
 /**
@@ -364,7 +394,7 @@ export async function changeMemberRole(
   groupId: string,
   targetUserId: string,
   role: string
-): Promise<MembershipResult<null>> {
+): Promise<MembershipResult<RoleChangeOutcome>> {
   if (!isGroupRole(role)) return { ok: false, reason: 'unknown_role' };
 
   const resolved = await resolveGroupMembership(actorUserId, groupId);
@@ -377,15 +407,45 @@ export async function changeMemberRole(
   // A pending row's role was fixed by the link it came through, and changing
   // it would let an admin turn a request into an admin-to-be. Approve first.
   if (!target || target.joinedAt === null) return { ok: false, reason: 'no_such_member' };
-  if (target.role === role) return { ok: true, value: null };
+  const groupName = resolved.membership.group.name;
+  if (target.role === role) {
+    return { ok: true, value: { changed: false, from: target.role, groupName } };
+  }
 
   if (target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
     return { ok: false, reason: 'last_admin' };
   }
 
-  await updateMemberRole(groupId, targetUserId, role);
+  await updateMemberRoleWithAudit(groupId, targetUserId, role, {
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: 'role_changed',
+    metadata: { from: target.role, to: role },
+  });
   logger.info('Resparkable group member role changed', { groupId, role });
-  return { ok: true, value: null };
+  return { ok: true, value: { changed: true, from: target.role, groupName } };
+}
+
+/** What a role change did, for the route's email (phase 58). */
+export interface RoleChangeOutcome {
+  /** `false` when the member already held the role: nothing to tell anyone. */
+  changed: boolean;
+  from: string;
+  groupName: string;
+}
+
+/**
+ * What a removal did (phase 58), so the route emails exactly the person an
+ * admin removed and nobody who left on their own.
+ */
+export type RemovalKind =
+  'left' | 'removed' | 'request_withdrawn' | 'request_removed' | 'group_deleted';
+
+export interface RemovalOutcome {
+  groupDeleted: boolean;
+  kind: RemovalKind;
+  groupName: string | null;
 }
 
 /**
@@ -407,7 +467,7 @@ export async function removeMember(
   actorUserId: string,
   groupId: string,
   targetUserId: string
-): Promise<MembershipResult<{ groupDeleted: boolean }>> {
+): Promise<MembershipResult<RemovalOutcome>> {
   // Withdrawing your own request to join. It has to come before the resolve
   // below, because a pending member resolves to nothing and would be told the
   // group does not exist. One cheap read first, so an ordinary leave does not
@@ -416,7 +476,10 @@ export async function removeMember(
     const own = await findMembership(actorUserId, groupId);
     if (own && own.joinedAt === null && (await deleteJoinRequest(groupId, actorUserId))) {
       logger.info('Resparkable group join request withdrawn', { groupId });
-      return { ok: true, value: { groupDeleted: false } };
+      return {
+        ok: true,
+        value: { groupDeleted: false, kind: 'request_withdrawn', groupName: null },
+      };
     }
   }
 
@@ -438,7 +501,14 @@ export async function removeMember(
   if (target.joinedAt === null) {
     await deleteJoinRequest(groupId, targetUserId);
     logger.info('Resparkable group join request removed', { groupId });
-    return { ok: true, value: { groupDeleted: false } };
+    return {
+      ok: true,
+      value: {
+        groupDeleted: false,
+        kind: 'request_removed',
+        groupName: resolved.membership.group.name,
+      },
+    };
   }
 
   // Joined members only, matching `countAdmins`, which excludes pending rows on
@@ -457,16 +527,29 @@ export async function removeMember(
     (await deleteGroupSpaceIfLastMember(groupId, resolved.membership.group.spaceId, targetUserId))
   ) {
     logger.info('Resparkable group deleted: its last member left', { groupId });
-    return { ok: true, value: { groupDeleted: true } };
+    return { ok: true, value: { groupDeleted: true, kind: 'group_deleted', groupName: null } };
   }
 
   if (target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
     return { ok: false, reason: 'last_admin' };
   }
 
-  await deleteMember(groupId, targetUserId);
+  await deleteMemberWithAudit(groupId, resolved.membership.group.spaceId, targetUserId, {
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: removingSomebodyElse ? 'member_removed' : 'member_left',
+    metadata: { role: target.role },
+  });
   logger.info('Resparkable group member removed', { groupId, byAdmin: removingSomebodyElse });
-  return { ok: true, value: { groupDeleted: false } };
+  return {
+    ok: true,
+    value: {
+      groupDeleted: false,
+      kind: removingSomebodyElse ? 'removed' : 'left',
+      groupName: resolved.membership.group.name,
+    },
+  };
 }
 
 // The rule itself lives in `services/succession.ts`, pure, so the group page
@@ -528,6 +611,18 @@ export async function settleGroupsAfterErasure(
       logger.info('Resparkable group deleted: its last member was erased', { groupId });
     } else if (plan.kind === 'promote') {
       await updateMemberRole(groupId, plan.userId, 'admin', tx);
+      // The system acted, so no actor: the group's record shows the successor
+      // was promoted, and not by whom, because nobody chose it (§23.13).
+      await insertGroupAuditEntry(
+        {
+          groupId,
+          actorUserId: null,
+          subjectUserId: plan.userId,
+          action: 'role_changed',
+          metadata: { to: 'admin', reason: 'succession' },
+        },
+        tx
+      );
       settlement.promoted += 1;
       logger.info('Resparkable group admin transferred after erasure', { groupId });
     } else if (plan.kind === 'no_admin') {
@@ -590,7 +685,13 @@ export async function settleStrandedGroups(
           logger.warn('Resparkable stranded group deleted: it had no members left', { groupId });
         }
       } else if (plan.kind === 'promote') {
-        await updateMemberRole(groupId, plan.userId, 'admin');
+        await updateMemberRoleWithAudit(groupId, plan.userId, 'admin', {
+          groupId,
+          actorUserId: null,
+          subjectUserId: plan.userId,
+          action: 'role_changed',
+          metadata: { to: 'admin', reason: 'succession' },
+        });
         settlement.promoted += 1;
         logger.warn('Resparkable stranded group given an admin', { groupId });
       }

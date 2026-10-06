@@ -204,6 +204,7 @@ export function ProjectForm({
       entityType="project"
       collection={RESPARKABLE_API.PROJECTS}
       existingId={project?.id}
+      {...(project?.rev !== undefined ? { rev: project.rev } : {})}
       editTitle="Edit project"
       editDescription="A body of work with tasks under it. Tasks inherit its goal alignment and momentum."
       form={form}

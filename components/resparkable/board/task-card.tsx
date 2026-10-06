@@ -57,6 +57,11 @@ export interface TaskCardProps {
   columnLabel?: string;
   /** Rendered without drag wiring inside the drag overlay. */
   overlay?: boolean;
+  /**
+   * Who the card is assigned to, by name, in a group workspace (phase 58).
+   * Resolved once by the board, never fetched per card.
+   */
+  assigneeName?: string | null;
 }
 
 export function TaskCard({
@@ -64,6 +69,7 @@ export function TaskCard({
   onOpen,
   columnLabel,
   overlay = false,
+  assigneeName = null,
 }: TaskCardProps): React.ReactElement {
   const now = useNow();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -105,6 +111,10 @@ export function TaskCard({
         aria-roledescription={overlay ? undefined : 'draggable card'}
       >
         <p className="font-medium">{card.task.title}</p>
+
+        {assigneeName !== null && (
+          <p className="text-muted-foreground text-xs">Assigned to {assigneeName}</p>
+        )}
 
         <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
           {card.task.dueAt && (

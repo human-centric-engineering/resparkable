@@ -34,6 +34,7 @@ import {
   removeMember,
   type MembershipRefusal,
 } from '@/lib/framework/resparkable/services/membership';
+import { sendMembershipChangedNotice } from '@/lib/framework/resparkable/services/membership-notice';
 import { updateGroupMemberSchema } from '@/lib/framework/resparkable/validations';
 
 /**
@@ -70,6 +71,19 @@ export const PATCH = withAuth<{ id: string; userId: string }>(
 
     log.info('Resparkable group member role changed', { groupId: id, role: body.role });
 
+    // After the change has committed, and only when somebody else made it
+    // (the notice skips an admin changing their own role). §23.13's second
+    // email of three.
+    if (result.value.changed) {
+      await sendMembershipChangedNotice({
+        groupId: id,
+        groupName: result.value.groupName,
+        actorUserId: session.user.id,
+        subjectUserId: userId,
+        change: { kind: 'role_changed', from: result.value.from, to: body.role },
+      });
+    }
+
     return successResponse({ groupId: id, role: body.role });
   }
 );
@@ -81,6 +95,18 @@ export const DELETE = withAuth<{ id: string; userId: string }>(
 
     const result = await removeMember(session.user.id, id, userId);
     if (!result.ok) refuse(result.reason);
+
+    // Only a member an admin removed is emailed: not somebody who left, and
+    // not a request to join that was turned down (that person never got in).
+    if (result.value.kind === 'removed' && result.value.groupName !== null) {
+      await sendMembershipChangedNotice({
+        groupId: id,
+        groupName: result.value.groupName,
+        actorUserId: session.user.id,
+        subjectUserId: userId,
+        change: { kind: 'removed' },
+      });
+    }
 
     if (result.value.groupDeleted) {
       log.warn('Resparkable group deleted: its last member left', { groupId: id });

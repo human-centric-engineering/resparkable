@@ -93,6 +93,18 @@ vi.mock('@/lib/framework/resparkable/services/group-deletion', () => ({
 vi.mock('@/lib/framework/resparkable/services/group-digest', () => ({
   getLatestGroupDigest: vi.fn().mockResolvedValue(null),
 }));
+// `GET /groups/[id]` now reads the space's storage usage on every call
+// (phase 58). Mocked so these tests exercise the route's own logic rather
+// than a real, unmocked database read through `sumDocumentBytes`.
+vi.mock('@/lib/framework/resparkable/services/storage-quota', () => ({
+  storageUsage: vi.fn().mockResolvedValue({ usedBytes: 0, quotaBytes: null }),
+}));
+// The role-change and removal routes email the affected person after a
+// successful write (phase 58's "your membership changed"). Mocked so the
+// tests below assert on the route's own branching, not a real send.
+vi.mock('@/lib/framework/resparkable/services/membership-notice', () => ({
+  sendMembershipChangedNotice: vi.fn(),
+}));
 
 vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
   issueGroupInvite: vi.fn(),
@@ -149,6 +161,7 @@ import {
 } from '@/lib/framework/resparkable/services/membership';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
+import { sendMembershipChangedNotice } from '@/lib/framework/resparkable/services/membership-notice';
 import {
   acceptGroupInvite,
   issueGroupInvite,
@@ -184,6 +197,7 @@ const GROUP = {
   lowBalanceAlertCredits: null,
   largeRunAlertPercent: null,
   largeRunAlertedAt: null,
+  storageQuotaBytes: null,
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
   updatedAt: new Date('2026-08-01T00:00:00.000Z'),
 };
@@ -196,6 +210,7 @@ const MEMBERSHIP = {
   invitedByUserId: null,
   soleAdminNotifiedAt: null,
   dailyCreditCap: null,
+  feedSeenAt: null,
   joinedAt: new Date('2026-08-01T00:00:00.000Z'),
   requestedAt: null,
   joinLinkId: null,
@@ -507,7 +522,10 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
     expect(pending.name).toBeNull();
   });
 
-  it('looks up names only for the pending rows it is showing, never for a joined member', async () => {
+  it('looks up a name for every visible row, joined members included (phase 58)', async () => {
+    // Extended from the earlier "pending rows only" rule: a group's member
+    // list, an assignee and the feed's attribution all need a joined
+    // member's name too, not only a pending request's.
     vi.mocked(resolveGroupMembership).mockResolvedValue({ membership: MEMBERSHIP, scope: SCOPE });
     vi.mocked(listGroupMembers).mockResolvedValue([MEMBERSHIP, PENDING_MEMBERSHIP]);
 
@@ -515,16 +533,17 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
       id: GROUP_ID,
     });
 
-    expect(findAccountNames).toHaveBeenCalledWith(['user_p']);
+    expect(findAccountNames).toHaveBeenCalledWith(['user_a', 'user_p']);
   });
 
-  it('never looks up a name, and never shows a pending row or a name, for a non-admin', async () => {
+  it('never shows a pending row to a non-admin, but still looks up names for the joined rows they can see', async () => {
     const memberRole = { ...MEMBERSHIP, role: 'member' };
     vi.mocked(resolveGroupMembership).mockResolvedValue({
       membership: memberRole,
       scope: MEMBER_SCOPE,
     });
     vi.mocked(listGroupMembers).mockResolvedValue([memberRole, PENDING_MEMBERSHIP]);
+    vi.mocked(findAccountNames).mockResolvedValue(new Map([['user_a', 'Ana']]));
 
     const response = await invoke(
       GROUP_GET,
@@ -533,8 +552,10 @@ describe('GET /api/v1/resparkable/groups/[id]', () => {
     );
     const body = await response.json();
 
-    expect(findAccountNames).toHaveBeenCalledWith([]);
+    // The pending row is still withheld: that rule is unchanged.
+    expect(findAccountNames).toHaveBeenCalledWith(['user_a']);
     expect(body.data.members.map((m: { userId: string }) => m.userId)).toEqual(['user_a']);
+    expect(body.data.members[0].name).toBe('Ana');
   });
 
   it('never lets an email address reach the response, even with a name attached', async () => {
@@ -796,6 +817,7 @@ describe('GET /api/v1/resparkable/groups/[id]/members', () => {
         role: 'admin',
         joinedAt: MEMBERSHIP.joinedAt.toISOString(),
         requestedAt: null,
+        name: null,
       },
     ]);
   });
@@ -891,7 +913,10 @@ describe('PATCH /api/v1/resparkable/groups/[id]/members/[userId]', () => {
   }
 
   it('reports the role on a successful change', async () => {
-    vi.mocked(changeMemberRole).mockResolvedValue({ ok: true, value: null });
+    vi.mocked(changeMemberRole).mockResolvedValue({
+      ok: true,
+      value: { changed: true, from: 'member', groupName: 'Study Group B' },
+    });
 
     const response = await invoke(
       MEMBER_PATCH,
@@ -904,6 +929,49 @@ describe('PATCH /api/v1/resparkable/groups/[id]/members/[userId]', () => {
 
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ groupId: GROUP_ID, role: 'viewer' });
+  });
+
+  it('emails the person whose role changed, naming what it changed from and to', async () => {
+    vi.mocked(changeMemberRole).mockResolvedValue({
+      ok: true,
+      value: { changed: true, from: 'member', groupName: 'Study Group B' },
+    });
+
+    await invoke(
+      MEMBER_PATCH,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_b`, {
+        role: 'viewer',
+      }),
+      { id: GROUP_ID, userId: 'user_b' }
+    );
+
+    expect(sendMembershipChangedNotice).toHaveBeenCalledWith({
+      groupId: GROUP_ID,
+      groupName: 'Study Group B',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      change: { kind: 'role_changed', from: 'member', to: 'viewer' },
+    });
+  });
+
+  it('sends no email when the role did not actually change', async () => {
+    // An admin re-submitting the role a member already holds: nothing moved,
+    // and nobody but the submitter saw this happen.
+    vi.mocked(changeMemberRole).mockResolvedValue({
+      ok: true,
+      value: { changed: false, from: 'viewer', groupName: 'Study Group B' },
+    });
+
+    const response = await invoke(
+      MEMBER_PATCH,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_b`, {
+        role: 'viewer',
+      }),
+      { id: GROUP_ID, userId: 'user_b' }
+    );
+
+    expect(response.status).toBe(200);
+    expect(sendMembershipChangedNotice).not.toHaveBeenCalled();
   });
 });
 
@@ -930,7 +998,10 @@ describe('DELETE /api/v1/resparkable/groups/[id]/members/[userId]', () => {
   }
 
   it('reports groupDeleted: false when another member remains', async () => {
-    vi.mocked(removeMember).mockResolvedValue({ ok: true, value: { groupDeleted: false } });
+    vi.mocked(removeMember).mockResolvedValue({
+      ok: true,
+      value: { groupDeleted: false, kind: 'removed', groupName: 'Study Group B' },
+    });
 
     const response = await invoke(
       MEMBER_DELETE,
@@ -944,7 +1015,10 @@ describe('DELETE /api/v1/resparkable/groups/[id]/members/[userId]', () => {
   });
 
   it('reports groupDeleted: true when the last member leaves, so the client knows the workspace is gone', async () => {
-    vi.mocked(removeMember).mockResolvedValue({ ok: true, value: { groupDeleted: true } });
+    vi.mocked(removeMember).mockResolvedValue({
+      ok: true,
+      value: { groupDeleted: true, kind: 'group_deleted', groupName: null },
+    });
 
     const response = await invoke(
       MEMBER_DELETE,
@@ -955,6 +1029,57 @@ describe('DELETE /api/v1/resparkable/groups/[id]/members/[userId]', () => {
 
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ groupId: GROUP_ID, groupDeleted: true });
+  });
+
+  it('emails somebody an admin removed', async () => {
+    vi.mocked(removeMember).mockResolvedValue({
+      ok: true,
+      value: { groupDeleted: false, kind: 'removed', groupName: 'Study Group B' },
+    });
+
+    await invoke(
+      MEMBER_DELETE,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_b`),
+      { id: GROUP_ID, userId: 'user_b' }
+    );
+
+    expect(sendMembershipChangedNotice).toHaveBeenCalledWith({
+      groupId: GROUP_ID,
+      groupName: 'Study Group B',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      change: { kind: 'removed' },
+    });
+  });
+
+  it('sends no email for a self-leave', async () => {
+    vi.mocked(removeMember).mockResolvedValue({
+      ok: true,
+      value: { groupDeleted: false, kind: 'left', groupName: 'Study Group B' },
+    });
+
+    await invoke(
+      MEMBER_DELETE,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_a`),
+      { id: GROUP_ID, userId: 'user_a' }
+    );
+
+    expect(sendMembershipChangedNotice).not.toHaveBeenCalled();
+  });
+
+  it('sends no email when a request to join is turned down: that person never got in', async () => {
+    vi.mocked(removeMember).mockResolvedValue({
+      ok: true,
+      value: { groupDeleted: false, kind: 'request_removed', groupName: 'Study Group B' },
+    });
+
+    await invoke(
+      MEMBER_DELETE,
+      req(`http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_p`),
+      { id: GROUP_ID, userId: 'user_p' }
+    );
+
+    expect(sendMembershipChangedNotice).not.toHaveBeenCalled();
   });
 
   it('is wrapped in withAuth: an unexpected service throw becomes an error response, not a rejected promise', async () => {
@@ -1460,7 +1585,11 @@ describe('POST /api/v1/resparkable/groups/[id]/join-requests/[userId]', () => {
   }
 
   it('approves the request and reports it', async () => {
-    vi.mocked(approveGroupJoinRequest).mockResolvedValue({ ok: true });
+    vi.mocked(approveGroupJoinRequest).mockResolvedValue({
+      ok: true,
+      groupName: 'Study Group B',
+      role: 'member',
+    });
 
     const response = await invoke(JOIN_REQUEST_POST, req(url), {
       id: GROUP_ID,
@@ -1470,6 +1599,24 @@ describe('POST /api/v1/resparkable/groups/[id]/join-requests/[userId]', () => {
 
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ userId: 'user_b', approved: true });
+  });
+
+  it('emails the person who was let in, naming the role they joined as', async () => {
+    vi.mocked(approveGroupJoinRequest).mockResolvedValue({
+      ok: true,
+      groupName: 'Study Group B',
+      role: 'viewer',
+    });
+
+    await invoke(JOIN_REQUEST_POST, req(url), { id: GROUP_ID, userId: 'user_b' });
+
+    expect(sendMembershipChangedNotice).toHaveBeenCalledWith({
+      groupId: GROUP_ID,
+      groupName: 'Study Group B',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      change: { kind: 'join_approved', role: 'viewer' },
+    });
   });
 });
 

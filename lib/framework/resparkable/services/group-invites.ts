@@ -64,6 +64,7 @@ import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { CreateGroupInviteInput } from '@/lib/framework/resparkable/validations';
 import { sendEmail } from '@/lib/email/send';
 import { env } from '@/lib/env';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
 import { logger } from '@/lib/logging';
 import { maskEmail } from '@/lib/security/redact';
 import { isShareActive } from '@/lib/utils/share-window';
@@ -136,6 +137,15 @@ export async function issueGroupInvite(
     expiresAt: resolveExpiry(input.expiry, now),
   });
 
+  // The role, not the address: an invitation names somebody who may never
+  // join, and the admin record is not where their address should live.
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    action: 'invite_issued',
+    metadata: { role: input.role },
+  });
+
   // The inviter's own contact details, read from their PERSONAL space. This is a
   // legitimate `spaceScope()` mint site: the id comes from the session, and the
   // read is of the actor's own row rather than of anything in the group.
@@ -190,6 +200,7 @@ export async function revokeGroupInvite(
   // 404 on a button that did exactly what it said the first time.
   await revokeInvite(groupId, inviteId, now);
   logger.info('Resparkable group invite revoked', { groupId });
+  await recordGroupAudit({ groupId, actorUserId, action: 'invite_revoked' });
   return { ok: true };
 }
 

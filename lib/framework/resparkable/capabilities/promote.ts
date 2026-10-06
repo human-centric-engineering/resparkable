@@ -52,6 +52,7 @@ export class ResparkablePromoteThoughtCapability extends ResparkableCapability<
   AgentPromoteThoughtInput,
   PromoteData
 > {
+  readonly writes = true;
   readonly slug = spec.slug;
   readonly functionDefinition: CapabilityFunctionDefinition = spec.functionDefinition;
   protected readonly schema = agentPromoteThoughtSchema;

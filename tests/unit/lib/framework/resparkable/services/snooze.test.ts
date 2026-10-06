@@ -141,11 +141,17 @@ describe('snoozeItem — tasks', () => {
     const result = await snoozeItem(scope, 'task', 'task_1', { preset: 'tomorrow' }, NOW);
 
     // Assert
-    expect(updateTask).toHaveBeenCalledWith(scope, 'task_1', {
-      deferUntil: new Date('2026-07-30T21:00:00.000Z'),
-      snoozeCount: { increment: 1 },
-      lastSnoozedAt: NOW,
-    });
+    expect(updateTask).toHaveBeenCalledWith(
+      scope,
+      'task_1',
+      {
+        deferUntil: new Date('2026-07-30T21:00:00.000Z'),
+        snoozeCount: { increment: 1 },
+        lastSnoozedAt: NOW,
+      },
+      undefined,
+      { bumpRev: false }
+    );
     expect(result).toEqual({
       id: 'task_1',
       snoozedUntil: new Date('2026-07-30T21:00:00.000Z'),
@@ -206,11 +212,17 @@ describe('snoozeItem — thoughts and projects', () => {
     const result = await snoozeItem(scope, 'thought', 'th_1', { preset: 'tomorrow' }, NOW);
 
     // Assert
-    expect(updateThought).toHaveBeenCalledWith(scope, 'th_1', {
-      snoozedUntil: new Date('2026-07-30T21:00:00.000Z'),
-      snoozeCount: { increment: 1 },
-      lastSnoozedAt: NOW,
-    });
+    expect(updateThought).toHaveBeenCalledWith(
+      scope,
+      'th_1',
+      {
+        snoozedUntil: new Date('2026-07-30T21:00:00.000Z'),
+        snoozeCount: { increment: 1 },
+        lastSnoozedAt: NOW,
+      },
+      undefined,
+      { bumpRev: false }
+    );
     expect(result?.snoozeCount).toBe(2);
   });
 
@@ -223,9 +235,15 @@ describe('snoozeItem — thoughts and projects', () => {
     const result = await snoozeItem(scope, 'project', 'proj_1', { preset: 'next_month' }, NOW);
 
     // Assert
-    expect(updateProject).toHaveBeenCalledWith(scope, 'proj_1', {
-      snoozedUntil: expect.any(Date),
-    });
+    expect(updateProject).toHaveBeenCalledWith(
+      scope,
+      'proj_1',
+      {
+        snoozedUntil: expect.any(Date),
+      },
+      undefined,
+      { bumpRev: false }
+    );
     expect(result?.snoozeCount).toBeNull();
   });
 
@@ -279,7 +297,9 @@ describe('unsnoozeItem', () => {
     await unsnoozeItem(scope, 'task', 'task_1', NOW);
 
     // Assert
-    expect(updateTask).toHaveBeenCalledWith(scope, 'task_1', { deferUntil: null });
+    expect(updateTask).toHaveBeenCalledWith(scope, 'task_1', { deferUntil: null }, undefined, {
+      bumpRev: false,
+    });
   });
 
   it('clears snoozedUntil on a thought', async () => {
@@ -287,7 +307,9 @@ describe('unsnoozeItem', () => {
 
     await unsnoozeItem(scope, 'thought', 'th_1', NOW);
 
-    expect(updateThought).toHaveBeenCalledWith(scope, 'th_1', { snoozedUntil: null });
+    expect(updateThought).toHaveBeenCalledWith(scope, 'th_1', { snoozedUntil: null }, undefined, {
+      bumpRev: false,
+    });
   });
 
   it('restarts a project momentum clock, which is how "decay pauses" is honoured', async () => {
@@ -300,10 +322,16 @@ describe('unsnoozeItem', () => {
     await unsnoozeItem(scope, 'project', 'proj_1', NOW);
 
     // Assert
-    expect(updateProject).toHaveBeenCalledWith(scope, 'proj_1', {
-      snoozedUntil: null,
-      lastActivityAt: NOW,
-    });
+    expect(updateProject).toHaveBeenCalledWith(
+      scope,
+      'proj_1',
+      {
+        snoozedUntil: null,
+        lastActivityAt: NOW,
+      },
+      undefined,
+      { bumpRev: false }
+    );
   });
 
   it('records an unsnoozed event and rescores a task', async () => {

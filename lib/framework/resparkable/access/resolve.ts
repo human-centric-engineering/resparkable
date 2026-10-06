@@ -91,6 +91,24 @@ const OWNER_RESULT = (ownerId: string): ResparkableAccessResult => ({
 });
 
 /**
+ * A member on their own group's item (§23.13). No redaction, because every
+ * member reads every item in the space (§23.4). Commenting follows the
+ * member's write permission, so a group `viewer` reads the thread and adds
+ * nothing to it; moderating (deleting anybody's comment) is the admins'.
+ */
+const SPACE_RESULT = (
+  ownerId: string,
+  group: { canWrite: boolean; canAdminister: boolean }
+): ResparkableAccessResult => ({
+  ok: true,
+  basis: 'space',
+  ownerId,
+  permissions: { read: true, comment: group.canWrite, moderate: group.canAdminister },
+  redact: [],
+  via: null,
+});
+
+/**
  * What a shared reader may see, by basis.
  *
  * Expressed as **what a basis removes from {@link ALL_REDACTIONS}**, not as
@@ -179,6 +197,15 @@ export async function resolveResparkableAccess(
 
   // ── The short circuit. Before any grant or link query. ────────────────────
   if (isOwner(viewer, ownerId)) return OWNER_RESULT(ownerId);
+
+  // ── A member, on an item in their own group's space (phase 58). ──────────
+  // Before the grant lookup, so a member who also holds a grant on an item in
+  // their own space reads it as a member. Membership was resolved once, where
+  // the scope was minted (`viewerFor`); nothing here queries it (D5).
+  if (viewer.group !== null && viewer.group.spaceId === ownerId) {
+    if (need === 'comment' && !viewer.group.canWrite) return DENY;
+    return SPACE_RESULT(ownerId, viewer.group);
+  }
 
   const ref: ResparkableEntityRef = { entityType, entityId };
 

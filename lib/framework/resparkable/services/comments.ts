@@ -84,11 +84,11 @@ export interface CommentView {
  * turns `null` into a 404, so "no access" and "no such item" stay the same
  * answer.
  */
-export async function listCommentsFor(
+export async function listCommentsWithPermission(
   viewer: ResparkableViewer,
   ref: { entityType: string; entityId: string },
   now: Date = new Date()
-): Promise<CommentView[] | null> {
+): Promise<{ comments: CommentView[]; canComment: boolean } | null> {
   const entityType = shareableTypeOf(ref);
   if (!entityType) return null;
 
@@ -120,7 +120,22 @@ export async function listCommentsFor(
   if (access.redact.includes('comments')) return null;
 
   const scope = sharedSpaceScope(access, viewer.userId);
-  return hydrate(scope, entityType, ref.entityId, viewer, access);
+  return {
+    comments: await hydrate(scope, entityType, ref.entityId, viewer, access),
+    // Whether this reader may add to the thread, from the same resolution: a
+    // group page renders the composer from this without knowing anyone's
+    // role (phase 58).
+    canComment: access.permissions.comment,
+  };
+}
+
+/** The thread alone. See {@link listCommentsWithPermission}. */
+export async function listCommentsFor(
+  viewer: ResparkableViewer,
+  ref: { entityType: string; entityId: string },
+  now: Date = new Date()
+): Promise<CommentView[] | null> {
+  return (await listCommentsWithPermission(viewer, ref, now))?.comments ?? null;
 }
 
 /**
