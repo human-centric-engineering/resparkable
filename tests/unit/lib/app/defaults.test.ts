@@ -704,7 +704,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     seam: 'lib/app/ci.ts',
     risk: 'a stray coverage exclusion would switch the per-file 80% floor OFF for that path on every install, a stray always-run entry would make every scoped run load a test whose file the install may not even have, and a stray ownerless-surface exception would let a route read rows nobody owns without the policy being asked — the first silences a gate, the second breaks the gate that replaced it, the third exempts a file from the authorization seam',
     // FORK (Resparkable): Sunrise asserts all three ship empty. Resparkable
-    // declares two always-run tests, both reading the tree rather than importing
+    // declares three always-run tests, all reading the tree rather than importing
     // it, and two ownerless-surface exceptions, both system code with no caller
     // to scope to. Pinned by path rather than deleted, per the SEAM_DEFAULTS
     // convention resparkable#480 established: coverage exclusions stay empty.
@@ -713,6 +713,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       expect(appAlwaysRunTests.map((entry) => entry.path)).toEqual([
         'tests/unit/app/api/v1/resparkable/group-isolation.test.ts',
         'tests/unit/lib/framework/resparkable/privacy/subject-export.test.ts',
+        'tests/unit/lib/framework/resparkable/rev-coverage.test.ts',
       ]);
       expect(appOwnerlessSurfaceExceptions.map((entry) => entry.path)).toEqual([
         'lib/framework/resparkable/repo/billing.ts',

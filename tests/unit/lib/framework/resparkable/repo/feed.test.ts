@@ -9,7 +9,9 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const delegate = () => ({ findMany: vi.fn().mockResolvedValue([]) });
+const { delegate } = vi.hoisted(() => ({
+  delegate: () => ({ findMany: vi.fn().mockResolvedValue([]) }),
+}));
 
 vi.mock('@/lib/db/client', () => ({
   prisma: {
@@ -105,6 +107,8 @@ describe('findFeedTitles', () => {
   });
 
   it('asks nothing for a type it has no title for, and leaves a deleted item out', async () => {
+    vi.mocked(prisma.resparkableTask.findMany).mockResolvedValue([]);
+
     const titles = await findFeedTitles(SCOPE, [
       { entityType: 'timeBlock', entityId: 'tb' },
       { entityType: 'task', entityId: 'gone' },
