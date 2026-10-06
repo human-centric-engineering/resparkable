@@ -30,7 +30,13 @@ import {
   setFeedSeenAt,
 } from '@/lib/framework/resparkable/repo/groups';
 import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
-import { buildFeed, FEED_PAGE_SIZE, markFeedSeen } from '@/lib/framework/resparkable/services/feed';
+import {
+  buildFeed,
+  decodeFeedCursor,
+  encodeFeedCursor,
+  FEED_PAGE_SIZE,
+  markFeedSeen,
+} from '@/lib/framework/resparkable/services/feed';
 
 const SCOPE = spaceScopeFor({ spaceId: 'spc_g', actorUserId: 'user_me', role: 'member' });
 const GROUP = { id: 'grp_1', spaceId: 'spc_g' };
@@ -104,11 +110,12 @@ describe('buildFeed', () => {
     const page = await buildFeed(SCOPE);
 
     expect(page?.items).toHaveLength(FEED_PAGE_SIZE);
-    expect(page?.nextCursor).toBe(full[FEED_PAGE_SIZE - 1].createdAt.toISOString());
+    const last = full[FEED_PAGE_SIZE - 1];
+    expect(page?.nextCursor).toBe(`${last.createdAt.toISOString()}|${last.id}`);
   });
 
   it('passes the cursor and the member filter through as rows-only filters', async () => {
-    const before = new Date('2026-09-30T00:00:00.000Z');
+    const before = { createdAt: new Date('2026-09-30T00:00:00.000Z'), id: 'evt_9' };
 
     await buildFeed(SCOPE, { before, memberUserId: 'user_sam' });
 
@@ -155,5 +162,20 @@ describe('markFeedSeen', () => {
     const anonymous = spaceScopeFor({ spaceId: 'spc_g', actorUserId: null, role: 'viewer' });
 
     expect(await markFeedSeen(anonymous)).toBe(false);
+  });
+});
+
+describe('feed cursors', () => {
+  it('round-trips a (time, id) position', () => {
+    const cursor = { createdAt: new Date('2026-10-01T10:00:00.000Z'), id: 'evt_7' };
+
+    expect(decodeFeedCursor(encodeFeedCursor(cursor))).toEqual(cursor);
+  });
+
+  it('refuses a position that is not one', () => {
+    expect(decodeFeedCursor('yesterday')).toBeNull();
+    expect(decodeFeedCursor('|evt_1')).toBeNull();
+    expect(decodeFeedCursor('not-a-date|evt_1')).toBeNull();
+    expect(decodeFeedCursor('2026-10-01T10:00:00.000Z|')).toBeNull();
   });
 });

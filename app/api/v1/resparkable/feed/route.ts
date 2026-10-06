@@ -10,13 +10,13 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { checkConditional, computeETag } from '@/lib/api/etag';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
 import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
-import { buildFeed } from '@/lib/framework/resparkable/services/feed';
+import { buildFeed, decodeFeedCursor } from '@/lib/framework/resparkable/services/feed';
 import { feedQuerySchema } from '@/lib/framework/resparkable/validations';
 
 export const GET = withAuth(async (request, session) => {
@@ -24,8 +24,13 @@ export const GET = withAuth(async (request, session) => {
   const scope = await requestSpaceScope(request, session.user.id);
   const query = validateQueryParams(new URL(request.url).searchParams, feedQuerySchema);
 
+  const before = query.before ? decodeFeedCursor(query.before) : null;
+  if (query.before && !before) {
+    throw new ValidationError('Invalid cursor', { before: ['Not a feed position'] });
+  }
+
   const page = await buildFeed(scope, {
-    ...(query.before ? { before: query.before } : {}),
+    ...(before ? { before } : {}),
     ...(query.member ? { memberUserId: query.member } : {}),
   });
   if (!page) throw new NotFoundError('There is no activity feed in a personal workspace');

@@ -21,8 +21,8 @@
  * - submitLabel defaults to "Create" / "Save changes" based on id, and a custom
  *   submitLabel overrides both
  * - rev (phase 58): sent in the PATCH body when given; a 409 shows
- *   EDIT_CONFLICT_MESSAGE, broadcasts the conflicting record as changed, and
- *   keeps the user's typed value instead of closing the dialog; a non-409
+ *   EDIT_CONFLICT_MESSAGE, keeps the user's typed value, refetches nothing,
+ *   and sends the 409's current rev on the next save; a non-409
  *   error still shows its own message rather than the conflict copy
  *
  * @see components/resparkable/ui/resource-dialog.tsx
@@ -221,8 +221,13 @@ describe('ResourceDialog: rev (optimistic concurrency, phase 58)', () => {
     });
   });
 
-  it('on a 409 shows EDIT_CONFLICT_MESSAGE, broadcasts the record as changed, keeps the typed value, and does not save', async () => {
-    const conflict = Object.assign(new APIClientError('ignored by the handler'), { status: 409 });
+  it('on a 409 keeps what was typed, refetches nothing, and arms the next save with the current rev', async () => {
+    // The current row rides on the 409. Refetching it instead would reset the
+    // form under the person, because every edit form resets on a new row.
+    const conflict = Object.assign(new APIClientError('ignored by the handler'), {
+      status: 409,
+      details: { current: { id: 'proj_1', rev: 7, name: 'Their retitle' } },
+    });
     mockPatch.mockRejectedValueOnce(conflict);
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
@@ -234,26 +239,44 @@ describe('ResourceDialog: rev (optimistic concurrency, phase 58)', () => {
       </DataChangeProvider>
     );
 
-    // The user's own edit, still in the box when the conflict lands.
     const input = screen.getByLabelText('Name');
     await user.clear(input);
     await user.type(input, 'My own retitle');
-
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
 
-    // Shows the fixed conflict copy rather than the server's own message.
     await waitFor(() => {
       expect(screen.getByText(EDIT_CONFLICT_MESSAGE)).toBeInTheDocument();
     });
     expect(screen.queryByText('ignored by the handler')).not.toBeInTheDocument();
-
-    // Broadcasts the project as changed, so a detail tab showing proj_1
-    // (and the projects list) know to refetch.
-    expect(screen.getByTestId('revision')).toHaveTextContent('2');
-
-    // The dialog stays open with what the user typed, not reset or closed.
+    // Nothing broadcast: a refetch would wipe the field below.
+    expect(screen.getByTestId('revision')).toHaveTextContent('0');
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
     expect(input).toHaveValue('My own retitle');
+
+    // Saving again is a deliberate replacement, sent with the current rev.
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenLastCalledWith(
+        RESPARKABLE_API.itemPath(RESPARKABLE_API.PROJECTS, 'proj_1'),
+        { body: { name: 'My own retitle', rev: 7 } }
+      );
+    });
+  });
+
+  it('on a 409 with no current row attached, keeps the rev it had', async () => {
+    mockPatch.mockRejectedValueOnce(Object.assign(new APIClientError('x'), { status: 409 }));
+    const user = userEvent.setup();
+    render(<Harness id="proj_1" rev={5} onOpenChange={vi.fn()} />);
+
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await screen.findByText(EDIT_CONFLICT_MESSAGE);
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => {
+      expect(mockPatch).toHaveBeenLastCalledWith(expect.any(String), {
+        body: { name: 'Q4 launch', rev: 5 },
+      });
+    });
   });
 
   it('shows its own message, not the conflict copy, for a non-409 error', async () => {

@@ -24,7 +24,8 @@ vi.mock('@/lib/auth/guards', () => ({
     },
 }));
 vi.mock('@/lib/framework/resparkable/api/space-request', () => ({ requestSpaceScope: vi.fn() }));
-vi.mock('@/lib/framework/resparkable/services/feed', () => ({
+vi.mock('@/lib/framework/resparkable/services/feed', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/services/feed')>()),
   buildFeed: vi.fn(),
   markFeedSeen: vi.fn(),
 }));
@@ -97,10 +98,13 @@ describe('GET /api/v1/resparkable/feed', () => {
   });
 
   it('passes the cursor and the member filter through', async () => {
-    await invoke(GET, req('&before=2026-09-30T00:00:00.000Z&member=user_sam'));
+    await invoke(
+      GET,
+      req(`&before=${encodeURIComponent('2026-09-30T00:00:00.000Z|evt_9')}&member=user_sam`)
+    );
 
     expect(buildFeed).toHaveBeenCalledWith(SCOPE, {
-      before: new Date('2026-09-30T00:00:00.000Z'),
+      before: { createdAt: new Date('2026-09-30T00:00:00.000Z'), id: 'evt_9' },
       memberUserId: 'user_sam',
     });
   });

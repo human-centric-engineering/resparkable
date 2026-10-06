@@ -243,14 +243,18 @@ describe('listEvents: the activity feed filters (phase 59)', () => {
     vi.mocked(prisma.resparkableEvent.findMany).mockResolvedValue([]);
   });
 
-  it('reads strictly before the cursor, combined with since when both are given', async () => {
+  it('pages strictly after a (time, id) position, so same-millisecond rows are neither skipped nor repeated', async () => {
     const since = new Date('2026-09-01T00:00:00.000Z');
-    const before = new Date('2026-10-01T00:00:00.000Z');
+    const at = new Date('2026-10-01T00:00:00.000Z');
 
-    await listEvents(feedScope, { since, before });
+    await listEvents(feedScope, { since, before: { createdAt: at, id: 'evt_5' } });
 
-    const where = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0][0]?.where;
-    expect(where).toMatchObject({ createdAt: { gte: since, lt: before } });
+    const args = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0][0];
+    expect(args?.where).toMatchObject({
+      createdAt: { gte: since },
+      OR: [{ createdAt: { lt: at } }, { createdAt: at, id: { lt: 'evt_5' } }],
+    });
+    expect(args?.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
   });
 
   it('filters by the actor as a row filter, on the column that records who did it', async () => {

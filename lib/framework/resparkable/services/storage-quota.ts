@@ -1,5 +1,6 @@
 /**
- * A group space's storage quota (§23.13, phase 58).
+ * A group space's storage quota (§23.13, phase 58), over retained originals
+ * only: a document parsed and discarded stores nothing and costs nothing.
  *
  * The shared shelf is a real ingestion: the original is retained under
  * `framework-resparkable/<spaceId>/`, and a few books' worth adds up across a
@@ -35,9 +36,12 @@ export async function resolveStorageQuotaBytes(spaceId: string): Promise<number 
     : Number(group.storageQuotaBytes);
 }
 
-export async function storageUsage(scope: SpaceScope): Promise<StorageUsage> {
+export async function storageUsage(
+  scope: SpaceScope,
+  options: { excludeFileHash?: string } = {}
+): Promise<StorageUsage> {
   const [usedBytes, quotaBytes] = await Promise.all([
-    sumDocumentBytes(scope),
+    sumDocumentBytes(scope, options),
     resolveStorageQuotaBytes(scope.spaceId),
   ]);
   return { usedBytes, quotaBytes };

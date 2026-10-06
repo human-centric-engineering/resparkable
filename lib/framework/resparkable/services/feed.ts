@@ -55,8 +55,28 @@ export interface FeedPage {
   seenAt: Date | null;
 }
 
+/** A feed position: a line's time and id, as `"<iso>|<id>"` on the wire. */
+export interface FeedCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export function encodeFeedCursor(cursor: { createdAt: Date; id: string }): string {
+  return `${cursor.createdAt.toISOString()}|${cursor.id}`;
+}
+
+/** The cursor a client sent, or `null` for one that is not well formed. */
+export function decodeFeedCursor(value: string): FeedCursor | null {
+  const separator = value.indexOf('|');
+  if (separator <= 0) return null;
+  const createdAt = new Date(value.slice(0, separator));
+  const id = value.slice(separator + 1);
+  if (Number.isNaN(createdAt.getTime()) || id === '') return null;
+  return { createdAt, id };
+}
+
 export interface FeedQuery {
-  before?: Date;
+  before?: FeedCursor;
   /** "What did Priya add": rows by one member, and never a count of them. */
   memberUserId?: string;
 }
@@ -101,7 +121,7 @@ export async function buildFeed(
       system: event.source === 'system',
       createdAt: event.createdAt,
     })),
-    nextCursor: hasMore && last ? last.createdAt.toISOString() : null,
+    nextCursor: hasMore && last ? encodeFeedCursor(last) : null,
     seenAt: membership?.feedSeenAt ?? null,
   };
 }

@@ -43,8 +43,9 @@ import { Plus, Share2, Trash2 } from 'lucide-react';
 
 import { GroupCommentThread } from '@/components/resparkable/groups/group-comment-thread';
 import {
+  canBeAssigned,
   memberName,
-  useActiveGroupMembers,
+  useActiveGroup,
 } from '@/components/resparkable/groups/use-active-group-members';
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
@@ -185,9 +186,11 @@ function CardDetailBody({
     else setTagIds(previous);
   }
 
-  // The group's members, in a group workspace; `null` in a personal one, where
-  // a task is nobody's but yours and the picker does not render (§23.13).
-  const members = useActiveGroupMembers();
+  // The group, in a group workspace; `null` in a personal one, where a task is
+  // nobody's but yours and the picker does not render (§23.13). A viewer
+  // cannot change a task, so they get no picker and are offered to nobody.
+  const group = useActiveGroup();
+  const members = group && group.yourRole !== 'viewer' ? group.members.filter(canBeAssigned) : null;
   const [assignee, setAssignee] = React.useState<string | null>(card.task.assignedToUserId ?? null);
 
   async function assign(next: string | null): Promise<void> {

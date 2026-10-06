@@ -100,7 +100,11 @@ alongside it.
 
 ## Decision 3: `rev` as an optimistic-concurrency token, opt in by the caller
 
-Every update to a `rev`-carrying model increments it. A write **may** send the
+Every content update to a `rev`-carrying model increments it. Bookkeeping
+writes pass `{ bumpRev: false }` and leave it alone: touching a project's
+`lastActivityAt` because one of its tasks moved, snoozing, and marking a note
+promoted change nothing an edit form shows, and moving the token for them
+would hand the person editing a 409 over nothing. A write **may** send the
 `rev` it read; when it does, the update matches on it, and a mismatch returns
 409 with the current row in `error.details.current`. When it does not, the write
 is last-write-wins exactly as today.
@@ -109,8 +113,9 @@ is last-write-wins exactly as today.
 tools and the iOS Shortcut all write through the same services and have never
 read a `rev`; requiring it would break every agent write in the tier. The edit
 dialogs for projects, goals, areas and people, which are where two people meet
-one row, send it. On a 409 the dialog keeps what was typed, refreshes the record
-underneath (which brings the new `rev`), and says that saving again replaces the
+one row, send it. On a 409 the dialog keeps what was typed, takes the current `rev`
+from the 409's `details.current` (never by refetching the row, which every edit
+form answers by resetting its fields), and says that saving again replaces the
 other person's version. Inline task and note edits (the board card, the task
 row, the inbox card) do not send it yet: last-write-wins there is a known gap,
 not a decision.
@@ -140,6 +145,9 @@ filter.
 - **Leaving clears it.** `removeMember` nulls the leaver's assignments in that
   group's space in the same transaction that deletes the membership row, so
   nothing is silently reassigned. Erasure is already covered by the FK.
+- **Viewers are never assignees.** A viewer cannot change a task, so a card
+  that is theirs would be one they are refused every change to; the service
+  refuses it and the picker neither offers them nor shows to them.
 - **The filter returns rows and never a count.** The task list accepts
   `assignedTo=me`; nothing renders "tasks per member".
 - **People assign; agents do not.** `agentUpsertTaskSchema` omits the field: an
@@ -197,8 +205,11 @@ logged, never surfaced: the change happened whether or not the email arrived.
 ## Decision 7: a per-space storage quota for group spaces
 
 `ResparkableGroup.storageQuotaBytes BigInt?`, `null` meaning the default, 2 GiB.
-Upload sums `ResparkableDocument.byteSize` in the space (archived documents
-included, because their originals are still retained) and refuses an upload that
+Upload sums `ResparkableDocument.byteSize` over rows with a stored original
+(archived ones included, because their originals are still held), only when the
+install keeps originals (`documentOriginals: 'retain'`; a discarded file stores
+nothing), and leaves out the row an upload of the same bytes would re-drive, so
+re-adding an archived file is not counted twice. It and refuses an upload that
 would cross the quota with a message naming both numbers, after the duplicate
 check (a re-upload costs nothing). The refusal is the tier's existing ingest
 error, a 400 with reason `over_quota`, not a new status. The group page
@@ -212,8 +223,14 @@ restricted to `member` and above" needs no code of its own: it is Decision 1.
 
 - **Route.** `GET /api/v1/resparkable/feed` in the current workspace, group
   spaces only (a personal space 404s: a feed of your own actions is a history
-  view, a different feature). Newest first, cursor-paged, an optional
-  `member=<userId>` filter that returns rows and never a total. ETag via
+  view, a different feature). Newest first, paged by a (time, id) cursor so
+  same-millisecond events are neither skipped nor repeated, with an optional
+  `member=<userId>` filter that returns rows and never a total. A filtered feed
+  is a one-off search and is not polled: the actor column is deliberately
+  unindexed, and a quiet member in a busy group is a long walk.
+- **Paging the client.** "Show older" pages from the oldest line on screen and
+  merges by id, never from a cursor saved at first load, which polling would
+  leave stranded behind a gap. ETag via
   `computeETag` / `checkConditional`, so an unchanged feed is a 304.
 - **Titles.** Each line names its item. The route resolves titles with one query
   per entity type on the page, never one per row. A deleted item renders without

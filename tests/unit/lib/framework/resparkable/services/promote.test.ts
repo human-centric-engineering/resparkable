@@ -175,11 +175,17 @@ describe('promoteThought', () => {
   it('records what the thought became', async () => {
     await promoteThought(SCOPE, 'th_1', { target: 'task' });
 
-    expect(mockedUpdate).toHaveBeenCalledWith(SCOPE, 'th_1', {
-      status: 'promoted',
-      promotedToType: 'task',
-      promotedToId: 'task_new',
-    });
+    expect(mockedUpdate).toHaveBeenCalledWith(
+      SCOPE,
+      'th_1',
+      {
+        status: 'promoted',
+        promotedToType: 'task',
+        promotedToId: 'task_new',
+      },
+      undefined,
+      { bumpRev: false }
+    );
   });
 
   it('links the thought to the new item as a human-made, accepted edge', async () => {

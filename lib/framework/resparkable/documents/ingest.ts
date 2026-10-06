@@ -175,10 +175,15 @@ export async function ingestDocument(
     return { document: existing, deduped: true };
   }
 
-  // A group space's total (§23.13, phase 58). After the dedupe, because a
-  // re-upload of a file the group already holds costs nothing. A personal
-  // space has no total and skips this.
-  const { usedBytes, quotaBytes } = await storageUsage(scope);
+  // A group space's total (§23.13, phase 58), checked only when this upload
+  // will keep its original: a discarded file stores nothing. After the dedupe,
+  // because a re-upload of a file the group already holds costs nothing, and
+  // leaving out the row these bytes would re-drive, so re-adding an archived
+  // or failed file is not counted twice. A personal space has no total.
+  const { usedBytes, quotaBytes } =
+    resolved.documentOriginals === 'retain'
+      ? await storageUsage(scope, { excludeFileHash: fileHash })
+      : { usedBytes: 0, quotaBytes: null };
   if (quotaBytes !== null && usedBytes + input.buffer.length > quotaBytes) {
     throw new DocumentIngestError(
       `This group has used ${formatBytes(usedBytes)} of its ${formatBytes(quotaBytes)} for documents, and this file would take it over. An admin can raise the limit, or remove documents the group no longer needs.`,

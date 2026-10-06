@@ -93,11 +93,25 @@ export type { ArchiveVisibility, SpaceScope };
  * and the write is last-write-wins exactly as before: agents, MCP tools and
  * the inbox write through the same functions and have never read a `rev`.
  *
- * `REV_BUMP` goes into every update's `data`, so the token moves on every
- * write through these functions, whoever made it.
+ * `REV_BUMP` goes into an update's `data` unless the caller passes
+ * `{ bumpRev: false }`, so the token moves whenever a field a person edits
+ * changes, whoever made the change. Bookkeeping writes opt out: touching a
+ * project's `lastActivityAt` because one of its tasks moved, snoozing, and
+ * marking a note promoted change nothing an edit form shows, and moving the
+ * token for them would give the person editing a 409 over nothing.
  */
 export function revWhere(expectedRev: number | undefined): { rev?: number } {
   return expectedRev === undefined ? {} : { rev: expectedRev };
 }
 
 export const REV_BUMP = { rev: { increment: 1 } } as const;
+
+export interface RevisedUpdateOptions {
+  /** `false` for a bookkeeping write that must not move the token. */
+  bumpRev?: boolean;
+}
+
+/** `REV_BUMP`, or nothing for a bookkeeping write. */
+export function revBump(options: RevisedUpdateOptions = {}): { rev?: { increment: number } } {
+  return options.bumpRev === false ? {} : REV_BUMP;
+}

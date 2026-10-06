@@ -70,19 +70,37 @@ async function fetchFeed(
   }
 }
 
+/**
+ * The first page and the older pages as one list: newest first, each line
+ * once. A poll can return lines an older page already holds once enough new
+ * ones push them down, so lines are merged by id rather than concatenated.
+ */
+function mergeLines(first: FeedItemWire[], older: FeedItemWire[]): FeedItemWire[] {
+  const byId = new Map<string, FeedItemWire>();
+  for (const item of [...first, ...older]) if (!byId.has(item.id)) byId.set(item.id, item);
+  return [...byId.values()].sort((a, b) =>
+    a.createdAt === b.createdAt ? b.id.localeCompare(a.id) : b.createdAt.localeCompare(a.createdAt)
+  );
+}
+
 export function GroupFeed(): React.ReactElement {
   const generation = useTabRefreshGeneration();
   const members = useActiveGroupMembers();
   const [member, setMember] = React.useState<string>(EVERYONE);
   const [items, setItems] = React.useState<FeedItemWire[] | null>(null);
   const [older, setOlder] = React.useState<FeedItemWire[]>([]);
-  const [cursor, setCursor] = React.useState<string | null>(null);
+  // Whether anything lies beyond the oldest line on screen. Paging always goes
+  // from the oldest line actually shown, never from a cursor saved at first
+  // load: polling replaces the first page, and a saved cursor would leave a
+  // gap between it and whatever slid off the end.
+  const [hasOlder, setHasOlder] = React.useState(false);
   const [failed, setFailed] = React.useState(false);
   // What counts as new is fixed when the tab opens: marking the feed read on
   // open must not un-highlight the lines the reader has not looked at yet.
   const [seenAt, setSeenAt] = React.useState<string | null | undefined>(undefined);
   const etag = React.useRef<string | null>(null);
   const markedSeen = React.useRef(false);
+  const olderLoaded = React.useRef(false);
 
   const url =
     member === EVERYONE
@@ -99,7 +117,9 @@ export function GroupFeed(): React.ReactElement {
     setFailed(false);
     if (result.status === 'unchanged') return;
     setItems(result.page.items);
-    setCursor((current) => (current === null ? result.page.nextCursor : current));
+    // Before anything older has been loaded, the first page decides it; after,
+    // the older pages do, and a poll of the first page says nothing about them.
+    if (!olderLoaded.current) setHasOlder(result.page.nextCursor !== null);
     setSeenAt((current) => (current === undefined ? result.page.seenAt : current));
     if (!markedSeen.current) {
       markedSeen.current = true;
@@ -112,30 +132,40 @@ export function GroupFeed(): React.ReactElement {
   // A new filter is a new list: start it from the top.
   React.useEffect(() => {
     etag.current = null;
+    olderLoaded.current = false;
     setItems(null);
     setOlder([]);
-    setCursor(null);
+    setHasOlder(false);
   }, [url]);
 
   React.useEffect(() => {
     void load();
   }, [load, generation]);
 
-  useVisibilityPoll(() => void load(), POLL_INTERVAL_MS);
+  // Polled only for everyone's lines. Filtered to one member it is a search,
+  // asked once: the member filter reads an unindexed column (§23.10), and
+  // repeating that walk every half-minute on every open laptop is the cost
+  // polling was chosen to avoid.
+  useVisibilityPoll(() => {
+    if (member === EVERYONE) void load();
+  }, POLL_INTERVAL_MS);
+
+  const all = mergeLines(items ?? [], older);
 
   async function showOlder(): Promise<void> {
-    if (!cursor) return;
+    const oldest = all[all.length - 1];
+    if (!oldest) return;
+    const cursor = `${oldest.createdAt}|${oldest.id}`;
     const separator = url.includes('?') ? '&' : '?';
     const { result } = await fetchFeed(
       `${url}${separator}before=${encodeURIComponent(cursor)}`,
       null
     );
     if (result?.status !== 'changed') return;
+    olderLoaded.current = true;
     setOlder((current) => [...current, ...result.page.items]);
-    setCursor(result.page.nextCursor);
+    setHasOlder(result.page.nextCursor !== null);
   }
-
-  const all = [...(items ?? []), ...older];
   const lines = all
     .map((item) => ({ item, line: feedLine(item) }))
     .filter(
@@ -203,7 +233,7 @@ export function GroupFeed(): React.ReactElement {
         </ul>
       )}
 
-      {cursor !== null && items !== null && (
+      {hasOlder && items !== null && (
         <div>
           <Button type="button" variant="outline" size="sm" onClick={() => void showOlder()}>
             Show older

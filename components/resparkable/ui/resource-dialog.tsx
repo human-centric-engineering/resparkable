@@ -41,6 +41,7 @@
  */
 
 import * as React from 'react';
+import { z } from 'zod';
 import type { FieldValues, UseFormReturn } from 'react-hook-form';
 
 import { FormError } from '@/components/forms/form-error';
@@ -82,7 +83,10 @@ export interface ResourceFormBodyProps<TValues extends FieldValues> {
 
 /** What a person is told when somebody else saved first. */
 export const EDIT_CONFLICT_MESSAGE =
-  'Someone else changed this while you had it open. Their version has loaded behind this form; save again to replace it with yours.';
+  'Someone else changed this while you had it open. Save again to replace their version with yours, or close without saving to keep theirs.';
+
+/** The current row a 409 carries (`ConflictError` `details.current`), read without asserting. */
+const conflictDetailsSchema = z.object({ current: z.object({ rev: z.number().int() }) });
 
 /** The `<form>` itself: fields, the API-error surface, save status, submit. No dialog chrome. */
 export function ResourceFormBody<TValues extends FieldValues>({
@@ -96,7 +100,13 @@ export function ResourceFormBody<TValues extends FieldValues>({
   onSaved,
 }: ResourceFormBodyProps<TValues>): React.ReactElement {
   const { state, message, run } = useSaveStatus();
-  const refresh = useResparkableRefresh();
+  // The `rev` a 409 reported, which the next save sends instead of the one the
+  // form opened with. Taken from the response rather than by refetching the
+  // row: every edit form resets its fields when its row prop changes, so a
+  // refetch would wipe what this person typed, the one thing a conflict must
+  // not do.
+  const [conflictRev, setConflictRev] = React.useState<number | undefined>(undefined);
+  const sendRev = conflictRev ?? rev;
 
   const onSubmit = form.handleSubmit(async (values) => {
     const body = toBody(values);
@@ -105,18 +115,18 @@ export function ResourceFormBody<TValues extends FieldValues>({
       () =>
         id
           ? resparkableApi.patch(RESPARKABLE_API.itemPath(collection, id), {
-              body: rev === undefined ? body : { ...body, rev },
+              body: sendRev === undefined ? body : { ...body, rev: sendRev },
             })
           : resparkableApi.post(collection, { body }),
       (error) => {
         if (!(error instanceof APIClientError) || error.status !== 409 || !id) {
           return error instanceof Error ? error.message : 'Something went wrong';
         }
-        // Somebody else saved first. Refetch the row underneath the form, which
-        // brings the new `rev` in through props, and keep what this person typed:
-        // a second save is then a deliberate replacement, not an accident.
-        const changed = changeTypeForCollection(collection);
-        refresh(changed ? { type: changed, id } : undefined);
+        // Somebody else saved first. Keep what this person typed, and arm the
+        // next save with the current `rev`, so saving again is a deliberate
+        // replacement rather than an accident.
+        const details = conflictDetailsSchema.safeParse(error.details);
+        if (details.success) setConflictRev(details.data.current.rev);
         return EDIT_CONFLICT_MESSAGE;
       }
     );

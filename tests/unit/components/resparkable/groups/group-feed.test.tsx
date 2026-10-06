@@ -257,3 +257,66 @@ describe('GroupFeed', () => {
     });
   });
 });
+
+describe('GroupFeed: paging and polling', () => {
+  it('pages from the oldest line on screen, and shows each line once', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        ok(
+          page(
+            [
+              { id: 'b', title: 'Second', actorName: 'Sam', createdAt: '2026-10-02T10:00:00.000Z' },
+              { id: 'a', title: 'First', actorName: 'Sam', createdAt: '2026-10-01T10:00:00.000Z' },
+            ],
+            'more'
+          )
+        )
+      )
+      .mockResolvedValue(
+        ok(
+          page([
+            // Overlaps what is already shown, as a page can once new lines push old ones down.
+            { id: 'a', title: 'First', actorName: 'Sam', createdAt: '2026-10-01T10:00:00.000Z' },
+            { id: 'z', title: 'Oldest', actorName: 'Sam', createdAt: '2026-09-20T10:00:00.000Z' },
+          ])
+        )
+      );
+    const user = userEvent.setup();
+    render(<GroupFeed />);
+    await screen.findByText('First');
+
+    await user.click(screen.getByRole('button', { name: 'Show older' }));
+
+    expect(await screen.findByText('Oldest')).toBeInTheDocument();
+    expect(screen.getAllByText('First')).toHaveLength(1);
+    expect(
+      feedCalls().some((url) => url.includes(encodeURIComponent('2026-10-01T10:00:00.000Z|a')))
+    ).toBe(true);
+    // The last older page said there was nothing beyond it.
+    expect(screen.queryByRole('button', { name: 'Show older' })).not.toBeInTheDocument();
+  });
+
+  it('does not poll a feed filtered to one person, which is a search', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      fetchMock.mockResolvedValue(
+        ok(page([{ id: '1', title: 'A', actorName: 'Sam', createdAt: '2026-10-01T10:00:00.000Z' }]))
+      );
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<GroupFeed />);
+      await screen.findByText('A');
+      await user.click(screen.getByRole('combobox', { name: 'Show what one person did' }));
+      await user.click(await screen.findByRole('option', { name: 'Priya' }));
+      await vi.waitFor(() =>
+        expect(feedCalls().some((url) => url.includes('member=user_priya'))).toBe(true)
+      );
+      const before = feedCalls().length;
+
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      expect(feedCalls().length).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

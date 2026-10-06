@@ -158,6 +158,35 @@ describe('dedupe on file hash', () => {
 describe('a group space over its storage quota (phase 58)', () => {
   const MB = 1024 * 1024;
 
+  // The quota is over retained originals, so these cases keep the original.
+  beforeEach(() => {
+    findResparkableSettings.mockResolvedValue({
+      documentOriginals: 'retain',
+      maxDocumentBytes: null,
+    });
+  });
+
+  it('never checks the quota when the original is discarded: nothing is stored', async () => {
+    findResparkableSettings.mockResolvedValue({
+      documentOriginals: 'discard',
+      maxDocumentBytes: null,
+    });
+    storageUsage.mockResolvedValue({ usedBytes: 10 * MB, quotaBytes: 1 });
+
+    const result = await ingestDocument(SCOPE, upload());
+
+    expect(result.deduped).toBe(false);
+    expect(storageUsage).not.toHaveBeenCalled();
+  });
+
+  it('leaves out the row these bytes would re-drive, so re-adding a file is not counted twice', async () => {
+    storageUsage.mockResolvedValue({ usedBytes: 0, quotaBytes: 10 * MB });
+
+    await ingestDocument(SCOPE, upload());
+
+    expect(storageUsage).toHaveBeenCalledWith(SCOPE, { excludeFileHash: expect.any(String) });
+  });
+
   it('refuses an upload that would cross the quota, naming both sizes', async () => {
     // Remaining room is 1 MB (9 of a 10 MB quota); a 2 MB upload crosses it.
     // Sized well under the 25 MB default per-file cap, so this exercises the

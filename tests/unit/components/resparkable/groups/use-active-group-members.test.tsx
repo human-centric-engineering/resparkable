@@ -15,7 +15,9 @@ vi.mock('@/lib/framework/resparkable/ui/use-active-space', () => ({ useActiveSpa
 vi.mock('@/components/resparkable/workspace/tabs/use-tab-fetch', () => ({ useTabFetch: vi.fn() }));
 
 import {
+  canBeAssigned,
   memberName,
+  useActiveGroup,
   useActiveGroupMembers,
 } from '@/components/resparkable/groups/use-active-group-members';
 import { useTabFetch } from '@/components/resparkable/workspace/tabs/use-tab-fetch';
@@ -55,7 +57,10 @@ describe('useActiveGroupMembers', () => {
     vi.mocked(useActiveSpaceId).mockReturnValue('spc_g');
     vi.mocked(useTabFetch).mockImplementation((endpoint) =>
       endpoint === '/api/v1/resparkable/spaces'
-        ? [{ status: 'ready', data: [{ spaceId: 'spc_g', groupId: 'grp_1' }] }, vi.fn()]
+        ? [
+            { status: 'ready', data: [{ spaceId: 'spc_g', groupId: 'grp_1', role: 'admin' }] },
+            vi.fn(),
+          ]
         : [{ status: 'ready', data: [JOINED, PENDING] }, vi.fn()]
     );
 
@@ -82,5 +87,32 @@ describe('memberName', () => {
     expect(memberName(JOINED)).toBe('Sam');
     expect(memberName({ ...JOINED, name: null })).toBe('A member with no name set');
     expect(memberName(undefined)).toBe('A member with no name set');
+  });
+});
+
+describe('useActiveGroup', () => {
+  it('carries the reader’s own role alongside the members', () => {
+    vi.mocked(useActiveSpaceId).mockReturnValue('spc_g');
+    vi.mocked(useTabFetch).mockImplementation((endpoint) =>
+      endpoint === '/api/v1/resparkable/spaces'
+        ? [
+            { status: 'ready', data: [{ spaceId: 'spc_g', groupId: 'grp_1', role: 'viewer' }] },
+            vi.fn(),
+          ]
+        : [{ status: 'ready', data: [JOINED] }, vi.fn()]
+    );
+
+    expect(renderHook(() => useActiveGroup()).result.current).toEqual({
+      members: [JOINED],
+      yourRole: 'viewer',
+    });
+  });
+});
+
+describe('canBeAssigned', () => {
+  it('lets admins and members be given a task, never a viewer', () => {
+    expect(canBeAssigned({ ...JOINED, role: 'admin' })).toBe(true);
+    expect(canBeAssigned({ ...JOINED, role: 'member' })).toBe(true);
+    expect(canBeAssigned({ ...JOINED, role: 'viewer' })).toBe(false);
   });
 });

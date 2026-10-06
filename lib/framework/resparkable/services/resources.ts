@@ -169,6 +169,13 @@ async function assertAssignable(
       assignedToUserId: ['Not a member of this group'],
     });
   }
+  // A viewer may not write the task, so a card that is theirs would be one
+  // they are refused every change to.
+  if (membership.role !== 'admin' && membership.role !== 'member') {
+    throw new ValidationError('A viewer cannot be given a task, because they cannot change it', {
+      assignedToUserId: ['Viewers read the group and cannot change its tasks'],
+    });
+  }
 }
 
 // ─── Tasks ───────────────────────────────────────────────────────────────────
@@ -279,7 +286,10 @@ const taskResourceOps: ResparkableResource<
 
 /** `lastActivityAt` is the input to `projectMomentum` — exp(-days/14) (§10). */
 async function touchProject(scope: SpaceScope, projectId: string): Promise<void> {
-  await projects.updateProject(scope, projectId, { lastActivityAt: new Date() });
+  // Bookkeeping, not an edit: it must not hand somebody editing the project a 409.
+  await projects.updateProject(scope, projectId, { lastActivityAt: new Date() }, undefined, {
+    bumpRev: false,
+  });
 }
 
 // ─── Projects ────────────────────────────────────────────────────────────────

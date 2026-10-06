@@ -53,7 +53,7 @@ vi.mock('@/lib/framework/resparkable/repo/comments', () => ({
 
 import {
   addComment,
-  canCommentOn,
+  listCommentsWithPermission,
   listCommentsFor,
   removeComment,
   updateComment,
@@ -306,7 +306,7 @@ describe('addComment', () => {
   });
 });
 
-describe('canCommentOn', () => {
+describe('listCommentsWithPermission: whether the reader may add to the thread', () => {
   it('is true for a writing group member on their own space’s item', async () => {
     resolveResparkableAccess.mockResolvedValue({
       ok: true,
@@ -322,7 +322,7 @@ describe('canCommentOn', () => {
       group: { spaceId: 'space_g', canWrite: true, canAdminister: false },
     };
 
-    expect(await canCommentOn(groupMember, REF, NOW)).toBe(true);
+    expect((await listCommentsWithPermission(groupMember, REF, NOW))?.canComment).toBe(true);
   });
 
   it('is false for a group viewer', async () => {
@@ -340,15 +340,15 @@ describe('canCommentOn', () => {
       group: { spaceId: 'space_g', canWrite: false, canAdminister: false },
     };
 
-    expect(await canCommentOn(groupViewer, REF, NOW)).toBe(false);
+    expect((await listCommentsWithPermission(groupViewer, REF, NOW))?.canComment).toBe(false);
   });
 
-  it('is false for an unshareable type, without resolving anything', async () => {
+  it('answers nothing for an unshareable type, without resolving anything', async () => {
     // Narrowed by the same guard the other entry points use, so a `thought`
     // costs no query before it is refused.
-    expect(await canCommentOn(GRANTEE, { entityType: 'thought', entityId: 'th_1' }, NOW)).toBe(
-      false
-    );
+    expect(
+      await listCommentsWithPermission(GRANTEE, { entityType: 'thought', entityId: 'th_1' }, NOW)
+    ).toBeNull();
     expect(resolveResparkableAccess).not.toHaveBeenCalled();
   });
 });

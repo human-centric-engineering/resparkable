@@ -132,7 +132,6 @@ import {
   returnJoinLinkUsesForErasure,
   deleteGroupSpaceIfMemberless,
   deleteJoinRequest,
-  deleteMember,
   findGroupById,
   findGroupBySlug,
   claimLargeRunAlert,
@@ -553,16 +552,6 @@ describe('upsertMember', () => {
     expect(args.where).toEqual({ groupId_userId: { groupId: 'group_1', userId: 'user_b' } });
     expect(args.update).toEqual({ joinedAt: NOW });
     expect(args.update).not.toHaveProperty('role');
-  });
-});
-
-describe('deleteMember', () => {
-  it('deletes by the groupId_userId unique key', async () => {
-    await deleteMember('group_1', 'user_b');
-
-    expect(vi.mocked(prisma.resparkableGroupMember.delete).mock.calls[0][0]).toEqual({
-      where: { groupId_userId: { groupId: 'group_1', userId: 'user_b' } },
-    });
   });
 });
 

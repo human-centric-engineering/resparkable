@@ -84,11 +84,14 @@ export async function promoteThought(
 
   const target = await createTarget(scope, input, title, thought.content);
 
-  await updateThought(scope, thoughtId, {
-    status: 'promoted',
-    promotedToType: input.target,
-    promotedToId: target.id,
-  });
+  // Bookkeeping on the note, not an edit to it: leaves the edit token alone.
+  await updateThought(
+    scope,
+    thoughtId,
+    { status: 'promoted', promotedToType: input.target, promotedToId: target.id },
+    undefined,
+    { bumpRev: false }
+  );
 
   // Best-effort, in this order: the edge is worth more than the event, and
   // neither is worth failing the promotion over.

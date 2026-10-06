@@ -400,12 +400,6 @@ export async function upsertMember(data: {
   });
 }
 
-export async function deleteMember(groupId: string, userId: string): Promise<void> {
-  await prisma.resparkableGroupMember.delete({
-    where: { groupId_userId: { groupId, userId } },
-  });
-}
-
 /**
  * A role change and its admin-record entry, in one transaction (§23.13), so
  * the record can never disagree with what happened. Role changes are the

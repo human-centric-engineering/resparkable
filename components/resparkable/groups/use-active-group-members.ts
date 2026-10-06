@@ -22,21 +22,41 @@ const groupMembersSchema = z.array(groupMemberSchema);
 
 export type ActiveGroupMember = GroupDetailWire['members'][number];
 
-export function useActiveGroupMembers(): ActiveGroupMember[] | null {
+export interface ActiveGroup {
+  /** Joined members only: a request to join is not a member yet. */
+  members: ActiveGroupMember[];
+  /** The reader's own role in the group. */
+  yourRole: string;
+}
+
+/** The open group's members and the reader's role, or `null` outside a group. */
+export function useActiveGroup(): ActiveGroup | null {
   const spaceId = useActiveSpaceId();
   const [spaces] = useTabFetch(spaceId ? RESPARKABLE_API.SPACES : null, openableSpacesSchema);
-  const groupId =
+  const space =
     spaceId && spaces.status === 'ready'
-      ? (spaces.data.find((space) => space.spaceId === spaceId)?.groupId ?? null)
+      ? (spaces.data.find((candidate) => candidate.spaceId === spaceId) ?? null)
       : null;
+  const groupId = space?.groupId ?? null;
   const [members] = useTabFetch(
     groupId ? RESPARKABLE_API.groupMembers(groupId) : null,
     groupMembersSchema
   );
 
-  if (!spaceId || members.status !== 'ready') return null;
-  // A request to join is not a member, so nobody can be assigned to one.
-  return members.data.filter((member) => member.joinedAt !== null);
+  if (!spaceId || !space || members.status !== 'ready') return null;
+  return {
+    members: members.data.filter((member) => member.joinedAt !== null),
+    yourRole: space.role,
+  };
+}
+
+export function useActiveGroupMembers(): ActiveGroupMember[] | null {
+  return useActiveGroup()?.members ?? null;
+}
+
+/** Whether a member can be given a task: a viewer cannot change one. */
+export function canBeAssigned(member: ActiveGroupMember): boolean {
+  return member.role === 'admin' || member.role === 'member';
 }
 
 /** "Sam", or a stand-in for an account with no name set. Never an address. */

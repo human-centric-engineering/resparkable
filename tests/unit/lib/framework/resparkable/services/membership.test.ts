@@ -41,7 +41,6 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   deleteGroupSpaceIfLastMember: vi.fn(),
   deleteGroupSpaceIfMemberless: vi.fn(),
   deleteJoinRequest: vi.fn(),
-  deleteMember: vi.fn(),
   deleteMemberWithAudit: vi.fn(),
   findGroupById: vi.fn(),
   findGroupBySlug: vi.fn(),
@@ -417,7 +416,7 @@ describe('the last-admin rules', () => {
       ok: false,
       reason: 'last_admin',
     });
-    expect(repo.deleteMember).not.toHaveBeenCalled();
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
   });
 
   it('refuses the same thing when the last admin is the one leaving', async () => {
@@ -635,7 +634,7 @@ describe('the last member out', () => {
     // The space, never the group row: deleting the group would strand the space
     // and all 23 satellites behind it. The repo re-counts under the group lock.
     expect(repo.deleteGroupSpaceIfLastMember).toHaveBeenCalledWith('grp_1', SPACE, 'user_a');
-    expect(repo.deleteMember).not.toHaveBeenCalled();
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
     expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
   });
 
@@ -653,7 +652,7 @@ describe('the last member out', () => {
       ok: false,
       reason: 'last_admin',
     });
-    expect(repo.deleteMember).not.toHaveBeenCalled();
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
   });
 
   it('removes a non-admin as an ordinary leave when the locked re-count finds a newcomer', async () => {
@@ -920,7 +919,7 @@ describe('settleGroupsAfterErasure', () => {
 
     // B13's cascade takes them a moment later. Deleting them here as well would
     // be a second definition of what erasure means.
-    expect(repo.deleteMember).not.toHaveBeenCalled();
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
   });
 
   it('does nothing for somebody in no groups', async () => {

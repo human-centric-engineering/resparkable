@@ -81,6 +81,7 @@ import {
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { insertGroupAuditEntry } from '@/lib/framework/resparkable/repo/group-audit';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit-record';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import { slugify } from '@/lib/framework/resparkable/services/slug';
@@ -370,17 +371,11 @@ export async function updateGroupSettings(
   const updated = await updateGroup(groupId, update);
   // Which settings moved, never their values: a group's description is
   // content, and the record is about administering, not about what was said.
-  await insertGroupAuditEntry({
+  await recordGroupAudit({
     groupId,
     actorUserId,
     action: 'settings_changed',
     metadata: { fields: Object.keys(data).sort() },
-  }).catch((error: unknown) => {
-    logger.warn('Resparkable group audit entry not written', {
-      groupId,
-      action: 'settings_changed',
-      error: error instanceof Error ? error.message : String(error),
-    });
   });
   return { ok: true, value: updated };
 }

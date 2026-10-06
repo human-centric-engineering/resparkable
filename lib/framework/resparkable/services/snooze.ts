@@ -35,6 +35,12 @@ import {
 } from '@/lib/framework/resparkable/time/zoned';
 import type { SnoozeInput } from '@/lib/framework/resparkable/validations';
 
+/**
+ * Snoozing changes nothing an edit form shows, so it leaves the edit token
+ * alone: a snooze must not hand somebody editing the row a 409 (phase 58).
+ */
+const BOOKKEEPING = { bumpRev: false } as const;
+
 /** The three types a person can snooze today. Links join them in phase 4. */
 export type SnoozableType = 'task' | 'thought' | 'project';
 
@@ -138,26 +144,38 @@ async function applySnooze(
   if (type === 'task') {
     // `deferUntil` doubles as the task snooze rather than a second column: two
     // fields meaning "not yet" would eventually disagree.
-    const task = await updateTask(scope, id, {
-      deferUntil: until,
-      snoozeCount: { increment: 1 },
-      lastSnoozedAt: now,
-    });
+    const task = await updateTask(
+      scope,
+      id,
+      {
+        deferUntil: until,
+        snoozeCount: { increment: 1 },
+        lastSnoozedAt: now,
+      },
+      undefined,
+      BOOKKEEPING
+    );
     return task && { id: task.id, snoozedUntil: until, snoozeCount: task.snoozeCount };
   }
 
   if (type === 'thought') {
-    const thought = await updateThought(scope, id, {
-      snoozedUntil: until,
-      snoozeCount: { increment: 1 },
-      lastSnoozedAt: now,
-    });
+    const thought = await updateThought(
+      scope,
+      id,
+      {
+        snoozedUntil: until,
+        snoozeCount: { increment: 1 },
+        lastSnoozedAt: now,
+      },
+      undefined,
+      BOOKKEEPING
+    );
     return thought && { id: thought.id, snoozedUntil: until, snoozeCount: thought.snoozeCount };
   }
 
   // Projects carry no `snoozeCount` — the chronic-snooze signal is about
   // individual items you keep avoiding, and a project is a container.
-  const project = await updateProject(scope, id, { snoozedUntil: until });
+  const project = await updateProject(scope, id, { snoozedUntil: until }, undefined, BOOKKEEPING);
   return project && { id: project.id, snoozedUntil: until, snoozeCount: null };
 }
 
@@ -192,12 +210,19 @@ async function clearSnooze(
   id: string,
   now: Date
 ): Promise<{ id: string } | null> {
-  if (type === 'task') return updateTask(scope, id, { deferUntil: null });
-  if (type === 'thought') return updateThought(scope, id, { snoozedUntil: null });
+  if (type === 'task') return updateTask(scope, id, { deferUntil: null }, undefined, BOOKKEEPING);
+  if (type === 'thought')
+    return updateThought(scope, id, { snoozedUntil: null }, undefined, BOOKKEEPING);
 
   // Restarting the momentum clock is how "decay pauses while snoozed" (§10) is
   // honoured without a column recording when the snooze began: a project you
   // deliberately left alone for a month comes back with full momentum instead
   // of looking a month stale for having done what you asked.
-  return updateProject(scope, id, { snoozedUntil: null, lastActivityAt: now });
+  return updateProject(
+    scope,
+    id,
+    { snoozedUntil: null, lastActivityAt: now },
+    undefined,
+    BOOKKEEPING
+  );
 }

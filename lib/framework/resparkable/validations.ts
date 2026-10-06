@@ -2296,6 +2296,7 @@ export type RedeemJoinLinkInput = z.infer<typeof redeemJoinLinkSchema>;
  * carries `?space=`, which `requestSpaceScope` reads.
  */
 export const feedQuerySchema = z.object({
-  before: z.coerce.date().optional(),
+  /** `"<iso time>|<event id>"`, as the previous page's `nextCursor` gave it. */
+  before: z.string().trim().min(3).max(120).optional(),
   member: z.string().trim().min(1).max(64).optional(),
 });

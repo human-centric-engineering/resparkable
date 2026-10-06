@@ -325,9 +325,15 @@ describe('touchProject — task momentum bump', () => {
     await taskResource.create(scope, { title: 'x' } as unknown as TaskCreate);
 
     // Assert
-    expect(projects.updateProject).toHaveBeenCalledWith(scope, 'proj_1', {
-      lastActivityAt: expect.any(Date),
-    });
+    expect(projects.updateProject).toHaveBeenCalledWith(
+      scope,
+      'proj_1',
+      {
+        lastActivityAt: expect.any(Date),
+      },
+      undefined,
+      { bumpRev: false }
+    );
   });
 
   it('does not touch any project when creating a task with no project', async () => {
@@ -352,9 +358,15 @@ describe('touchProject — task momentum bump', () => {
     await taskResource.update(scope, 'task_1', { notes: 'progress update' });
 
     // Assert
-    expect(projects.updateProject).toHaveBeenCalledWith(scope, 'proj_1', {
-      lastActivityAt: expect.any(Date),
-    });
+    expect(projects.updateProject).toHaveBeenCalledWith(
+      scope,
+      'proj_1',
+      {
+        lastActivityAt: expect.any(Date),
+      },
+      undefined,
+      { bumpRev: false }
+    );
   });
 });
 
@@ -2130,7 +2142,7 @@ describe('revisedUpdate: optimistic concurrency on project.update (phase 58, §2
 
 describe('task assignment (phase 58, §23.13)', () => {
   const groupScope = spaceScopeFor({ spaceId: 'spc_g', actorUserId: 'user_x', role: 'member' });
-  const joined = { userId: 'user_sam', joinedAt: new Date('2026-09-01T00:00:00Z') };
+  const joined = { userId: 'user_sam', role: 'member', joinedAt: new Date('2026-09-01T00:00:00Z') };
 
   beforeEach(() => {
     vi.mocked(findGroupBySpaceId).mockResolvedValue({ id: 'grp_1' } as never);
@@ -2185,6 +2197,18 @@ describe('task assignment (phase 58, §23.13)', () => {
       taskResource.update(groupScope, 'task_1', { assignedToUserId: 'user_p' })
     ).rejects.toBeInstanceOf(ValidationError);
     expect(tasks.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses a viewer, who could not change the task they were given', async () => {
+    vi.mocked(findMembership).mockResolvedValueOnce({
+      userId: 'user_v',
+      role: 'viewer',
+      joinedAt: new Date('2026-09-01T00:00:00Z'),
+    } as never);
+
+    await expect(
+      taskResource.update(groupScope, 'task_1', { assignedToUserId: 'user_v' })
+    ).rejects.toBeInstanceOf(ValidationError);
   });
 
   it('lists "assigned to me" as a filter on the reader', async () => {

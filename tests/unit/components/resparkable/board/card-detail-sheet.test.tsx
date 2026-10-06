@@ -52,10 +52,10 @@ vi.mock('@/components/resparkable/groups/use-active-group-members', async (impor
   ...(await importOriginal<
     typeof import('@/components/resparkable/groups/use-active-group-members')
   >()),
-  useActiveGroupMembers: vi.fn(() => null),
+  useActiveGroup: vi.fn(() => null),
 }));
 
-import { useActiveGroupMembers } from '@/components/resparkable/groups/use-active-group-members';
+import { useActiveGroup } from '@/components/resparkable/groups/use-active-group-members';
 
 const MEMBERS = [
   {
@@ -130,7 +130,7 @@ function card(overrides: Partial<BoardCardWire> = {}): BoardCardWire {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(useActiveGroupMembers).mockReturnValue(null);
+  vi.mocked(useActiveGroup).mockReturnValue(null);
   mockedPost.mockResolvedValue({ id: 'c3' });
   mockedPatch.mockResolvedValue({ id: 'c1' });
   mockedPut.mockResolvedValue([]);
@@ -431,7 +431,7 @@ describe('CardDetailSheet: assigning a card (phase 58)', () => {
   });
 
   it('assigns to a group member by name, and back to nobody', async () => {
-    vi.mocked(useActiveGroupMembers).mockReturnValue(MEMBERS);
+    vi.mocked(useActiveGroup).mockReturnValue({ members: MEMBERS, yourRole: 'member' });
     const user = userEvent.setup();
     render(
       <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
@@ -460,7 +460,7 @@ describe('CardDetailSheet: assigning a card (phase 58)', () => {
   });
 
   it('puts the previous assignee back when the save fails', async () => {
-    vi.mocked(useActiveGroupMembers).mockReturnValue(MEMBERS);
+    vi.mocked(useActiveGroup).mockReturnValue({ members: MEMBERS, yourRole: 'member' });
     mockedPatch.mockRejectedValueOnce(new Error('Not a member of this group'));
     const user = userEvent.setup();
     render(
@@ -480,5 +480,41 @@ describe('CardDetailSheet: assigning a card (phase 58)', () => {
         'A member with no name set'
       );
     });
+  });
+});
+
+describe('CardDetailSheet: viewers and assignment (phase 58)', () => {
+  it('offers a viewer no picker, since they cannot change the task', () => {
+    vi.mocked(useActiveGroup).mockReturnValue({ members: MEMBERS, yourRole: 'viewer' });
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
+
+    expect(screen.queryByRole('combobox', { name: 'Assigned to' })).not.toBeInTheDocument();
+  });
+
+  it('never offers a viewer as the person to assign', async () => {
+    vi.mocked(useActiveGroup).mockReturnValue({
+      members: [
+        ...MEMBERS,
+        {
+          userId: 'user_v',
+          name: 'Val',
+          role: 'viewer',
+          joinedAt: '2026-09-03T00:00:00.000Z',
+          requestedAt: null,
+        },
+      ],
+      yourRole: 'admin',
+    });
+    const user = userEvent.setup();
+    render(
+      <CardDetailSheet card={card()} allTags={TAGS} onOpenChange={vi.fn()} onShare={vi.fn()} />
+    );
+
+    await user.click(screen.getByRole('combobox', { name: 'Assigned to' }));
+
+    expect(await screen.findByRole('option', { name: 'Sam' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Val' })).not.toBeInTheDocument();
   });
 });
