@@ -38,6 +38,7 @@ import {
   createJoinLink,
   deleteJoinRequest,
   findJoinLinkByTokenHash,
+  findMembership,
   listJoinLinks,
   redeemJoinLink,
   revokeJoinLink,
@@ -50,6 +51,7 @@ import {
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import type { CreateJoinLinkInput } from '@/lib/framework/resparkable/validations';
 import { env } from '@/lib/env';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
 import { logger } from '@/lib/logging';
 import { isShareActive } from '@/lib/utils/share-window';
 
@@ -111,13 +113,13 @@ function toView(link: JoinLinkView): JoinLinkView {
 async function requireAdmin(
   actorUserId: string,
   groupId: string
-): Promise<{ ok: true } | { ok: false; reason: MembershipRefusal }> {
+): Promise<{ ok: true; groupName: string } | { ok: false; reason: MembershipRefusal }> {
   const resolved = await resolveGroupMembership(actorUserId, groupId);
   if (!resolved) return { ok: false, reason: 'not_a_member' };
   if (!permissionsFor(resolved.scope.role).administer) {
     return { ok: false, reason: 'not_an_admin' };
   }
-  return { ok: true };
+  return { ok: true, groupName: resolved.membership.group.name };
 }
 
 export type MintJoinLinkResult =
@@ -165,6 +167,12 @@ export async function mintJoinLink(
     role: link.role,
     approval: link.approval,
   });
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    action: 'join_link_minted',
+    metadata: { role: link.role, approval: link.approval, maxUses: link.maxUses },
+  });
 
   return {
     ok: true,
@@ -197,6 +205,7 @@ export async function revokeGroupJoinLink(
 
   await revokeJoinLink(groupId, linkId, now);
   logger.info('Resparkable group join link revoked', { groupId });
+  await recordGroupAudit({ groupId, actorUserId, action: 'join_link_revoked' });
   return { ok: true };
 }
 
@@ -249,16 +258,30 @@ export async function approveGroupJoinRequest(
   groupId: string,
   targetUserId: string,
   now: Date = new Date()
-): Promise<{ ok: true } | { ok: false; reason: JoinRequestRefusal }> {
+): Promise<
+  { ok: true; groupName: string; role: string } | { ok: false; reason: JoinRequestRefusal }
+> {
   const allowed = await requireAdmin(actorUserId, groupId);
   if (!allowed.ok) return allowed;
+
+  // The role was fixed by the link they came through; read before approving
+  // so the record and the email can say what they joined as.
+  const pending = await findMembership(targetUserId, groupId);
 
   const outcome = await approveJoinRequest(groupId, targetUserId, now);
   if (outcome === 'no_such_request') return { ok: false, reason: 'no_such_member' };
   if (outcome === 'group_full') return { ok: false, reason: 'group_full' };
 
+  const role = pending?.role ?? 'member';
   logger.info('Resparkable group join request approved', { groupId });
-  return { ok: true };
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: 'join_approved',
+    metadata: { role },
+  });
+  return { ok: true, groupName: allowed.groupName, role };
 }
 
 /** Turn a request down. Admin only; the pending row is deleted and nothing is kept. */
@@ -275,5 +298,11 @@ export async function rejectGroupJoinRequest(
   }
 
   logger.info('Resparkable group join request rejected', { groupId });
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: 'join_rejected',
+  });
   return { ok: true };
 }

@@ -59,7 +59,13 @@ const DETAIL: GroupDetailWire = {
   latestDigest: null,
   members: [
     { userId: 'user_a', role: 'admin', joinedAt: '2026-09-01T10:00:00.000Z', requestedAt: null },
-    { userId: 'user_b', role: 'member', joinedAt: '2026-09-02T10:00:00.000Z', requestedAt: null },
+    {
+      userId: 'user_b',
+      role: 'member',
+      joinedAt: '2026-09-02T10:00:00.000Z',
+      requestedAt: null,
+      name: 'Bailey Chen',
+    },
   ],
 };
 
@@ -143,7 +149,7 @@ describe('GroupDetail', () => {
     vi.mocked(apiClient.patch).mockRejectedValue(new Error('last_admin'));
 
     renderDetail();
-    await user.click(screen.getByLabelText('Role for user_b'));
+    await user.click(screen.getByLabelText('Role for Bailey Chen'));
     await user.click(await screen.findByRole('option', { name: 'viewer' }));
 
     expect(apiClient.patch).toHaveBeenCalledWith(
@@ -153,7 +159,7 @@ describe('GroupDetail', () => {
     // The last-admin rules live in the service, so the UI has to believe the
     // refusal rather than its own optimism.
     await vi.waitFor(() =>
-      expect(screen.getByLabelText('Role for user_b')).toHaveTextContent('member')
+      expect(screen.getByLabelText('Role for Bailey Chen')).toHaveTextContent('member')
     );
   });
 
@@ -250,14 +256,36 @@ describe('GroupDetail', () => {
     expect(screen.getByText('Only admins see this part.')).toBeInTheDocument();
   });
 
-  it('names members by id and never by address', () => {
+  it('names members by account name, never by id or address (phase 58)', () => {
     renderDetail();
 
     // Every member can see who else is in the group, which §23.4 makes
     // unavoidable. Handing out everybody's email is a separate decision nobody
-    // made, and the member route does not return one.
-    expect(screen.getByText('user_b')).toBeInTheDocument();
+    // made, and the member route does not return one. The raw id used to be
+    // what rendered here; it is now a name, because an id means nothing to a
+    // human reader.
+    expect(screen.getByText('Bailey Chen')).toBeInTheDocument();
+    expect(screen.queryByText('user_b')).not.toBeInTheDocument();
     expect(screen.queryByText(/user_b@/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to "A member with no name set" for a joined member with no account name', () => {
+    renderDetail({
+      members: [
+        DETAIL.members[0],
+        {
+          userId: 'user_c',
+          role: 'member',
+          joinedAt: '2026-09-03T10:00:00.000Z',
+          requestedAt: null,
+        },
+      ],
+    });
+
+    // Never the id: the stand-in is plain English, matching the pending-row
+    // fallback ("An account with no name") in spirit.
+    expect(screen.getByText('A member with no name set')).toBeInTheDocument();
+    expect(screen.queryByText('user_c')).not.toBeInTheDocument();
   });
 
   it('shows an admin an "Asking to join" list for a pending member, named by account name', () => {

@@ -4,7 +4,7 @@
  *
  * `rev Int @default(0)` was added to seven models in one migration (Decision
  * 3, `.context/framework/resparkable/phase-58-59-plan.md`), but only six have
- * an update route that honours it — the seventh, reviews, has no update route
+ * an update route that honours it: the seventh, reviews, has no update route
  * at all; a review is generated whole and later dismissed, never edited.
  *
  * This parses the schema itself rather than trusting a hand-written list to
@@ -15,9 +15,9 @@
  * conflict handling, looks exactly like a complete rollout from the outside.
  * Nothing about the schema or the API reveals the gap.
  *
- * @see lib/framework/resparkable/repo/shared.ts — `revWhere`, `REV_BUMP`
- * @see lib/framework/resparkable/services/resources.ts — `revisedUpdate`
- * @see lib/framework/resparkable/validations.ts — the per-type update schemas
+ * @see lib/framework/resparkable/repo/shared.ts: `revWhere`, `REV_BUMP`
+ * @see lib/framework/resparkable/services/resources.ts: `revisedUpdate`
+ * @see lib/framework/resparkable/validations.ts: the per-type update schemas
  */
 
 import { readFileSync } from 'node:fs';
@@ -120,7 +120,7 @@ describe('rev-carrying models vs the phase-58 update wiring (13j)', () => {
     const stale = [...accountedFor].filter((model) => !revModelSet.has(model));
     expect(stale).toEqual([]);
 
-    // No model may appear in both — that would be a contradiction about
+    // No model may appear in both: that would be a contradiction about
     // whether it has an update route at all.
     const overlap = HANDLED.filter((model) => model in EXCLUDED);
     expect(overlap).toEqual([]);

@@ -108,11 +108,19 @@ is last-write-wins exactly as today.
 **Optional, because the callers are not all people.** The capabilities, the MCP
 tools and the iOS Shortcut all write through the same services and have never
 read a `rev`; requiring it would break every agent write in the tier. The edit
-forms, which are where two people meet one row, always send it.
+dialogs for projects, goals, areas and people, which are where two people meet
+one row, send it. On a 409 the dialog keeps what was typed, refreshes the record
+underneath (which brings the new `rev`), and says that saving again replaces the
+other person's version. Inline task and note edits (the board card, the task
+row, the inbox card) do not send it yet: last-write-wins there is a known gap,
+not a decision.
 
-The repo does `updateMany({ where: { id, ...spaceWhere, rev } })` and reads the
-row back on a count of zero, which distinguishes "gone" (404) from "changed"
-(409) without a second round trip on the happy path.
+Checked twice, for two races. The service compares the `rev` it was sent with
+the row it already reads for the update, which catches the common case without
+touching the write. The repo's `update` then matches on `rev` in its `WHERE`,
+which catches a save landing between that read and this write; a miss there is
+read again to tell "gone" (404) from "changed" (409). The happy path is still
+one write.
 
 **The coverage list is asserted by enumeration** (13j): a test reads the Prisma
 schema, collects every model with a `rev` field, and requires each to be either
@@ -132,8 +140,16 @@ filter.
 - **Leaving clears it.** `removeMember` nulls the leaver's assignments in that
   group's space in the same transaction that deletes the membership row, so
   nothing is silently reassigned. Erasure is already covered by the FK.
-- **The filter returns rows and never a count.** The task list and board accept
+- **The filter returns rows and never a count.** The task list accepts
   `assignedTo=me`; nothing renders "tasks per member".
+- **People assign; agents do not.** `agentUpsertTaskSchema` omits the field: an
+  agent holds no member's user id, and assigning is one person's call about
+  another.
+- **Names, not ids.** The picker and the card need a member's name, and so does
+  the feed's "added by Sam". The member lists (`GET /groups/[id]` and
+  `/members`) now return each joined member's account name, never an address;
+  until now the group page showed raw user ids. The address stays the separate
+  decision nobody has made.
 
 ## Decision 5: `ResparkableGroupAuditEntry`
 
@@ -143,11 +159,19 @@ person keeps the record of what happened and drops who), `action`
 (`VarChar(32)`), `metadata Json?`, `createdAt`. Append-only: the repo has insert
 and list, and nothing else.
 
-Written **inside the transaction** of the action it records, so an action and
-its record cannot disagree: role changes, removals (including self-leave),
-settings changes, join-link minting and revocation, join approvals and
-rejections, invitation issue and revocation, budget settings, member caps and
-top-ups.
+Recorded for role changes (including an erasure succession, with no actor),
+removals (including self-leave), settings changes (which fields, never their
+values), join-link minting and revocation, join approvals and rejections,
+invitation issue and revocation (the role, never the address), budget
+settings, member caps and top-ups.
+
+**Atomic where it is disputed, best effort elsewhere.** Role changes and
+removals write their entry in the same transaction as the change, because
+those are the acts a person contests, and a removal's transaction also clears
+the leaver's assignments. The rest record straight after the action, and a
+failed write there is logged and never fails the action it describes; the
+group's settings and link services do not run in transactions today, and
+making them would be a larger change than the record is worth.
 
 **Who reads it.** Admins see every entry. Any other member sees the entries
 where they are the subject, because the subject of an administrative action has
@@ -175,7 +199,9 @@ logged, never surfaced: the change happened whether or not the email arrived.
 `ResparkableGroup.storageQuotaBytes BigInt?`, `null` meaning the default, 2 GiB.
 Upload sums `ResparkableDocument.byteSize` in the space (archived documents
 included, because their originals are still retained) and refuses an upload that
-would cross the quota with 413 and a message naming both numbers. The group page
+would cross the quota with a message naming both numbers, after the duplicate
+check (a re-upload costs nothing). The refusal is the tier's existing ingest
+error, a 400 with reason `over_quota`, not a new status. The group page
 shows usage against the quota. Personal spaces keep today's behaviour: no total,
 only the per-file cap.
 

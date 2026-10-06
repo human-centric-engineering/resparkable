@@ -19,7 +19,7 @@ import { getRouteLogger } from '@/lib/api/context';
 import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { withAuth } from '@/lib/auth/guards';
-import { listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
+import { findAccountNames, listGroupMembers } from '@/lib/framework/resparkable/repo/groups';
 import {
   resolveGroupMembership,
   visibleMemberRows,
@@ -37,6 +37,9 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
 
   log.info('Resparkable group members list', { groupId: id, count: members.length });
 
+  // Names, never addresses: see `GET /groups/[id]`.
+  const names = await findAccountNames(members.map((member) => member.userId));
+
   // No addresses. See `GET /groups/[id]` for why.
   return successResponse(
     members.map((member) => ({
@@ -44,6 +47,7 @@ export const GET = withAuth<{ id: string }>(async (request, session, { params })
       role: member.role,
       joinedAt: member.joinedAt,
       requestedAt: member.requestedAt,
+      name: names.get(member.userId) ?? null,
     })),
     { count: members.length }
   );

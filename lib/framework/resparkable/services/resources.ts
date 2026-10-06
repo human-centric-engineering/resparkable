@@ -19,7 +19,8 @@
 
 import type { z } from 'zod';
 
-import { ConflictError } from '@/lib/api/errors';
+import { ConflictError, ValidationError } from '@/lib/api/errors';
+import { findGroupBySpaceId, findMembership } from '@/lib/framework/resparkable/repo/groups';
 import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as boards from '@/lib/framework/resparkable/repo/boards';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
@@ -145,6 +146,31 @@ function revConflict(name: string, current: unknown): ConflictError {
   });
 }
 
+/**
+ * A task's assignee must be a joined member of the space's group (§23.13,
+ * phase 58), and a personal space has nobody to assign to. Checked here,
+ * against membership, and never inside a task query (D5). `undefined` (not
+ * sent) and `null` (unassign) always pass.
+ */
+async function assertAssignable(
+  scope: SpaceScope,
+  assignee: string | null | undefined
+): Promise<void> {
+  if (assignee === undefined || assignee === null) return;
+  const group = await findGroupBySpaceId(scope.spaceId);
+  if (!group) {
+    throw new ValidationError('A task in your own workspace is not assigned to anyone', {
+      assignedToUserId: ['Only a task in a group can be assigned'],
+    });
+  }
+  const membership = await findMembership(assignee, group.id);
+  if (!membership || membership.joinedAt === null) {
+    throw new ValidationError('That person is not a member of this group', {
+      assignedToUserId: ['Not a member of this group'],
+    });
+  }
+}
+
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
 const taskResourceOps: ResparkableResource<
@@ -162,6 +188,9 @@ const taskResourceOps: ResparkableResource<
       status: query.status,
       projectId: query.projectId,
       hideDeferred: query.hideDeferred,
+      ...(query.assignedTo === 'me' && scope.actorUserId
+        ? { assignedToUserId: scope.actorUserId }
+        : {}),
     };
     const [items, total] = await Promise.all([
       tasks.listTasks(scope, filters, {
@@ -177,6 +206,7 @@ const taskResourceOps: ResparkableResource<
   get: (scope, id) => tasks.findTask(scope, id),
 
   async create(scope, input) {
+    await assertAssignable(scope, input.assignedToUserId);
     const task = await tasks.createTask(scope, definedOnly(input));
     await recordResparkableEvent(scope, { kind: 'created', entityType: 'task', entityId: task.id });
     // A new task is activity on its project — momentum decay restarts.
@@ -187,6 +217,7 @@ const taskResourceOps: ResparkableResource<
   async update(scope, id, { rev, ...input }) {
     const before = await tasks.findTask(scope, id);
     if (!before) return null;
+    await assertAssignable(scope, input.assignedToUserId);
 
     const data = definedOnly(input);
     // Completing a task stamps `completedAt` here rather than trusting the

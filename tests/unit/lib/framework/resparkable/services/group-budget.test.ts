@@ -60,6 +60,11 @@ vi.mock('@/lib/framework/resparkable/services/space', () => ({
   ensureResparkableSpace: (...args: unknown[]) => ensureResparkableSpace(...args),
 }));
 
+const recordGroupAudit = vi.fn();
+vi.mock('@/lib/framework/resparkable/services/group-audit', () => ({
+  recordGroupAudit: (...args: unknown[]) => recordGroupAudit(...args),
+}));
+
 const resolveGroupMembership = vi.fn();
 vi.mock('@/lib/framework/resparkable/services/membership', async (importOriginal) => {
   // `permissionsFor` stays real: it is pure role-to-permission logic, not a
@@ -259,6 +264,28 @@ describe('updateGroupBudgetSettings', () => {
       },
     });
   });
+
+  it('records the new settings in the admin log', async () => {
+    resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
+    updateGroup.mockResolvedValue({
+      fundingMode: 'member_contributions',
+      lowBalanceAlertCredits: 20,
+      largeRunAlertPercent: 50,
+    });
+
+    await updateGroupBudgetSettings('user_m', 'grp_1', { fundingMode: 'member_contributions' });
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_m',
+      action: 'budget_changed',
+      metadata: {
+        fundingMode: 'member_contributions',
+        lowBalanceAlertCredits: 20,
+        largeRunAlertPercent: 50,
+      },
+    });
+  });
 });
 
 describe('setMemberDailyCreditCap', () => {
@@ -288,6 +315,30 @@ describe('setMemberDailyCreditCap', () => {
 
     expect(updateMemberDailyCreditCap).toHaveBeenCalledWith('grp_1', 'user_m', 3);
     expect(result).toEqual({ ok: true, value: { userId: 'user_m', dailyCreditCap: 3 } });
+  });
+
+  it('records the cap change with the target as subject, not the actor', async () => {
+    resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
+    updateMemberDailyCreditCap.mockResolvedValue({ userId: 'user_b', dailyCreditCap: 7 });
+
+    await setMemberDailyCreditCap('user_m', 'grp_1', 'user_b', 7);
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_m',
+      subjectUserId: 'user_b',
+      action: 'member_cap_changed',
+      metadata: { dailyCreditCap: 7 },
+    });
+  });
+
+  it('writes no entry when there was no such member to cap', async () => {
+    resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
+    updateMemberDailyCreditCap.mockResolvedValue(null);
+
+    await setMemberDailyCreditCap('user_m', 'grp_1', 'user_ghost', 5);
+
+    expect(recordGroupAudit).not.toHaveBeenCalled();
   });
 });
 
@@ -366,6 +417,29 @@ describe('topUpGroup', () => {
     expect(from).toMatchObject({ spaceId: 'user_m', actorUserId: 'user_m', role: 'owner' });
     expect(to).toMatchObject({ spaceId: 'spc_group' });
     expect(credits).toBe(10);
+  });
+
+  it('records the top-up with the credits moved', async () => {
+    resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
+    transferCreditsToGroup.mockResolvedValue({ groupBalanceCredits: 20 });
+
+    await topUpGroup('user_m', 'grp_1', 10);
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_m',
+      action: 'topped_up',
+      metadata: { credits: 10 },
+    });
+  });
+
+  it('writes no entry when the transfer was refused for insufficient credits', async () => {
+    resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
+    transferCreditsToGroup.mockResolvedValue(null);
+
+    await topUpGroup('user_m', 'grp_1', 999);
+
+    expect(recordGroupAudit).not.toHaveBeenCalled();
   });
 });
 

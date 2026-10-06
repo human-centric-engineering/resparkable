@@ -90,12 +90,18 @@ vi.mock('@/lib/db/client', () => {
   // `listUnnotifiedSoleAdmins` calls `prisma.$queryRaw` directly, with no
   // transaction, so one mock covers both call shapes.
   const queryRaw = vi.fn().mockResolvedValue([]);
+  // Phase 58: a removal clears the leaver's assignments and writes the admin
+  // record in the same transaction as the membership delete.
+  const resparkableTask = { updateMany: vi.fn().mockResolvedValue({ count: 0 }) };
+  const resparkableGroupAuditEntry = { create: vi.fn() };
   const tx = {
     resparkableSpace,
     resparkableGroup,
     resparkableGroupMember,
     resparkableGroupInvite,
     resparkableGroupJoinLink,
+    resparkableTask,
+    resparkableGroupAuditEntry,
     $queryRaw: queryRaw,
   };
   const client = {
@@ -114,6 +120,7 @@ vi.mock('@/lib/db/client', () => {
 
 import { prisma } from '@/lib/db/client';
 import type { GroupCreateData } from '@/lib/framework/resparkable/repo/groups';
+import * as repo from '@/lib/framework/resparkable/repo/groups';
 import {
   acceptInviteAndJoin,
   approveJoinRequest,
@@ -1551,5 +1558,63 @@ describe('deleteJoinRequest', () => {
 
     expect(await deleteJoinRequest('group_1', 'user_b')).toBe(true);
     expect(prisma.resparkableGroupJoinLink.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('phase 58: membership changes and their record, in one transaction', () => {
+  it('removes a member, clears their assignments in that space only, and records it', async () => {
+    await repo.deleteMemberWithAudit('group_1', 'spc_g', 'user_b', {
+      groupId: 'group_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      action: 'member_removed',
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.resparkableGroupMember.delete).toHaveBeenCalledWith({
+      where: { groupId_userId: { groupId: 'group_1', userId: 'user_b' } },
+    });
+    expect(prisma.resparkableTask.updateMany).toHaveBeenCalledWith({
+      where: { spaceId: 'spc_g', assignedToUserId: 'user_b' },
+      data: { assignedToUserId: null },
+    });
+    expect(prisma.resparkableGroupAuditEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ action: 'member_removed', subjectUserId: 'user_b' }),
+    });
+  });
+
+  it('changes a role and records it together', async () => {
+    vi.mocked(prisma.resparkableGroupMember.update).mockResolvedValue(memberRow());
+
+    await repo.updateMemberRoleWithAudit('group_1', 'user_b', 'viewer', {
+      groupId: 'group_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      action: 'role_changed',
+      metadata: { from: 'member', to: 'viewer' },
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.resparkableGroupMember.update).toHaveBeenCalledWith({
+      where: { groupId_userId: { groupId: 'group_1', userId: 'user_b' } },
+      data: { role: 'viewer' },
+    });
+    expect(prisma.resparkableGroupAuditEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        action: 'role_changed',
+        metadata: { from: 'member', to: 'viewer' },
+      }),
+    });
+  });
+
+  it('marks the feed read on a joined member’s own row only', async () => {
+    const at = new Date('2026-10-06T12:00:00.000Z');
+
+    await repo.setFeedSeenAt('group_1', 'user_b', at);
+
+    expect(prisma.resparkableGroupMember.updateMany).toHaveBeenCalledWith({
+      where: { groupId: 'group_1', userId: 'user_b', joinedAt: { not: null } },
+      data: { feedSeenAt: at },
+    });
   });
 });

@@ -11,7 +11,7 @@
  *   comments route resolves rather than the viewer's personal ones.
  *
  * Whether the composer shows is left entirely to `CommentThread`'s own
- * `meta.canComment` read — this component passes no `canComment` prop, by
+ * `meta.canComment` read: this component passes no `canComment` prop, by
  * design, so that behaviour is covered there and not duplicated here.
  *
  * @see components/resparkable/groups/group-comment-thread.tsx
@@ -47,7 +47,7 @@ beforeEach(() => {
 describe('GroupCommentThread', () => {
   it('renders nothing and makes no fetch in a personal workspace', async () => {
     // `useActiveSpaceId` reads `useSearchParams()`, and no `?space=` means the
-    // personal workspace — there is nobody else in it to talk to.
+    // personal workspace: there is nobody else in it to talk to.
     vi.mocked(useSearchParams).mockReturnValue(new URLSearchParams() as never);
 
     const { container } = render(<GroupCommentThread entityType="project" entityId="item-1" />);

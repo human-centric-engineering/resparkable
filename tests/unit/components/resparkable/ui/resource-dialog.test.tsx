@@ -197,7 +197,7 @@ describe('ResourceDialog', () => {
   });
 });
 
-describe('ResourceDialog — rev (optimistic concurrency, phase 58)', () => {
+describe('ResourceDialog: rev (optimistic concurrency, phase 58)', () => {
   const projectChangeKeys = keysForChange({ type: 'project', id: 'proj_1' });
 
   beforeEach(() => {

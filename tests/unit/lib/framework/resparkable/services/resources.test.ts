@@ -20,6 +20,11 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
+// Phase 58: an assignee is checked against the group's membership.
+vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
+  findGroupBySpaceId: vi.fn(),
+  findMembership: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/repo/tasks', () => ({
   listTasks: vi.fn(),
   countTasks: vi.fn(),
@@ -128,7 +133,8 @@ vi.mock('@/lib/framework/resparkable/priority/reprioritise', () => ({
 import * as areas from '@/lib/framework/resparkable/repo/areas';
 import * as entities from '@/lib/framework/resparkable/repo/entities';
 import * as goals from '@/lib/framework/resparkable/repo/goals';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { findGroupBySpaceId, findMembership } from '@/lib/framework/resparkable/repo/groups';
+import { spaceScope, spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import * as projects from '@/lib/framework/resparkable/repo/projects';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
 import * as thoughts from '@/lib/framework/resparkable/repo/thoughts';
@@ -150,7 +156,7 @@ import {
   timeBlockResource,
 } from '@/lib/framework/resparkable/services/resources';
 import { resolveSlugOnUpdate, resolveUniqueSlug } from '@/lib/framework/resparkable/services/slug';
-import { ConflictError } from '@/lib/api/errors';
+import { ConflictError, ValidationError } from '@/lib/api/errors';
 import { assertDefined } from '@/tests/helpers/assertions';
 import type {
   ResparkableArea,
@@ -1950,7 +1956,7 @@ describe('taskResource.update — the status-change payload', () => {
   });
 });
 
-describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §23.13)', () => {
+describe('revisedUpdate: optimistic concurrency on task.update (phase 58, §23.13)', () => {
   it('passes a matching rev through to the repo as expectedRev, and never includes rev in the data', async () => {
     // Arrange
     vi.mocked(tasks.findTask).mockResolvedValue(fakeTask({ id: 'task_1', rev: 3 }));
@@ -1983,7 +1989,7 @@ describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §2
   });
 
   it('rereads and throws a 409 with the fresh row when a matching-rev write misses but the row still exists', async () => {
-    // Arrange — the row was changed by someone else between the read above
+    // Arrange: the row was changed by someone else between the read above
     // and this write landing; the repo's own WHERE (rev: 3) then matches
     // nothing, so updateTask misses even though `before` looked fine.
     const before = fakeTask({ id: 'task_1', rev: 3 });
@@ -2001,7 +2007,7 @@ describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §2
   });
 
   it('returns null without a conflict when a matching-rev write misses and the row is gone', async () => {
-    // Arrange — the row was deleted, not merely edited, between the read and
+    // Arrange: the row was deleted, not merely edited, between the read and
     // the write: the reread also comes back empty.
     vi.mocked(tasks.findTask)
       .mockResolvedValueOnce(fakeTask({ id: 'task_1', rev: 3 }))
@@ -2020,7 +2026,7 @@ describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §2
   });
 
   it('passes undefined as expectedRev and never rereads when the caller sends no rev at all', async () => {
-    // Arrange — last-write-wins: a miss here is an ordinary not-found, not a
+    // Arrange: last-write-wins: a miss here is an ordinary not-found, not a
     // conflict, so there is nothing to reread.
     vi.mocked(tasks.findTask).mockResolvedValue(fakeTask({ id: 'task_1', rev: 3 }));
     vi.mocked(tasks.updateTask).mockResolvedValue(null);
@@ -2036,7 +2042,7 @@ describe('revisedUpdate — optimistic concurrency on task.update (phase 58, §2
   });
 });
 
-describe('revisedUpdate — optimistic concurrency on project.update (phase 58, §23.13)', () => {
+describe('revisedUpdate: optimistic concurrency on project.update (phase 58, §23.13)', () => {
   it('passes a matching rev through to the repo as expectedRev, and never includes rev in the data', async () => {
     // Arrange
     vi.mocked(projects.findProject).mockResolvedValue(
@@ -2119,5 +2125,95 @@ describe('revisedUpdate — optimistic concurrency on project.update (phase 58, 
     const call = vi.mocked(projects.updateProject).mock.calls[0];
     expect(call?.[3]).toBeUndefined();
     expect(projects.findProject).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('task assignment (phase 58, §23.13)', () => {
+  const groupScope = spaceScopeFor({ spaceId: 'spc_g', actorUserId: 'user_x', role: 'member' });
+  const joined = { userId: 'user_sam', joinedAt: new Date('2026-09-01T00:00:00Z') };
+
+  beforeEach(() => {
+    vi.mocked(findGroupBySpaceId).mockResolvedValue({ id: 'grp_1' } as never);
+    vi.mocked(findMembership).mockResolvedValue(joined as never);
+    vi.mocked(tasks.createTask).mockResolvedValue(fakeTask({ id: 'task_1', projectId: null }));
+    vi.mocked(tasks.findTask).mockResolvedValue(fakeTask({ id: 'task_1' }));
+    vi.mocked(tasks.updateTask).mockResolvedValue(fakeTask({ id: 'task_1' }));
+  });
+
+  it('asks nothing when no assignee is sent, or when unassigning', async () => {
+    await taskResource.create(groupScope, { title: 'A', status: 'todo' });
+    await taskResource.update(groupScope, 'task_1', { assignedToUserId: null });
+
+    expect(findGroupBySpaceId).not.toHaveBeenCalled();
+    expect(findMembership).not.toHaveBeenCalled();
+  });
+
+  it('assigns a joined member of the space’s group', async () => {
+    await taskResource.create(groupScope, {
+      title: 'A',
+      status: 'todo',
+      assignedToUserId: 'user_sam',
+    });
+
+    expect(findMembership).toHaveBeenCalledWith('user_sam', 'grp_1');
+    expect(vi.mocked(tasks.createTask).mock.calls[0][1]).toMatchObject({
+      assignedToUserId: 'user_sam',
+    });
+  });
+
+  it('refuses an assignee in a personal space, which has nobody to assign to', async () => {
+    vi.mocked(findGroupBySpaceId).mockResolvedValue(null);
+
+    await expect(
+      taskResource.create(scope, {
+        title: 'A',
+        status: 'todo',
+        assignedToUserId: 'user_sam',
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(tasks.createTask).not.toHaveBeenCalled();
+  });
+
+  it('refuses somebody who is not in the group, or only asked to join', async () => {
+    vi.mocked(findMembership).mockResolvedValueOnce(null);
+    await expect(
+      taskResource.update(groupScope, 'task_1', { assignedToUserId: 'user_stranger' })
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    vi.mocked(findMembership).mockResolvedValueOnce({ userId: 'user_p', joinedAt: null } as never);
+    await expect(
+      taskResource.update(groupScope, 'task_1', { assignedToUserId: 'user_p' })
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(tasks.updateTask).not.toHaveBeenCalled();
+  });
+
+  it('lists "assigned to me" as a filter on the reader', async () => {
+    vi.mocked(tasks.listTasks).mockResolvedValue([]);
+    vi.mocked(tasks.countTasks).mockResolvedValue(0);
+
+    await taskResource.list(groupScope, {
+      limit: 50,
+      offset: 0,
+      hideDeferred: false,
+      assignedTo: 'me',
+    } as Parameters<typeof taskResource.list>[1]);
+
+    expect(vi.mocked(tasks.listTasks).mock.calls[0][1]).toMatchObject({
+      assignedToUserId: 'user_x',
+    });
+  });
+});
+
+describe('who may assign (phase 58)', () => {
+  it('lets a person assign and keeps an agent from it', async () => {
+    const { agentUpsertTaskSchema, createTaskSchema } =
+      await import('@/lib/framework/resparkable/validations');
+
+    expect(createTaskSchema.safeParse({ title: 'A', assignedToUserId: 'user_sam' }).success).toBe(
+      true
+    );
+    expect(
+      agentUpsertTaskSchema.safeParse({ title: 'A', assignedToUserId: 'user_sam' }).success
+    ).toBe(false);
   });
 });

@@ -22,6 +22,7 @@ const findDocumentByHash = vi.fn();
 const findDocumentByHashIncludingFailed = vi.fn();
 const findResparkableSettings = vi.fn();
 const enqueueReindex = vi.fn();
+const storageUsage = vi.fn();
 
 vi.mock('@/lib/orchestration/knowledge/parsers', () => ({
   parseDocument: (...args: unknown[]) => parseDocument(...args),
@@ -45,6 +46,20 @@ vi.mock('@/lib/framework/resparkable/repo/settings', () => ({
 
 vi.mock('@/lib/framework/resparkable/embedding/indexer', () => ({
   enqueueReindex: (...args: unknown[]) => enqueueReindex(...args),
+}));
+
+// A personal space has no quota at all (phase 58's default), which is what
+// keeps the rest of this file's assertions about discard/retain unchanged by
+// the quota check that now runs right after dedupe. `formatBytes` is copied
+// from `ui/format-bytes.ts` rather than faked, so the "over_quota" message
+// assertions below check real, human-readable figures.
+vi.mock('@/lib/framework/resparkable/services/storage-quota', () => ({
+  storageUsage: (...args: unknown[]) => storageUsage(...args),
+  formatBytes: (bytes: number) => {
+    const gb = bytes / (1024 * 1024 * 1024);
+    if (gb >= 1) return `${Math.round(gb * 10) / 10} GB`;
+    return `${Math.round(bytes / (1024 * 1024))} MB`;
+  },
 }));
 
 import {
@@ -80,6 +95,9 @@ beforeEach(() => {
   );
   enqueueReindex.mockResolvedValue(true);
   getStorageClient.mockReturnValue(null);
+  // A personal space (the default SCOPE below): no total, only the per-file
+  // cap this file's other tests already cover.
+  storageUsage.mockResolvedValue({ usedBytes: 0, quotaBytes: null });
   parseDocument.mockResolvedValue({
     title: 'Notes',
     sections: [],
@@ -134,6 +152,55 @@ describe('dedupe on file hash', () => {
     await ingestDocument(SCOPE, upload());
 
     expect(findDocumentByHash).toHaveBeenCalledWith(SCOPE, expect.stringMatching(/^[0-9a-f]{64}$/));
+  });
+});
+
+describe('a group space over its storage quota (phase 58)', () => {
+  const MB = 1024 * 1024;
+
+  it('refuses an upload that would cross the quota, naming both sizes', async () => {
+    // Remaining room is 1 MB (9 of a 10 MB quota); a 2 MB upload crosses it.
+    // Sized well under the 25 MB default per-file cap, so this exercises the
+    // quota check and not the unrelated size cap.
+    storageUsage.mockResolvedValue({ usedBytes: 9 * MB, quotaBytes: 10 * MB });
+    const file = upload({ buffer: Buffer.alloc(2 * MB, 'x') });
+
+    const error: unknown = await ingestDocument(SCOPE, file).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(DocumentIngestError);
+    expect((error as DocumentIngestError).reason).toBe('over_quota');
+    expect((error as Error).message).toContain('9 MB');
+    expect((error as Error).message).toContain('10 MB');
+    expect(createDocument).not.toHaveBeenCalled();
+  });
+
+  it('allows an upload that lands exactly at the quota, not just under it', async () => {
+    storageUsage.mockResolvedValue({ usedBytes: 0, quotaBytes: 100 });
+
+    const result = await ingestDocument(SCOPE, upload({ buffer: Buffer.alloc(100, 'x') }));
+
+    expect(result.deduped).toBe(false);
+  });
+
+  it('never checks the quota on a dedupe: the bytes are not actually added', async () => {
+    findDocumentByHash.mockResolvedValue({ id: 'doc_existing', storageKey: null });
+    storageUsage.mockResolvedValue({ usedBytes: 0, quotaBytes: 1 });
+
+    const result = await ingestDocument(SCOPE, upload());
+
+    expect(result.deduped).toBe(true);
+    expect(storageUsage).not.toHaveBeenCalled();
+  });
+
+  it('never refuses a personal space, which has no quota at all', async () => {
+    // `quotaBytes: null` is what a personal space's `storageUsage` always
+    // reports (phase 58's `resolveStorageQuotaBytes`), regardless of how much
+    // has been uploaded there: there is no total to compare against.
+    storageUsage.mockResolvedValue({ usedBytes: 20 * MB, quotaBytes: null });
+
+    const result = await ingestDocument(SCOPE, upload({ buffer: Buffer.alloc(10 * MB, 'x') }));
+
+    expect(result.deduped).toBe(false);
   });
 });
 

@@ -21,6 +21,9 @@ export const RESPARKABLE_API = {
    * of them would be circular.
    */
   SPACES: '/api/v1/resparkable/spaces',
+  /** The group activity feed for the current workspace (phase 59). */
+  FEED: '/api/v1/resparkable/feed',
+  FEED_SEEN: '/api/v1/resparkable/feed/seen',
   /**
    * A person's own MCP key for one workspace, for the Connect card.
    *
@@ -230,6 +233,8 @@ export const RESPARKABLE_API = {
   groupMember: (groupId: string, userId: string): string =>
     `/api/v1/resparkable/groups/${groupId}/members/${userId}`,
   groupInvites: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/invites`,
+  /** The admin record: every entry for an admin, your own for anyone else (phase 58). */
+  groupAudit: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/audit`,
   /** The group's budget: balance for everyone, per-person figures for admins (phase 50). */
   groupBudget: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/budget`,
   groupTopUp: (groupId: string): string => `/api/v1/resparkable/groups/${groupId}/budget/top-up`,

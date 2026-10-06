@@ -71,6 +71,18 @@ export async function countDocuments(
   });
 }
 
+/**
+ * Bytes of retained originals in the space, archived documents included,
+ * because their originals are still held (§23.13's storage quota, phase 58).
+ */
+export async function sumDocumentBytes(scope: SpaceScope): Promise<number> {
+  const result = await prisma.resparkableDocument.aggregate({
+    where: spaceWhere(scope),
+    _sum: { byteSize: true },
+  });
+  return result._sum.byteSize ?? 0;
+}
+
 export async function findDocument(
   scope: SpaceScope,
   id: string

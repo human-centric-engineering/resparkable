@@ -42,6 +42,12 @@ vi.mock('@/lib/framework/resparkable/repo/owner-contact', () => ({
   findOwnerContact: vi.fn(),
 }));
 vi.mock('@/lib/email/send', () => ({ sendEmail: vi.fn() }));
+// Audit writes go through this service; mocked so the tests do not pay for a
+// real database call and so the metadata assertions check what was actually
+// sent: in particular, that the invitee's address never reaches it.
+vi.mock('@/lib/framework/resparkable/services/group-audit', () => ({
+  recordGroupAudit: vi.fn(),
+}));
 
 import { sendEmail } from '@/lib/email/send';
 import * as repo from '@/lib/framework/resparkable/repo/groups';
@@ -53,6 +59,7 @@ import {
   listInvitesForAdmin,
   revokeGroupInvite,
 } from '@/lib/framework/resparkable/services/group-invites';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
 import { resolveGroupMembership } from '@/lib/framework/resparkable/services/membership';
 
 const NOW = new Date('2026-09-01T10:00:00.000Z');
@@ -208,6 +215,31 @@ describe('issueGroupInvite', () => {
     expect(emailed.subject).toContain('Study Group B');
     expect(emailed.subject).toContain('invited you to join');
   });
+
+  it('records the invite in the admin log with the role only, never the address', async () => {
+    asAdmin();
+
+    await issueGroupInvite('user_a', 'grp_1', inviteInput(), NOW);
+
+    // The admin record is not where an invitee's address should live: an
+    // invitation names somebody who may never join.
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      action: 'invite_issued',
+      metadata: { role: 'member' },
+    });
+    const metadata = vi.mocked(recordGroupAudit).mock.calls[0]?.[0];
+    expect(JSON.stringify(metadata)).not.toContain('b@example.com');
+  });
+
+  it('writes no entry when the invite is refused', async () => {
+    vi.mocked(resolveGroupMembership).mockResolvedValue(null);
+
+    await issueGroupInvite('user_stranger', 'grp_1', inviteInput());
+
+    expect(recordGroupAudit).not.toHaveBeenCalled();
+  });
 });
 
 describe('acceptGroupInvite', () => {
@@ -348,6 +380,18 @@ describe('revokeGroupInvite', () => {
     // from revoking one somebody re-made in between. An invitation to one
     // address is a single row, so there is no such ambiguity.
     expect(await revokeGroupInvite('user_a', 'grp_1', 'inv_1', NOW)).toEqual({ ok: true });
+  });
+
+  it('records the revoke with no metadata at all', async () => {
+    asAdmin();
+
+    await revokeGroupInvite('user_a', 'grp_1', 'inv_1', NOW);
+
+    expect(recordGroupAudit).toHaveBeenCalledWith({
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      action: 'invite_revoked',
+    });
   });
 });
 

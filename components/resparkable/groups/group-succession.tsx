@@ -129,8 +129,9 @@ function SoleAdminNotice({
       const successor = members.find((member) => member.userId === plan.userId);
       return (
         <>
-          You are the only admin. If you close your account, {plan.userId} will become admin,
-          because they have been in the group longest
+          You are the only admin. If you close your account,{' '}
+          {successor?.name ?? 'a member with no name set'} will become admin, because they have been
+          in the group longest
           {successor?.role === 'viewer' ? ', even though they are a viewer' : ''}. To choose someone
           yourself, make them an admin now.
         </>

@@ -181,6 +181,11 @@ export const createTaskSchema = z
     manualBoost: z.number().min(-1).max(1).optional(),
     manualBoostExpiresAt: z.coerce.date().nullish(),
     manualBoostReason: z.string().trim().max(280).nullish(),
+    /**
+     * A member of the space's group (§23.13, phase 58). Checked against
+     * membership by the service, so a non-member or a personal space is a 400.
+     */
+    assignedToUserId: z.string().trim().min(1).max(64).nullish(),
   })
   .strict();
 
@@ -196,6 +201,8 @@ export const updateTaskSchema = createTaskSchema.partial().extend({ rev: revFiel
 export const taskListQuerySchema = resparkableListQuerySchema.extend({
   status: z.enum(TASK_STATUSES).optional(),
   projectId: cuidSchema.optional(),
+  /** "Assigned to me" (phase 58). A filter that returns rows, never a count. */
+  assignedTo: z.literal('me').optional(),
   hideDeferred: z
     .enum(['true', 'false'])
     .optional()
@@ -1115,6 +1122,9 @@ export const agentUpsertTaskSchema = upsertSchema(
     manualBoost: true,
     manualBoostExpiresAt: true,
     manualBoostReason: true,
+    // Assigning is a person's call about another person (§23.13), and an agent
+    // holds no member's user id to name. Omitted, so it is a type error.
+    assignedToUserId: true,
   }),
   ['title']
 );
@@ -2125,6 +2135,17 @@ export const updateGroupSchema = z
      * See `services/succession.ts`.
      */
     viewersCanInheritAdmin: z.boolean().optional(),
+    /**
+     * The most the group's retained document originals may total, in bytes
+     * (phase 58). `null` returns to the default. Between 100 MB and 1 TB.
+     */
+    storageQuotaBytes: z
+      .number()
+      .int()
+      .min(100 * 1024 * 1024)
+      .max(1024 * 1024 * 1024 * 1024)
+      .nullable()
+      .optional(),
   })
   .strict();
 
@@ -2267,3 +2288,14 @@ export const redeemJoinLinkSchema = z
   .strict();
 
 export type RedeemJoinLinkInput = z.infer<typeof redeemJoinLinkSchema>;
+
+/**
+ * `GET /resparkable/feed` (§23.10, phase 59). `member` filters to one person's
+ * actions and returns rows, never a count: a content question, not a tally.
+ * Not strict, like the other list queries: every workspace request also
+ * carries `?space=`, which `requestSpaceScope` reads.
+ */
+export const feedQuerySchema = z.object({
+  before: z.coerce.date().optional(),
+  member: z.string().trim().min(1).max(64).optional(),
+});

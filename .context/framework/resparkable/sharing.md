@@ -109,24 +109,30 @@ The batched form is not an optimisation, it is a requirement. `task` is the high
 
 `redact` is a list of field names the caller **must** strip before serialising. It is computed as _what a basis removes from `ALL_REDACTIONS`_, never as what it allows — so a redaction added tomorrow applies to every basis until somebody decides otherwise. Failing closed on a field nobody has thought about yet is the only safe default.
 
-| Basis           | Reads | Comments | Sees owner identity | Sees `notes`                |
-| --------------- | ----- | -------- | ------------------- | --------------------------- |
-| `owner`         | ✅    | ✅       | (their own)         | ✅ — nothing is redacted    |
-| `grant`         | ✅    | ✅\*     | ✅                  | only if `includeTaskDetail` |
-| `grant-cascade` | ✅    | ❌       | ✅                  | only if `includeTaskDetail` |
-| `link`          | ✅    | ❌       | ❌                  | only if `includeTaskDetail` |
-| `link-cascade`  | ✅    | ❌       | ❌                  | only if `includeTaskDetail` |
+| Basis           | Reads | Reads the thread | Writes comments | Deletes others' comments | Sees owner identity | Sees `notes`                |
+| --------------- | ----- | ---------------- | --------------- | ------------------------ | ------------------- | --------------------------- |
+| `owner`         | ✅    | ✅               | ✅              | ✅                       | (their own)         | ✅ (nothing is redacted)    |
+| `space`         | ✅    | ✅               | ✅†             | admins only              | (it is their group) | ✅ (nothing is redacted)    |
+| `grant`         | ✅    | ✅               | ✅\*            | ❌                       | ✅                  | only if `includeTaskDetail` |
+| `grant-cascade` | ✅    | ✅               | ❌              | ❌                       | ✅                  | only if `includeTaskDetail` |
+| `link`          | ✅    | ❌               | ❌              | ❌                       | ❌                  | only if `includeTaskDetail` |
+| `link-cascade`  | ✅    | ❌               | ❌              | ❌                       | ❌                  | only if `includeTaskDetail` |
 
-\* `role: 'commenter'` only.
+\* `role: 'commenter'` only, and never a group `viewer` reading through a grant to its group.
+† A member or admin; a group `viewer` reads the thread and adds nothing (§23.3).
 
-> **The `Comments` column above is about WRITING.** It tracks
-> `permissions.comment`, and it is right: a cascaded item cannot be commented on
-> even with a commenter grant on its parent. It does not say who may **read** the
-> thread, and the two differ: `redactionsFor()` opens the `comments` field for
-> `grant` and `grant-cascade` alike, so a cascaded grantee reads a thread this
-> table marks ❌. Only a public link is cut off from it. A read column belongs
-> here, and Release 9 phase 58 is when it has to be written, because a group UI
-> has to answer "who can see the discussion" out loud.
+**`space` (phase 58, §23.13)** is a member on an item in their own group's space.
+Nothing is shared, so nothing is redacted: every member reads every item there
+(§23.4). It exists so a group can talk about its own work, which it could not
+before, because nothing in a group is `owner`-held and a member fell through to
+the grant lookup and found none. It is checked before the grant lookup, and
+`moderate` is the admins' (what succeeds "the owner" in a group). Editing a
+comment is the author's alone on every basis.
+
+The thread columns used to be one `Comments` column that tracked writing only;
+the read column is the one Release 9 phase 58 had to answer out loud, and the
+answer is above: everybody who reads the item reads its thread, except a public
+link, which is a document rather than a relationship.
 
 Nobody but the owner ever sees `priorityScore`, `manualBoostReason`, the event history, or the parent an item hangs off.
 
@@ -479,7 +485,7 @@ Items a group owns **do not resolve as `owner` through this layer** for the grou
 ### Deliberately not done in phase 49
 
 - **A person is still named by email or account, not by their personal space.** Re-keying person grants onto `granteeSpaceId` would touch every accepted grant and the invite flow for no behaviour change.
-- **Comments on an item a group shared are invisible to that group.** A group can issue a `commenter` grant, and the grantee's comments are stored and shown to other grantees, but no member of the sharing group can read or remove them: group-owned items do not resolve as `owner` here, and the group holds no grant to its own item. Accepted for phase 49 and closed by phase 58's owner powers. Until then a group that wants to moderate a thread should share as `viewer`.
+- ~~**Comments on an item a group shared are invisible to that group.**~~ **Closed by phase 58.** A group's own items now resolve on the `space` basis for its members, so they read the thread a grantee started, comment on it, and an admin can remove what a grantee wrote.
 - **A group still cannot email an invite to a person.** That dates from phase 47. The grant works without the email; the person sees it when they sign in with that address.
 
 ---

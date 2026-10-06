@@ -45,8 +45,10 @@ import { useRouter } from 'next/navigation';
 import { Check, Mail, UserMinus, X } from 'lucide-react';
 
 import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
+import { GroupAuditLog } from '@/components/resparkable/groups/group-audit-log';
 import { GroupBudget } from '@/components/resparkable/groups/group-budget';
 import { GroupJoinLinks } from '@/components/resparkable/groups/group-join-links';
+import { GroupStorage } from '@/components/resparkable/groups/group-storage';
 import { GroupSuccession } from '@/components/resparkable/groups/group-succession';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { Button } from '@/components/ui/button';
@@ -275,11 +277,11 @@ export function GroupDetail({
                 className="border-border/60 flex items-center justify-between gap-3 rounded-md border px-3 py-2"
               >
                 <span className="min-w-0 truncate text-sm">
-                  {/* Ids rather than addresses, deliberately: every member can
-                      see who else is in the group, which §23.4 makes
+                  {/* Names rather than addresses, deliberately: every member
+                      can see who else is in the group, which §23.4 makes
                       unavoidable, but handing out everybody's email is a
                       separate decision nobody made. */}
-                  {isYou ? 'You' : member.userId}
+                  {isYou ? 'You' : (member.name ?? 'A member with no name set')}
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
                   {isAdmin && !isYou ? (
@@ -289,7 +291,7 @@ export function GroupDetail({
                     >
                       <SelectTrigger
                         className="h-7 w-28 text-xs"
-                        aria-label={`Role for ${member.userId}`}
+                        aria-label={`Role for ${member.name ?? 'this member'}`}
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -312,7 +314,9 @@ export function GroupDetail({
                       variant="ghost"
                       size="sm"
                       onClick={() => void remove(member.userId)}
-                      aria-label={isYou ? 'Leave this group' : `Remove ${member.userId}`}
+                      aria-label={
+                        isYou ? 'Leave this group' : `Remove ${member.name ?? 'this member'}`
+                      }
                     >
                       <UserMinus className="h-3.5 w-3.5" aria-hidden="true" />
                       {isYou ? 'Leave' : null}
@@ -495,6 +499,17 @@ export function GroupDetail({
       )}
 
       {isAdmin && <GroupJoinLinks groupId={groupId} links={joinLinks} />}
+
+      {detail.storage && detail.storage.quotaBytes !== null && (
+        <GroupStorage
+          groupId={groupId}
+          isAdmin={isAdmin}
+          usedBytes={detail.storage.usedBytes}
+          quotaBytes={detail.storage.quotaBytes}
+        />
+      )}
+
+      <GroupAuditLog groupId={groupId} isAdmin={isAdmin} />
 
       <SaveStatus state={state} message={message} />
 

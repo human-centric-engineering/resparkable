@@ -146,3 +146,17 @@ describe('TaskCard', () => {
     expect(container.querySelector('.text-destructive')).toBeNull();
   });
 });
+
+describe('TaskCard: who it is assigned to (phase 58)', () => {
+  it('says who has the card when the board names them', () => {
+    renderCard({ assigneeName: 'Sam' });
+
+    expect(screen.getByText('Assigned to Sam')).toBeInTheDocument();
+  });
+
+  it('says nothing about assignment when nobody has it, or outside a group', () => {
+    renderCard();
+
+    expect(screen.queryByText(/Assigned to/)).not.toBeInTheDocument();
+  });
+});

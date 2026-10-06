@@ -53,6 +53,7 @@ import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/spa
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { sendEmail } from '@/lib/email/send';
 import { env } from '@/lib/env';
+import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
 import { logger } from '@/lib/logging';
 
 export const FUNDING_MODES = ['self_funded', 'member_contributions'] as const;
@@ -202,6 +203,16 @@ export async function updateGroupBudgetSettings(
   if (!permissionsFor(resolved.scope.role).administer) return { ok: false, reason: 'not_an_admin' };
 
   const updated = await updateGroup(groupId, input);
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    action: 'budget_changed',
+    metadata: {
+      fundingMode: updated.fundingMode,
+      lowBalanceAlertCredits: updated.lowBalanceAlertCredits,
+      largeRunAlertPercent: updated.largeRunAlertPercent,
+    },
+  });
   return {
     ok: true,
     value: {
@@ -228,6 +239,13 @@ export async function setMemberDailyCreditCap(
 
   const updated = await updateMemberDailyCreditCap(groupId, targetUserId, dailyCreditCap);
   if (!updated) return { ok: false, reason: 'no_such_member' };
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: 'member_cap_changed',
+    metadata: { dailyCreditCap },
+  });
   return { ok: true, value: { userId: targetUserId, dailyCreditCap } };
 }
 
@@ -268,6 +286,7 @@ export async function topUpGroup(
   if (!moved) return { ok: false, reason: 'insufficient_personal_credits' };
 
   logger.info('Resparkable group topped up', { groupId, credits });
+  await recordGroupAudit({ groupId, actorUserId, action: 'topped_up', metadata: { credits } });
   return { ok: true, value: { balanceCredits: round(moved.groupBalanceCredits) } };
 }
 

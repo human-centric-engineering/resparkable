@@ -179,7 +179,7 @@ describe('CommentThread', () => {
     });
 
     it('hides the compose form when meta is missing entirely and the prop is omitted', async () => {
-      // No `meta` at all — treated the same as `canComment: false`, never as
+      // No `meta` at all: treated the same as `canComment: false`, never as
       // "assume yes".
       mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: [] }));
 

@@ -43,6 +43,7 @@ import {
   resolveMaxDocumentBytes,
   type DocumentOriginalsMode,
 } from '@/lib/framework/resparkable/settings';
+import { formatBytes, storageUsage } from '@/lib/framework/resparkable/services/storage-quota';
 import { logger } from '@/lib/logging';
 import { parseDocument } from '@/lib/orchestration/knowledge/parsers';
 import { getStorageClient } from '@/lib/storage/client';
@@ -117,7 +118,8 @@ export interface IngestDocumentResult {
 export class DocumentIngestError extends Error {
   constructor(
     message: string,
-    readonly reason: 'unsupported' | 'too_large' | 'malformed' | 'empty' | 'duplicate'
+    readonly reason:
+      'unsupported' | 'too_large' | 'over_quota' | 'malformed' | 'empty' | 'duplicate'
   ) {
     super(message);
     this.name = 'DocumentIngestError';
@@ -171,6 +173,17 @@ export async function ingestDocument(
   if (existing) {
     logger.info('Resparkable document deduped on fileHash', { documentId: existing.id });
     return { document: existing, deduped: true };
+  }
+
+  // A group space's total (§23.13, phase 58). After the dedupe, because a
+  // re-upload of a file the group already holds costs nothing. A personal
+  // space has no total and skips this.
+  const { usedBytes, quotaBytes } = await storageUsage(scope);
+  if (quotaBytes !== null && usedBytes + input.buffer.length > quotaBytes) {
+    throw new DocumentIngestError(
+      `This group has used ${formatBytes(usedBytes)} of its ${formatBytes(quotaBytes)} for documents, and this file would take it over. An admin can raise the limit, or remove documents the group no longer needs.`,
+      'over_quota'
+    );
   }
 
   const title = input.title?.trim() || input.fileName.replace(/\.[^.]+$/, '');

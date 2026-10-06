@@ -332,6 +332,8 @@ export type DocumentWire = z.infer<typeof documentSchema>;
 
 export const taskSchema = z.object({
   id: z.string(),
+  /** A group member, or null (phase 58). Optional for older payloads. */
+  assignedToUserId: z.string().nullable().optional(),
   title: z.string(),
   notes: z.string().nullable(),
   projectId: z.string().nullable(),
@@ -1042,9 +1044,8 @@ export const groupMemberSchema = z.object({
   /** When they asked, for anybody who came in through a `request` link. */
   requestedAt: z.string().nullable(),
   /**
-   * The account name of somebody asking to join, for the admin deciding on
-   * them. `null` for everybody else, and for an account with no name. Optional
-   * because `GET /groups/[id]/members` does not carry it.
+   * The member's account name (phase 58; requests to join since phase 57).
+   * `null` for an account with no name. Never an address.
    */
   name: z.string().nullable().optional(),
 });
@@ -1067,6 +1068,8 @@ export const groupDetailSchema = z.object({
   latestDigest: z
     .object({ id: z.string(), title: z.string(), body: z.string(), generatedAt: z.string() })
     .nullable(),
+  /** The shared shelf's usage (phase 58). Optional for older payloads. */
+  storage: z.object({ usedBytes: z.number(), quotaBytes: z.number().nullable() }).optional(),
 });
 
 /** A pending invitation, from `GET /resparkable/groups/[id]/invites`. */
@@ -1177,3 +1180,25 @@ export const groupAuditEntrySchema = z.object({
 
 export const groupAuditEntriesSchema = z.array(groupAuditEntrySchema);
 export type GroupAuditEntryWire = z.infer<typeof groupAuditEntrySchema>;
+
+/** One line of the group activity feed (phase 59). See `services/feed.ts`. */
+export const feedItemSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  entityType: z.string(),
+  entityId: z.string(),
+  title: z.string().nullable(),
+  actorName: z.string().nullable(),
+  byYou: z.boolean(),
+  system: z.boolean(),
+  createdAt: isoDate,
+});
+
+export const feedPageSchema = z.object({
+  items: z.array(feedItemSchema),
+  nextCursor: z.string().nullable(),
+  seenAt: isoDate.nullable(),
+});
+
+export type FeedItemWire = z.infer<typeof feedItemSchema>;
+export type FeedPageWire = z.infer<typeof feedPageSchema>;

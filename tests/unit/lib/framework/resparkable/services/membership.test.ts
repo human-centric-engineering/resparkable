@@ -42,6 +42,7 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   deleteGroupSpaceIfMemberless: vi.fn(),
   deleteJoinRequest: vi.fn(),
   deleteMember: vi.fn(),
+  deleteMemberWithAudit: vi.fn(),
   findGroupById: vi.fn(),
   findGroupBySlug: vi.fn(),
   findMembership: vi.fn(),
@@ -53,9 +54,17 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   returnJoinLinkUsesForErasure: vi.fn(),
   updateGroup: vi.fn(),
   updateMemberRole: vi.fn(),
+  updateMemberRoleWithAudit: vi.fn(),
+}));
+// `settleGroupsAfterErasure`'s succession entry and `updateGroupSettings`'s
+// settings_changed entry call this directly (not through the repo mock
+// above), so without this mock they hit a real, unmocked `prisma` client.
+vi.mock('@/lib/framework/resparkable/repo/group-audit', () => ({
+  insertGroupAuditEntry: vi.fn(),
 }));
 
 import * as repo from '@/lib/framework/resparkable/repo/groups';
+import { insertGroupAuditEntry } from '@/lib/framework/resparkable/repo/group-audit';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
 import {
@@ -125,6 +134,10 @@ beforeEach(() => {
   // Same reason: the race tests set `false`, and the default is the locked
   // re-count agreeing with the unlocked one.
   vi.mocked(repo.deleteGroupSpaceIfLastMember).mockResolvedValue(true);
+  // A bare `vi.fn()` resolves to `undefined` when awaited, which is fine :
+  // except `updateGroupSettings` chains `.catch()` straight off the call, and
+  // `undefined.catch` throws. Needs an actual resolved promise by default.
+  vi.mocked(insertGroupAuditEntry).mockResolvedValue(undefined);
 });
 
 describe('resolveGroupSpaceScope', () => {
@@ -340,9 +353,32 @@ describe('the last-admin rules', () => {
 
     expect(await changeMemberRole('user_a', 'grp_1', 'user_b', 'member')).toEqual({
       ok: true,
-      value: null,
+      value: { changed: true, from: 'admin', groupName: 'Study Group B' },
     });
-    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_1', 'user_b', 'member');
+    expect(repo.updateMemberRoleWithAudit).toHaveBeenCalledWith('grp_1', 'user_b', 'member', {
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_b',
+      action: 'role_changed',
+      metadata: { from: 'admin', to: 'member' },
+    });
+  });
+
+  it('reports no change, and writes nothing, when the target already holds the role', async () => {
+    vi.mocked(repo.findMembership)
+      .mockResolvedValueOnce(membership({ role: 'admin' }))
+      .mockResolvedValueOnce(membership({ userId: 'user_b', role: 'member' }));
+
+    const result = await changeMemberRole('user_a', 'grp_1', 'user_b', 'member');
+
+    expect(result).toEqual({
+      ok: true,
+      value: { changed: false, from: 'member', groupName: 'Study Group B' },
+    });
+    expect(repo.updateMemberRoleWithAudit).not.toHaveBeenCalled();
+    // The last-admin check never runs for a no-op: there is nothing to count
+    // admins for when nothing is going to change.
+    expect(repo.countAdmins).not.toHaveBeenCalled();
   });
 
   it('refuses a role the code does not know', async () => {
@@ -419,9 +455,15 @@ describe('the last-admin rules', () => {
 
     expect(await removeMember('user_a', 'grp_1', 'user_a')).toEqual({
       ok: true,
-      value: { groupDeleted: false },
+      value: { groupDeleted: false, kind: 'left', groupName: 'Study Group B' },
     });
-    expect(repo.deleteMember).toHaveBeenCalledWith('grp_1', 'user_a');
+    expect(repo.deleteMemberWithAudit).toHaveBeenCalledWith('grp_1', SPACE, 'user_a', {
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_a',
+      action: 'member_left',
+      metadata: { role: 'member' },
+    });
     // An ordinary joined leave must never take the withdraw-a-request path.
     expect(repo.deleteJoinRequest).not.toHaveBeenCalled();
   });
@@ -438,9 +480,9 @@ describe('the last-admin rules', () => {
 
 describe('pending rows do not trap anybody', () => {
   it('lets a sole joined admin leave even with a request-to-join beside them', async () => {
-    vi.mocked(repo.findMembership)
-      .mockResolvedValueOnce(membership({ role: 'admin' }))
-      .mockResolvedValueOnce(membership({ role: 'admin' }));
+    // Self-leave reads `findMembership` three times (own-check, resolve,
+    // target), and all three are reads of the actor's own still-unchanged row.
+    vi.mocked(repo.findMembership).mockResolvedValue(membership({ role: 'admin' }));
     vi.mocked(repo.listGroupMembers).mockResolvedValue([
       membership({ role: 'admin' }),
       membership({ userId: 'user_pending', joinedAt: null }),
@@ -453,7 +495,10 @@ describe('pending rows do not trap anybody', () => {
     // so the sole admin failed the "last member out" short-circuit, fell through
     // to the last-admin rule, and could never leave their own group. Somebody
     // asking to come in must not be the reason somebody else is trapped.
-    expect(result).toEqual({ ok: true, value: { groupDeleted: true } });
+    expect(result).toEqual({
+      ok: true,
+      value: { groupDeleted: true, kind: 'group_deleted', groupName: null },
+    });
     expect(repo.deleteGroupSpaceIfLastMember).toHaveBeenCalledWith('grp_1', SPACE, 'user_a');
   });
 
@@ -491,7 +536,10 @@ describe('pending rows do not trap anybody', () => {
 
     const result = await removeMember('user_a', 'grp_1', 'user_pending');
 
-    expect(result).toEqual({ ok: true, value: { groupDeleted: false } });
+    expect(result).toEqual({
+      ok: true,
+      value: { groupDeleted: false, kind: 'request_removed', groupName: 'Study Group B' },
+    });
     expect(repo.deleteJoinRequest).toHaveBeenCalledWith('grp_1', 'user_pending');
     expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
     expect(repo.listGroupMembers).not.toHaveBeenCalled();
@@ -511,7 +559,10 @@ describe('pending rows do not trap anybody', () => {
 
     const result = await removeMember('user_pending', 'grp_1', 'user_pending');
 
-    expect(result).toEqual({ ok: true, value: { groupDeleted: false } });
+    expect(result).toEqual({
+      ok: true,
+      value: { groupDeleted: false, kind: 'request_withdrawn', groupName: null },
+    });
     expect(repo.findMembership).toHaveBeenCalledWith('user_pending', 'grp_1');
     expect(repo.deleteJoinRequest).toHaveBeenCalledWith('grp_1', 'user_pending');
     // Proves the short-circuit: only the one "am I pending" read happens, never
@@ -532,9 +583,18 @@ describe('pending rows do not trap anybody', () => {
 
     const result = await removeMember('user_a', 'grp_1', 'user_a');
 
-    expect(result).toEqual({ ok: true, value: { groupDeleted: false } });
+    expect(result).toEqual({
+      ok: true,
+      value: { groupDeleted: false, kind: 'left', groupName: 'Study Group B' },
+    });
     expect(repo.deleteJoinRequest).not.toHaveBeenCalled();
-    expect(repo.deleteMember).toHaveBeenCalledWith('grp_1', 'user_a');
+    expect(repo.deleteMemberWithAudit).toHaveBeenCalledWith('grp_1', SPACE, 'user_a', {
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_a',
+      action: 'member_left',
+      metadata: { role: 'member' },
+    });
   });
 
   it('does not withdraw when the own row is pending but deleteJoinRequest itself finds nothing to delete', async () => {
@@ -555,9 +615,9 @@ describe('pending rows do not trap anybody', () => {
 
 describe('the last member out', () => {
   it('deletes the space rather than leaving an unreachable group', async () => {
-    vi.mocked(repo.findMembership)
-      .mockResolvedValueOnce(membership({ role: 'admin' }))
-      .mockResolvedValueOnce(membership({ role: 'admin' }));
+    // Self-leave reads `findMembership` three times (own-check, resolve,
+    // target); all three see the same unchanged admin row.
+    vi.mocked(repo.findMembership).mockResolvedValue(membership({ role: 'admin' }));
     vi.mocked(repo.listGroupMembers).mockResolvedValue([membership({ role: 'admin' })] as never);
     vi.mocked(repo.deleteGroupSpaceIfLastMember).mockResolvedValue(true);
 
@@ -568,11 +628,15 @@ describe('the last member out', () => {
     // that the space goes, because a group space sits outside the personal
     // erasure cascade (§23.2) and a memberless one is a brain no route can open
     // and no cascade can remove.
-    expect(result).toEqual({ ok: true, value: { groupDeleted: true } });
+    expect(result).toEqual({
+      ok: true,
+      value: { groupDeleted: true, kind: 'group_deleted', groupName: null },
+    });
     // The space, never the group row: deleting the group would strand the space
     // and all 23 satellites behind it. The repo re-counts under the group lock.
     expect(repo.deleteGroupSpaceIfLastMember).toHaveBeenCalledWith('grp_1', SPACE, 'user_a');
     expect(repo.deleteMember).not.toHaveBeenCalled();
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
   });
 
   it('keeps the group when somebody joined through a link after the count', async () => {
@@ -599,9 +663,15 @@ describe('the last member out', () => {
 
     expect(await removeMember('user_a', 'grp_1', 'user_a')).toEqual({
       ok: true,
-      value: { groupDeleted: false },
+      value: { groupDeleted: false, kind: 'left', groupName: 'Study Group B' },
     });
-    expect(repo.deleteMember).toHaveBeenCalledWith('grp_1', 'user_a');
+    expect(repo.deleteMemberWithAudit).toHaveBeenCalledWith('grp_1', SPACE, 'user_a', {
+      groupId: 'grp_1',
+      actorUserId: 'user_a',
+      subjectUserId: 'user_a',
+      action: 'member_left',
+      metadata: { role: 'member' },
+    });
   });
 });
 
@@ -782,6 +852,31 @@ describe('settleGroupsAfterErasure', () => {
     expect(repo.deleteGroupSpace).toHaveBeenCalledWith('spc_delete', tx);
   });
 
+  it('writes the succession as an entry with no actor, through the transaction', async () => {
+    // Nobody chose the successor: erasure forced it, so the record names no
+    // actor: unlike an admin's own role change, which always does.
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_promote', spaceId: 'spc_promote', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ groupId: 'grp_promote', userId: 'user_erased', role: 'admin' }),
+      membership({ groupId: 'grp_promote', userId: 'user_b' }),
+    ] as never);
+
+    await settleGroupsAfterErasure('user_erased', tx);
+
+    expect(insertGroupAuditEntry).toHaveBeenCalledWith(
+      {
+        groupId: 'grp_promote',
+        actorUserId: null,
+        subjectUserId: 'user_b',
+        action: 'role_changed',
+        metadata: { to: 'admin', reason: 'succession' },
+      },
+      tx
+    );
+  });
+
   it('gives back the link use of every request they were still waiting on, through the transaction', async () => {
     // The cascade removes a pending row without going through
     // `deleteJoinRequest`, so the use it took would otherwise stay spent.
@@ -866,8 +961,19 @@ describe('settleStrandedGroups', () => {
     expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
     // Longest-standing JOINED member. The pending row is first in the list and
     // is still skipped, or the sweep would be a way past the approval queue.
-    expect(repo.updateMemberRole).toHaveBeenCalledTimes(1);
-    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_headless', 'user_b', 'admin');
+    // This path writes its own audit entry (`updateMemberRoleWithAudit`), unlike
+    // the in-transaction erasure path, which calls the plain `updateMemberRole`
+    // and inserts the entry itself: a stranded-group repair has no transaction
+    // of its own to write the entry inside.
+    expect(repo.updateMemberRoleWithAudit).toHaveBeenCalledTimes(1);
+    expect(repo.updateMemberRoleWithAudit).toHaveBeenCalledWith('grp_headless', 'user_b', 'admin', {
+      groupId: 'grp_headless',
+      actorUserId: null,
+      subjectUserId: 'user_b',
+      action: 'role_changed',
+      metadata: { to: 'admin', reason: 'succession' },
+    });
+    expect(repo.updateMemberRole).not.toHaveBeenCalled();
   });
 
   it('does not count a delete the database declined', async () => {
@@ -923,7 +1029,12 @@ describe('settleStrandedGroups', () => {
       deleted: 0,
       leftWithoutAdmin: 0,
     });
-    expect(repo.updateMemberRole).toHaveBeenCalledWith('grp_1', 'user_m', 'admin');
+    expect(repo.updateMemberRoleWithAudit).toHaveBeenCalledWith(
+      'grp_1',
+      'user_m',
+      'admin',
+      expect.objectContaining({ groupId: 'grp_1', subjectUserId: 'user_m' })
+    );
   });
 
   it('neither writes nor counts a group left without an admin by its own choice', async () => {

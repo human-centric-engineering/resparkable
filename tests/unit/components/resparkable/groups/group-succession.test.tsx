@@ -31,12 +31,25 @@ import { apiClient } from '@/lib/api/client';
 const AT = (day: number) => `2026-09-0${day}T10:00:00.000Z`;
 
 const ADMIN = { userId: 'user_a', role: 'admin', joinedAt: AT(1), requestedAt: null };
-const VIEWER = { userId: 'user_v', role: 'viewer', joinedAt: AT(2), requestedAt: null };
-const MEMBER = { userId: 'user_m', role: 'member', joinedAt: AT(3), requestedAt: null };
+const VIEWER = {
+  userId: 'user_v',
+  name: 'Val',
+  role: 'viewer',
+  joinedAt: AT(2),
+  requestedAt: null,
+};
+const MEMBER = {
+  userId: 'user_m',
+  name: 'Mo',
+  role: 'member',
+  joinedAt: AT(3),
+  requestedAt: null,
+};
 
 function renderSuccession(
   members: Array<{
     userId: string;
+    name?: string | null;
     role: string;
     joinedAt: string | null;
     requestedAt: string | null;
@@ -61,14 +74,14 @@ describe('GroupSuccession', () => {
   it('tells a sole admin that the longest-standing member inherits, even a viewer', () => {
     renderSuccession([ADMIN, VIEWER, MEMBER]);
 
-    expect(screen.getByText(/user_v will become admin/)).toBeInTheDocument();
+    expect(screen.getByText(/Val will become admin/)).toBeInTheDocument();
     expect(screen.getByText(/even though they are a viewer/)).toBeInTheDocument();
   });
 
   it('names the first non-viewer when viewers are excluded', () => {
     renderSuccession([ADMIN, VIEWER, MEMBER], false);
 
-    expect(screen.getByText(/user_m will become admin/)).toBeInTheDocument();
+    expect(screen.getByText(/Mo will become admin/)).toBeInTheDocument();
     expect(screen.queryByText(/even though they are a viewer/)).not.toBeInTheDocument();
   });
 
@@ -123,7 +136,21 @@ describe('GroupSuccession', () => {
     const toggle = screen.getByRole('switch', { name: 'A viewer can become admin' });
     await user.click(toggle);
 
-    expect(await screen.findByText(/user_v will become admin/)).toBeInTheDocument();
+    expect(await screen.findByText(/Val will become admin/)).toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+describe('GroupSuccession: naming the successor', () => {
+  it('names a successor by name, never by user id', () => {
+    renderSuccession([ADMIN, VIEWER, MEMBER]);
+
+    expect(screen.queryByText(/user_v/)).not.toBeInTheDocument();
+  });
+
+  it('says so plainly when the successor has no name set', () => {
+    renderSuccession([ADMIN, { ...VIEWER, name: null }]);
+
+    expect(screen.getByText(/a member with no name set will become admin/)).toBeInTheDocument();
   });
 });

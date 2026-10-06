@@ -582,7 +582,7 @@ describe('B11 — the 23 authorship cascades, in one probe', () => {
   });
 });
 
-describe('B15 — a task assignee into "user" (phase 58)', () => {
+describe('B15: a task assignee into "user" (phase 58)', () => {
   it('passes when the key exists and nulls out', async () => {
     queryRaw.mockImplementation(() =>
       Promise.resolve([

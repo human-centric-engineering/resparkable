@@ -677,7 +677,7 @@ describe('archived rows are excluded unless asked for', () => {
   });
 });
 
-describe('updateTask / updateProject — rev where and bump (phase 58, §23.13)', () => {
+describe('updateTask / updateProject: rev where and bump (phase 58, §23.13)', () => {
   it('adds rev to the WHERE and bumps rev in the data when updateTask is given an expectedRev', async () => {
     await tasks.updateTask(SCOPE, 'id_1', { title: 'y' }, 4);
 

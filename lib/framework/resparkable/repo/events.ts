@@ -137,6 +137,14 @@ export interface EventFilters {
   entityType?: string;
   entityId?: string;
   since?: Date;
+  /** Strictly older than this. The activity feed's cursor (phase 59). */
+  before?: Date;
+  /**
+   * Only rows this person did: the feed's "what did Priya add" filter (§23.10).
+   * Returns rows and never a count. There is deliberately no index on the
+   * column, so this narrows a page already read by `[spaceId, createdAt]`.
+   */
+  actorUserId?: string;
 }
 
 export async function listEvents(
@@ -155,7 +163,15 @@ export async function listEvents(
       ...(filters.source ? { source: filters.source } : {}),
       ...(filters.entityType ? { entityType: filters.entityType } : {}),
       ...(filters.entityId ? { entityId: filters.entityId } : {}),
-      ...(filters.since ? { createdAt: { gte: filters.since } } : {}),
+      ...(filters.since || filters.before
+        ? {
+            createdAt: {
+              ...(filters.since ? { gte: filters.since } : {}),
+              ...(filters.before ? { lt: filters.before } : {}),
+            },
+          }
+        : {}),
+      ...(filters.actorUserId ? { createdByUserId: filters.actorUserId } : {}),
     },
     orderBy: { createdAt: 'desc' },
     ...pageArgs(options),

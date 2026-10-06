@@ -162,6 +162,7 @@ const OTHER_ROUTES: Record<string, string> = {
   'groups/[id]/route.ts': 'Resolves membership by group id through the membership service.',
   'groups/[id]/members/route.ts': 'As above.',
   'groups/[id]/members/[userId]/route.ts': 'As above.',
+  'groups/[id]/audit/route.ts': 'As above. The admin record of one group, by group id (phase 58).',
   'groups/[id]/invites/route.ts': 'As above.',
   'groups/[id]/invites/[inviteId]/route.ts': 'As above.',
   'groups/[id]/budget/route.ts': 'As above. The per-person half is admin-only in the service.',

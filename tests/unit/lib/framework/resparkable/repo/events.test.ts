@@ -38,7 +38,7 @@ import {
   insertEvent,
   listEvents,
 } from '@/lib/framework/resparkable/repo/events';
-import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { spaceScope, spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 
 const SCOPE = spaceScope('user_x');
 
@@ -233,5 +233,31 @@ describe('findLatestStatusChanges', () => {
     // Assert
     expect(result.has('task_1')).toBe(false);
     expect(result.size).toBe(0);
+  });
+});
+
+describe('listEvents: the activity feed filters (phase 59)', () => {
+  const feedScope = spaceScopeFor({ spaceId: 'spc_g', actorUserId: 'user_me', role: 'member' });
+
+  beforeEach(() => {
+    vi.mocked(prisma.resparkableEvent.findMany).mockResolvedValue([]);
+  });
+
+  it('reads strictly before the cursor, combined with since when both are given', async () => {
+    const since = new Date('2026-09-01T00:00:00.000Z');
+    const before = new Date('2026-10-01T00:00:00.000Z');
+
+    await listEvents(feedScope, { since, before });
+
+    const where = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0][0]?.where;
+    expect(where).toMatchObject({ createdAt: { gte: since, lt: before } });
+  });
+
+  it('filters by the actor as a row filter, on the column that records who did it', async () => {
+    await listEvents(feedScope, { actorUserId: 'user_sam' });
+
+    const where = vi.mocked(prisma.resparkableEvent.findMany).mock.calls[0][0]?.where;
+    expect(where).toMatchObject({ createdByUserId: 'user_sam' });
+    expect(where).not.toHaveProperty('createdAt');
   });
 });

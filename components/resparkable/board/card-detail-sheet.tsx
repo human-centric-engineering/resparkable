@@ -39,15 +39,20 @@
  */
 
 import * as React from 'react';
-import { GroupCommentThread } from '@/components/resparkable/groups/group-comment-thread';
 import { Plus, Share2, Trash2 } from 'lucide-react';
 
+import { GroupCommentThread } from '@/components/resparkable/groups/group-comment-thread';
+import {
+  memberName,
+  useActiveGroupMembers,
+} from '@/components/resparkable/groups/use-active-group-members';
 import { MarkdownView } from '@/components/resparkable/ui/markdown-view';
 import { SaveStatus, useSaveStatus } from '@/components/resparkable/ui/save-status';
 import { useResparkableRefresh } from '@/components/resparkable/workspace/tabs/tab-refresh-context';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import { FieldHelp } from '@/components/ui/field-help';
 import {
   Dialog,
   DialogContent,
@@ -57,6 +62,13 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type { BoardCardWire, TagWire } from '@/lib/framework/resparkable/ui/payloads';
@@ -70,6 +82,9 @@ export interface CardDetailSheetProps {
   /** Closes this sheet and opens the share dialog on the task. See the docblock. */
   onShare: (card: BoardCardWire) => void;
 }
+
+/** The Select's value for "nobody": a Radix Select item cannot hold an empty string. */
+const UNASSIGNED = '__nobody__';
 
 /**
  * Outer shell: owns nothing but the open/closed question.
@@ -170,6 +185,25 @@ function CardDetailBody({
     else setTagIds(previous);
   }
 
+  // The group's members, in a group workspace; `null` in a personal one, where
+  // a task is nobody's but yours and the picker does not render (§23.13).
+  const members = useActiveGroupMembers();
+  const [assignee, setAssignee] = React.useState<string | null>(card.task.assignedToUserId ?? null);
+
+  async function assign(next: string | null): Promise<void> {
+    const previous = assignee;
+    setAssignee(next);
+
+    const ok = await run(() =>
+      resparkableApi.patch(RESPARKABLE_API.itemPath(RESPARKABLE_API.TASKS, taskId), {
+        body: { assignedToUserId: next },
+      })
+    );
+
+    if (ok) refresh({ type: 'task', id: taskId });
+    else setAssignee(previous);
+  }
+
   const doneCount = Object.values(checked).filter(Boolean).length;
 
   return (
@@ -202,6 +236,35 @@ function CardDetailBody({
       </div>
 
       <div className="space-y-5">
+        {members !== null && (
+          <section className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+              <Label htmlFor={`assignee-${taskId}`}>Assigned to</Label>
+              <FieldHelp title="Assigned to">
+                Who in the group is doing this. Anyone in the group can change it, and someone who
+                leaves the group is taken off their cards rather than having them passed to somebody
+                else.
+              </FieldHelp>
+            </h3>
+            <Select
+              value={assignee ?? UNASSIGNED}
+              onValueChange={(value) => void assign(value === UNASSIGNED ? null : value)}
+            >
+              <SelectTrigger id={`assignee-${taskId}`} className="h-8 w-56 text-sm">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNASSIGNED}>Nobody</SelectItem>
+                {members.map((member) => (
+                  <SelectItem key={member.userId} value={member.userId}>
+                    {memberName(member)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </section>
+        )}
+
         {card.task.notes && (
           <section className="space-y-1.5">
             <h3 className="text-sm font-semibold">Notes</h3>

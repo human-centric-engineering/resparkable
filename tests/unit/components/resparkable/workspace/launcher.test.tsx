@@ -33,6 +33,13 @@ import {
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { listLeaves } from '@/lib/framework/resparkable/ui/workspace/split-tree';
+import { useActiveSpaceId } from '@/lib/framework/resparkable/ui/use-active-space';
+
+// Personal by default; the "This group" cases name a group workspace.
+vi.mock('@/lib/framework/resparkable/ui/use-active-space', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/ui/use-active-space')>()),
+  useActiveSpaceId: vi.fn(() => null),
+}));
 
 vi.mock('@/lib/api/client', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/client')>('@/lib/api/client');
@@ -72,6 +79,7 @@ function renderLauncher() {
 
 beforeEach(() => {
   window.localStorage.clear();
+  vi.mocked(useActiveSpaceId).mockReturnValue(null);
   vi.mocked(apiClient.get).mockReset();
   // Nothing waiting, unless a case says otherwise — a badge on every tile
   // would otherwise leak into the unrelated coverage/focus assertions.
@@ -201,5 +209,28 @@ describe('Launcher — the inbox badge', () => {
     await waitFor(() => expect(apiClient.get).toHaveBeenCalled());
     expect(screen.getByRole('button', { name: 'Inbox' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Today' })).toBeInTheDocument();
+  });
+});
+
+describe('Launcher: the group’s own views (phase 59)', () => {
+  it('offers no group section in a personal workspace', async () => {
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByText('split'));
+
+    expect(screen.queryByText('This group')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /What’s new|What's new/ })).not.toBeInTheDocument();
+  });
+
+  it('opens the activity feed from a group workspace', async () => {
+    vi.mocked(useActiveSpaceId).mockReturnValue('spc_g');
+    const user = userEvent.setup();
+    renderLauncher();
+    await user.click(screen.getByText('split'));
+
+    expect(screen.getByText('This group')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /What’s new|What's new/ }));
+
+    expect(screen.getByTestId('new-leaf-tab-kinds')).toHaveTextContent('feed');
   });
 });
