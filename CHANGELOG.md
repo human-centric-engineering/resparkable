@@ -29,8 +29,9 @@ release process.
   `GET` returns `meta.canComment`, and `CommentThread`'s `canComment` prop is
   now optional. Optimistic concurrency on the six editable models with `rev`:
   an update may send `rev`, a stale one is a 409 carrying the current row
-  (`ConflictError` `details.current`), and every update increments it; the
-  coverage is asserted by enumeration. New model `ResparkableGroupAuditEntry`
+  (`ConflictError` `details.current`), and every content update increments
+  it (bookkeeping writes pass `{ bumpRev: false }`); the coverage is
+  asserted by enumeration. New model `ResparkableGroupAuditEntry`
   and `GET /groups/[id]/audit` (admins see all, members see what concerns
   them), exported to a subject as `groupAdminRecord`. One new email,
   `membership-changed.tsx`, when somebody else changes your role, removes you
