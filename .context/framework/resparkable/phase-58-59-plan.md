@@ -118,7 +118,7 @@ from the 409's `details.current` (never by refetching the row, which every edit
 form answers by resetting its fields), and says that saving again replaces the
 other person's version. Inline task and note edits (the board card, the task
 row, the inbox card) do not send it yet: last-write-wins there is a known gap,
-not a decision.
+not a decision. Phase 63 closed it for the note editor, the one inline place text is typed; the others send one field the person just chose and stay last-write-wins.
 
 Checked twice, for two races. The service compares the `rev` it was sent with
 the row it already reads for the update, which catches the common case without
@@ -258,7 +258,7 @@ restricted to `member` and above" needs no code of its own: it is Decision 1.
 ## What this does not do
 
 - Push, presence or "Priya is editing this" (§23.14 q7).
-- Read comments into the group agent's context (Decision 2).
+- Read comments into the group agent's context (Decision 2; phase 64, design first).
 - A feed for personal workspaces.
 - Any email beyond the three.
 - Require `rev` from agent or API writers (Decision 3).
