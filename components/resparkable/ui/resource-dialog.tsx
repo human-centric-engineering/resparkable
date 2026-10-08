@@ -57,7 +57,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { APIClientError } from '@/lib/api/client';
+import { isEditConflict, readConflictCurrent } from '@/lib/framework/resparkable/ui/edit-conflict';
 import { resparkableApi } from '@/lib/framework/resparkable/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 
@@ -85,8 +85,8 @@ export interface ResourceFormBodyProps<TValues extends FieldValues> {
 export const EDIT_CONFLICT_MESSAGE =
   'Someone else changed this while you had it open. Save again to replace their version with yours, or close without saving to keep theirs.';
 
-/** The current row a 409 carries (`ConflictError` `details.current`), read without asserting. */
-const conflictDetailsSchema = z.object({ current: z.object({ rev: z.number().int() }) });
+/** The slice of a 409's current row the next save needs. */
+const conflictRevSchema = z.object({ rev: z.number().int() });
 
 /** The `<form>` itself: fields, the API-error surface, save status, submit. No dialog chrome. */
 export function ResourceFormBody<TValues extends FieldValues>({
@@ -119,14 +119,14 @@ export function ResourceFormBody<TValues extends FieldValues>({
             })
           : resparkableApi.post(collection, { body }),
       (error) => {
-        if (!(error instanceof APIClientError) || error.status !== 409 || !id) {
+        if (!isEditConflict(error) || !id) {
           return error instanceof Error ? error.message : 'Something went wrong';
         }
         // Somebody else saved first. Keep what this person typed, and arm the
         // next save with the current `rev`, so saving again is a deliberate
         // replacement rather than an accident.
-        const details = conflictDetailsSchema.safeParse(error.details);
-        if (details.success) setConflictRev(details.data.current.rev);
+        const current = readConflictCurrent(error, conflictRevSchema);
+        if (current) setConflictRev(current.rev);
         return EDIT_CONFLICT_MESSAGE;
       }
     );
