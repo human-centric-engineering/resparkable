@@ -168,6 +168,8 @@ export const thoughtSchema = z.object({
   archivedAt: isoDate.nullable(),
   /** `manual | aged_out | project_closed` — why it left (§11, phase 8). */
   archivedReason: z.string().nullable().optional(),
+  /** Optimistic-concurrency token (phase 58); the note editor sends it back on save. */
+  rev: z.number().int().optional(),
   createdAt: isoDate,
   updatedAt: isoDate,
 });
