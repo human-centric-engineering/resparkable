@@ -159,6 +159,11 @@ export async function updateThought(
   /** `{ bumpRev: false }` for a bookkeeping write. See `revBump`. */
   options: RevisedUpdateOptions = {}
 ): Promise<ResparkableThought | null> {
+  // A note's words are the one thing a person reads and edits on it, so only a
+  // write to `content` moves `rev` (phase 65). A status change, a snooze or a
+  // sensitivity correction leaves it, whoever sends it, and the note editor can
+  // then take every 409 as a change to the words.
+  const bump = data.content === undefined ? {} : revBump(options);
   const update = () =>
     prisma.resparkableThought.update({
       where: { id, ...spaceWhere(scope), ...revWhere(expectedRev) },
@@ -166,7 +171,7 @@ export async function updateThought(
       // for the indexer. Nulling it costs a hash comparison, not an embedding
       // call, which is why every update can do it without knowing which fields
       // are semantic (see embedding/indexer.ts).
-      data: { ...data, ...revBump(options), indexedHash: null },
+      data: { ...data, ...bump, indexedHash: null },
     });
 
   // Reclassifying is the one edit the hash gate cannot carry (phase 9e).

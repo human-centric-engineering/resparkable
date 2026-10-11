@@ -98,7 +98,9 @@ export type { ArchiveVisibility, SpaceScope };
  * changes, whoever made the change. Bookkeeping writes opt out: touching a
  * project's `lastActivityAt` because one of its tasks moved, snoozing, and
  * marking a note promoted change nothing an edit form shows, and moving the
- * token for them would give the person editing a 409 over nothing.
+ * token for them would give the person editing a 409 over nothing. A thought
+ * goes further: `updateThought` moves it only for a write to `content`, the
+ * one field its editor shows (phase 65).
  */
 export function revWhere(expectedRev: number | undefined): { rev?: number } {
   return expectedRev === undefined ? {} : { rev: expectedRev };

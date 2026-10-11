@@ -712,3 +712,32 @@ describe('updateTask / updateProject: rev where and bump (phase 58, §23.13)', (
     expect(call?.data).toMatchObject({ rev: { increment: 1 } });
   });
 });
+
+describe('updateThought: only a write to the text moves rev (phase 65)', () => {
+  it('bumps rev when the write carries content', async () => {
+    await thoughts.updateThought(SCOPE, 'id_1', { content: 'y' }, 4);
+
+    const call = vi.mocked(prisma.resparkableThought.update).mock.calls[0]?.[0];
+    expect(call?.where).toEqual({ id: 'id_1', spaceId: 'user_a', rev: 4 });
+    expect(call?.data).toMatchObject({ content: 'y', rev: { increment: 1 } });
+  });
+
+  it.each([
+    ['a status change', { status: 'dropped' }],
+    ['an unsnooze', { snoozedUntil: null }],
+    ['a sensitivity correction', { sensitivity: 'sensitive' }],
+  ])('leaves rev alone for %s', async (_label, data) => {
+    await thoughts.updateThought(SCOPE, 'id_1', data);
+
+    const call = vi.mocked(prisma.resparkableThought.update).mock.calls[0]?.[0];
+    expect(call?.data).toMatchObject(data);
+    expect(call?.data).not.toHaveProperty('rev');
+  });
+
+  it('still honours bumpRev: false on a write that carries content', async () => {
+    await thoughts.updateThought(SCOPE, 'id_1', { content: 'y' }, undefined, { bumpRev: false });
+
+    const call = vi.mocked(prisma.resparkableThought.update).mock.calls[0]?.[0];
+    expect(call?.data).not.toHaveProperty('rev');
+  });
+});

@@ -25,12 +25,11 @@
  * Phase 63 brought phase 58's Decision 3 (`rev` as an optional concurrency
  * token) to this, the one inline editor where text is typed.
  *
- * A 409 is not always a change to the words. Any write to the thought moves its
- * `rev` (a status change from the inbox, a snooze). When the text on the server
- * is still the text this editor last knew it held, nobody changed the words, so
- * the save takes the new `rev` and goes through rather than asking a question
- * with no real answer. Any other text is a real conflict and always asks, even
- * when the other version came from this same person in another pane.
+ * A 409 is a change to the words. Only a write to a thought's `content`
+ * moves its `rev` (phase 65), so a status change from the inbox or a
+ * snooze reaches no editor, and a conflict asks, even when the other version
+ * came from this same person in another pane. The one exception is a version
+ * that already holds the text being saved: that save is done, not a question.
  *
  * Except when there is no one left to ask. A save that finds a conflict after
  * its editor has closed (the flush of the last keystrokes, or a save still in
@@ -68,19 +67,16 @@ export const NOTE_CONFLICT_MESSAGE =
   'This note was changed somewhere else while you were writing. Your text is still here, but it will not save until you choose. Closing the tab now leaves the other version in place.';
 
 /**
- * What a successful save returns, read without asserting. The `content` is the
- * server's, which is trimmed, so it and not the text sent is what the next
- * conflict compares against.
+ * What a successful save returns, read without asserting. A response without a
+ * `rev` leaves the one the editor holds, so the next save asks rather than
+ * writing blind.
  */
-const savedRowSchema = z.object({ rev: z.number().int(), content: z.string() });
+const savedRowSchema = z.object({ rev: z.number().int() });
 
 /** The slice of a 409's current row this editor needs: its token and its words. */
 const conflictRowSchema = z.object({ rev: z.number().int(), content: z.string() });
 
 type Conflict = z.infer<typeof conflictRowSchema>;
-
-/** How many times a save follows a `rev` that moved without the words changing. */
-const MAX_SAVE_ATTEMPTS = 3;
 
 /**
  * One save queue per note, shared by every editor of it on this page. Saves to
@@ -105,7 +101,7 @@ function enqueueSave(id: string, task: () => Promise<unknown>): void {
 /** What a save returns when a closed editor's text went to a new note instead. */
 const KEPT_AS_NEW_NOTE = Symbol('kept as a new note');
 
-/** Thrown inside a save once a real conflict is held, to report it without retrying. */
+/** Thrown inside a save once a conflict is held, to report it as the conflict message. */
 class HeldConflict extends Error {}
 
 export interface NoteTabProps {
@@ -173,10 +169,6 @@ function NoteEditor({
   // save's own answer. A ref because saves are queued and each must read the
   // value the one before it left, not the value at the time it was queued.
   const revRef = React.useRef(initialRev);
-  // The text the server held at `revRef`: what this editor opened with, then
-  // each save's text. A conflict whose current text is this one changed the
-  // row but not the words.
-  const baseRef = React.useRef(initialContent);
   // The other version, while this person has not yet chosen. Held twice: the
   // state renders the choice, the ref stops saves already queued from writing.
   const [conflict, setConflict] = React.useState<Conflict | null>(null);
@@ -209,30 +201,24 @@ function NoteEditor({
       : null;
   }
 
-  /**
-   * Sends `next`, following a `rev` that moved without the words changing. A
-   * different text on the server is held as a conflict and never written over.
-   */
+  /** Sends `next`. The other version a 409 reveals is held, never written over. */
   async function send(next: string): Promise<unknown> {
-    let rev = revRef.current;
-    for (let attempt = 1; ; attempt++) {
-      try {
-        return await patch(next, rev);
-      } catch (error) {
-        if (!isEditConflict(error)) throw error;
-        const current = await currentAfterConflict(error);
-        if (!current) throw error;
-        if (current.content !== baseRef.current) {
-          if (!mountedRef.current) {
-            await apiClient.post<unknown>(paths.notes, { body: { content: next } });
-            return KEPT_AS_NEW_NOTE;
-          }
-          holdConflict(current);
-          throw new HeldConflict();
-        }
-        if (attempt === MAX_SAVE_ATTEMPTS) throw error;
-        rev = current.rev;
+    try {
+      return await patch(next, revRef.current);
+    } catch (error) {
+      if (!isEditConflict(error)) throw error;
+      const current = await currentAfterConflict(error);
+      if (!current) throw error;
+      // The other version already says what this save says, so there is
+      // nothing to choose between and nothing to keep. Trimmed on both sides:
+      // the API trims a body, but a vault import stores one as the file had it.
+      if (current.content.trim() === next.trim()) return current;
+      if (!mountedRef.current) {
+        await apiClient.post<unknown>(paths.notes, { body: { content: next } });
+        return KEPT_AS_NEW_NOTE;
       }
+      holdConflict(current);
+      throw new HeldConflict();
     }
   }
 
@@ -244,7 +230,6 @@ function NoteEditor({
         if (saved === KEPT_AS_NEW_NOTE) return;
         const row = savedRowSchema.safeParse(saved);
         if (row.success) revRef.current = row.data.rev;
-        baseRef.current = row.success ? row.data.content : next;
       },
       (error) => {
         if (error instanceof HeldConflict) return NOTE_CONFLICT_MESSAGE;
@@ -273,7 +258,6 @@ function NoteEditor({
     if (timerRef.current) clearTimeout(timerRef.current);
     pendingRef.current = null;
     revRef.current = current.rev;
-    baseRef.current = current.content;
     generationRef.current += 1;
     holdConflict(null);
     return current;
