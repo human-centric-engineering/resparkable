@@ -20,10 +20,11 @@
  * - Saves go to the workspace the editor opened in, fixed at mount
  * - A non-409 error shows its own message and offers no choice
  * - A 409 without the current row fetches the row and offers the same choice
- * - A 409 that changed the row but not the words (a status change, a response
- *   with no rev) saves through without asking, at most three attempts, and
- *   compares against the text the server stored (it trims)
- * - A real conflict is held even on the last attempt
+ * - A 409 asks, even when the words match what it last saved: only a change to
+ *   the text moves rev (phase 65), so nothing is retried
+ * - A 409 whose other version already holds the text being saved finishes
+ *   without asking, and the next save sends that version's rev
+ * - A save response with no rev keeps the held one, so the next save asks
  * - "Use their version" drops a save queued before it; one failed save does
  *   not stop later ones
  * - Saves to one note queue across editors: a reopened editor waits for the
@@ -300,27 +301,44 @@ describe('NoteTab: edges', () => {
     expect(screen.queryByRole('button', { name: 'Save my version' })).not.toBeInTheDocument();
   });
 
-  it('saves through a 409 that changed the row but not the words', async () => {
-    // A status change or a snooze moves the rev and leaves the text alone.
-    // Nobody else wrote anything, so there is nothing to ask about.
+  it('asks on a 409 even when the words match what it last saved, and sends no second save', async () => {
+    // Only a change to a note's text moves its rev (phase 65), so a 409 is
+    // somebody's words. Matching the last-saved text is not read as a status change.
     mockPatch.mockRejectedValueOnce(conflictError(4, 'First draft'));
-    mockPatch.mockResolvedValueOnce({ id: 'thought_1', rev: 5, content: 'Second draft' });
     render(<NoteTab tabId="t1" id="thought_1" />);
 
     type('Second draft');
     await flushSave();
 
-    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
-      body: { content: 'Second draft', rev: 4 },
-    });
-    expect(screen.queryByText(NOTE_CONFLICT_MESSAGE)).not.toBeInTheDocument();
+    expect(mockPatch).toHaveBeenCalledTimes(1);
+    expect(screen.getByText(NOTE_CONFLICT_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Use their version' })).toBeInTheDocument();
   });
 
-  it('recovers when a save response carries no rev, instead of reporting itself as someone else', async () => {
-    mockPatch.mockResolvedValueOnce({ id: 'thought_1' });
-    // The server moved to 4 on that save; this editor still holds 3.
-    mockPatch.mockRejectedValueOnce(conflictError(4, 'Second draft'));
+  it('finishes without asking when the other version already holds the text being saved', async () => {
+    // Somebody else saved the same words first, with different whitespace at
+    // the ends (a vault import stores a body untrimmed). Nothing to choose
+    // between, so the editor takes their rev and the next save sends it.
+    mockPatch.mockRejectedValueOnce(conflictError(4, 'Second draft\n'));
     mockPatch.mockResolvedValueOnce({ id: 'thought_1', rev: 5, content: 'Third draft' });
+    render(<NoteTab tabId="t1" id="thought_1" />);
+
+    type('  Second draft');
+    await flushSave();
+    expect(screen.queryByText(NOTE_CONFLICT_MESSAGE)).not.toBeInTheDocument();
+
+    type('Third draft');
+    await flushSave();
+
+    expect(mockPatch).toHaveBeenCalledTimes(2);
+    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
+      body: { content: 'Third draft', rev: 4 },
+    });
+  });
+
+  it('keeps the held rev when a save response carries none, so the next save asks', async () => {
+    mockPatch.mockResolvedValueOnce({ id: 'thought_1' });
+    mockPatch.mockRejectedValueOnce(conflictError(4, 'Second draft'));
     render(<NoteTab tabId="t1" id="thought_1" />);
 
     type('Second draft');
@@ -328,61 +346,10 @@ describe('NoteTab: edges', () => {
     type('Third draft');
     await flushSave();
 
-    expect(mockPatch).toHaveBeenNthCalledWith(2, NOTE_PATH, {
+    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
       body: { content: 'Third draft', rev: 3 },
     });
-    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
-      body: { content: 'Third draft', rev: 4 },
-    });
-    expect(screen.queryByText(NOTE_CONFLICT_MESSAGE)).not.toBeInTheDocument();
-  });
-
-  it('follows a rev that keeps moving without the words changing, up to the cap', async () => {
-    mockPatch.mockRejectedValueOnce(conflictError(4, 'First draft'));
-    mockPatch.mockRejectedValueOnce(conflictError(5, 'First draft'));
-    mockPatch.mockResolvedValueOnce({ id: 'thought_1', rev: 6, content: 'Second draft' });
-    render(<NoteTab tabId="t1" id="thought_1" />);
-
-    type('Second draft');
-    await flushSave();
-
-    expect(mockPatch).toHaveBeenCalledTimes(3);
-    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
-      body: { content: 'Second draft', rev: 5 },
-    });
-    expect(screen.queryByText(NOTE_CONFLICT_MESSAGE)).not.toBeInTheDocument();
-  });
-
-  it('compares the next conflict against the text the server stored, not the text sent', async () => {
-    // The server trims a note body, so the words it holds can differ from the
-    // keystrokes sent by trailing whitespace alone.
-    mockPatch.mockResolvedValueOnce({ id: 'thought_1', rev: 4, content: 'Buy milk' });
-    mockPatch.mockRejectedValueOnce(conflictError(5, 'Buy milk'));
-    mockPatch.mockResolvedValueOnce({ id: 'thought_1', rev: 6, content: 'Buy milk and eggs' });
-    render(<NoteTab tabId="t1" id="thought_1" />);
-
-    type('Buy milk\n');
-    await flushSave();
-    type('Buy milk and eggs');
-    await flushSave();
-
-    expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
-      body: { content: 'Buy milk and eggs', rev: 5 },
-    });
-    expect(screen.queryByText(NOTE_CONFLICT_MESSAGE)).not.toBeInTheDocument();
-  });
-
-  it('holds a real conflict even when it arrives on the last attempt', async () => {
-    mockPatch.mockRejectedValueOnce(conflictError(4, 'First draft'));
-    mockPatch.mockRejectedValueOnce(conflictError(5, 'First draft'));
-    mockPatch.mockRejectedValueOnce(conflictError(6, 'Their version'));
-    render(<NoteTab tabId="t1" id="thought_1" />);
-
-    type('My version');
-    await flushSave();
-
     expect(screen.getByText(NOTE_CONFLICT_MESSAGE)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Use their version' })).toBeInTheDocument();
   });
 
   it('drops a save queued before "Use their version", instead of sending it with their rev', async () => {
@@ -432,27 +399,6 @@ describe('NoteTab: edges', () => {
     expect(mockPatch).toHaveBeenLastCalledWith(NOTE_PATH, {
       body: { content: 'Second try', rev: 3 },
     });
-  });
-
-  it('stops following after three attempts and reports the failure', async () => {
-    const stillMoving = Object.assign(
-      new APIClientError('This note was changed by someone else.'),
-      {
-        status: 409,
-        details: { current: { id: 'thought_1', rev: 9, content: 'First draft' } },
-      }
-    );
-    mockPatch
-      .mockRejectedValueOnce(stillMoving)
-      .mockRejectedValueOnce(stillMoving)
-      .mockRejectedValueOnce(stillMoving);
-    render(<NoteTab tabId="t1" id="thought_1" />);
-
-    type('Second draft');
-    await flushSave();
-
-    expect(mockPatch).toHaveBeenCalledTimes(3);
-    expect(screen.getByText('This note was changed by someone else.')).toBeInTheDocument();
   });
 
   it("makes a reopened editor wait for the closing editor's save, then ask rather than overwrite it", async () => {

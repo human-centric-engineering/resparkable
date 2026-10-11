@@ -896,6 +896,15 @@ release process.
 
 ### Changed
 
+- **Only a write to a note's text moves its `rev` (phase 65).** `updateThought`
+  increments `rev` only when the update carries `content`, so a
+  `PATCH /resparkable/thoughts/[id]` of only `status`, `snoozedUntil` or
+  `sensitivity` (the inbox's drop, an unsnooze, a sensitivity correction)
+  leaves it unchanged and no longer gives somebody editing the note a 409. A
+  thought's `rev` now versions its text alone: two status-only writes sending
+  the same `rev` no longer conflict. The note editor asks on every 409 instead
+  of retrying when the text matches what it last saved, and finishes without
+  asking when the other version already holds the text being saved.
 - **Background runs name the space they are about (Release 9, phase 50).**
   `queueResparkableWorkflowRun(slug, scope, input)` now takes a `SpaceScope`
   rather than a user id and writes `scope.resparkableSpaceId` on the execution;
