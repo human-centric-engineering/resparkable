@@ -362,10 +362,16 @@ export const GROUP_CONTRIBUTION_SOURCES: Record<
     section: 'billingLedger',
     // Phase 50: what they spent from a group's balance and what they added to
     // it. Rows attributed to them only: the group's other members' spend is
-    // theirs, and operational rows are attributed to nobody.
+    // theirs, and operational rows are attributed to nobody. Phase 62 adds the
+    // rows that moved their own group balance, which somebody else may have
+    // started (their share of an equal split, a seat charged by the monthly
+    // cycle): money taken from them is about them whoever caused it.
     fetch: (userId) =>
       prisma.resparkableCreditLedgerEntry.findMany({
-        where: contributedBy(userId),
+        where: {
+          space: { kind: 'group' },
+          OR: [{ createdByUserId: userId }, { memberUserId: userId }],
+        },
         orderBy: OLDEST_FIRST,
       }),
   },

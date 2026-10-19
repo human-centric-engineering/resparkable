@@ -1438,11 +1438,19 @@ model ResparkableCreditLedgerEntry {
   /// do not.
   createdByUserId String?
 
-  /// admin_grant | agent_spend | refund | transfer_out | transfer_in
+  /// admin_grant | agent_spend | refund | transfer_out | transfer_in | seat |
+  /// auto_top_up | credit_back | debt_absorbed | pool_closed
   ///
   /// The two transfer kinds are a group top-up (§23.12): `transfer_out` on the
   /// giver's personal account and `transfer_in` on the group's, written in one
-  /// transaction, both attributed to the giver.
+  /// transaction, both attributed to the giver. Phase 62 adds the rest, all in
+  /// pairs where money moves between two accounts: `seat` (a member's group
+  /// balance to the pool), `auto_top_up` (a person's own balance into the group,
+  /// up to the monthly amount they agreed), `credit_back` (what is left in a
+  /// member's group balance, or their share of a closing pool, back to their own
+  /// balance), `debt_absorbed` (an unpaid debt moved onto the pool), and
+  /// `pool_closed` (what a deleted group's pool could not give back to anybody).
+  /// See phase-62-plan.md.
   kind         String @db.VarChar(16)
   creditsDelta Float
 
@@ -1456,9 +1464,21 @@ model ResparkableCreditLedgerEntry {
   relatedWorkflowExecutionId String?
   relatedCostLogId           String?
 
-  note             String?  @db.VarChar(500)
+  note             String? @db.VarChar(500)
   createdByAdminId String? // admin_grant only
-  createdAt        DateTime @default(now())
+
+  /// Whose group balance this row moves (phase 62). `null` means the space's
+  /// own account: the pool in a group space, the person's balance in a
+  /// personal one. Distinct from `createdByUserId`, which is who started the
+  /// run: in an equal split one person's chat turn writes a row against every
+  /// member's balance.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// Hand-written FK to `"user"("id")` ON DELETE **SetNull**, probe B16. An
+  /// erased member's rows stay in the group's books, unattributed, like
+  /// `createdByUserId`.
+  memberUserId String?
+  createdAt    DateTime @default(now())
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.
@@ -1474,6 +1494,9 @@ model ResparkableCreditLedgerEntry {
   /// the space over the last day (`sumMemberSpendSince`), and the admin's
   /// per-member spend view reads the same shape.
   @@index([spaceId, createdByUserId, createdAt])
+  /// Phase 62: a member's own group balance, read by the books and the
+  /// filled-allowance monthly cap.
+  @@index([spaceId, memberUserId, createdAt])
   @@map("framework_resparkable_credit_ledger_entry")
 }
 
@@ -1980,6 +2003,59 @@ model ResparkableGroup {
   /// settings `PATCH`. A personal space has no total, only the per-file cap.
   storageQuotaBytes BigInt?
 
+  // ─── Who pays (§23.12's second amendment, phase 62) ─────────────────────────
+  //
+  // Every default is what phase 50 does, so a group nobody has configured
+  // behaves exactly as before. A change to any of these takes effect at the
+  // start of the group's next month (`pendingBilling`), never at once: a member
+  // who joined a group where the pool paid for their chats is told before their
+  // own balance is charged. See phase-62-plan.md.
+
+  /// Credits a month for holding a seat, per role. Paid into the pool from the
+  /// member's own group balance. 0 is free.
+  seatPriceAdminCredits  Float @default(0)
+  seatPriceMemberCredits Float @default(0)
+  seatPriceViewerCredits Float @default(0)
+
+  /// `pool` | `one_admin` | `admins_split`. Who pays for runs nobody in
+  /// particular started (today, the weekly digest).
+  operationalCostsPaidBy String @default("pool") @db.VarChar(16)
+
+  /// The admin who pays operational costs under `one_admin`. Falls back to
+  /// `pool` (and the admins are told) when they leave, are removed, stop being
+  /// an admin or are erased.
+  ///
+  /// ⚠️ PRISMA-SCHEMA DRIFT WARNING ⚠️
+  /// Hand-written FK to `"user"("id")` ON DELETE **SetNull**, probe B16.
+  operationalPayerUserId String?
+
+  /// `pool` | `equal_split` | `allowance`. Who pays for runs a member started.
+  activityCostsPaidBy String @default("pool") @db.VarChar(16)
+
+  /// `carved` (a limit on how much of the pool each member may use) or
+  /// `filled` (each member spends their own group balance). Read only when
+  /// `activityCostsPaidBy` is `allowance`.
+  allowanceSource String @default("carved") @db.VarChar(16)
+
+  /// `debt` (a balance may go below zero and the person carries on) or
+  /// `suspend` (below zero, they cannot start anything that costs credits
+  /// until it is paid). Suspension is derived from this and the balance, never
+  /// stored.
+  shortfallPolicy String @default("debt") @db.VarChar(16)
+
+  /// Settings an admin changed this month, and the instant they take effect.
+  /// The shape is `GroupBillingSettings` in `services/group-billing.ts`. Read
+  /// lazily: once `pendingBillingFrom` has passed, the pending values are the
+  /// group's settings whether or not the cycle job has copied them over yet.
+  pendingBilling     Json?
+  pendingBillingFrom DateTime?
+
+  /// The start of the last month whose seats and carved allowances have been
+  /// settled. Null means only the month the group was created in. Claimed with
+  /// a conditional update, so the cycle job and a charge that finds the month
+  /// unsettled cannot both settle it.
+  cycleSettledThrough DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2071,6 +2147,34 @@ model ResparkableGroupMember {
   /// a filter in `repo/**`, does not reach `SpaceScope`, and no `WHERE` gains a
   /// term from it (test 13l compares the SQL). Null means never opened.
   feedSeenAt DateTime?
+
+  // ─── This member's money in the group (phase 62) ────────────────────────────
+
+  /// Credits this person put into the group for their own costs and has not
+  /// spent. **Theirs**: credited back to their own balance when they leave.
+  /// Below zero is a debt to the group (the group's `shortfallPolicy` says what
+  /// that means). On the membership row because it cannot outlive it.
+  balanceCredits Float @default(0)
+
+  /// Set by an admin. Under a carved allowance, what is added to
+  /// `allowanceRemainingCredits` at the start of each month (unused allowance
+  /// rolls over). Under a filled allowance, the most this member may spend in
+  /// the group in a month. `null` is none.
+  allowanceCredits Float?
+
+  /// How much of the **pool** this member may still spend under a carved
+  /// allowance. A limit, not money: never credited back.
+  allowanceRemainingCredits Float @default(0)
+
+  /// Set by the member and nobody else: the most that may move from their own
+  /// balance into the group in a month when their group balance runs out.
+  /// `null` is off.
+  autoTopUpMonthlyCredits Float?
+
+  /// How much has moved automatically in the month starting `autoTopUpMonth`.
+  /// A different month reads as zero, so nothing needs resetting.
+  autoTopUpUsedCredits Float     @default(0)
+  autoTopUpMonth       DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
