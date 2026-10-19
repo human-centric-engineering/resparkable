@@ -98,6 +98,33 @@ const REFUSAL_STATUS: Record<string, number> = {
   insufficient_personal_credits: 402,
 };
 
+/** Phase 62's additions to the budget view, at a group's defaults. */
+const YOU = {
+  dailyCreditCap: null,
+  spentLastDayCredits: 0,
+  balanceCredits: 0,
+  allowanceCredits: null,
+  allowanceRemainingCredits: 0,
+  autoTopUpMonthlyCredits: null,
+  autoTopUpUsedThisMonthCredits: 0,
+  suspended: false,
+};
+const BILLING = {
+  settings: {
+    seatPriceAdminCredits: 0,
+    seatPriceMemberCredits: 0,
+    seatPriceViewerCredits: 0,
+    operationalCostsPaidBy: 'pool' as const,
+    operationalPayerUserId: null,
+    activityCostsPaidBy: 'pool' as const,
+    allowanceSource: 'carved' as const,
+    shortfallPolicy: 'debt' as const,
+  },
+  pending: null,
+  monthStartedAt: '2026-10-05T00:00:00.000Z',
+  nextMonthStartsAt: '2026-11-05T00:00:00.000Z',
+};
+
 describe('GET /api/v1/resparkable/groups/[id]/budget', () => {
   it('is a 404, not a 403, for a group the caller is not a member of', async () => {
     vi.mocked(getGroupBudget).mockResolvedValue({ ok: false, reason: 'not_a_member' });
@@ -117,7 +144,8 @@ describe('GET /api/v1/resparkable/groups/[id]/budget', () => {
       fundingMode: 'self_funded' as const,
       canTopUp: false,
       yourPersonalBalanceCredits: 12,
-      you: { dailyCreditCap: null, spentLastDayCredits: 0 },
+      you: YOU,
+      billing: BILLING,
       admin: null,
     };
     vi.mocked(getGroupBudget).mockResolvedValue({ ok: true, value: view });
@@ -141,7 +169,8 @@ describe('GET /api/v1/resparkable/groups/[id]/budget', () => {
         fundingMode: 'self_funded',
         canTopUp: false,
         yourPersonalBalanceCredits: 0,
-        you: { dailyCreditCap: null, spentLastDayCredits: 0 },
+        you: YOU,
+        billing: BILLING,
         admin: null,
       },
     });

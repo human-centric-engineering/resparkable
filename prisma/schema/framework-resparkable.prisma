@@ -2357,7 +2357,7 @@ model ResparkableGroupAuditEntry {
   /// role_changed | member_removed | member_left | settings_changed |
   /// join_link_minted | join_link_revoked | join_approved | join_rejected |
   /// invite_issued | invite_revoked | budget_changed | member_cap_changed |
-  /// topped_up
+  /// topped_up | billing_changed | member_allowance_changed | payer_released
   action String @db.VarChar(32)
 
   /// What changed, in the action's own shape (`{ from, to }` for a role).

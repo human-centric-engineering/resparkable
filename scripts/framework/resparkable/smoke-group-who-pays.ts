@@ -26,7 +26,15 @@ import {
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
-import { canAffordOperational } from '@/lib/framework/resparkable/services/group-billing';
+import {
+  canAffordOperational,
+  effectiveBillingSettings,
+} from '@/lib/framework/resparkable/services/group-billing';
+import {
+  releasePayerAndTell,
+  topUpOwnGroupBalance,
+  updateGroupBilling,
+} from '@/lib/framework/resparkable/services/group-budget';
 import {
   createGroup,
   resolveGroupMembership,
@@ -264,7 +272,79 @@ async function main(): Promise<void> {
     check(near(await balanceOf(SPACE), poolBeforeDemoted - 1), 'a demoted payer reads as the pool');
     await setMember(admin.id, { role: 'admin' });
 
-    check(near(await balanceOf(ben.id), 50), "Ben's personal balance never moved");
+    console.log('\nsettings: a change waits for next month');
+    await configure({
+      activityCostsPaidBy: 'pool',
+      operationalCostsPaidBy: 'pool',
+      operationalPayerUserId: null,
+      shortfallPolicy: 'debt',
+    });
+    const refusedPayer = await updateGroupBilling(admin.id, groupId, {
+      operationalCostsPaidBy: 'one_admin',
+      operationalPayerUserId: ana.id,
+    });
+    check(
+      !refusedPayer.ok && refusedPayer.reason === 'payer_not_admin',
+      'a payer who is not an admin is refused'
+    );
+    const scheduled = await updateGroupBilling(admin.id, groupId, {
+      activityCostsPaidBy: 'equal_split',
+      operationalCostsPaidBy: 'one_admin',
+      operationalPayerUserId: admin.id,
+    });
+    check(scheduled.ok, 'an admin schedules a change');
+    const stored = await prisma.resparkableGroup.findUniqueOrThrow({ where: { id: groupId } });
+    check(
+      effectiveBillingSettings(stored).activityCostsPaidBy === 'pool',
+      'the pool still pays today'
+    );
+    check(
+      stored.pendingBillingFrom !== null &&
+        effectiveBillingSettings(stored, stored.pendingBillingFrom).activityCostsPaidBy ===
+          'equal_split',
+      'the split applies from the start of next month'
+    );
+    const merged = await updateGroupBilling(admin.id, groupId, { seatPriceMemberCredits: 5 });
+    check(
+      merged.ok && merged.value.pending?.settings.activityCostsPaidBy === 'equal_split',
+      'a second change merges over the first rather than undoing it'
+    );
+
+    console.log('\nfilling your own balance in the group');
+    const before = (await memberRow(groupId, ben.id)).balanceCredits;
+    const filled = await topUpOwnGroupBalance(ben.id, groupId, 7);
+    check(filled.ok, 'any member may fill their own balance');
+    check(
+      near((await memberRow(groupId, ben.id)).balanceCredits, before + 7),
+      'it lands in his balance, not the pool'
+    );
+    check(near(await balanceOf(ben.id), 43), 'and leaves his own credits');
+    const overdraw = await topUpOwnGroupBalance(ben.id, groupId, 1000);
+    check(
+      !overdraw.ok && overdraw.reason === 'insufficient_personal_credits',
+      'never an overdraft'
+    );
+
+    console.log('\nthe payer goes, the pool pays');
+    await configure({ operationalCostsPaidBy: 'one_admin', operationalPayerUserId: admin.id });
+    check(await releasePayerAndTell(groupId, admin.id), 'releasing the payer changes something');
+    const released = await prisma.resparkableGroup.findUniqueOrThrow({ where: { id: groupId } });
+    check(released.operationalCostsPaidBy === 'pool', 'the stored setting is the pool');
+    check(
+      released.pendingBillingFrom !== null &&
+        effectiveBillingSettings(released, released.pendingBillingFrom).operationalCostsPaidBy ===
+          'pool',
+      'and the waiting change no longer names them'
+    );
+    check(!(await releasePayerAndTell(groupId, ana.id)), 'a no-op for anybody else');
+    check(
+      (await prisma.resparkableGroupAuditEntry.count({
+        where: { groupId, action: 'payer_released' },
+      })) === 1,
+      'one audit entry'
+    );
+
+    check(near(await balanceOf(ben.id), 43), "Ben's personal balance moved only by his own top-up");
     check(near(await balanceOf(spaceScope(admin.id).spaceId), 100), "nor the admin's");
     console.log('\nframework:resparkable:smoke-group-who-pays passed');
   } finally {

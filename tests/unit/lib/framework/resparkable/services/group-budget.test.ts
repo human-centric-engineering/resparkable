@@ -53,6 +53,28 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   claimLargeRunAlert: (...args: unknown[]) => claimLargeRunAlert(...args),
   releaseLargeRunAlert: (...args: unknown[]) => releaseLargeRunAlert(...args),
 }));
+const findGroupWithClockBySpaceId = vi.fn();
+const findJoinedMembership = vi.fn();
+vi.mock('@/lib/framework/resparkable/repo/group-billing', () => ({
+  findGroupWithClockBySpaceId: (...args: unknown[]) => findGroupWithClockBySpaceId(...args),
+  findJoinedMembership: (...args: unknown[]) => findJoinedMembership(...args),
+}));
+const promotePendingBilling = vi.fn();
+const setPendingBilling = vi.fn();
+const clearPendingBilling = vi.fn();
+const updateMemberAllowance = vi.fn();
+const updateMemberAutoTopUp = vi.fn();
+const transferCreditsToMemberBalance = vi.fn();
+const releaseOperationalPayer = vi.fn();
+vi.mock('@/lib/framework/resparkable/repo/group-billing-settings', () => ({
+  promotePendingBilling: (...args: unknown[]) => promotePendingBilling(...args),
+  setPendingBilling: (...args: unknown[]) => setPendingBilling(...args),
+  clearPendingBilling: (...args: unknown[]) => clearPendingBilling(...args),
+  updateMemberAllowance: (...args: unknown[]) => updateMemberAllowance(...args),
+  updateMemberAutoTopUp: (...args: unknown[]) => updateMemberAutoTopUp(...args),
+  transferCreditsToMemberBalance: (...args: unknown[]) => transferCreditsToMemberBalance(...args),
+  releaseOperationalPayer: (...args: unknown[]) => releaseOperationalPayer(...args),
+}));
 vi.mock('@/lib/email/send', () => ({ sendEmail: (...args: unknown[]) => sendEmail(...args) }));
 vi.mock('@/lib/env', () => ({ env: { NEXT_PUBLIC_APP_URL: 'https://app.example.com' } }));
 const ensureResparkableSpace = vi.fn().mockResolvedValue({});
@@ -90,14 +112,36 @@ import {
 const GROUP = {
   id: 'grp_1',
   name: 'Study Group B',
+  spaceId: 'spc_group',
+  createdAt: new Date('2026-09-05T10:00:00Z'),
   fundingMode: 'self_funded',
   lowBalanceAlertCredits: null as number | null,
   largeRunAlertPercent: null as number | null,
+  // Phase 62's who-pays settings, at their defaults (the pool pays).
+  seatPriceAdminCredits: 0,
+  seatPriceMemberCredits: 0,
+  seatPriceViewerCredits: 0,
+  operationalCostsPaidBy: 'pool',
+  operationalPayerUserId: null as string | null,
+  activityCostsPaidBy: 'pool',
+  allowanceSource: 'carved',
+  shortfallPolicy: 'debt',
+  pendingBilling: null as unknown,
+  pendingBillingFrom: null as Date | null,
 };
 
 function membershipRow(role: 'admin' | 'member' | 'viewer', dailyCreditCap: number | null = null) {
   return {
-    membership: { group: GROUP, dailyCreditCap },
+    membership: {
+      group: GROUP,
+      dailyCreditCap,
+      balanceCredits: 0,
+      allowanceCredits: null,
+      allowanceRemainingCredits: 0,
+      autoTopUpMonthlyCredits: null,
+      autoTopUpUsedCredits: 0,
+      autoTopUpMonth: null,
+    },
     scope: spaceScopeFor({ spaceId: 'spc_group', actorUserId: 'user_m', role }),
   };
 }
@@ -106,6 +150,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   findCreditAccount.mockResolvedValue(null);
   sumMemberSpendSince.mockResolvedValue(0);
+  findGroupWithClockBySpaceId.mockResolvedValue({ ...GROUP, timezone: 'UTC' });
 });
 
 describe('getGroupBudget', () => {
@@ -210,7 +255,7 @@ describe('getGroupBudget', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
-    expect(result.value.you).toEqual({ dailyCreditCap: 7, spentLastDayCredits: 2.46 });
+    expect(result.value.you).toMatchObject({ dailyCreditCap: 7, spentLastDayCredits: 2.46 });
     // Measured over a rolling day, not a calendar one.
     const [, memberArg, since] = sumMemberSpendSince.mock.calls[0] ?? [];
     expect(memberArg).toBe('user_m');

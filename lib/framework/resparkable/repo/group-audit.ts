@@ -31,6 +31,10 @@ export const GROUP_AUDIT_ACTIONS = [
   'budget_changed',
   'member_cap_changed',
   'topped_up',
+  // Phase 62: who pays.
+  'billing_changed',
+  'member_allowance_changed',
+  'payer_released',
 ] as const;
 
 export type GroupAuditAction = (typeof GROUP_AUDIT_ACTIONS)[number];

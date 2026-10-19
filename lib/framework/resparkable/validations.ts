@@ -2183,20 +2183,53 @@ const MAX_CREDITS = 1_000_000;
  * `null` switches an alert off. The percentage is whole numbers from 1 to 100:
  * "one run cost more than 0% of what was left" would fire on every run.
  */
+const seatPrice = z.number().finite().min(0).max(MAX_CREDITS).optional();
+
 export const updateGroupBudgetSchema = z
   .object({
     fundingMode: z.enum(['self_funded', 'member_contributions']).optional(),
     lowBalanceAlertCredits: z.number().finite().min(0).max(MAX_CREDITS).nullable().optional(),
     largeRunAlertPercent: z.number().int().min(1).max(100).nullable().optional(),
+    // Who pays (phase 62). Each takes effect at the start of the group's next
+    // month, never at once; see `updateGroupBilling`.
+    seatPriceAdminCredits: seatPrice,
+    seatPriceMemberCredits: seatPrice,
+    seatPriceViewerCredits: seatPrice,
+    operationalCostsPaidBy: z.enum(['pool', 'one_admin', 'admins_split']).optional(),
+    operationalPayerUserId: z.string().min(1).max(64).nullable().optional(),
+    activityCostsPaidBy: z.enum(['pool', 'equal_split', 'allowance']).optional(),
+    allowanceSource: z.enum(['carved', 'filled']).optional(),
+    shortfallPolicy: z.enum(['debt', 'suspend']).optional(),
+    /** Cancel a change still waiting for next month. */
+    discardPendingBilling: z.literal(true).optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, 'Nothing to change');
+
+/** The fields of {@link updateGroupBudgetSchema} that change who pays. */
+export const GROUP_BILLING_FIELDS = [
+  'seatPriceAdminCredits',
+  'seatPriceMemberCredits',
+  'seatPriceViewerCredits',
+  'operationalCostsPaidBy',
+  'operationalPayerUserId',
+  'activityCostsPaidBy',
+  'allowanceSource',
+  'shortfallPolicy',
+] as const;
 
 export type UpdateGroupBudgetInput = z.infer<typeof updateGroupBudgetSchema>;
 
 /** `POST /resparkable/groups/[id]/budget/top-up`. */
 export const groupTopUpSchema = z
-  .object({ credits: z.number().finite().positive().max(MAX_CREDITS) })
+  .object({
+    credits: z.number().finite().positive().max(MAX_CREDITS),
+    /**
+     * `pool` (the default, phase 50): the group's shared balance, a gift to the
+     * group. `me` (phase 62): your own balance in the group, which stays yours.
+     */
+    to: z.enum(['pool', 'me']).default('pool'),
+  })
   .strict();
 
 export type GroupTopUpInput = z.infer<typeof groupTopUpSchema>;
@@ -2207,8 +2240,26 @@ export type GroupTopUpInput = z.infer<typeof groupTopUpSchema>;
  * while still writing everything else.
  */
 export const groupMemberCapSchema = z
-  .object({ dailyCreditCap: z.number().finite().min(0).max(MAX_CREDITS).nullable() })
+  .object({
+    dailyCreditCap: z.number().finite().min(0).max(MAX_CREDITS).nullable().optional(),
+    /** Phase 62: the member's monthly allowance. `null` removes it. */
+    allowanceCredits: z.number().finite().min(0).max(MAX_CREDITS).nullable().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'Nothing to change');
+
+/**
+ * `PATCH /resparkable/groups/[id]/budget/me`: the caller's own automatic
+ * top-up, the most that may move from their own credits into the group in a
+ * month. `null` withdraws it.
+ */
+export const groupOwnBudgetSchema = z
+  .object({
+    autoTopUpMonthlyCredits: z.number().finite().positive().max(MAX_CREDITS).nullable(),
+  })
   .strict();
+
+export type GroupOwnBudgetInput = z.infer<typeof groupOwnBudgetSchema>;
 
 export type GroupMemberCapInput = z.infer<typeof groupMemberCapSchema>;
 

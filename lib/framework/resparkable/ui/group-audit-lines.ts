@@ -86,6 +86,21 @@ export function groupAuditLine(entry: GroupAuditEntryWire): string | null {
         ? `${actor} added ${credits} credits to the group`
         : `${actor} added credits to the group`;
     }
+    case 'billing_changed': {
+      const from = field(entry.metadata, 'from');
+      const when = typeof from === 'string' ? ` from ${from.slice(0, 10)}` : '';
+      return field(entry.metadata, 'discarded') === true
+        ? `${actor} cancelled a change to who pays`
+        : `${actor} changed who pays${when}`;
+    }
+    case 'member_allowance_changed': {
+      const allowance = field(entry.metadata, 'allowanceCredits');
+      return typeof allowance === 'number'
+        ? `${actor} set ${subjectPossessive} monthly allowance to ${allowance} credits`
+        : `${actor} removed ${subjectPossessive} monthly allowance`;
+    }
+    case 'payer_released':
+      return `The group’s shared balance now pays its running costs, because ${subject} no longer can`;
     default:
       return null;
   }

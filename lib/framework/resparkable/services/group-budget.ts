@@ -37,6 +37,7 @@ import {
 } from '@/lib/framework/resparkable/repo/billing';
 import {
   claimLargeRunAlert,
+  findGroupById,
   findGroupBySpaceId,
   releaseLargeRunAlert,
   listGroupMembers,
@@ -54,6 +55,26 @@ import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 import { sendEmail } from '@/lib/email/send';
 import { env } from '@/lib/env';
 import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit';
+import {
+  clearPendingBilling,
+  promotePendingBilling,
+  releaseOperationalPayer,
+  setPendingBilling,
+  transferCreditsToMemberBalance,
+  updateMemberAllowance,
+  updateMemberAutoTopUp,
+} from '@/lib/framework/resparkable/repo/group-billing-settings';
+import {
+  findGroupWithClockBySpaceId,
+  findJoinedMembership,
+} from '@/lib/framework/resparkable/repo/group-billing';
+import {
+  effectiveBillingSettings,
+  monthStartFor,
+  nextMonthStartFor,
+  storedBillingSettings,
+  type GroupBillingSettings,
+} from '@/lib/framework/resparkable/services/group-billing';
 import { logger } from '@/lib/logging';
 
 export const FUNDING_MODES = ['self_funded', 'member_contributions'] as const;
@@ -89,7 +110,9 @@ export type BudgetRefusal =
   /** A member tried to top up a self-funded group, or a viewer tried at all. */
   | 'top_up_not_allowed'
   /** The giver's own balance does not cover the amount. */
-  | 'insufficient_personal_credits';
+  | 'insufficient_personal_credits'
+  /** `one_admin` named somebody who is not a joined admin (phase 62). */
+  | 'payer_not_admin';
 
 export type BudgetResult<T> = { ok: true; value: T } | { ok: false; reason: BudgetRefusal };
 
@@ -100,8 +123,30 @@ export interface GroupBudgetView {
   canTopUp: boolean;
   /** The caller's own personal balance, which is what a top-up comes out of. */
   yourPersonalBalanceCredits: number;
-  /** The caller's cap in this group, and what they have spent against it today. */
-  you: { dailyCreditCap: number | null; spentLastDayCredits: number };
+  /**
+   * The caller's own figures: their daily cap and spend against it, and their
+   * money in the group (phase 62). `suspended` is derived, never stored.
+   */
+  you: {
+    dailyCreditCap: number | null;
+    spentLastDayCredits: number;
+    balanceCredits: number;
+    allowanceCredits: number | null;
+    allowanceRemainingCredits: number;
+    autoTopUpMonthlyCredits: number | null;
+    autoTopUpUsedThisMonthCredits: number;
+    suspended: boolean;
+  };
+  /**
+   * Who pays (phase 62), shown to every member: the settings in force, a change
+   * waiting for next month if there is one, and when this month started.
+   */
+  billing: {
+    settings: GroupBillingSettings;
+    pending: { settings: GroupBillingSettings; from: string } | null;
+    monthStartedAt: string;
+    nextMonthStartsAt: string;
+  };
   /** Admins only. `null` for everybody else, never an empty object. */
   admin: {
     lowBalanceAlertCredits: number | null;
@@ -173,6 +218,22 @@ export async function getGroupBudget(
     };
   }
 
+  const clock = await findGroupWithClockBySpaceId(scope.spaceId);
+  const timeZone = clock?.timezone ?? 'UTC';
+  const settings = effectiveBillingSettings(group, now);
+  const monthStart = monthStartFor(group, timeZone, now);
+  const pendingWaiting =
+    group.pendingBillingFrom !== null && group.pendingBillingFrom > now
+      ? {
+          settings: effectiveBillingSettings(group, group.pendingBillingFrom),
+          from: group.pendingBillingFrom.toISOString(),
+        }
+      : null;
+  const usedThisMonth =
+    membership.autoTopUpMonth?.getTime() === monthStart.getTime()
+      ? membership.autoTopUpUsedCredits
+      : 0;
+
   return {
     ok: true,
     value: {
@@ -180,7 +241,22 @@ export async function getGroupBudget(
       fundingMode,
       canTopUp: mayTopUp(scope.role, fundingMode),
       yourPersonalBalanceCredits: round(personal?.balanceCredits ?? 0),
-      you: { dailyCreditCap: membership.dailyCreditCap, spentLastDayCredits: round(spentLastDay) },
+      you: {
+        dailyCreditCap: membership.dailyCreditCap,
+        spentLastDayCredits: round(spentLastDay),
+        balanceCredits: round(membership.balanceCredits),
+        allowanceCredits: membership.allowanceCredits,
+        allowanceRemainingCredits: round(membership.allowanceRemainingCredits),
+        autoTopUpMonthlyCredits: membership.autoTopUpMonthlyCredits,
+        autoTopUpUsedThisMonthCredits: round(usedThisMonth),
+        suspended: settings.shortfallPolicy === 'suspend' && membership.balanceCredits < 0,
+      },
+      billing: {
+        settings,
+        pending: pendingWaiting,
+        monthStartedAt: monthStart.toISOString(),
+        nextMonthStartsAt: nextMonthStartFor(group, timeZone, now).toISOString(),
+      },
       admin,
     },
   };
@@ -288,6 +364,227 @@ export async function topUpGroup(
   logger.info('Resparkable group topped up', { groupId, credits });
   await recordGroupAudit({ groupId, actorUserId, action: 'topped_up', metadata: { credits } });
   return { ok: true, value: { balanceCredits: round(moved.groupBalanceCredits) } };
+}
+
+// ─── Who pays (phase 62) ──────────────────────────────────────────────────────
+
+export type GroupBillingChange = Partial<GroupBillingSettings>;
+
+export interface GroupBillingChangeView {
+  settings: GroupBillingSettings;
+  pending: { settings: GroupBillingSettings; from: string } | null;
+}
+
+/**
+ * Change who pays. Admin only, and **never at once**: the change waits for the
+ * start of the group's next month, and every member can see it waiting
+ * (decided 2026-10-19). A member who joined a group where the pool paid for
+ * their chats is told before their own balance is charged, and no run is billed
+ * under a rule that changed after it started.
+ *
+ * A second change in the same month replaces the first (merged over it, so a
+ * change to seat prices does not undo a waiting change to who pays). A change
+ * whose start has already passed is promoted into the columns first, so it is
+ * never lost under the new one. `discardPending` drops a change still waiting.
+ */
+export async function updateGroupBilling(
+  actorUserId: string,
+  groupId: string,
+  change: GroupBillingChange,
+  options: { discardPending?: boolean } = {},
+  now: Date = new Date()
+): Promise<BudgetResult<GroupBillingChangeView>> {
+  const resolved = await resolveGroupMembership(actorUserId, groupId);
+  if (!resolved) return { ok: false, reason: 'not_a_member' };
+  if (!permissionsFor(resolved.scope.role).administer) return { ok: false, reason: 'not_an_admin' };
+
+  let group = resolved.membership.group;
+  const clock = await findGroupWithClockBySpaceId(group.spaceId);
+  const timeZone = clock?.timezone ?? 'UTC';
+
+  if (group.pendingBillingFrom && group.pendingBillingFrom <= now) {
+    await promotePendingBilling(
+      groupId,
+      group.pendingBillingFrom,
+      effectiveBillingSettings(group, now),
+      now
+    );
+    group = (await findGroupBySpaceId(group.spaceId)) ?? group;
+  }
+
+  if (options.discardPending) {
+    if (group.pendingBillingFrom) {
+      group = await clearPendingBilling(groupId);
+      await recordGroupAudit({
+        groupId,
+        actorUserId,
+        action: 'billing_changed',
+        metadata: { discarded: true },
+      });
+    }
+    return { ok: true, value: { settings: storedBillingSettings(group), pending: null } };
+  }
+
+  const base =
+    group.pendingBillingFrom !== null
+      ? effectiveBillingSettings(group, group.pendingBillingFrom)
+      : storedBillingSettings(group);
+  const next: GroupBillingSettings = { ...base, ...change };
+  if (next.operationalCostsPaidBy !== 'one_admin') next.operationalPayerUserId = null;
+  if (next.operationalCostsPaidBy === 'one_admin') {
+    const payer = next.operationalPayerUserId
+      ? await findJoinedMembership(groupId, next.operationalPayerUserId)
+      : null;
+    if (payer?.role !== 'admin') return { ok: false, reason: 'payer_not_admin' };
+  }
+
+  const from = nextMonthStartFor(group, timeZone, now);
+  group = await setPendingBilling(groupId, next, from);
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    action: 'billing_changed',
+    metadata: { ...change, from: from.toISOString() },
+  });
+  logger.info('Resparkable group billing change scheduled', {
+    groupId,
+    fields: Object.keys(change),
+  });
+  return {
+    ok: true,
+    value: {
+      settings: storedBillingSettings(group),
+      pending: { settings: next, from: from.toISOString() },
+    },
+  };
+}
+
+/**
+ * Set or clear one member's monthly allowance. Admin only. Under a carved
+ * allowance it is what is added to their share of the pool each month; under a
+ * filled one, the most of their own money they may spend in the group a month.
+ */
+export async function setMemberAllowance(
+  actorUserId: string,
+  groupId: string,
+  targetUserId: string,
+  allowanceCredits: number | null
+): Promise<BudgetResult<{ userId: string; allowanceCredits: number | null }>> {
+  const resolved = await resolveGroupMembership(actorUserId, groupId);
+  if (!resolved) return { ok: false, reason: 'not_a_member' };
+  if (!permissionsFor(resolved.scope.role).administer) return { ok: false, reason: 'not_an_admin' };
+
+  if (!(await updateMemberAllowance(groupId, targetUserId, allowanceCredits))) {
+    return { ok: false, reason: 'no_such_member' };
+  }
+  await recordGroupAudit({
+    groupId,
+    actorUserId,
+    subjectUserId: targetUserId,
+    action: 'member_allowance_changed',
+    metadata: { allowanceCredits },
+  });
+  return { ok: true, value: { userId: targetUserId, allowanceCredits } };
+}
+
+/**
+ * Set or withdraw the caller's own automatic top-up. **Only ever their own**:
+ * it is a standing instruction to move their money, so nobody else, an admin
+ * included, can give it on their behalf (§23.14 q7). Not audited: it is a
+ * person's choice about their own money, not an administrative action on
+ * somebody else.
+ */
+export async function setOwnAutoTopUp(
+  actorUserId: string,
+  groupId: string,
+  autoTopUpMonthlyCredits: number | null
+): Promise<BudgetResult<{ autoTopUpMonthlyCredits: number | null }>> {
+  const resolved = await resolveGroupMembership(actorUserId, groupId);
+  if (!resolved) return { ok: false, reason: 'not_a_member' };
+  if (!(await updateMemberAutoTopUp(groupId, actorUserId, autoTopUpMonthlyCredits))) {
+    return { ok: false, reason: 'not_a_member' };
+  }
+  return { ok: true, value: { autoTopUpMonthlyCredits } };
+}
+
+/**
+ * Move credits from the caller's own balance into **their own balance in the
+ * group**, the money they spend under a filled allowance or an equal split and
+ * pay seats from. Any joined member may, viewers included (a viewer pays for
+ * their seat). The money stays theirs and comes back when they leave.
+ */
+export async function topUpOwnGroupBalance(
+  actorUserId: string,
+  groupId: string,
+  credits: number
+): Promise<BudgetResult<{ memberBalanceCredits: number }>> {
+  const resolved = await resolveGroupMembership(actorUserId, groupId);
+  if (!resolved) return { ok: false, reason: 'not_a_member' };
+
+  await ensureResparkableSpace(actorUserId);
+  const personal = spaceScope(actorUserId);
+  await ensureCreditAccount(personal);
+
+  const moved = await transferCreditsToMemberBalance(
+    personal,
+    resolved.scope,
+    groupId,
+    credits,
+    `Top-up to my balance in ${resolved.membership.group.name}`.slice(0, 500)
+  );
+  if (!moved) return { ok: false, reason: 'insufficient_personal_credits' };
+
+  logger.info('Resparkable group member balance topped up', { groupId, credits });
+  return { ok: true, value: { memberBalanceCredits: round(moved.memberBalanceCredits) } };
+}
+
+/**
+ * The operational payer is no longer an admin of the group (they left, were
+ * removed or were demoted): operational costs fall back to the pool, the change
+ * is in the audit log, and the admins are told (§23.14 q10). A no-op for
+ * anybody who is not the payer, so every departure path can call it.
+ *
+ * Never throws: the departure it follows has already happened. Erasure does not
+ * call it, because it runs inside `eraseUser`'s transaction where no email can
+ * go; the payer column's `SetNull` and `planForRun`'s "a payer who is not a
+ * joined admin reads as the pool" cover that path.
+ */
+export async function releasePayerAndTell(groupId: string, userId: string): Promise<boolean> {
+  try {
+    if (!(await releaseOperationalPayer(groupId, userId))) return false;
+    await recordGroupAudit({
+      groupId,
+      actorUserId: null,
+      subjectUserId: userId,
+      action: 'payer_released',
+    });
+
+    const admins = await listMemberContacts(groupId, { roles: ['admin'] });
+    const group = await findGroupById(groupId);
+    if (!group) return true;
+    const pool = await findCreditAccount(spaceScope(group.spaceId));
+    const groupUrl = `${env.NEXT_PUBLIC_APP_URL}${RESPARKABLE_ROUTES.group(group.id)}`;
+    for (const admin of admins) {
+      await sendEmail({
+        to: admin.email,
+        subject: groupBudgetAlertSubject('payer_gone', group.name),
+        react: GroupBudgetAlertEmail({
+          kind: 'payer_gone',
+          groupName: group.name,
+          balanceCredits: round(Math.max(0, pool?.balanceCredits ?? 0)),
+          figureCredits: 0,
+          groupUrl,
+        }),
+      }).catch(() => undefined);
+    }
+    return true;
+  } catch (error) {
+    logger.warn('Resparkable group payer release failed', {
+      groupId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
 }
 
 /**
