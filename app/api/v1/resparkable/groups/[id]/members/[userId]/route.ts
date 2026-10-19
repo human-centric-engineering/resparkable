@@ -57,6 +57,10 @@ function refuse(reason: MembershipRefusal): never {
       throw new ConflictError('This is the group’s only admin. Make somebody else an admin first.');
     case 'unknown_role':
       throw new ValidationError('Unknown role');
+    case 'group_owes':
+      throw new ConflictError(
+        'You are the last member, and the group still owes credits. Add credits to the group before you leave, and it will close.'
+      );
   }
 }
 

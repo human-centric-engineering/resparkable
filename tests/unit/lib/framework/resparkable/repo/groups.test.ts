@@ -46,6 +46,13 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Phase 62's money settlement has its own tests (group-billing-departure.test.ts).
+// Here it is a seam: what matters is that it runs inside the same transaction.
+vi.mock('@/lib/framework/resparkable/repo/group-billing-departure', () => ({
+  closeGroupPool: vi.fn().mockResolvedValue({ owes: 0, returned: 0, unreturned: 0 }),
+  settleMemberDeparture: vi.fn(),
+}));
+
 vi.mock('@/lib/db/client', () => {
   const resparkableSpace = {
     create: vi.fn(),
@@ -121,6 +128,10 @@ vi.mock('@/lib/db/client', () => {
 import { prisma } from '@/lib/db/client';
 import type { GroupCreateData } from '@/lib/framework/resparkable/repo/groups';
 import * as repo from '@/lib/framework/resparkable/repo/groups';
+import {
+  closeGroupPool,
+  settleMemberDeparture,
+} from '@/lib/framework/resparkable/repo/group-billing-departure';
 import {
   acceptInviteAndJoin,
   approveJoinRequest,
@@ -605,6 +616,82 @@ describe('deleteGroupSpaceIfLastMember', () => {
 
     expect(await deleteGroupSpaceIfLastMember('group_1', 'grp_space_1', 'user_a')).toBe(false);
     expect(prisma.resparkableSpace.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleting a group settles its money first (phase 62)', () => {
+  beforeEach(() => {
+    vi.mocked(closeGroupPool).mockResolvedValue({ owes: 0, returned: 3, unreturned: 1 });
+  });
+
+  it('closes the pool inside the deleting transaction, before the space goes', async () => {
+    vi.mocked(prisma.resparkableGroupMember.count).mockResolvedValueOnce(0);
+
+    expect(await deleteGroupSpaceIfLastMember('group_1', 'grp_space_1', 'user_a')).toBe(true);
+
+    expect(closeGroupPool).toHaveBeenCalledWith(expect.anything(), {
+      groupId: 'group_1',
+      spaceId: 'grp_space_1',
+    });
+    const closeOrder = vi.mocked(closeGroupPool).mock.invocationCallOrder[0];
+    const deleteOrder = vi.mocked(prisma.resparkableSpace.delete).mock.invocationCallOrder[0];
+    expect(closeOrder).toBeLessThan(deleteOrder);
+  });
+
+  it('keeps the last member’s group when it would close owing credits, and says how much', async () => {
+    vi.mocked(prisma.resparkableGroupMember.count).mockResolvedValueOnce(0);
+    vi.mocked(closeGroupPool).mockResolvedValueOnce({ owes: 4, returned: 0, unreturned: 0 });
+
+    expect(await deleteGroupSpaceIfLastMember('group_1', 'grp_space_1', 'user_a')).toEqual({
+      owes: 4,
+    });
+    expect(prisma.resparkableSpace.delete).not.toHaveBeenCalled();
+  });
+
+  it('deleteGroupSpaceSettled deletes and reports what went back', async () => {
+    expect(await repo.deleteGroupSpaceSettled('group_1', 'grp_space_1')).toEqual({
+      deleted: true,
+      returned: 3,
+      unreturned: 1,
+    });
+    expect(prisma.resparkableSpace.delete).toHaveBeenCalledWith({
+      where: { spaceId: 'grp_space_1' },
+    });
+  });
+
+  it('deleteGroupSpaceSettled refuses a group that owes, deleting nothing', async () => {
+    vi.mocked(closeGroupPool).mockResolvedValueOnce({ owes: 9, returned: 0, unreturned: 0 });
+
+    expect(await repo.deleteGroupSpaceSettled('group_1', 'grp_space_1')).toEqual({
+      deleted: false,
+      owes: 9,
+    });
+    expect(prisma.resparkableSpace.delete).not.toHaveBeenCalled();
+  });
+
+  it('lets any other failure propagate', async () => {
+    vi.mocked(closeGroupPool).mockRejectedValueOnce(new Error('db down'));
+
+    await expect(repo.deleteGroupSpaceSettled('group_1', 'grp_space_1')).rejects.toThrow('db down');
+  });
+
+  it('a member leaving settles their balance before their row goes', async () => {
+    await repo.deleteMemberWithAudit('group_1', 'spc_g', 'user_b', {
+      groupId: 'group_1',
+      actorUserId: 'user_b',
+      subjectUserId: 'user_b',
+      action: 'member_left',
+    });
+
+    expect(settleMemberDeparture).toHaveBeenCalledWith(expect.anything(), {
+      groupId: 'group_1',
+      spaceId: 'spc_g',
+      userId: 'user_b',
+      toOwnBalance: true,
+    });
+    const settleOrder = vi.mocked(settleMemberDeparture).mock.invocationCallOrder[0];
+    const deleteOrder = vi.mocked(prisma.resparkableGroupMember.delete).mock.invocationCallOrder[0];
+    expect(settleOrder).toBeLessThan(deleteOrder);
   });
 });
 

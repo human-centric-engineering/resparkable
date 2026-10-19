@@ -33,6 +33,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/framework/resparkable/repo/space', () => ({ findSpaceByUserId: vi.fn() }));
+vi.mock('@/lib/framework/resparkable/repo/group-billing-departure', () => ({
+  closeGroupPool: vi.fn().mockResolvedValue({ owes: 0, returned: 0, unreturned: 0 }),
+  settleMemberDeparture: vi.fn().mockResolvedValue({ creditedBack: 0, debtAbsorbed: 0 }),
+}));
+vi.mock('@/lib/framework/resparkable/services/space', () => ({
+  ensureResparkableSpace: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/queue/enqueue', () => ({ ensureResparkableJobs: vi.fn() }));
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   countAdmins: vi.fn(),
@@ -63,6 +70,11 @@ vi.mock('@/lib/framework/resparkable/repo/group-audit', () => ({
 }));
 
 import * as repo from '@/lib/framework/resparkable/repo/groups';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
+import {
+  closeGroupPool,
+  settleMemberDeparture,
+} from '@/lib/framework/resparkable/repo/group-billing-departure';
 import { insertGroupAuditEntry } from '@/lib/framework/resparkable/repo/group-audit';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
@@ -1170,5 +1182,92 @@ describe('updateGroupSettings', () => {
 
     expect(result).toEqual({ ok: false, reason: 'not_a_member' });
     expect(repo.updateGroup).not.toHaveBeenCalled();
+  });
+});
+
+describe('money on the way out (phase 62)', () => {
+  const tx = { marker: 'the erasure transaction' } as never;
+
+  it('settles the erased member’s money in every group that goes on, and closes the pool of one that does not', async () => {
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_delete', spaceId: 'spc_delete', viewersCanInheritAdmin: true },
+      { groupId: 'grp_fine', spaceId: 'spc_fine', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockImplementation(async (groupId) =>
+      groupId === 'grp_delete'
+        ? ([membership({ groupId, userId: 'user_erased', role: 'admin' })] as never)
+        : ([
+            membership({ groupId, userId: 'user_erased' }),
+            membership({ groupId, userId: 'user_a', role: 'admin' }),
+          ] as never)
+    );
+
+    await settleGroupsAfterErasure('user_erased', tx);
+
+    expect(closeGroupPool).toHaveBeenCalledWith(tx, {
+      groupId: 'grp_delete',
+      spaceId: 'spc_delete',
+      erasedUserId: 'user_erased',
+    });
+    // Their own account is going too, so nothing is credited back to it.
+    expect(settleMemberDeparture).toHaveBeenCalledWith(tx, {
+      groupId: 'grp_fine',
+      spaceId: 'spc_fine',
+      userId: 'user_erased',
+      toOwnBalance: false,
+    });
+    expect(settleMemberDeparture).toHaveBeenCalledTimes(1);
+  });
+
+  it('still deletes a group erasure empties when it owes credits, because erasure cannot be refused', async () => {
+    vi.mocked(closeGroupPool).mockResolvedValueOnce({ owes: 7, returned: 0, unreturned: 0 });
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_delete', spaceId: 'spc_delete', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ groupId: 'grp_delete', userId: 'user_erased', role: 'admin' }),
+    ] as never);
+
+    const settlement = await settleGroupsAfterErasure('user_erased', tx);
+
+    expect(settlement.deleted).toBe(1);
+    expect(repo.deleteGroupSpace).toHaveBeenCalledWith('spc_delete', tx);
+  });
+});
+
+describe('leaving with money in the group (phase 62)', () => {
+  it('refuses the last member out when the group would close owing credits, and deletes nothing', async () => {
+    vi.mocked(repo.findMembership).mockResolvedValue(membership({ role: 'admin' }));
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([membership({ role: 'admin' })] as never);
+    vi.mocked(repo.deleteGroupSpaceIfLastMember).mockResolvedValue({ owes: 4 });
+
+    const result = await removeMember('user_a', 'grp_1', 'user_a');
+
+    expect(result).toEqual({ ok: false, reason: 'group_owes' });
+    expect(repo.deleteMemberWithAudit).not.toHaveBeenCalled();
+  });
+
+  it('makes sure a leaver with credits in the group has their own space for them to go back to', async () => {
+    vi.mocked(repo.findMembership).mockResolvedValue(membership({ userId: 'user_b' }));
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ role: 'admin' }),
+      membership({ userId: 'user_b', balanceCredits: 6 }),
+    ] as never);
+
+    await removeMember('user_b', 'grp_1', 'user_b');
+
+    expect(ensureResparkableSpace).toHaveBeenCalledWith('user_b');
+  });
+
+  it('does not create a space for a leaver with nothing to give back', async () => {
+    vi.mocked(repo.findMembership).mockResolvedValue(membership({ userId: 'user_b' }));
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      membership({ role: 'admin' }),
+      membership({ userId: 'user_b', balanceCredits: -2 }),
+    ] as never);
+
+    await removeMember('user_b', 'grp_1', 'user_b');
+
+    expect(ensureResparkableSpace).not.toHaveBeenCalled();
   });
 });

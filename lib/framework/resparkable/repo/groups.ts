@@ -35,6 +35,10 @@
 
 import { prisma } from '@/lib/db/client';
 import {
+  closeGroupPool,
+  settleMemberDeparture,
+} from '@/lib/framework/resparkable/repo/group-billing-departure';
+import {
   insertGroupAuditEntry,
   type GroupAuditInput,
 } from '@/lib/framework/resparkable/repo/group-audit';
@@ -429,6 +433,9 @@ export async function deleteMemberWithAudit(
   audit: GroupAuditInput
 ): Promise<void> {
   await prisma.$transaction(async (tx) => {
+    // Their money first, while the row it lives on still exists (phase 62):
+    // a positive group balance goes back to them, a debt moves onto the pool.
+    await settleMemberDeparture(tx, { groupId, spaceId, userId, toOwnBalance: true });
     await tx.resparkableGroupMember.delete({ where: { groupId_userId: { groupId, userId } } });
     // Their assignments clear rather than silently moving to somebody who did
     // not agree to them (§23.13). In this group's space only: an assignment
@@ -1227,16 +1234,63 @@ export async function deleteGroupSpaceIfLastMember(
   groupId: string,
   spaceId: string,
   leaverUserId: string
-): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
-    await lockGroup(tx, groupId);
-    const others = await tx.resparkableGroupMember.count({
-      where: { groupId, joinedAt: { not: null }, userId: { not: leaverUserId } },
+): Promise<boolean | { owes: number }> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await lockGroup(tx, groupId);
+      const others = await tx.resparkableGroupMember.count({
+        where: { groupId, joinedAt: { not: null }, userId: { not: leaverUserId } },
+      });
+      if (others > 0) return false;
+      // Phase 62: the money settles inside the deleting transaction, and a group
+      // that still owes credits once their balance has moved onto the pool is
+      // not deleted (decided 2026-10-19). Thrown to roll the settlement back.
+      const closed = await closeGroupPool(tx, { groupId, spaceId });
+      if (closed.owes > 0) throw new GroupOwesError(closed.owes);
+      await deleteGroupSpace(spaceId, tx);
+      return true;
     });
-    if (others > 0) return false;
-    await deleteGroupSpace(spaceId, tx);
-    return true;
-  });
+  } catch (error) {
+    if (error instanceof GroupOwesError) return { owes: error.owes };
+    throw error;
+  }
+}
+
+/**
+ * Thrown inside a deleting transaction to roll it back when the group still
+ * owes credits (phase 62). Caught by the function that opened the transaction
+ * and turned into a refusal, never seen by a route.
+ */
+export class GroupOwesError extends Error {
+  constructor(readonly owes: number) {
+    super(`The group owes ${owes} credits`);
+    this.name = 'GroupOwesError';
+  }
+}
+
+/**
+ * Delete a group an admin chose to delete (phase 62's version of
+ * `deleteGroupSpace` for that path): settle everybody's money, refuse if the
+ * group still owes credits, then delete, in one transaction.
+ */
+export async function deleteGroupSpaceSettled(
+  groupId: string,
+  spaceId: string
+): Promise<
+  { deleted: true; returned: number; unreturned: number } | { deleted: false; owes: number }
+> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      await lockGroup(tx, groupId);
+      const closed = await closeGroupPool(tx, { groupId, spaceId });
+      if (closed.owes > 0) throw new GroupOwesError(closed.owes);
+      await deleteGroupSpace(spaceId, tx);
+      return { deleted: true as const, returned: closed.returned, unreturned: closed.unreturned };
+    });
+  } catch (error) {
+    if (error instanceof GroupOwesError) return { deleted: false, owes: error.owes };
+    throw error;
+  }
 }
 
 /** Narrow the transaction client's type without importing the runtime namespace. */

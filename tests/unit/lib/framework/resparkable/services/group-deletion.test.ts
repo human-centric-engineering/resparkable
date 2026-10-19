@@ -20,8 +20,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
-  deleteGroupSpace: vi.fn(),
+  deleteGroupSpaceSettled: vi.fn(),
   listMemberContacts: vi.fn(),
+}));
+vi.mock('@/lib/framework/resparkable/services/space', () => ({
+  ensureResparkableSpace: vi.fn(),
 }));
 
 vi.mock('@/lib/framework/resparkable/repo/owner-contact', () => ({
@@ -52,6 +55,7 @@ import {
 } from '@/lib/framework/resparkable/services/group-deletion';
 import { resolveGroupMembership } from '@/lib/framework/resparkable/services/membership';
 import { sendEmail } from '@/lib/email/send';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 
 const SPACE = 'spc_group_1';
 const NOW = new Date('2026-09-18T10:00:00.000Z');
@@ -125,6 +129,11 @@ beforeEach(() => {
     { userId: 'user_c', email: 'c@example.com', name: null },
   ]);
   vi.mocked(sendEmail).mockResolvedValue({ success: true, status: 'sent' as const });
+  vi.mocked(repo.deleteGroupSpaceSettled).mockResolvedValue({
+    deleted: true,
+    returned: 0,
+    unreturned: 0,
+  });
 });
 
 describe('confirmationMatches', () => {
@@ -150,7 +159,7 @@ describe('deleteGroupConfirmed', () => {
     const result = await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group A');
 
     expect(result).toEqual({ ok: false, reason: 'confirmation_mismatch' });
-    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
+    expect(repo.deleteGroupSpaceSettled).not.toHaveBeenCalled();
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -160,7 +169,7 @@ describe('deleteGroupConfirmed', () => {
     const result = await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
 
     expect(result).toEqual({ ok: false, reason: 'not_an_admin' });
-    expect(repo.deleteGroupSpace).not.toHaveBeenCalled();
+    expect(repo.deleteGroupSpaceSettled).not.toHaveBeenCalled();
   });
 
   it('answers a stranger with not_a_member before looking at the name', async () => {
@@ -177,7 +186,7 @@ describe('deleteGroupConfirmed', () => {
   it('deletes the space, not the group row', async () => {
     await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
 
-    expect(repo.deleteGroupSpace).toHaveBeenCalledWith(SPACE);
+    expect(repo.deleteGroupSpaceSettled).toHaveBeenCalledWith('grp_1', SPACE);
   });
 
   it('reads who to tell before the delete, because the delete removes the memberships', async () => {
@@ -186,8 +195,9 @@ describe('deleteGroupConfirmed', () => {
       order.push('read');
       return [{ userId: 'user_b', email: 'b@example.com', name: 'Bo' }];
     });
-    vi.mocked(repo.deleteGroupSpace).mockImplementation(async () => {
+    vi.mocked(repo.deleteGroupSpaceSettled).mockImplementation(async () => {
       order.push('delete');
+      return { deleted: true, returned: 0, unreturned: 0 };
     });
     vi.mocked(sendEmail).mockImplementation(async () => {
       order.push('send');
@@ -221,7 +231,28 @@ describe('deleteGroupConfirmed', () => {
     const result = await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
 
     // The delete has committed. A throw here would tell the admin it failed.
-    expect(repo.deleteGroupSpace).toHaveBeenCalled();
+    expect(repo.deleteGroupSpaceSettled).toHaveBeenCalled();
     expect(result).toEqual({ ok: true, notified: 0, notifyFailed: 2 });
+  });
+});
+
+describe('deleteGroupConfirmed and money (phase 62)', () => {
+  it('makes sure every member has their own space before settling, so a credit back has somewhere to land', async () => {
+    await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
+
+    expect(vi.mocked(ensureResparkableSpace).mock.calls.map(([userId]) => userId)).toEqual([
+      'user_a',
+      'user_b',
+      'user_c',
+    ]);
+  });
+
+  it('refuses a group that still owes credits, says how much, and tells nobody', async () => {
+    vi.mocked(repo.deleteGroupSpaceSettled).mockResolvedValue({ deleted: false, owes: 12.5 });
+
+    const result = await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
+
+    expect(result).toEqual({ ok: false, reason: 'group_owes', owes: 12.5 });
+    expect(sendEmail).not.toHaveBeenCalled();
   });
 });

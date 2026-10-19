@@ -32,7 +32,11 @@
  */
 
 import { GroupDeletedEmail } from '@/components/resparkable/emails/group-deleted';
-import { deleteGroupSpace, listMemberContacts } from '@/lib/framework/resparkable/repo/groups';
+import {
+  deleteGroupSpaceSettled,
+  listMemberContacts,
+} from '@/lib/framework/resparkable/repo/groups';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
@@ -48,11 +52,16 @@ import { logger } from '@/lib/logging';
  * `confirmation_mismatch` is a 400 rather than a 403: the caller is allowed to
  * do this, they just have not said which group they mean.
  */
-export type GroupDeletionRefusal = 'not_a_member' | 'not_an_admin' | 'confirmation_mismatch';
+export type GroupDeletionRefusal =
+  | 'not_a_member'
+  | 'not_an_admin'
+  | 'confirmation_mismatch'
+  /** Once every member's debt has moved onto it, the pool is below zero (phase 62). */
+  | 'group_owes';
 
 export type GroupDeletionResult =
   | { ok: true; notified: number; notifyFailed: number }
-  | { ok: false; reason: GroupDeletionRefusal };
+  | { ok: false; reason: GroupDeletionRefusal; owes?: number };
 
 /**
  * Does the typed confirmation name this group?
@@ -90,16 +99,24 @@ export async function deleteGroupConfirmed(
   }
 
   // Before the delete. See this file's header: afterwards, nothing says who was in it.
-  const recipients = (await listMemberContacts(groupId)).filter(
-    (contact) => contact.userId !== actorUserId
-  );
+  const members = await listMemberContacts(groupId);
+  const recipients = members.filter((contact) => contact.userId !== actorUserId);
   // The actor's own name, read from their PERSONAL space. A legitimate
   // `spaceScope()` mint site: the id is the session's.
   const actor = await findOwnerContact(spaceScope(actorUserId));
   const deletedByName = actor?.name ?? actor?.email ?? 'A group admin';
 
-  await deleteGroupSpace(group.spaceId);
-  logger.info('Resparkable group deleted', { groupId });
+  // Phase 62: everybody's money settles in the deleting transaction. Members'
+  // own balances, and their share of the pool, go back to their own balances,
+  // which need their own spaces to exist.
+  for (const member of members) await ensureResparkableSpace(member.userId);
+  const deleted = await deleteGroupSpaceSettled(groupId, group.spaceId);
+  if (!deleted.deleted) return { ok: false, reason: 'group_owes', owes: deleted.owes };
+  logger.info('Resparkable group deleted', {
+    groupId,
+    returnedCredits: deleted.returned,
+    unreturnedCredits: deleted.unreturned,
+  });
 
   const results = await Promise.allSettled(
     recipients.map((recipient) =>

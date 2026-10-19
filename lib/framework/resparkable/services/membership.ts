@@ -81,6 +81,11 @@ import {
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
 import { insertGroupAuditEntry } from '@/lib/framework/resparkable/repo/group-audit';
+import {
+  closeGroupPool,
+  settleMemberDeparture,
+} from '@/lib/framework/resparkable/repo/group-billing-departure';
+import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit-record';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
 import { ensureResparkableJobs } from '@/lib/framework/resparkable/queue/enqueue';
@@ -295,7 +300,13 @@ export function visibleMemberRows<T extends { joinedAt: Date | null }>(
 
 /** Why a membership change was refused. Every one is a 400 the UI can explain. */
 export type MembershipRefusal =
-  'not_a_member' | 'not_an_admin' | 'no_such_member' | 'last_admin' | 'unknown_role';
+  | 'not_a_member'
+  | 'not_an_admin'
+  | 'no_such_member'
+  | 'last_admin'
+  | 'unknown_role'
+  /** The last member leaving would close a group that still owes credits (phase 62). */
+  | 'group_owes';
 
 export type MembershipResult<T> = { ok: true; value: T } | { ok: false; reason: MembershipRefusal };
 
@@ -518,16 +529,27 @@ export async function removeMember(
   // could never leave their own group. A pending row is somebody asking to come
   // in, and it cannot be the reason somebody else is trapped.
   const members = (await listGroupMembers(groupId)).filter((member) => member.joinedAt !== null);
+  // Phase 62: whatever is left of their money in the group goes back to their
+  // own balance, which needs their own space to exist. Somebody who joined by
+  // invitation may never have opened their own brain.
+  if (members.some((member) => member.userId === targetUserId && member.balanceCredits > 0)) {
+    await ensureResparkableSpace(targetUserId);
+  }
   // The last person out. See the docblock: the space goes with them, because
   // nothing afterwards can reach it. The repo counts again under the group lock,
   // and a `false` means somebody came in through a link since the count above,
   // so this is an ordinary leave after all.
-  if (
-    members.length <= 1 &&
-    (await deleteGroupSpaceIfLastMember(groupId, resolved.membership.group.spaceId, targetUserId))
-  ) {
-    logger.info('Resparkable group deleted: its last member left', { groupId });
-    return { ok: true, value: { groupDeleted: true, kind: 'group_deleted', groupName: null } };
+  if (members.length <= 1) {
+    const deleted = await deleteGroupSpaceIfLastMember(
+      groupId,
+      resolved.membership.group.spaceId,
+      targetUserId
+    );
+    if (typeof deleted === 'object') return { ok: false, reason: 'group_owes' };
+    if (deleted) {
+      logger.info('Resparkable group deleted: its last member left', { groupId });
+      return { ok: true, value: { groupDeleted: true, kind: 'group_deleted', groupName: null } };
+    }
   }
 
   if (target.role === 'admin' && (await countAdmins(groupId)) <= 1) {
@@ -606,10 +628,33 @@ export async function settleGroupsAfterErasure(
     });
 
     if (plan.kind === 'delete') {
+      // Phase 62: the one deletion that cannot be refused for owing credits.
+      // Members' money is settled, and a shortfall is logged: it is the only
+      // route by which the operator absorbs a group's debt.
+      const closed = await closeGroupPool(tx, { groupId, spaceId, erasedUserId });
+      if (closed.owes > 0) {
+        logger.warn('Resparkable group closed by erasure while owing credits', {
+          groupId,
+          owes: closed.owes,
+        });
+      }
       await deleteGroupSpace(spaceId, tx);
       settlement.deleted += 1;
       logger.info('Resparkable group deleted: its last member was erased', { groupId });
-    } else if (plan.kind === 'promote') {
+      continue;
+    }
+
+    // The group goes on without them. Their money settles as a leave does,
+    // except that their own account is going too: a positive balance leaves with
+    // them, and a debt moves onto the pool (phase 62).
+    await settleMemberDeparture(tx, {
+      groupId,
+      spaceId,
+      userId: erasedUserId,
+      toOwnBalance: false,
+    });
+
+    if (plan.kind === 'promote') {
       await updateMemberRole(groupId, plan.userId, 'admin', tx);
       // The system acted, so no actor: the group's record shows the successor
       // was promoted, and not by whom, because nobody chose it (§23.13).

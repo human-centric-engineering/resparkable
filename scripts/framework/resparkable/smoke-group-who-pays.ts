@@ -36,8 +36,10 @@ import {
   topUpOwnGroupBalance,
   updateGroupBilling,
 } from '@/lib/framework/resparkable/services/group-budget';
+import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
 import {
   createGroup,
+  removeMember,
   resolveGroupMembership,
 } from '@/lib/framework/resparkable/services/membership';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
@@ -396,8 +398,76 @@ async function main(): Promise<void> {
       'and charged no second seat'
     );
 
-    check(near(await balanceOf(ben.id), 43), "Ben's personal balance moved only by his own top-up");
-    check(near(await balanceOf(spaceScope(admin.id).spaceId), 100), "nor the admin's");
+    console.log('\nleaving: your money back, your debt to the group');
+    const cara = await makeUser('cara', 20);
+    users.push(cara.id);
+    await prisma.resparkableGroupMember.create({
+      data: { groupId, userId: cara.id, role: 'member', joinedAt: new Date(), balanceCredits: 6 },
+    });
+    const caraLeft = await removeMember(cara.id, groupId, cara.id);
+    check(caraLeft.ok, 'Cara leaves');
+    check(near(await balanceOf(cara.id), 26), 'her 6 came back to her own balance');
+
+    const dev = await makeUser('dev', 20);
+    users.push(dev.id);
+    await prisma.resparkableGroupMember.create({
+      data: { groupId, userId: dev.id, role: 'member', joinedAt: new Date(), balanceCredits: -5 },
+    });
+    const poolBeforeDebt = await balanceOf(SPACE);
+    const devRemoved = await removeMember(admin.id, groupId, dev.id);
+    check(devRemoved.ok, 'an admin removes Dev, who owes 5');
+    check(near(await balanceOf(SPACE), poolBeforeDebt - 5), 'the pool took on his debt');
+    check(near(await balanceOf(dev.id), 20), 'his own credits were not touched');
+
+    console.log('\ndeleting: refused while the group owes, then shared back by what each put in');
+    await prisma.resparkableCreditAccount.update({
+      where: { spaceId: SPACE },
+      data: { balanceCredits: -3 },
+    });
+    const owing = await deleteGroupConfirmed(admin.id, groupId, `${PREFIX} ${stamp}`);
+    check(!owing.ok && owing.reason === 'group_owes', 'a group that owes cannot be deleted');
+    check(
+      (await prisma.resparkableGroup.count({ where: { id: groupId } })) === 1,
+      'and the refusal rolled the settlement back: the group is still there'
+    );
+    check(
+      near((await memberRow(groupId, ana.id)).balanceCredits, 10 - seatTotal),
+      'with Ana’s balance untouched'
+    );
+
+    // Ana gave the pool 30, Ben 10; the pool holds 20 when the group closes.
+    await prisma.resparkableCreditLedgerEntry.createMany({
+      data: [
+        { spaceId: SPACE, createdByUserId: ana.id, kind: 'transfer_in', creditsDelta: 30 },
+        { spaceId: SPACE, createdByUserId: ben.id, kind: 'transfer_in', creditsDelta: 10 },
+      ],
+    });
+    await prisma.resparkableCreditAccount.update({
+      where: { spaceId: SPACE },
+      data: { balanceCredits: 20 },
+    });
+    const anaBefore = await balanceOf(ana.id);
+    const benBefore = await balanceOf(ben.id);
+    const anaGroupBalance = (await memberRow(groupId, ana.id)).balanceCredits;
+    const benGroupBalance = (await memberRow(groupId, ben.id)).balanceCredits;
+    const adminGroupBalance = (await memberRow(groupId, admin.id)).balanceCredits;
+    const closed = await deleteGroupConfirmed(admin.id, groupId, `${PREFIX} ${stamp}`);
+    check(closed.ok, 'the group is deleted');
+    check(
+      near(await balanceOf(ana.id), anaBefore + Math.max(0, anaGroupBalance) + 15),
+      'Ana got her group balance back and 15 of the 20 (she gave three quarters)'
+    );
+    check(
+      near(await balanceOf(ben.id), benBefore + Math.max(0, benGroupBalance) + 5),
+      'Ben got his group balance back and 5'
+    );
+    spaces.length = 0;
+
+    check(near(await balanceOf(dev.id), 20), "Dev's own credits never moved");
+    check(
+      near(await balanceOf(spaceScope(admin.id).spaceId), 100 + Math.max(0, adminGroupBalance)),
+      "the admin's own credits moved only by their group balance coming back"
+    );
     console.log('\nframework:resparkable:smoke-group-who-pays passed');
   } finally {
     await prisma.resparkableSpace
