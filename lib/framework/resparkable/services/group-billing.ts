@@ -35,7 +35,12 @@ import {
   type GroupWithClock,
 } from '@/lib/framework/resparkable/repo/group-billing';
 import { ensureCreditAccount, findCreditAccount } from '@/lib/framework/resparkable/repo/billing';
-import { spaceScope, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
+import { settleGroupMonths } from '@/lib/framework/resparkable/repo/group-billing-cycle';
+import {
+  spaceScope,
+  spaceScopeFor,
+  type SpaceScope,
+} from '@/lib/framework/resparkable/repo/space-scope';
 import {
   addZonedMonths,
   instantAtWallClock,
@@ -171,6 +176,99 @@ export function nextMonthStartFor(
   now: Date = new Date()
 ): Date {
   return addZonedMonths(monthStartFor(group, timeZone, now), 1, timeZone);
+}
+
+// ─── The month turning over ──────────────────────────────────────────────────
+
+/** A job that is years late settles at most this many months at once. */
+const MAX_MONTHS_AT_ONCE = 24;
+
+/** The month a group's settlement has reached: its own column, or its first month. */
+function settledThrough(group: GroupWithClock): Date {
+  return group.cycleSettledThrough ?? monthStartFor(group, group.timezone, group.createdAt);
+}
+
+/** Whether a new month has started that this group has not settled. Pure. */
+export function cycleDue(group: GroupWithClock, now: Date = new Date()): boolean {
+  return monthStartFor(group, group.timezone, now) > settledThrough(group);
+}
+
+/**
+ * Settle the start of the group's month, once (decision 6): promote a pending
+ * settings change, add carved allowances, charge each member their seat.
+ *
+ * **Idempotent and safe to call from anywhere.** The repo's claim lets exactly
+ * one caller settle a given month; everybody else gets `settled: false`. It is
+ * called by the daily `group_cycle` job and lazily by {@link resolveCharge}, so
+ * a late job can never let a run be charged under last month's allowance.
+ *
+ * **The month a member joins in is free.** Seats are charged at each month's
+ * start to whoever is in the group then, so a member's first seat is their first
+ * full month. A pro-rata charge on joining would need its own consent step in
+ * all three ways in (an invitation, an open link, an approved request), and
+ * would put somebody with no group balance yet straight into debt on day one.
+ */
+export async function settleGroupCycle(
+  group: GroupWithClock,
+  now: Date = new Date()
+): Promise<{ settled: boolean; seatsCharged: number; months: number }> {
+  const through = monthStartFor(group, group.timezone, now);
+  const from = settledThrough(group);
+  if (through <= from) return { settled: false, seatsCharged: 0, months: 0 };
+
+  let months = 0;
+  for (let cursor = from; cursor < through && months < MAX_MONTHS_AT_ONCE; months++) {
+    cursor = addZonedMonths(cursor, 1, group.timezone);
+  }
+
+  // The settings in force in the new month: a change scheduled for it applies
+  // to its seats, which is the whole point of scheduling it.
+  const settings = effectiveBillingSettings(group, through);
+  const promote = group.pendingBillingFrom && group.pendingBillingFrom <= through ? settings : null;
+
+  const result = await settleGroupMonths({
+    groupId: group.id,
+    spaceId: group.spaceId,
+    expectedThrough: group.cycleSettledThrough,
+    through,
+    months,
+    seatPrices: {
+      admin: settings.seatPriceAdminCredits,
+      member: settings.seatPriceMemberCredits,
+      viewer: settings.seatPriceViewerCredits,
+    },
+    creditCarvedAllowances:
+      settings.activityCostsPaidBy === 'allowance' && settings.allowanceSource === 'carved',
+    promote:
+      promote && group.pendingBillingFrom
+        ? { from: group.pendingBillingFrom, columns: promote }
+        : null,
+  });
+
+  if (result.settled) {
+    logger.info('Resparkable group month settled', {
+      groupId: group.id,
+      months,
+      seatsCharged: result.seatsCharged,
+    });
+    // A seat that left somebody below zero runs their agreed top-up, best effort.
+    const scope = spaceScopeFor({ spaceId: group.spaceId, actorUserId: null, role: 'member' });
+    for (const userId of result.shortUserIds) {
+      const membership = await findJoinedMembership(group.id, userId);
+      if (membership) await topUpAutomatically(scope, group, membership, 'member', now);
+    }
+  }
+  return { settled: result.settled, seatsCharged: result.seatsCharged, months };
+}
+
+/** {@link settleGroupCycle} for the queue's `group_cycle` job, by space. */
+export async function settleGroupCycleForSpace(
+  spaceId: string,
+  now: Date = new Date()
+): Promise<{ settled: boolean; seatsCharged: number; months: number }> {
+  const group = await findGroupWithClockBySpaceId(spaceId);
+  if (!group) return { settled: false, seatsCharged: 0, months: 0 };
+  return settleGroupCycle(group, now);
 }
 
 // ─── Refusals ────────────────────────────────────────────────────────────────
@@ -403,6 +501,17 @@ export async function resolveCharge(
     // pass; the queue's gate is what answers for those.
     if (((await findCreditAccount(scope))?.balanceCredits ?? 0) > 0) return SPACE;
     throw new InsufficientCreditsError(POOL_EMPTY);
+  }
+
+  // A new month nobody has settled yet: settle it first, so this run sees this
+  // month's allowance and seat, not last month's. Never refuses a run itself.
+  if (cycleDue(group, now)) {
+    await settleGroupCycle(group, now).catch((error: unknown) => {
+      logger.warn('Resparkable group month could not be settled before a run', {
+        groupId: group.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   const settings = effectiveBillingSettings(group, now);

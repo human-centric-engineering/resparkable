@@ -28,6 +28,10 @@ vi.mock('@/lib/framework/resparkable/repo/group-billing', () => ({
   poolAvailableCredits: (...args: unknown[]) => poolAvailableCredits(...args),
   sumMemberOwnSpendSince: (...args: unknown[]) => sumMemberOwnSpendSince(...args),
 }));
+const settleGroupMonths = vi.fn();
+vi.mock('@/lib/framework/resparkable/repo/group-billing-cycle', () => ({
+  settleGroupMonths: (...args: unknown[]) => settleGroupMonths(...args),
+}));
 vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   ensureCreditAccount: (...args: unknown[]) => ensureCreditAccount(...args),
   findCreditAccount: (...args: unknown[]) => findCreditAccount(...args),
@@ -48,12 +52,15 @@ import {
   GroupMonthlyLimitError,
   GroupSuspendedError,
   canAffordOperational,
+  cycleDue,
   effectiveBillingSettings,
   monthStartFor,
   nextMonthStartFor,
   planForRun,
   resolveCharge,
   seatPriceFor,
+  settleGroupCycle,
+  settleGroupCycleForSpace,
   storedBillingSettings,
   topUpAutomatically,
 } from '@/lib/framework/resparkable/services/group-billing';
@@ -110,6 +117,7 @@ function setup(
 
 beforeEach(() => {
   vi.resetAllMocks();
+  settleGroupMonths.mockResolvedValue({ settled: false, seatsCharged: 0, shortUserIds: [] });
 });
 
 describe('storedBillingSettings', () => {
@@ -794,4 +802,115 @@ describe('topUpAutomatically', () => {
       });
     }
   );
+});
+
+describe('the month turning over (decision 6)', () => {
+  // Created on the 10th, so each month starts at midnight UTC on the 10th.
+  const SETTLED_OCT = new Date('2026-10-10T00:00:00Z');
+
+  it('is not due while the current month is the one already settled', () => {
+    expect(cycleDue(makeGroup({ cycleSettledThrough: SETTLED_OCT }), NOW)).toBe(false);
+  });
+
+  it('is due once a new month has started', () => {
+    const group = makeGroup({ cycleSettledThrough: new Date('2026-09-10T00:00:00Z') });
+    expect(cycleDue(group, NOW)).toBe(true);
+  });
+
+  it('treats a group never settled as settled through the month it was created in', () => {
+    const fresh = makeGroup({
+      createdAt: new Date('2026-10-12T09:00:00Z'),
+      cycleSettledThrough: null,
+    });
+    expect(cycleDue(fresh, new Date('2026-10-20T00:00:00Z'))).toBe(false);
+    expect(cycleDue(fresh, new Date('2026-11-12T00:00:01Z'))).toBe(true);
+  });
+
+  it('writes nothing when the month is already settled', async () => {
+    const result = await settleGroupCycle(makeGroup({ cycleSettledThrough: SETTLED_OCT }), NOW);
+
+    expect(result).toEqual({ settled: false, seatsCharged: 0, months: 0 });
+    expect(settleGroupMonths).not.toHaveBeenCalled();
+  });
+
+  it('claims from the value it read, charges the new month’s seat prices, and counts missed months', async () => {
+    settleGroupMonths.mockResolvedValue({ settled: true, seatsCharged: 2, shortUserIds: [] });
+    const through = new Date('2026-08-10T00:00:00Z');
+    const group = makeGroup({
+      cycleSettledThrough: through,
+      seatPriceMemberCredits: 3,
+      seatPriceAdminCredits: 1,
+    });
+
+    const result = await settleGroupCycle(group, NOW);
+
+    expect(result).toEqual({ settled: true, seatsCharged: 2, months: 2 });
+    expect(settleGroupMonths).toHaveBeenCalledWith(
+      expect.objectContaining({
+        groupId: 'g1',
+        spaceId: 'spc_group',
+        expectedThrough: through,
+        through: SETTLED_OCT,
+        months: 2,
+        seatPrices: { admin: 1, member: 3, viewer: 0 },
+        creditCarvedAllowances: false,
+        promote: null,
+      })
+    );
+  });
+
+  it('applies a change scheduled for the new month to that month’s seats, and promotes it', async () => {
+    const pending = {
+      ...DEFAULT_GROUP_BILLING,
+      seatPriceMemberCredits: 9,
+      activityCostsPaidBy: 'allowance' as const,
+    };
+    const group = makeGroup({
+      cycleSettledThrough: new Date('2026-09-10T00:00:00Z'),
+      pendingBilling: pending,
+      pendingBillingFrom: SETTLED_OCT,
+    });
+
+    await settleGroupCycle(group, NOW);
+
+    const input = settleGroupMonths.mock.calls[0]?.[0];
+    expect(input.seatPrices.member).toBe(9);
+    expect(input.creditCarvedAllowances).toBe(true);
+    expect(input.promote).toEqual({ from: SETTLED_OCT, columns: pending });
+  });
+
+  it('runs the agreed top-up for a member a seat left below zero', async () => {
+    settleGroupMonths.mockResolvedValue({ settled: true, seatsCharged: 1, shortUserIds: ['u1'] });
+    findJoinedMembership.mockResolvedValue(
+      makeMember({ balanceCredits: -3, autoTopUpMonthlyCredits: 5 })
+    );
+    applyAutoTopUp.mockResolvedValue({ moved: 5, balanceAfter: 2, allowanceRemainingAfter: 0 });
+
+    await settleGroupCycle(
+      makeGroup({ cycleSettledThrough: new Date('2026-09-10T00:00:00Z') }),
+      NOW
+    );
+
+    expect(applyAutoTopUp).toHaveBeenCalledWith(
+      expect.objectContaining({ memberUserId: 'u1', target: 'member', monthlyCredits: 5 })
+    );
+  });
+
+  it('settles by space for the job, and does nothing for a space with no group', async () => {
+    findGroupWithClockBySpaceId.mockResolvedValue(null);
+    await expect(settleGroupCycleForSpace('user_a', NOW)).resolves.toEqual({
+      settled: false,
+      seatsCharged: 0,
+      months: 0,
+    });
+    expect(settleGroupMonths).not.toHaveBeenCalled();
+  });
+
+  it('settles an unsettled month before a run is cleared, and a failure there never refuses the run', async () => {
+    setup(makeGroup({ cycleSettledThrough: new Date('2026-09-10T00:00:00Z') }), makeMember());
+    settleGroupMonths.mockRejectedValue(new Error('db down'));
+
+    await expect(resolveCharge(memberScope, NOW)).resolves.toEqual({ source: 'space' });
+    expect(settleGroupMonths).toHaveBeenCalledTimes(1);
+  });
 });

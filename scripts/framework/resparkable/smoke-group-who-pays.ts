@@ -29,6 +29,7 @@ import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/se
 import {
   canAffordOperational,
   effectiveBillingSettings,
+  settleGroupCycleForSpace,
 } from '@/lib/framework/resparkable/services/group-billing';
 import {
   releasePayerAndTell,
@@ -40,7 +41,7 @@ import {
   resolveGroupMembership,
 } from '@/lib/framework/resparkable/services/membership';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 const stamp = Date.now();
 const PREFIX = 'smoke-resparkable-whopays';
@@ -342,6 +343,57 @@ async function main(): Promise<void> {
         where: { groupId, action: 'payer_released' },
       })) === 1,
       'one audit entry'
+    );
+
+    console.log('\nthe month turns over: seats and carved allowances, once');
+    // Pretend the group was created two months and a day ago, never settled,
+    // with a carved allowance and a seat price in force.
+    const createdAt = new Date(Date.now() - 62 * 24 * 60 * 60_000);
+    await configure({
+      createdAt,
+      cycleSettledThrough: null,
+      pendingBilling: Prisma.DbNull,
+      pendingBillingFrom: null,
+      activityCostsPaidBy: 'allowance',
+      allowanceSource: 'carved',
+      seatPriceAdminCredits: 0,
+      seatPriceMemberCredits: 2,
+      seatPriceViewerCredits: 0,
+    });
+    for (const user of [admin, ana, ben]) {
+      await setMember(user.id, { balanceCredits: 10, allowanceRemainingCredits: 1 });
+    }
+    await setMember(ana.id, { allowanceCredits: 4 });
+    const poolBeforeSeats = await balanceOf(SPACE);
+    const first = await settleGroupCycleForSpace(SPACE);
+    check(first.settled && first.months >= 1, `settled ${first.months} month(s)`);
+    const seatTotal = 2 * first.months;
+    check(
+      near((await memberRow(groupId, ana.id)).balanceCredits, 10 - seatTotal) &&
+        near((await memberRow(groupId, ben.id)).balanceCredits, 10 - seatTotal),
+      'each member paid a member seat per month'
+    );
+    check(
+      near((await memberRow(groupId, admin.id)).balanceCredits, 10),
+      'a free admin seat charged nothing'
+    );
+    check(
+      near(await balanceOf(SPACE), poolBeforeSeats + 2 * seatTotal),
+      'the seats went into the pool'
+    );
+    check(
+      near((await memberRow(groupId, ana.id)).allowanceRemainingCredits, 1 + 4 * first.months),
+      'her allowance was added on top of what she had left'
+    );
+    check(
+      near((await memberRow(groupId, ben.id)).allowanceRemainingCredits, 1),
+      'nobody without an allowance gained one'
+    );
+    const second = await settleGroupCycleForSpace(SPACE);
+    check(!second.settled, 'settling the same month again does nothing');
+    check(
+      near((await memberRow(groupId, ana.id)).balanceCredits, 10 - seatTotal),
+      'and charged no second seat'
     );
 
     check(near(await balanceOf(ben.id), 43), "Ben's personal balance moved only by his own top-up");
