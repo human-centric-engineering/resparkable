@@ -40,14 +40,15 @@ export const POST = withAuth(async (request, session) => {
   await ensureResparkableSpace(session.user.id);
   // Refused before any provider call: see services/billing.ts. Throws
   // InsufficientCreditsError, turned into a 402 by withAuth's error handler.
-  await assertCanSpend(scope);
+  // The plan names who pays (phase 62), decided now and used for the debit.
+  const plan = await assertCanSpend(scope);
 
   const result = await ideate(scope, body);
 
   // Best-effort: the compute already happened, so a ledger-write failure logs
   // rather than turning an otherwise-successful response into an error.
   try {
-    await recordAgentSpend(scope, { tokenCostUsd: result.costUsd });
+    await recordAgentSpend(scope, { tokenCostUsd: result.costUsd, plan });
   } catch (error) {
     logger.error('Resparkable ideate spend could not be recorded', error, {
       userId: session.user.id,

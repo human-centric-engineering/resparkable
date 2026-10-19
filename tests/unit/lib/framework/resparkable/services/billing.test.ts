@@ -24,6 +24,9 @@ const findCreditAccount = vi.fn();
 const findResparkableBillingSettings = vi.fn();
 const sumMemberSpendSince = vi.fn();
 const findMembershipBySpace = vi.fn();
+const findGroupWithClockBySpaceId = vi.fn();
+const findJoinedMembership = vi.fn();
+const poolAvailableCredits = vi.fn();
 
 // `after()` needs a request scope. By default it throws here, as it does in
 // the queue tick, so the alert runs in the background; tests that need the
@@ -37,6 +40,17 @@ vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   ensureCreditAccount: (...args: unknown[]) => ensureCreditAccount(...args),
   findCreditAccount: (...args: unknown[]) => findCreditAccount(...args),
   sumMemberSpendSince: (...args: unknown[]) => sumMemberSpendSince(...args),
+}));
+vi.mock('@/lib/framework/resparkable/repo/group-billing', () => ({
+  findGroupWithClockBySpaceId: (...args: unknown[]) => findGroupWithClockBySpaceId(...args),
+  findJoinedMembership: (...args: unknown[]) => findJoinedMembership(...args),
+  poolAvailableCredits: (...args: unknown[]) => poolAvailableCredits(...args),
+  listJoinedMembersByRole: vi.fn(),
+  sumMemberOwnSpendSince: vi.fn(),
+  applyAutoTopUp: vi.fn(),
+  debitEqualSplit: vi.fn(),
+  debitMemberBalance: vi.fn(),
+  debitPoolWithinAllowance: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   findMembershipBySpace: (...args: unknown[]) => findMembershipBySpace(...args),
@@ -81,13 +95,40 @@ beforeEach(() => {
   ensureCreditAccount.mockResolvedValue({ id: 'acct_1', balanceCredits: 10 });
   applyLedgerEntryWithBalance.mockResolvedValue({ entry: { id: 'ledger_1' }, balanceAfter: 8 });
   notifyGroupBudgetThresholds.mockResolvedValue({ sent: [] });
+  // A group whose pool pays, as every group did before phase 62. The who-pays
+  // modes have their own tests in group-billing.test.ts.
+  findGroupWithClockBySpaceId.mockResolvedValue({
+    id: 'grp_1',
+    spaceId: 'spc_group',
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+    timezone: 'UTC',
+    seatPriceAdminCredits: 0,
+    seatPriceMemberCredits: 0,
+    seatPriceViewerCredits: 0,
+    operationalCostsPaidBy: 'pool',
+    operationalPayerUserId: null,
+    activityCostsPaidBy: 'pool',
+    allowanceSource: 'carved',
+    shortfallPolicy: 'debt',
+    pendingBilling: null,
+    pendingBillingFrom: null,
+  });
+  findJoinedMembership.mockResolvedValue({
+    userId: 'user_m',
+    role: 'member',
+    balanceCredits: 0,
+    allowanceCredits: null,
+    allowanceRemainingCredits: 0,
+    autoTopUpMonthlyCredits: null,
+  });
+  poolAvailableCredits.mockResolvedValue(10);
 });
 
 describe('assertCanSpend', () => {
   it('does not throw when the balance is positive', async () => {
     ensureCreditAccount.mockResolvedValue({ id: 'acct_1', balanceCredits: 5 });
 
-    await expect(assertCanSpend(scope)).resolves.toBeUndefined();
+    await expect(assertCanSpend(scope)).resolves.toEqual({ source: 'space' });
   });
 
   it('throws InsufficientCreditsError at a zero balance', async () => {
@@ -128,16 +169,17 @@ describe('assertCanSpend in a group space (test 13k)', () => {
   });
 
   it('refuses an empty group balance and never looks at the member’s own account', async () => {
-    ensureCreditAccount.mockResolvedValue({ id: 'acct_group', balanceCredits: 0 });
+    poolAvailableCredits.mockResolvedValue(0);
 
     const refusal = assertCanSpend(groupScope('member'));
 
     await expect(refusal).rejects.toBeInstanceOf(InsufficientCreditsError);
     await expect(refusal).rejects.toThrow(/group admin can top it up/);
-    // Exactly one account, and it is the group's. A second lookup, of any
-    // scope, is the shape the fallback to a personal balance would take.
-    expect(ensureCreditAccount).toHaveBeenCalledTimes(1);
-    expect(ensureCreditAccount.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'spc_group' });
+    // Exactly one account, and it is the group's pool. Any read of a personal
+    // account is the shape the fallback to a personal balance would take.
+    expect(poolAvailableCredits).toHaveBeenCalledTimes(1);
+    expect(poolAvailableCredits.mock.calls[0]?.[0]).toMatchObject({ spaceId: 'spc_group' });
+    expect(ensureCreditAccount).not.toHaveBeenCalled();
     expect(findCreditAccount).not.toHaveBeenCalled();
   });
 
@@ -171,7 +213,7 @@ describe('assertCanSpend in a group space (test 13k)', () => {
     findMembershipBySpace.mockResolvedValue({ dailyCreditCap: 5 });
     sumMemberSpendSince.mockResolvedValue(4.99);
 
-    await expect(assertCanSpend(groupScope('member'))).resolves.toBeUndefined();
+    await expect(assertCanSpend(groupScope('member'))).resolves.toEqual({ source: 'space' });
   });
 
   it('caps an admin like anyone else: the cap is blast radius, not rank', async () => {
@@ -182,13 +224,14 @@ describe('assertCanSpend in a group space (test 13k)', () => {
   });
 
   it('sums nothing for an uncapped member, which is the default', async () => {
-    await expect(assertCanSpend(groupScope('member'))).resolves.toBeUndefined();
+    await expect(assertCanSpend(groupScope('member'))).resolves.toEqual({ source: 'space' });
     expect(sumMemberSpendSince).not.toHaveBeenCalled();
   });
 
   it('never consults membership in a personal space', async () => {
-    await expect(assertCanSpend(scope)).resolves.toBeUndefined();
+    await expect(assertCanSpend(scope)).resolves.toEqual({ source: 'space' });
     expect(findMembershipBySpace).not.toHaveBeenCalled();
+    expect(findGroupWithClockBySpaceId).not.toHaveBeenCalled();
   });
 });
 
@@ -405,7 +448,8 @@ describe('recordAgentSpend', () => {
       notifyGroupBudgetThresholds.mockImplementation(() => new Promise(() => undefined));
 
       await expect(recordAgentSpend(groupScope, { tokenCostUsd: 2 })).resolves.toEqual({
-        id: 'ledger_1',
+        credits: 2,
+        source: 'space',
       });
     });
   });

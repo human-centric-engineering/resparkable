@@ -42,6 +42,18 @@ vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   applyLedgerEntryWithBalance: vi.fn(),
   sumMemberSpendSince: vi.fn(),
 }));
+// A group whose pool pays, as every group did before phase 62.
+vi.mock('@/lib/framework/resparkable/repo/group-billing', () => ({
+  findGroupWithClockBySpaceId: vi.fn(),
+  findJoinedMembership: vi.fn(),
+  poolAvailableCredits: vi.fn(),
+  listJoinedMembersByRole: vi.fn(),
+  sumMemberOwnSpendSince: vi.fn(),
+  applyAutoTopUp: vi.fn(),
+  debitEqualSplit: vi.fn(),
+  debitMemberBalance: vi.fn(),
+  debitPoolWithinAllowance: vi.fn(),
+}));
 vi.mock('@/lib/framework/resparkable/repo/billing-settings', () => ({
   findResparkableBillingSettings: vi.fn().mockResolvedValue(null),
 }));
@@ -58,6 +70,11 @@ import {
   ensureCreditAccount,
   sumMemberSpendSince,
 } from '@/lib/framework/resparkable/repo/billing';
+import {
+  findGroupWithClockBySpaceId,
+  findJoinedMembership,
+  poolAvailableCredits,
+} from '@/lib/framework/resparkable/repo/group-billing';
 import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
 import { ideate } from '@/lib/framework/resparkable/services/ideate';
 import { streamChat } from '@/lib/orchestration/chat';
@@ -109,6 +126,7 @@ const ideateCall = () =>
 function accountsTouched(): string[] {
   return [
     ...vi.mocked(ensureCreditAccount).mock.calls.map(([scope]) => scope.spaceId),
+    ...vi.mocked(poolAvailableCredits).mock.calls.map(([scope]) => scope.spaceId),
     ...vi.mocked(applyLedgerEntryWithBalance).mock.calls.map(([scope]) => scope.spaceId),
   ];
 }
@@ -128,11 +146,36 @@ beforeEach(() => {
     balanceAfter: 8,
   } as never);
   vi.mocked(streamChat).mockReturnValue(doneEvent() as never);
+  vi.mocked(findGroupWithClockBySpaceId).mockResolvedValue({
+    id: 'grp_1',
+    spaceId: GROUP_SPACE,
+    createdAt: new Date('2026-09-01T00:00:00Z'),
+    timezone: 'UTC',
+    seatPriceAdminCredits: 0,
+    seatPriceMemberCredits: 0,
+    seatPriceViewerCredits: 0,
+    operationalCostsPaidBy: 'pool',
+    operationalPayerUserId: null,
+    activityCostsPaidBy: 'pool',
+    allowanceSource: 'carved',
+    shortfallPolicy: 'debt',
+    pendingBilling: null,
+    pendingBillingFrom: null,
+  } as never);
+  vi.mocked(findJoinedMembership).mockResolvedValue({
+    ...membership(),
+    balanceCredits: 0,
+    allowanceCredits: null,
+    allowanceRemainingCredits: 0,
+    autoTopUpMonthlyCredits: null,
+  } as never);
+  vi.mocked(poolAvailableCredits).mockResolvedValue(10);
 });
 
 describe('test 13k: an empty group balance', () => {
   beforeEach(() => {
     vi.mocked(ensureCreditAccount).mockResolvedValue({ id: 'acct_g', balanceCredits: 0 } as never);
+    vi.mocked(poolAvailableCredits).mockResolvedValue(0);
   });
 
   it('refuses a chat turn with zero provider calls and never touches the member’s own account', async () => {
