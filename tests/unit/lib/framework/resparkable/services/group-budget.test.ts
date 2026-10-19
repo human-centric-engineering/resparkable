@@ -32,6 +32,7 @@ const ensureCreditAccount = vi.fn();
 const findGroupBySpaceId = vi.fn();
 const findGroupById = vi.fn();
 const listGroupMembers = vi.fn();
+const findAccountNames = vi.fn();
 const listMemberContacts = vi.fn();
 const updateGroup = vi.fn();
 const updateMemberDailyCreditCap = vi.fn();
@@ -51,6 +52,7 @@ vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   findGroupBySpaceId: (...args: unknown[]) => findGroupBySpaceId(...args),
   findGroupById: (...args: unknown[]) => findGroupById(...args),
   listGroupMembers: (...args: unknown[]) => listGroupMembers(...args),
+  findAccountNames: (...args: unknown[]) => findAccountNames(...args),
   listMemberContacts: (...args: unknown[]) => listMemberContacts(...args),
   updateGroup: (...args: unknown[]) => updateGroup(...args),
   updateMemberDailyCreditCap: (...args: unknown[]) => updateMemberDailyCreditCap(...args),
@@ -158,6 +160,7 @@ function membershipRow(role: 'admin' | 'member' | 'viewer', dailyCreditCap: numb
 beforeEach(() => {
   vi.clearAllMocks();
   findCreditAccount.mockResolvedValue(null);
+  findAccountNames.mockResolvedValue(new Map());
   sumMemberSpendSince.mockResolvedValue(0);
   findGroupWithClockBySpaceId.mockResolvedValue({ ...GROUP, timezone: 'UTC' });
 });
@@ -186,38 +189,56 @@ describe('getGroupBudget', () => {
     expect(listGroupMembers).not.toHaveBeenCalled();
   });
 
-  it('gives an admin per-member rows merged from the ledger summary', async () => {
+  it('gives an admin each joined member by name, with the two limits and no money', async () => {
     resolveGroupMembership.mockResolvedValue(membershipRow('admin'));
     findCreditAccount.mockResolvedValue({ balanceCredits: 100 });
     listGroupMembers.mockResolvedValue([
-      { userId: 'user_a', role: 'admin', dailyCreditCap: null, joinedAt: new Date('2026-01-01') },
-      { userId: 'user_b', role: 'member', dailyCreditCap: 5, joinedAt: new Date('2026-01-02') },
-    ]);
-    summariseLedgerByMemberSince.mockResolvedValue([
-      { userId: 'user_a', spentCredits: 12.345, contributedCredits: 0 },
-      // user_b has no ledger rows in the window at all.
-    ]);
-
-    const result = await getGroupBudget('user_m', 'grp_1');
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error('unreachable');
-    expect(result.value.admin?.members).toEqual([
       {
         userId: 'user_a',
         role: 'admin',
         dailyCreditCap: null,
-        spentCredits: 12.35,
-        contributedCredits: 0,
+        allowanceCredits: 40,
+        joinedAt: new Date('2026-01-01'),
       },
       {
         userId: 'user_b',
         role: 'member',
         dailyCreditCap: 5,
-        spentCredits: 0,
-        contributedCredits: 0,
+        allowanceCredits: null,
+        joinedAt: new Date('2026-01-02'),
       },
     ]);
+    // user_b has an account with no name set.
+    findAccountNames.mockResolvedValue(
+      new Map([
+        ['user_a', 'Ada Lovelace'],
+        ['user_b', null],
+      ])
+    );
+
+    const result = await getGroupBudget('user_m', 'grp_1');
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    // Exactly these keys: spend and contributions moved to the books, so an
+    // admin's list carries nothing a member could not already read.
+    expect(result.value.admin?.members).toEqual([
+      {
+        userId: 'user_a',
+        name: 'Ada Lovelace',
+        role: 'admin',
+        dailyCreditCap: null,
+        allowanceCredits: 40,
+      },
+      {
+        userId: 'user_b',
+        name: null,
+        role: 'member',
+        dailyCreditCap: 5,
+        allowanceCredits: null,
+      },
+    ]);
+    expect(summariseLedgerByMemberSince).not.toHaveBeenCalled();
   });
 
   it('excludes a pending member from the admin table', async () => {
@@ -227,13 +248,14 @@ describe('getGroupBudget', () => {
       { userId: 'user_a', role: 'admin', dailyCreditCap: null, joinedAt: new Date('2026-01-01') },
       { userId: 'user_pending', role: 'member', dailyCreditCap: null, joinedAt: null },
     ]);
-    summariseLedgerByMemberSince.mockResolvedValue([]);
 
     const result = await getGroupBudget('user_m', 'grp_1');
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect(result.value.admin?.members.map((m) => m.userId)).toEqual(['user_a']);
+    // A pending member's name is not looked up either.
+    expect(findAccountNames).toHaveBeenCalledWith(['user_a']);
   });
 
   it.each([
@@ -748,7 +770,44 @@ describe('getGroupBudget: who pays (phase 62)', () => {
       pending: null,
       monthStartedAt: MONTH_START.toISOString(),
       nextMonthStartsAt: NEXT_MONTH_START,
+      timeZone: 'UTC',
+      operationalPayerName: null,
     });
+  });
+
+  it('names the admin who pays running costs, and only when one admin pays', async () => {
+    findAccountNames.mockResolvedValue(new Map([['user_p', 'Priya Patel']]));
+    resolveGroupMembership.mockResolvedValue(
+      rowFor('member', { operationalCostsPaidBy: 'one_admin', operationalPayerUserId: 'user_p' })
+    );
+
+    const result = await getGroupBudget('user_m', 'grp_1', NOW);
+
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.value.billing.operationalPayerName).toBe('Priya Patel');
+    expect(findAccountNames).toHaveBeenCalledWith(['user_p']);
+  });
+
+  it('gives no payer name when the pool pays, even if a stale payer id is stored', async () => {
+    findAccountNames.mockResolvedValue(new Map([['user_p', 'Priya Patel']]));
+    resolveGroupMembership.mockResolvedValue(
+      rowFor('member', { operationalCostsPaidBy: 'pool', operationalPayerUserId: 'user_p' })
+    );
+
+    const result = await getGroupBudget('user_m', 'grp_1', NOW);
+
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.value.billing.operationalPayerName).toBeNull();
+  });
+
+  it('reports the group clock as the billing time zone', async () => {
+    findGroupWithClockBySpaceId.mockResolvedValue({ ...GROUP, timezone: 'Pacific/Auckland' });
+    resolveGroupMembership.mockResolvedValue(rowFor('member'));
+
+    const result = await getGroupBudget('user_m', 'grp_1', NOW);
+
+    if (!result.ok) throw new Error('unreachable');
+    expect(result.value.billing.timeZone).toBe('Pacific/Auckland');
   });
 
   it('shows a pending change only while its start is still in the future', async () => {

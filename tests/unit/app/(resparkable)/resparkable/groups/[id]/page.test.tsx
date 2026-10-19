@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
+import { makeBooks, makeBudget, makeFigures } from '@/tests/helpers/resparkable-group-budget';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
   GroupBudgetWire,
@@ -92,15 +93,7 @@ function detailFixture(overrides: Partial<GroupDetailWire> = {}): GroupDetailWir
 }
 
 function budgetFixture(overrides: Partial<GroupBudgetWire> = {}): GroupBudgetWire {
-  return {
-    balanceCredits: 40,
-    fundingMode: 'self_funded',
-    canTopUp: true,
-    yourPersonalBalanceCredits: 10,
-    you: { dailyCreditCap: null, spentLastDayCredits: 0 },
-    admin: null,
-    ...overrides,
-  };
+  return makeBudget(overrides);
 }
 
 const INVITES: GroupInviteWire[] = [
@@ -158,6 +151,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('missing')]: fail(404, 'not found'),
       [RESPARKABLE_API.groupBudget('missing')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('missing')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -172,6 +166,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: fail(500, 'server unwell'),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -186,6 +181,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'admin' })),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
       [RESPARKABLE_API.groupInvites('group_1')]: ok(INVITES),
       [RESPARKABLE_API.groupJoinLinks('group_1')]: ok(JOIN_LINKS),
     });
@@ -205,6 +201,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'member' })),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -222,6 +219,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture({ yourRole: 'admin' })),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
       [RESPARKABLE_API.groupInvites('group_1')]: ok(INVITES),
       [RESPARKABLE_API.groupJoinLinks('group_1')]: fail(500, 'join links unwell'),
     });
@@ -238,6 +236,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture()),
       [RESPARKABLE_API.groupBudget('group_1')]: fail(500, 'budget unwell'),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -255,6 +254,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture()),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budget),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -269,6 +269,7 @@ describe('ResparkableGroupPage', () => {
     routeReads({
       [RESPARKABLE_API.group('group_1')]: ok(detailFixture()),
       [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(makeBooks()),
     });
     const { default: ResparkableGroupPage } =
       await import('@/app/(resparkable)/resparkable/groups/[id]/page');
@@ -276,5 +277,39 @@ describe('ResparkableGroupPage', () => {
     render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
 
     expect(propsOf().viewerUserId).toBe('user_z');
+  });
+
+  it('passes the books through to GroupDetail on success', async () => {
+    const books = makeBooks({
+      poolBalanceCredits: 12,
+      totals: makeFigures({ sharedActivity: 3 }),
+    });
+    routeReads({
+      [RESPARKABLE_API.group('group_1')]: ok(detailFixture()),
+      [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: ok(books),
+    });
+    const { default: ResparkableGroupPage } =
+      await import('@/app/(resparkable)/resparkable/groups/[id]/page');
+
+    render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
+
+    expect(propsOf().books).toEqual(books);
+  });
+
+  it('passes books={null} when the books read fails, without failing the page', async () => {
+    routeReads({
+      [RESPARKABLE_API.group('group_1')]: ok(detailFixture()),
+      [RESPARKABLE_API.groupBudget('group_1')]: ok(budgetFixture()),
+      [RESPARKABLE_API.groupBooks('group_1')]: fail(500, 'books unwell'),
+    });
+    const { default: ResparkableGroupPage } =
+      await import('@/app/(resparkable)/resparkable/groups/[id]/page');
+
+    render(await ResparkableGroupPage({ params: Promise.resolve({ id: 'group_1' }) }));
+
+    expect(screen.getByTestId('group-detail')).toBeInTheDocument();
+    expect(propsOf().books).toBeNull();
+    expect(propsOf().budget).not.toBeNull();
   });
 });

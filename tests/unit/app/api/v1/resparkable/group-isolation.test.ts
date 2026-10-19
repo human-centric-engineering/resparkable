@@ -168,6 +168,8 @@ const OTHER_ROUTES: Record<string, string> = {
   'groups/[id]/budget/route.ts': 'As above. The per-person half is admin-only in the service.',
   'groups/[id]/budget/top-up/route.ts': 'As above. The giver’s own space is their session’s.',
   'groups/[id]/budget/members/[userId]/route.ts': 'As above. Admin only in the service.',
+  'groups/[id]/books/route.ts':
+    'As above. Any joined member; the group is resolved from the actor.',
   'groups/[id]/budget/me/route.ts': 'As above. Only ever the caller’s own membership row.',
   'groups/[id]/join-links/route.ts': 'As above. Admin only in the service.',
   'groups/[id]/join-links/[linkId]/route.ts': 'As above. Admin only in the service.',

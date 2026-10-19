@@ -70,7 +70,8 @@ The ledger gains `memberUserId String?`: **whose group balance this row moves.**
 personal space). `createdByUserId` still means who started it. The two differ on
 purpose: in an equal split, one person's chat turn writes a row against every
 member's balance. Hand-written FK to `"user"("id")` `ON DELETE SetNull`, covered by
-probe B11 like every other person column on this table. New index
+probe B16 together with `operationalPayerUserId` (B11 is the `createdByUserId`
+inventory, and these are not authorship). New index
 `[spaceId, memberUserId, createdAt]`. The Art. 15 export of the ledger includes
 rows where `memberUserId` is the subject as well as rows they authored.
 
@@ -140,8 +141,9 @@ a refusal. The plan is never re-chosen because a source ran dry.
   `balanceCredits`. One `UPDATE … WHERE groupId = $1 AND joinedAt IS NOT NULL AND
 role IN ('admin','member')` and one `createMany` inside one transaction, the
   member count read inside it, so a split is never seen half-written (q8) and
-  somebody joining mid-split is either in all of it or none. The last share takes
-  the rounding remainder so the shares add up to the cost exactly.
+  somebody joining mid-split is either in all of it or none. Every share is the
+  same (`cost / n`); the floating-point difference from the cost is below a
+  millionth of a credit and is accepted with the other float edges below.
 
 `dailyCreditCap` stays, in every mode, as the blast-radius limit it already is.
 
@@ -172,8 +174,15 @@ until it ends: an equal split where somebody's balance was already low, a seat
 charged at the start of the month, or a run that cost more than was left. The
 pre-flight can only refuse the person starting the run.
 
-- **`debt`.** The balance goes negative. The person keeps using the group. Their
-  next top-up, by hand or automatic, pays the debt first.
+- **`debt`.** The balance goes negative. The person keeps using the group, and
+  may start a run with an empty balance, **but only while the pool can back
+  it**: the pool read net of every member's debt
+  (`poolAvailableCredits`) must be above zero. An unpaid debt lands on the pool
+  when its holder leaves, so borrowing is borrowing from the pool, and this is
+  also what bounds the operator's exposure (added 2026-10-20: without it,
+  `debt` and `suspend` would refuse exactly the same runs, and unbounded debt
+  would leave the operator holding it). Their next top-up, by hand or
+  automatic, pays the debt first.
 - **`suspend`.** The balance goes negative and the person is suspended until it
   is back at zero or above. Suspension is derived (`balanceCredits < 0` and the
   policy is `suspend`), never stored, so paying the debt lifts it with no second
@@ -190,31 +199,42 @@ wrote over a few credits is a heavier penalty than the debt.
 ## Decision 6: the monthly cycle and automatic top-ups
 
 **One cycle per group**, starting on the day of the month the group was created
-(the 29th, 30th and 31st fold to the 28th), at 00:00 in the group's timezone. A
-new gated job kind `group_cycle` on phase 56's queue, one row per group, `dueAt`
-the next start. At each start, in one transaction per group:
+(the 29th, 30th and 31st fold to the 28th), at 00:00 in the group's timezone.
+`settleGroupCycle` settles a month start once, in one transaction:
 
-1. pending setting changes take effect (decision 2),
-2. carved allowances are added to `allowanceRemainingCredits`,
-3. `autoTopUpUsedCredits` resets to zero,
-4. each joined member is charged their role's seat price from their own balance,
-   with decision 5 applying to anybody who cannot cover it.
+1. a pending setting change that starts then is promoted (decision 2), so the
+   new month's seat prices are the ones charged,
+2. carved allowances are added to `allowanceRemainingCredits` (unused allowance
+   rolls over),
+3. each joined member is charged their role's seat price from their own balance
+   into the pool, with decision 5 applying to anybody it takes below zero, and
+   their automatic top-up runs.
 
-The gate skips a group with every seat price at zero and no carved allowances, so
-a group that uses none of this costs one indexed read a month.
+`autoTopUpUsedCredits` needs no reset: it is read against `autoTopUpMonth`, and a
+different month reads as zero.
 
-**Joining mid-month** pays the seat for the days left in the month, from the
-person's own credits, as an explicit step in the join or invite flow that shows
-the price before they accept. That one-off payment is the second kind of
-top-up in the one rule above, so joining a priced group is never a charge taken without asking. A role
-change takes the new price from the next month. A seat is not refunded on
-leaving: the month was held.
+**Settled idempotently, from two places** (built 2026-10-20). The transaction
+starts with a conditional claim of `cycleSettledThrough`, so exactly one caller
+settles a month. A daily `group_cycle` job (not demand-gated: the calendar
+decides, as for retention) calls it, and so does the pre-flight when it finds an
+unsettled month, so a late job can never clear a run against last month's
+allowance. A job that is months late settles every missed month at once, capped
+at 24.
+
+**The month a member joins in is free** (departure from the first draft, decided
+2026-10-20). The first draft charged a pro-rata seat on joining, as an explicit
+step in the join flow. That needs a consent step in all three ways in (an
+invitation, an open link, an approved request), and someone with no group
+balance yet would start in debt on day one. Seats are charged at each month's
+start to whoever is in the group then, so a member's first seat is their first
+full month. A role change takes the new price from the next month. A seat is not
+refunded on leaving: the month was held.
 
 **Automatic top-up (q7).** A member sets a monthly amount, and only the member can
 set or withdraw it. When their group balance falls to zero or below (in the
 pre-flight, or after a debit), up to that month's unused amount moves from their
-personal balance into their group balance through `transferCreditsToGroup`'s
-refuse-rather-than-overdraw path, as one ledger row. It never moves more than the
+personal balance into their group balance (`applyAutoTopUp`), decremented only
+where the personal balance still covers it, as one ledger row on each side. It never moves more than the
 member agreed in a month, and never anything without that agreement. In a carved
 group the same move goes into the pool and raises the member's
 `allowanceRemainingCredits` by the same amount: that money is then a contribution
@@ -229,9 +249,15 @@ Settled inside the same transaction as the leave, removal, erasure or delete
   `credit_back` row on each side.
 - **A carved allowance is not money** and goes nowhere.
 - **Seats are not refunded.**
-- **Erasure** credits back to an account that is deleted in the same
-  transaction, so in practice the money leaves with the person, exactly as their
-  personal balance does. The group-side row stays, unattributed.
+- **Erasure**: the person's own account is deleted in the same transaction, so
+  nothing is written to it and the money leaves with them, exactly as their
+  personal balance does. The group-side `credit_back` row stays, unattributed.
+  A debt is absorbed by the pool as on any departure.
+- **No personal space** (somebody who joined by invitation and never opened
+  their own brain): the leave and delete paths create it first, so a credit
+  back has an account to land in. If it is still missing inside the
+  transaction, the credits are counted as not returned rather than written
+  against a row that cannot exist.
 - **The pool on leaving** stays with the group. A top-up into the pool was a gift
   to the group (phase 50's own words), and dividing it up on every departure is
   the settlement problem §23.12 set out to avoid.
@@ -240,7 +266,8 @@ Settled inside the same transaction as the leave, removal, erasure or delete
 current members in proportion to what each of them put into the pool over the
 group's life (their `transfer_in` rows, including automatic top-ups in a carved
 group), never more than they put in. Anything left over, for example credits an
-operator granted, is closed off with a ledger row and goes nowhere. This answers
+operator granted, goes nowhere; the amount is logged (the group's own ledger
+is deleted with it). This answers
 "what a member's share of a pool is on refund" with a figure every member can
 check against the books.
 
@@ -264,8 +291,8 @@ positive member balances and moves any remaining debts onto the pool, inside the
 transaction. If the pool is then below zero, the delete is refused with the
 amount, and the delete screen offers the admin the choice to pay it from their
 own credits. The one case that cannot be refused is the last member erasing
-their account, which deletes the group with it: there the shortfall is closed
-off with a ledger row and a warning in the log. It is bounded by what one
+their account, which deletes the group with it: there the shortfall is logged
+as a warning. It is bounded by what one
 group's members could run up before the pre-flight stopped them, and it is the
 only route by which the operator absorbs a group's debt.
 
@@ -279,14 +306,15 @@ Rows: per week, per category, per person, in credits. Categories:
 
 - seats,
 - operational costs (`createdByUserId` null),
-- shared activity costs (the pool, or a split),
-- own activity costs (a member's own balance),
+- shared activity costs (the pool paid, attributed to who started the run),
+- own activity costs (a member's own balance, including their share of a split,
+  attributed to whoever paid),
 - top-ups, by hand and automatic,
 - credit-backs, and debts the group took over.
 
 People are named from the account names the members routes already return,
-never by address. Somebody no longer in the group shows as "a former member",
-whether they left or were erased.
+never by address. Everybody no longer in the group is folded into one "Former
+members" line, whether they left or were erased.
 
 **What the books never contain**, asserted by 13n against the rendered page:
 counts of items written, tasks finished or messages sent, any figure derived
@@ -297,6 +325,18 @@ digest (13h) and the feed (13m) are untouched.
 Admin-only controls (caps, alerts, settings) stay admin-only. Each member's own
 figures (balance, allowance left, automatic top-up used this month) are shown to
 that member.
+
+## Not built in this phase
+
+- **The delete screen does not offer to pay what the group owes.** A refused
+  delete answers 409 with the amount in `details.owes` and a message saying to
+  add it to the group first, which an admin does with the ordinary top-up. A
+  one-click "pay and delete" is a follow-up. (Leaving does offer it: a member who
+  owes the group is asked "Pay and leave" or "Leave without paying" before the
+  leave is sent, and paying is a top-up to their own balance with `to: 'me'`.)
+- **The payer-gone email is not sent on erasure**, because erasure runs inside
+  `eraseUser`'s transaction. The setting still falls back: the FK nulls the
+  payer, and a payer who is not a joined admin reads as the pool.
 
 ## Known edges, accepted
 
@@ -322,7 +362,7 @@ that member.
 ## Commit order
 
 1. Migration: the group settings, the member columns, `memberUserId` on the
-   ledger, B11 coverage, the export manifest. No behaviour change.
+   ledger, probe B16, the export manifest. No behaviour change.
 2. `resolveCharge` and the three activity modes; `recordAgentSpend` taking a plan;
    the equal split's single transaction; shortfall and suspension.
 3. Operational modes, the payer fallback and its alert.

@@ -2261,6 +2261,11 @@ export const groupOwnBudgetSchema = z
 
 export type GroupOwnBudgetInput = z.infer<typeof groupOwnBudgetSchema>;
 
+/** `GET /resparkable/groups/[id]/books?weeks=` (phase 62): 1 to 52 weeks back, 12 by default. */
+export const groupBooksQuerySchema = z
+  .object({ weeks: z.coerce.number().int().min(1).max(52).default(12) })
+  .strict();
+
 export type GroupMemberCapInput = z.infer<typeof groupMemberCapSchema>;
 
 /**

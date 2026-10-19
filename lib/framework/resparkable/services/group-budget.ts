@@ -32,11 +32,11 @@ import {
   ensureCreditAccount,
   findCreditAccount,
   sumMemberSpendSince,
-  summariseLedgerByMemberSince,
   transferCreditsToGroup,
 } from '@/lib/framework/resparkable/repo/billing';
 import {
   claimLargeRunAlert,
+  findAccountNames,
   findGroupById,
   findGroupBySpaceId,
   releaseLargeRunAlert,
@@ -83,9 +83,6 @@ export type FundingMode = (typeof FUNDING_MODES)[number];
 export function isFundingMode(value: string): value is FundingMode {
   return (FUNDING_MODES as readonly string[]).includes(value);
 }
-
-/** The window per-person figures cover in the admin view. */
-export const MEMBER_SPEND_WINDOW_DAYS = 30;
 
 const DAY_MS = 24 * 60 * 60_000;
 
@@ -146,18 +143,26 @@ export interface GroupBudgetView {
     pending: { settings: GroupBillingSettings; from: string } | null;
     monthStartedAt: string;
     nextMonthStartsAt: string;
+    /** The group's clock, which its month and weeks run on. */
+    timeZone: string;
+    /** The account name of the admin who pays running costs, when one does. */
+    operationalPayerName: string | null;
   };
   /** Admins only. `null` for everybody else, never an empty object. */
   admin: {
     lowBalanceAlertCredits: number | null;
     largeRunAlertPercent: number | null;
-    windowDays: number;
+    /**
+     * Each joined member, named, with the two limits an admin sets. What anybody
+     * spent is in the group's books, which every member reads (phase 62); this
+     * list carries no money, so there is nothing here only an admin knows.
+     */
     members: Array<{
       userId: string;
+      name: string | null;
       role: string;
       dailyCreditCap: number | null;
-      spentCredits: number;
-      contributedCredits: number;
+      allowanceCredits: number | null;
     }>;
   } | null;
 }
@@ -196,25 +201,18 @@ export async function getGroupBudget(
 
   let admin: GroupBudgetView['admin'] = null;
   if (isAdmin) {
-    const since = new Date(now.getTime() - MEMBER_SPEND_WINDOW_DAYS * DAY_MS);
-    const [members, summaries] = await Promise.all([
-      listGroupMembers(groupId),
-      summariseLedgerByMemberSince(scope, since),
-    ]);
-    const byUser = new Map(summaries.map((row) => [row.userId, row]));
+    const joined = (await listGroupMembers(groupId)).filter((member) => member.joinedAt !== null);
+    const names = await findAccountNames(joined.map((member) => member.userId));
     admin = {
       lowBalanceAlertCredits: group.lowBalanceAlertCredits,
       largeRunAlertPercent: group.largeRunAlertPercent,
-      windowDays: MEMBER_SPEND_WINDOW_DAYS,
-      members: members
-        .filter((member) => member.joinedAt !== null)
-        .map((member) => ({
-          userId: member.userId,
-          role: member.role,
-          dailyCreditCap: member.dailyCreditCap,
-          spentCredits: round(byUser.get(member.userId)?.spentCredits ?? 0),
-          contributedCredits: round(byUser.get(member.userId)?.contributedCredits ?? 0),
-        })),
+      members: joined.map((member) => ({
+        userId: member.userId,
+        name: names.get(member.userId) ?? null,
+        role: member.role,
+        dailyCreditCap: member.dailyCreditCap,
+        allowanceCredits: member.allowanceCredits,
+      })),
     };
   }
 
@@ -229,6 +227,9 @@ export async function getGroupBudget(
           from: group.pendingBillingFrom.toISOString(),
         }
       : null;
+  const payerId =
+    settings.operationalCostsPaidBy === 'one_admin' ? settings.operationalPayerUserId : null;
+  const payerName = payerId ? ((await findAccountNames([payerId])).get(payerId) ?? null) : null;
   const usedThisMonth =
     membership.autoTopUpMonth?.getTime() === monthStart.getTime()
       ? membership.autoTopUpUsedCredits
@@ -256,6 +257,8 @@ export async function getGroupBudget(
         pending: pendingWaiting,
         monthStartedAt: monthStart.toISOString(),
         nextMonthStartsAt: nextMonthStartFor(group, timeZone, now).toISOString(),
+        timeZone,
+        operationalPayerName: payerName,
       },
       admin,
     },

@@ -132,6 +132,8 @@ const BILLING = {
   pending: null,
   monthStartedAt: '2026-10-05T00:00:00.000Z',
   nextMonthStartsAt: '2026-11-05T00:00:00.000Z',
+  timeZone: 'UTC',
+  operationalPayerName: null,
 };
 
 describe('GET /api/v1/resparkable/groups/[id]/budget', () => {

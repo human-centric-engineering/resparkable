@@ -36,6 +36,7 @@ vi.mock('@/components/resparkable/groups/group-detail', () => ({
   ),
 }));
 
+import { makeBudget } from '@/tests/helpers/resparkable-group-budget';
 import { GroupTab } from '@/components/resparkable/workspace/tabs/group-tab';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -72,15 +73,7 @@ function detailFixture(overrides: Partial<GroupDetailWire> = {}): GroupDetailWir
 }
 
 function budgetFixture(overrides: Partial<GroupBudgetWire> = {}): GroupBudgetWire {
-  return {
-    balanceCredits: 40,
-    fundingMode: 'self_funded',
-    canTopUp: true,
-    yourPersonalBalanceCredits: 10,
-    you: { dailyCreditCap: null, spentLastDayCredits: 0 },
-    admin: null,
-    ...overrides,
-  };
+  return makeBudget(overrides);
 }
 
 const INVITES: GroupInviteWire[] = [

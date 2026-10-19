@@ -18,6 +18,35 @@ release process.
 
 ### Added
 
+- **Who pays in a group, and the group's books (Release 9, phase 62).**
+  §23.12's second amendment, designed in `phase-62-plan.md`. `ResparkableGroup`
+  gains seat prices per role, `operationalCostsPaidBy` (`pool`, `one_admin`,
+  `admins_split`) with `operationalPayerUserId` (hand-written FK to `user`,
+  SetNull), `activityCostsPaidBy` (`pool`, `equal_split`, `allowance`),
+  `allowanceSource` (`carved`, `filled`), `shortfallPolicy` (`debt`,
+  `suspend`), `pendingBilling`/`pendingBillingFrom` and `cycleSettledThrough`;
+  every default is phase 50's behaviour. `ResparkableGroupMember` gains a
+  member's own group balance (`balanceCredits`, below zero is a debt),
+  `allowanceCredits`, `allowanceRemainingCredits` and the automatic top-up the
+  member sets (`autoTopUpMonthlyCredits`, `autoTopUpUsedCredits`,
+  `autoTopUpMonth`). `ResparkableCreditLedgerEntry` gains `memberUserId`
+  (hand-written FK to `user`, SetNull, probe B16 with the payer key) and the
+  kinds `seat`, `auto_top_up`, `credit_back`, `debt_absorbed`. `assertCanSpend`
+  now returns a charge plan that `recordAgentSpend` accepts as `plan`, and
+  `recordAgentSpend` returns `{ credits, source }` rather than the ledger row.
+  A change to who pays waits for the start of the group's next month. A new
+  `group_cycle` job kind settles each month's seats and carved allowances.
+  Leaving, removal, erasure and deletion settle money in the same transaction;
+  a group that owes credits cannot be deleted (`DELETE /groups/[id]` and the
+  last member leaving answer 409). New routes: `GET /groups/[id]/books` (every
+  member) and `PATCH /groups/[id]/budget/me`; `PATCH /budget` takes the
+  who-pays settings and `discardPendingBilling`; `POST /budget/top-up` takes
+  `to: 'me'`; `PATCH /budget/members/[userId]` takes `allowanceCredits`.
+  `GET /budget` adds `billing` and the caller's own figures, and its admin
+  member list now carries names and allowances instead of per-person spend,
+  which moved to the books. The subject export includes ledger rows that moved
+  the subject's own group balance.
+
 - **Group collaboration (Release 9, phase 58).** §23.13, designed in
   `phase-58-59-plan.md`. `ResparkableTask.assignedToUserId` (hand-written FK to
   `user`, SetNull, probe B15): a task in a group space can be assigned to a

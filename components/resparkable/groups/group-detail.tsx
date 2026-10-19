@@ -46,6 +46,7 @@ import { Check, Mail, UserMinus, X } from 'lucide-react';
 
 import { DeleteGroup } from '@/components/resparkable/groups/delete-group';
 import { GroupAuditLog } from '@/components/resparkable/groups/group-audit-log';
+import { GroupBooks } from '@/components/resparkable/groups/group-books';
 import { GroupBudget } from '@/components/resparkable/groups/group-budget';
 import { GroupJoinLinks } from '@/components/resparkable/groups/group-join-links';
 import { GroupStorage } from '@/components/resparkable/groups/group-storage';
@@ -65,6 +66,7 @@ import {
 import { apiClient } from '@/lib/api/client';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
+  GroupBooksWire,
   GroupBudgetWire,
   GroupDetailWire,
   GroupInviteWire,
@@ -82,6 +84,8 @@ export interface GroupDetailProps {
   joinLinks: GroupJoinLinkWire[];
   /** The group's credits, or `null` when they could not be read. */
   budget: GroupBudgetWire | null;
+  /** The group's books (phase 62), or `null` when they could not be read. */
+  books?: GroupBooksWire | null;
   /** The signed-in user, so the member list can say which row is you. */
   viewerUserId: string;
 }
@@ -91,6 +95,7 @@ export function GroupDetail({
   invites: initialInvites,
   joinLinks,
   budget,
+  books = null,
   viewerUserId,
 }: GroupDetailProps): React.ReactElement {
   const router = useRouter();
@@ -160,7 +165,27 @@ export function GroupDetail({
     if (!ok) setMembers(previous);
   }
 
-  async function remove(userId: string): Promise<void> {
+  // Phase 62: somebody leaving who owes the group is asked first whether to pay
+  // it from their own credits (decided 2026-10-19). Leaving without paying is
+  // allowed; the debt then moves onto the group's shared balance.
+  const owed = budget && budget.you.balanceCredits < 0 ? -budget.you.balanceCredits : 0;
+  const [askingToSettle, setAskingToSettle] = React.useState(false);
+
+  async function payDebtAndLeave(): Promise<void> {
+    const paid = await run(() =>
+      apiClient.post(RESPARKABLE_API.groupTopUp(groupId), {
+        body: { credits: Math.round(owed * 100) / 100, to: 'me' },
+      })
+    );
+    if (paid) await remove(viewerUserId, true);
+  }
+
+  async function remove(userId: string, settled = false): Promise<void> {
+    if (userId === viewerUserId && owed > 0 && !settled && !askingToSettle) {
+      setAskingToSettle(true);
+      return;
+    }
+    setAskingToSettle(false);
     const previous = allMembers;
     setMembers((prev) => prev.filter((row) => row.userId !== userId));
 
@@ -329,6 +354,32 @@ export function GroupDetail({
         </ul>
       </section>
 
+      {askingToSettle && (
+        <div className="border-border/60 flex flex-col gap-2 rounded-md border px-3 py-2 text-xs">
+          <p>
+            You owe the group {Math.round(owed * 100) / 100} credits. You can pay it from your own
+            credits before you leave. If you leave without paying, the group&apos;s shared balance
+            covers it.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void payDebtAndLeave()} disabled={state === 'saving'}>
+              Pay and leave
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void remove(viewerUserId, true)}
+              disabled={state === 'saving'}
+            >
+              Leave without paying
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setAskingToSettle(false)}>
+              Stay
+            </Button>
+          </div>
+        </div>
+      )}
+
       {/* Only while the group is still full: once there is room, by either route
           the notice suggests, it has nothing left to ask of the admin. */}
       {isAdmin && refusedFullAt !== null && members.length >= maxMembers && (
@@ -428,6 +479,8 @@ export function GroupDetail({
           viewerUserId={viewerUserId}
         />
       )}
+
+      {books && <GroupBooks books={books} />}
 
       {isAdmin && (
         <section>

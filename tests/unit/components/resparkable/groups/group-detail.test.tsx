@@ -30,7 +30,12 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useRouter } from 'next/navigation';
 
-import type { GroupDetailWire, GroupJoinLinkWire } from '@/lib/framework/resparkable/ui/payloads';
+import type {
+  GroupBooksWire,
+  GroupBudgetWire,
+  GroupDetailWire,
+  GroupJoinLinkWire,
+} from '@/lib/framework/resparkable/ui/payloads';
 vi.mock('next/navigation', () => ({ useRouter: vi.fn() }));
 vi.mock('@/lib/api/client', () => ({
   apiClient: { post: vi.fn(), get: vi.fn(), patch: vi.fn(), delete: vi.fn() },
@@ -39,6 +44,12 @@ vi.mock('@/lib/api/client', () => ({
 
 import { GroupDetail } from '@/components/resparkable/groups/group-detail';
 import { apiClient } from '@/lib/api/client';
+import {
+  makeBooks,
+  makeBudget,
+  makeFigures,
+  makeYou,
+} from '@/tests/helpers/resparkable-group-budget';
 import { createMockRouter } from '@/tests/types/mocks';
 
 const push = vi.fn();
@@ -91,14 +102,17 @@ const INVITE = {
 function renderDetail(
   overrides: Partial<GroupDetailWire> = {},
   invites = [INVITE],
-  joinLinks: GroupJoinLinkWire[] = []
+  joinLinks: GroupJoinLinkWire[] = [],
+  budget: GroupBudgetWire | null = null,
+  books: GroupBooksWire | null = null
 ) {
   return render(
     <GroupDetail
       detail={{ ...DETAIL, ...overrides }}
       invites={invites}
       joinLinks={joinLinks}
-      budget={null}
+      budget={budget}
+      books={books}
       viewerUserId="user_a"
     />
   );
@@ -187,6 +201,139 @@ describe('GroupDetail', () => {
     expect(push).not.toHaveBeenCalled();
   });
 
+  describe('leaving while owing the group (phase 62)', () => {
+    const OWING = makeBudget({ you: makeYou({ balanceCredits: -7.5 }) });
+
+    it('asks first, and sends nothing, when you owe the group', async () => {
+      const user = userEvent.setup();
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+
+      expect(screen.getByText(/before you leave/)).toBeInTheDocument();
+      expect(screen.getByText(/You owe the group 7\.5 credits\. You can pay/)).toBeInTheDocument();
+      expect(apiClient.delete).not.toHaveBeenCalled();
+      expect(apiClient.post).not.toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('pays the debt from your own credits and then leaves', async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiClient.post).mockResolvedValue({ memberBalanceCredits: 0 });
+      vi.mocked(apiClient.delete).mockResolvedValue(undefined);
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+      await user.click(screen.getByRole('button', { name: 'Pay and leave' }));
+
+      expect(apiClient.post).toHaveBeenCalledWith(
+        '/api/v1/resparkable/groups/grp_1/budget/top-up',
+        {
+          body: { credits: 7.5, to: 'me' },
+        }
+      );
+      expect(apiClient.delete).toHaveBeenCalledWith(
+        '/api/v1/resparkable/groups/grp_1/members/user_a'
+      );
+      // Paid first, left second: leaving before the payment lands would leave
+      // the debt behind for the group.
+      expect(vi.mocked(apiClient.post).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(apiClient.delete).mock.invocationCallOrder[0] ?? 0
+      );
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/resparkable/groups'));
+    });
+
+    it('does not leave when the payment fails', async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiClient.post).mockRejectedValue(new Error('not enough credits'));
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+      await user.click(screen.getByRole('button', { name: 'Pay and leave' }));
+
+      await vi.waitFor(() => expect(apiClient.post).toHaveBeenCalled());
+      expect(apiClient.delete).not.toHaveBeenCalled();
+      expect(push).not.toHaveBeenCalled();
+    });
+
+    it('leaves straight away, without paying, when asked to', async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiClient.delete).mockResolvedValue(undefined);
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+      await user.click(screen.getByRole('button', { name: 'Leave without paying' }));
+
+      expect(apiClient.delete).toHaveBeenCalledWith(
+        '/api/v1/resparkable/groups/grp_1/members/user_a'
+      );
+      expect(apiClient.post).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/resparkable/groups'));
+    });
+
+    it('closes the prompt and sends nothing on Stay', async () => {
+      const user = userEvent.setup();
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+      await user.click(screen.getByRole('button', { name: 'Stay' }));
+
+      expect(screen.queryByText(/before you leave/)).not.toBeInTheDocument();
+      expect(apiClient.delete).not.toHaveBeenCalled();
+      expect(apiClient.post).not.toHaveBeenCalled();
+    });
+
+    it.each([0, 12])('leaves at once, with no prompt, at a balance of %s', async (balance) => {
+      const user = userEvent.setup();
+      vi.mocked(apiClient.delete).mockResolvedValue(undefined);
+
+      renderDetail({}, [], [], makeBudget({ you: makeYou({ balanceCredits: balance }) }));
+      await user.click(screen.getByRole('button', { name: 'Leave this group' }));
+
+      expect(screen.queryByText(/before you leave/)).not.toBeInTheDocument();
+      expect(apiClient.delete).toHaveBeenCalledWith(
+        '/api/v1/resparkable/groups/grp_1/members/user_a'
+      );
+      await vi.waitFor(() => expect(push).toHaveBeenCalledWith('/resparkable/groups'));
+    });
+
+    it('does not ask when an admin removes somebody else', async () => {
+      const user = userEvent.setup();
+      vi.mocked(apiClient.delete).mockResolvedValue(undefined);
+
+      renderDetail({}, [], [], OWING);
+      await user.click(screen.getByRole('button', { name: 'Remove Bailey Chen' }));
+
+      expect(screen.queryByText(/before you leave/)).not.toBeInTheDocument();
+      expect(apiClient.delete).toHaveBeenCalledWith(
+        '/api/v1/resparkable/groups/grp_1/members/user_b'
+      );
+    });
+  });
+
+  describe('the books', () => {
+    it('renders the books when they were read, and nothing when they were not', () => {
+      const books = makeBooks({
+        totals: makeFigures({ sharedActivity: 3 }),
+        people: [
+          {
+            userId: 'user_a',
+            name: 'Ada',
+            isYou: true,
+            totals: makeFigures({ sharedActivity: 3 }),
+            byWeek: [],
+          },
+        ],
+      });
+      const { unmount } = renderDetail({}, [], [], null, books);
+      expect(screen.getByText(/The group.s books/)).toBeInTheDocument();
+      unmount();
+
+      renderDetail({}, [], [], null, null);
+      expect(screen.queryByText(/The group.s books/)).not.toBeInTheDocument();
+    });
+  });
+
   it('offers a member nothing an admin route would refuse them', () => {
     renderDetail({ yourRole: 'member' }, []);
 
@@ -214,14 +361,7 @@ describe('GroupDetail', () => {
   });
 
   it('shows the credits panel when the budget loaded, with the admin half only for an admin', () => {
-    const budget = {
-      balanceCredits: 40,
-      fundingMode: 'self_funded' as const,
-      canTopUp: false,
-      yourPersonalBalanceCredits: 5,
-      you: { dailyCreditCap: null, spentLastDayCredits: 0 },
-      admin: null,
-    };
+    const budget = makeBudget({ canTopUp: false, yourPersonalBalanceCredits: 5 });
     const { unmount } = render(
       <GroupDetail
         detail={{ ...DETAIL, yourRole: 'member' }}
@@ -246,7 +386,6 @@ describe('GroupDetail', () => {
           admin: {
             lowBalanceAlertCredits: 10,
             largeRunAlertPercent: 50,
-            windowDays: 30,
             members: [],
           },
         }}
