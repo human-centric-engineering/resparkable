@@ -51,18 +51,27 @@ vi.mock('@/lib/framework/resparkable/services/group-budget', () => ({
   updateGroupBudgetSettings: vi.fn(),
   topUpGroup: vi.fn(),
   setMemberDailyCreditCap: vi.fn(),
+  updateGroupBilling: vi.fn(),
+  setMemberAllowance: vi.fn(),
+  setOwnAutoTopUp: vi.fn(),
+  topUpOwnGroupBalance: vi.fn(),
 }));
 
 import {
   GET as BUDGET_GET,
   PATCH as BUDGET_PATCH,
 } from '@/app/api/v1/resparkable/groups/[id]/budget/route';
+import { PATCH as ME_PATCH } from '@/app/api/v1/resparkable/groups/[id]/budget/me/route';
 import { POST as TOP_UP_POST } from '@/app/api/v1/resparkable/groups/[id]/budget/top-up/route';
 import { PATCH as MEMBER_CAP_PATCH } from '@/app/api/v1/resparkable/groups/[id]/budget/members/[userId]/route';
 import {
   getGroupBudget,
+  setMemberAllowance,
   setMemberDailyCreditCap,
+  setOwnAutoTopUp,
   topUpGroup,
+  topUpOwnGroupBalance,
+  updateGroupBilling,
   updateGroupBudgetSettings,
 } from '@/lib/framework/resparkable/services/group-budget';
 
@@ -430,5 +439,359 @@ describe('PATCH /api/v1/resparkable/groups/[id]/budget/members/[userId]', () => 
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ userId: 'user_b', dailyCreditCap: 5 });
     expect(setMemberDailyCreditCap).toHaveBeenCalledWith('user_a', GROUP_ID, 'user_b', 5);
+  });
+});
+
+// ─── Who pays (phase 62) ──────────────────────────────────────────────────────
+
+const BUDGET_URL = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/budget`;
+const BILLING_VIEW = {
+  settings: BILLING.settings,
+  pending: {
+    settings: { ...BILLING.settings, seatPriceMemberCredits: 4 },
+    from: '2026-11-05T00:00:00.000Z',
+  },
+};
+
+describe('PATCH /api/v1/resparkable/groups/[id]/budget: who pays', () => {
+  it('sends billing fields to updateGroupBilling and not to the funding/alerts writer', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({ ok: true, value: BILLING_VIEW });
+
+    const response = await invoke(BUDGET_PATCH, req(BUDGET_URL, { seatPriceMemberCredits: 4 }), {
+      id: GROUP_ID,
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(updateGroupBilling).toHaveBeenCalledWith(
+      'user_a',
+      GROUP_ID,
+      { seatPriceMemberCredits: 4 },
+      { discardPending: false }
+    );
+    expect(updateGroupBudgetSettings).not.toHaveBeenCalled();
+    expect(body.data).toEqual({ billing: BILLING_VIEW });
+  });
+
+  it('sends funding and alerts to updateGroupBudgetSettings and not to billing', async () => {
+    vi.mocked(updateGroupBudgetSettings).mockResolvedValue({
+      ok: true,
+      value: {
+        fundingMode: 'member_contributions',
+        lowBalanceAlertCredits: 10,
+        largeRunAlertPercent: 50,
+      },
+    });
+
+    await invoke(
+      BUDGET_PATCH,
+      req(BUDGET_URL, { fundingMode: 'member_contributions', lowBalanceAlertCredits: 10 }),
+      { id: GROUP_ID }
+    );
+
+    expect(updateGroupBilling).not.toHaveBeenCalled();
+    // Only the fields the caller sent: an unsent alert is not written as undefined.
+    expect(updateGroupBudgetSettings).toHaveBeenCalledWith('user_a', GROUP_ID, {
+      fundingMode: 'member_contributions',
+      lowBalanceAlertCredits: 10,
+    });
+  });
+
+  it('splits a mixed body between the two writers and returns both results', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({ ok: true, value: BILLING_VIEW });
+    const settings = {
+      fundingMode: 'member_contributions' as const,
+      lowBalanceAlertCredits: null,
+      largeRunAlertPercent: 50,
+    };
+    vi.mocked(updateGroupBudgetSettings).mockResolvedValue({ ok: true, value: settings });
+
+    const response = await invoke(
+      BUDGET_PATCH,
+      req(BUDGET_URL, {
+        fundingMode: 'member_contributions',
+        seatPriceMemberCredits: 4,
+        shortfallPolicy: 'suspend',
+      }),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(updateGroupBilling).toHaveBeenCalledWith(
+      'user_a',
+      GROUP_ID,
+      { seatPriceMemberCredits: 4, shortfallPolicy: 'suspend' },
+      { discardPending: false }
+    );
+    expect(updateGroupBudgetSettings).toHaveBeenCalledWith('user_a', GROUP_ID, {
+      fundingMode: 'member_contributions',
+    });
+    expect(body.data).toEqual({ ...settings, billing: BILLING_VIEW });
+  });
+
+  it('writes no budget change when the payer is refused, because billing runs first', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({ ok: false, reason: 'payer_not_admin' });
+
+    const response = await invoke(
+      BUDGET_PATCH,
+      req(BUDGET_URL, {
+        fundingMode: 'member_contributions',
+        operationalCostsPaidBy: 'one_admin',
+        operationalPayerUserId: 'user_member',
+      }),
+      { id: GROUP_ID }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error.message).toBe('Only an admin of the group can pay its running costs.');
+    expect(updateGroupBudgetSettings).not.toHaveBeenCalled();
+  });
+
+  it('passes discardPendingBilling through as discardPending, with no billing fields', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({
+      ok: true,
+      value: { settings: BILLING.settings, pending: null },
+    });
+
+    const response = await invoke(BUDGET_PATCH, req(BUDGET_URL, { discardPendingBilling: true }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(200);
+    expect(updateGroupBilling).toHaveBeenCalledWith(
+      'user_a',
+      GROUP_ID,
+      {},
+      { discardPending: true }
+    );
+  });
+
+  it('keeps an explicit null payer id, which is a billing field being cleared', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({ ok: true, value: BILLING_VIEW });
+
+    await invoke(
+      BUDGET_PATCH,
+      req(BUDGET_URL, { operationalCostsPaidBy: 'pool', operationalPayerUserId: null }),
+      { id: GROUP_ID }
+    );
+
+    expect(vi.mocked(updateGroupBilling).mock.calls[0]?.[2]).toEqual({
+      operationalCostsPaidBy: 'pool',
+      operationalPayerUserId: null,
+    });
+  });
+
+  it('is a 403 when billing refuses a non-admin', async () => {
+    vi.mocked(updateGroupBilling).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
+
+    const response = await invoke(BUDGET_PATCH, req(BUDGET_URL, { shortfallPolicy: 'debt' }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects a discardPendingBilling that is not literally true', async () => {
+    const response = await invoke(BUDGET_PATCH, req(BUDGET_URL, { discardPendingBilling: false }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(400);
+    expect(updateGroupBilling).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/v1/resparkable/groups/[id]/budget/me', () => {
+  const ME_URL = `${BUDGET_URL}/me`;
+
+  it('sets the caller’s own automatic top-up, keyed on the session user', async () => {
+    vi.mocked(setOwnAutoTopUp).mockResolvedValue({
+      ok: true,
+      value: { autoTopUpMonthlyCredits: 40 },
+    });
+
+    const response = await invoke(ME_PATCH, req(ME_URL, { autoTopUpMonthlyCredits: 40 }), {
+      id: GROUP_ID,
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(setOwnAutoTopUp).toHaveBeenCalledWith('user_a', GROUP_ID, 40);
+    expect(body.data).toEqual({ autoTopUpMonthlyCredits: 40 });
+  });
+
+  it('withdraws with null', async () => {
+    vi.mocked(setOwnAutoTopUp).mockResolvedValue({
+      ok: true,
+      value: { autoTopUpMonthlyCredits: null },
+    });
+
+    await invoke(ME_PATCH, req(ME_URL, { autoTopUpMonthlyCredits: null }), { id: GROUP_ID });
+
+    expect(setOwnAutoTopUp).toHaveBeenCalledWith('user_a', GROUP_ID, null);
+  });
+
+  it('ignores a userId in the body: it is rejected, so nobody can set another’s', async () => {
+    const response = await invoke(
+      ME_PATCH,
+      req(ME_URL, { autoTopUpMonthlyCredits: 40, userId: 'user_b' }),
+      { id: GROUP_ID }
+    );
+
+    expect(response.status).toBe(400);
+    expect(setOwnAutoTopUp).not.toHaveBeenCalled();
+  });
+
+  it.each([{ autoTopUpMonthlyCredits: 0 }, { autoTopUpMonthlyCredits: -5 }, {}])(
+    'rejects %j, rather than reaching the service',
+    async (payload) => {
+      const response = await invoke(ME_PATCH, req(ME_URL, payload), { id: GROUP_ID });
+
+      expect(response.status).toBe(400);
+      expect(setOwnAutoTopUp).not.toHaveBeenCalled();
+    }
+  );
+
+  it('is a 404 for a caller who is not a member', async () => {
+    vi.mocked(setOwnAutoTopUp).mockResolvedValue({ ok: false, reason: 'not_a_member' });
+
+    const response = await invoke(ME_PATCH, req(ME_URL, { autoTopUpMonthlyCredits: 40 }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/resparkable/groups/[id]/budget/top-up: to', () => {
+  const TOP_UP_URL = `${BUDGET_URL}/top-up`;
+
+  it('fills the caller’s own group balance for to: me, not the pool', async () => {
+    vi.mocked(topUpOwnGroupBalance).mockResolvedValue({
+      ok: true,
+      value: { memberBalanceCredits: 25 },
+    });
+
+    const response = await invoke(TOP_UP_POST, req(TOP_UP_URL, { credits: 10, to: 'me' }), {
+      id: GROUP_ID,
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(topUpOwnGroupBalance).toHaveBeenCalledWith('user_a', GROUP_ID, 10);
+    expect(topUpGroup).not.toHaveBeenCalled();
+    expect(body.data).toEqual({ memberBalanceCredits: 25 });
+  });
+
+  it('defaults to the pool when to is omitted', async () => {
+    vi.mocked(topUpGroup).mockResolvedValue({ ok: true, value: { balanceCredits: 60 } });
+
+    await invoke(TOP_UP_POST, req(TOP_UP_URL, { credits: 10 }), { id: GROUP_ID });
+
+    expect(topUpGroup).toHaveBeenCalledWith('user_a', GROUP_ID, 10);
+    expect(topUpOwnGroupBalance).not.toHaveBeenCalled();
+  });
+
+  it('goes to the pool for an explicit to: pool', async () => {
+    vi.mocked(topUpGroup).mockResolvedValue({ ok: true, value: { balanceCredits: 60 } });
+
+    await invoke(TOP_UP_POST, req(TOP_UP_URL, { credits: 10, to: 'pool' }), { id: GROUP_ID });
+
+    expect(topUpGroup).toHaveBeenCalledTimes(1);
+    expect(topUpOwnGroupBalance).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown destination', async () => {
+    const response = await invoke(TOP_UP_POST, req(TOP_UP_URL, { credits: 10, to: 'bank' }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(400);
+    expect(topUpGroup).not.toHaveBeenCalled();
+    expect(topUpOwnGroupBalance).not.toHaveBeenCalled();
+  });
+
+  it('is a 402 when the caller’s own credits do not cover a to: me top-up', async () => {
+    vi.mocked(topUpOwnGroupBalance).mockResolvedValue({
+      ok: false,
+      reason: 'insufficient_personal_credits',
+    });
+
+    const response = await invoke(TOP_UP_POST, req(TOP_UP_URL, { credits: 10, to: 'me' }), {
+      id: GROUP_ID,
+    });
+
+    expect(response.status).toBe(402);
+  });
+});
+
+describe('PATCH /api/v1/resparkable/groups/[id]/budget/members/[userId]: allowance', () => {
+  const URL_B = `${BUDGET_URL}/members/user_b`;
+  const params = { id: GROUP_ID, userId: 'user_b' };
+
+  it('sets only the allowance when only allowanceCredits is sent, leaving the cap alone', async () => {
+    vi.mocked(setMemberAllowance).mockResolvedValue({
+      ok: true,
+      value: { userId: 'user_b', allowanceCredits: 30 },
+    });
+
+    const response = await invoke(MEMBER_CAP_PATCH, req(URL_B, { allowanceCredits: 30 }), params);
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(setMemberAllowance).toHaveBeenCalledWith('user_a', GROUP_ID, 'user_b', 30);
+    expect(setMemberDailyCreditCap).not.toHaveBeenCalled();
+    expect(body.data).toEqual({ userId: 'user_b', allowanceCredits: 30 });
+  });
+
+  it('sets both when both are sent, and returns both', async () => {
+    vi.mocked(setMemberDailyCreditCap).mockResolvedValue({
+      ok: true,
+      value: { userId: 'user_b', dailyCreditCap: 5 },
+    });
+    vi.mocked(setMemberAllowance).mockResolvedValue({
+      ok: true,
+      value: { userId: 'user_b', allowanceCredits: null },
+    });
+
+    const response = await invoke(
+      MEMBER_CAP_PATCH,
+      req(URL_B, { dailyCreditCap: 5, allowanceCredits: null }),
+      params
+    );
+    const body = await response.json();
+
+    expect(setMemberDailyCreditCap).toHaveBeenCalledWith('user_a', GROUP_ID, 'user_b', 5);
+    expect(setMemberAllowance).toHaveBeenCalledWith('user_a', GROUP_ID, 'user_b', null);
+    expect(body.data).toEqual({ userId: 'user_b', dailyCreditCap: 5, allowanceCredits: null });
+  });
+
+  it('does not attempt the allowance when the cap write is refused', async () => {
+    vi.mocked(setMemberDailyCreditCap).mockResolvedValue({ ok: false, reason: 'not_an_admin' });
+
+    const response = await invoke(
+      MEMBER_CAP_PATCH,
+      req(URL_B, { dailyCreditCap: 5, allowanceCredits: 30 }),
+      params
+    );
+
+    expect(response.status).toBe(403);
+    expect(setMemberAllowance).not.toHaveBeenCalled();
+  });
+
+  it('is a 404 for an allowance on someone who is not a joined member', async () => {
+    vi.mocked(setMemberAllowance).mockResolvedValue({ ok: false, reason: 'no_such_member' });
+
+    const response = await invoke(MEMBER_CAP_PATCH, req(URL_B, { allowanceCredits: 30 }), params);
+
+    expect(response.status).toBe(404);
+  });
+
+  it('rejects a negative allowance', async () => {
+    const response = await invoke(MEMBER_CAP_PATCH, req(URL_B, { allowanceCredits: -1 }), params);
+
+    expect(response.status).toBe(400);
+    expect(setMemberAllowance).not.toHaveBeenCalled();
   });
 });

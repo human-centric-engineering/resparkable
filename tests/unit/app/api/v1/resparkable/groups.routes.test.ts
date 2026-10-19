@@ -106,6 +106,12 @@ vi.mock('@/lib/framework/resparkable/services/membership-notice', () => ({
   sendMembershipChangedNotice: vi.fn(),
 }));
 
+// The operational-payer fallback (phase 62) is its own service; the routes are
+// tested for when they call it, not for what it does.
+vi.mock('@/lib/framework/resparkable/services/group-budget', () => ({
+  releasePayerAndTell: vi.fn().mockResolvedValue(false),
+}));
+
 vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
   issueGroupInvite: vi.fn(),
   listInvitesForAdmin: vi.fn(),
@@ -160,6 +166,7 @@ import {
   updateGroupSettings,
 } from '@/lib/framework/resparkable/services/membership';
 import { deleteGroupConfirmed } from '@/lib/framework/resparkable/services/group-deletion';
+import { releasePayerAndTell } from '@/lib/framework/resparkable/services/group-budget';
 import { getLatestGroupDigest } from '@/lib/framework/resparkable/services/group-digest';
 import { sendMembershipChangedNotice } from '@/lib/framework/resparkable/services/membership-notice';
 import {
@@ -1736,5 +1743,123 @@ describe('POST /api/v1/resparkable/groups/join', () => {
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ outcome: 'unknown' });
     expect(body.data).not.toHaveProperty('groupName');
+  });
+});
+
+// ─── The operational payer going (phase 62) ───────────────────────────────────
+
+describe('members/[userId]: releasing the operational payer', () => {
+  const MEMBER_URL = `http://localhost/api/v1/resparkable/groups/${GROUP_ID}/members/user_b`;
+  const params = { id: GROUP_ID, userId: 'user_b' };
+
+  describe('PATCH (role change)', () => {
+    it('releases the payer when an admin is demoted', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({
+        ok: true,
+        value: { changed: true, from: 'admin', groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'member' }), params);
+
+      expect(releasePayerAndTell).toHaveBeenCalledWith(GROUP_ID, 'user_b');
+    });
+
+    it('releases the payer when an admin is demoted to a viewer', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({
+        ok: true,
+        value: { changed: true, from: 'admin', groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'viewer' }), params);
+
+      expect(releasePayerAndTell).toHaveBeenCalledWith(GROUP_ID, 'user_b');
+    });
+
+    it('does not release when a non-admin is promoted to admin', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({
+        ok: true,
+        value: { changed: true, from: 'member', groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'admin' }), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
+
+    it('does not release for a change between two roles that were never admin', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({
+        ok: true,
+        value: { changed: true, from: 'member', groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'viewer' }), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
+
+    it('does not release when the admin role was re-submitted unchanged', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({
+        ok: true,
+        value: { changed: false, from: 'admin', groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'admin' }), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
+
+    it('does not release when the change was refused', async () => {
+      vi.mocked(changeMemberRole).mockResolvedValue({ ok: false, reason: 'last_admin' });
+
+      await invoke(MEMBER_PATCH, req(MEMBER_URL, { role: 'member' }), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('DELETE (leave / remove)', () => {
+    it.each(['left', 'removed'] as const)('releases the payer on %s', async (kind) => {
+      vi.mocked(removeMember).mockResolvedValue({
+        ok: true,
+        value: { groupDeleted: false, kind, groupName: 'Study Group B' },
+      });
+
+      await invoke(MEMBER_DELETE, req(MEMBER_URL), params);
+
+      expect(releasePayerAndTell).toHaveBeenCalledWith(GROUP_ID, 'user_b');
+    });
+
+    it.each(['request_removed', 'request_withdrawn'] as const)(
+      'does not release for a request to join that ended (%s)',
+      async (kind) => {
+        vi.mocked(removeMember).mockResolvedValue({
+          ok: true,
+          value: { groupDeleted: false, kind, groupName: 'Study Group B' },
+        });
+
+        await invoke(MEMBER_DELETE, req(MEMBER_URL), params);
+
+        expect(releasePayerAndTell).not.toHaveBeenCalled();
+      }
+    );
+
+    it('does not release when the whole group went with its last member', async () => {
+      vi.mocked(removeMember).mockResolvedValue({
+        ok: true,
+        value: { groupDeleted: true, kind: 'group_deleted', groupName: null },
+      });
+
+      await invoke(MEMBER_DELETE, req(MEMBER_URL), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
+
+    it('does not release when the removal was refused', async () => {
+      vi.mocked(removeMember).mockResolvedValue({ ok: false, reason: 'last_admin' });
+
+      await invoke(MEMBER_DELETE, req(MEMBER_URL), params);
+
+      expect(releasePayerAndTell).not.toHaveBeenCalled();
+    });
   });
 });
