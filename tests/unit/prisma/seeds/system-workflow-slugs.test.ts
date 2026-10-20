@@ -28,6 +28,7 @@ vi.mock('@/lib/db/client', () => ({ prisma: {} }));
 
 import { isSystemWorkflowSlug } from '@/lib/orchestration/workflows/template-catalogue';
 import { PROVIDER_MODEL_AUDIT_TEMPLATE } from '@/prisma/seeds/data/templates/provider-model-audit';
+import { RESPARKABLE_WORKFLOWS } from '@/lib/framework/resparkable/workflows/definitions';
 
 const SEEDS_DIR = path.join(process.cwd(), 'prisma', 'seeds');
 
@@ -65,8 +66,11 @@ describe('seeds that write system workflows', () => {
       .filter((unit) => writesSystemWorkflow(readFileSync(path.join(SEEDS_DIR, unit), 'utf8')))
       .sort();
 
-    expect(writers).toEqual(['010-model-auditor.ts']);
-    // …and the workflow that unit writes is on the importer's list.
+    // FORK (Resparkable): Sunrise pins only 010; Resparkable's workflow seed
+    // writes system rows as well.
+    expect(writers).toEqual(['010-model-auditor.ts', 'framework-resparkable/005-workflows.ts']);
+    // …and the workflows those units write are on the importer's list.
     expect(isSystemWorkflowSlug(PROVIDER_MODEL_AUDIT_TEMPLATE.slug)).toBe(true);
+    for (const spec of RESPARKABLE_WORKFLOWS) expect(isSystemWorkflowSlug(spec.slug)).toBe(true);
   });
 });

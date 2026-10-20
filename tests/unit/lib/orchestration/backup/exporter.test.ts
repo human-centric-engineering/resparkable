@@ -29,6 +29,7 @@ vi.mock('@/lib/db/client', () => ({
 
 import { exportOrchestrationConfig } from '@/lib/orchestration/backup/exporter';
 import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
+import { SYSTEM_WORKFLOW_SLUGS } from '@/lib/orchestration/workflows/template-catalogue';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -502,9 +503,11 @@ describe('exportOrchestrationConfig', () => {
         NOT?: { isTemplate?: boolean; slug?: { in?: string[] } };
       };
     };
+    // FORK (Resparkable): the reserved slugs are the provider-model audit plus
+    // Resparkable's seeded workflows, so read the list rather than spell it.
     expect(wfCall?.where).toEqual({
       isSystem: false,
-      slug: { notIn: ['tpl-provider-model-audit'] },
+      slug: { notIn: [...SYSTEM_WORKFLOW_SLUGS] },
       NOT: { isTemplate: true, slug: { in: expect.any(Array) } },
     });
     expect([...(wfCall?.where?.NOT?.slug?.in ?? [])].sort()).toEqual(

@@ -21,6 +21,7 @@ import { prisma } from '@/lib/db/client';
 import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
 import { PROVIDER_MODEL_AUDIT_TEMPLATE } from '@/prisma/seeds/data/templates/provider-model-audit';
 import type { WorkflowDefinition, WorkflowTemplateMetadata } from '@/types/orchestration';
+import { RESPARKABLE_WORKFLOWS } from '@/lib/framework/resparkable/workflows/definitions';
 
 /** Where a catalogue entry comes from. */
 export type WorkflowTemplateSource = 'builtin' | 'custom';
@@ -80,6 +81,10 @@ export function isBuiltinTemplateSlug(slug: string): boolean {
  */
 export const SYSTEM_WORKFLOW_SLUGS: ReadonlySet<string> = new Set([
   PROVIDER_MODEL_AUDIT_TEMPLATE.slug,
+  // FORK (Resparkable): `prisma/seeds/framework-resparkable/005-workflows.ts`
+  // seeds Resparkable's workflows as system rows too. Sunrise has no seam for a
+  // fork to register these, so they are listed here.
+  ...RESPARKABLE_WORKFLOWS.map((spec) => spec.slug),
 ]);
 
 /** True when `slug` belongs to a Sunrise system workflow. */
