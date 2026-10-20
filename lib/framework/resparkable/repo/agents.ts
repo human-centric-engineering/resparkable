@@ -20,6 +20,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { requireOrgId } from '@/lib/tenancy/context';
 
 /** The subset of agent configuration Resparkable code actually reads. */
 export interface ResparkableAgentBinding {
@@ -40,7 +41,7 @@ export interface ResparkableAgentBinding {
  */
 export async function findAgentBinding(slug: string): Promise<ResparkableAgentBinding | null> {
   return prisma.aiAgent.findUnique({
-    where: { slug },
+    where: { orgId_slug: { orgId: requireOrgId(), slug } },
     select: { id: true, provider: true, model: true, fallbackProviders: true },
   });
 }

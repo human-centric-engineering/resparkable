@@ -1,6 +1,7 @@
 import type { SeedUnit } from '@/prisma/runner';
 import { RESPARKABLE_AGENT_SLUGS } from '@/lib/framework/resparkable/agents';
 import { RESPARKABLE_CAPABILITY_SLUGS } from '@/lib/framework/resparkable/capabilities/catalogue';
+import { requireOrgId } from '@/lib/tenancy/context';
 
 /**
  * Bind capabilities to agents — the fourth and last step of the pipeline.
@@ -153,7 +154,7 @@ const unit: SeedUnit = {
 
     for (const { agentSlug, capabilities } of BINDINGS) {
       const agent = await prisma.aiAgent.findUnique({
-        where: { slug: agentSlug },
+        where: { orgId_slug: { orgId: requireOrgId(), slug: agentSlug } },
         select: { id: true },
       });
       if (!agent) {
