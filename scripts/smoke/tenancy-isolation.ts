@@ -881,8 +881,8 @@ async function main(): Promise<void> {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-sunrise-signature': signature,
-          'x-sunrise-timestamp': timestamp,
+          'x-resparkable-signature': signature,
+          'x-resparkable-timestamp': timestamp,
           'x-forwarded-for': '10.0.0.2',
         },
         body: rawBody,
@@ -1018,9 +1018,12 @@ async function main(): Promise<void> {
       installOnly.every((slug) => !inB.some((r) => r.slug === slug)),
       `B has none of the install-only agents (${installOnly.join(', ')})`
     );
+    // The fork seeds its own system agents into the install org too, so count
+    // only the registry's slugs there, not every isSystem row.
+    const platformSlugs = [...everyOrg, ...installOnly];
     check(
-      installOnly.every((slug) => inInstall.some((r) => r.slug === slug)) &&
-        inInstall.length === everyOrg.length + installOnly.length,
+      platformSlugs.every((slug) => inInstall.some((r) => r.slug === slug)) &&
+        inInstall.filter((r) => platformSlugs.includes(r.slug)).length === platformSlugs.length,
       `the install org still has all ${everyOrg.length + installOnly.length}`
     );
     check(
