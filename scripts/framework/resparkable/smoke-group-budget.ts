@@ -24,6 +24,7 @@ import { hasResparkableActivitySince } from '@/lib/framework/resparkable/repo/jo
 import { backgroundSpaceScope, spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { assertCanSpend, recordAgentSpend } from '@/lib/framework/resparkable/services/billing';
 import { captureThought } from '@/lib/framework/resparkable/services/capture';
+import { getGroupBooks } from '@/lib/framework/resparkable/services/group-books';
 import {
   getGroupBudget,
   notifyGroupBudgetThresholds,
@@ -198,20 +199,16 @@ async function main(): Promise<void> {
       'clearing the cap lets them spend again'
     );
 
-    console.log('\nthe budget view: admins see spend, members see the balance');
+    console.log('\nthe budget view and the books (phase 62: the books are open to every member)');
     const memberView = await getGroupBudget(member.id, groupId);
-    check(memberView.ok && memberView.value.admin === null, 'a member gets no per-person figures');
-    const adminView = await getGroupBudget(admin.id, groupId);
-    const rowsByUser = new Map(
-      adminView.ok && adminView.value.admin
-        ? adminView.value.admin.members.map((row) => [row.userId, row])
-        : []
-    );
+    check(memberView.ok && memberView.value.admin === null, 'a member gets no admin controls');
+    const books = await getGroupBooks(member.id, groupId);
+    const rowsByUser = new Map(books.ok ? books.value.people.map((row) => [row.userId, row]) : []);
     check(
-      (rowsByUser.get(member.id)?.spentCredits ?? 0) > 0 &&
-        rowsByUser.get(member.id)?.contributedCredits === 10 &&
-        rowsByUser.get(admin.id)?.contributedCredits === 40,
-      "an admin sees each person's spend and what they added"
+      (rowsByUser.get(member.id)?.totals.sharedActivity ?? 0) > 0 &&
+        rowsByUser.get(member.id)?.totals.topUps === 10 &&
+        rowsByUser.get(admin.id)?.totals.topUps === 40,
+      "a member reads each person's spend and what they added"
     );
 
     console.log('\nthe alerts: on the crossing, admins only');

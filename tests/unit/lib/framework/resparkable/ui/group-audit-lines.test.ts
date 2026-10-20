@@ -44,6 +44,9 @@ const METADATA: Record<string, unknown> = {
   budget_changed: { fundingMode: 'self_funded' },
   member_cap_changed: { dailyCreditCap: 25 },
   topped_up: { credits: 40 },
+  billing_changed: { shortfallPolicy: 'suspend', from: '2026-11-05T00:00:00.000Z' },
+  member_allowance_changed: { allowanceCredits: 30 },
+  payer_released: null,
 };
 
 describe('groupAuditLine', () => {
@@ -109,6 +112,60 @@ describe('groupAuditLine', () => {
     expect(groupAuditLine(entry({ action: 'topped_up', metadata: null }))).toBe(
       'Sam added credits to the group'
     );
+  });
+
+  it('says a change to who pays starts on its date, and drops the time of day', () => {
+    expect(
+      groupAuditLine(
+        entry({
+          action: 'billing_changed',
+          metadata: { seatPriceMemberCredits: 4, from: '2026-11-05T00:00:00.000Z' },
+        })
+      )
+    ).toBe('Sam changed who pays from 2026-11-05');
+  });
+
+  it('says a change to who pays was cancelled when it was discarded', () => {
+    expect(
+      groupAuditLine(entry({ action: 'billing_changed', metadata: { discarded: true } }))
+    ).toBe('Sam cancelled a change to who pays');
+  });
+
+  it('describes a change to who pays without a date when none is recorded', () => {
+    expect(groupAuditLine(entry({ action: 'billing_changed', metadata: null }))).toBe(
+      'Sam changed who pays'
+    );
+  });
+
+  it('renders an allowance with its number, and a cleared one as removed', () => {
+    expect(
+      groupAuditLine(
+        entry({ action: 'member_allowance_changed', metadata: { allowanceCredits: 30 } })
+      )
+    ).toBe('Sam set Priya’s monthly allowance to 30 credits');
+    expect(
+      groupAuditLine(
+        entry({ action: 'member_allowance_changed', metadata: { allowanceCredits: null } })
+      )
+    ).toBe('Sam removed Priya’s monthly allowance');
+    expect(
+      groupAuditLine(
+        entry({
+          action: 'member_allowance_changed',
+          aboutYou: true,
+          metadata: { allowanceCredits: 0 },
+        })
+      )
+    ).toBe('Sam set your monthly allowance to 0 credits');
+  });
+
+  it('says the shared balance took over because the payer no longer can, naming no actor', () => {
+    expect(groupAuditLine(entry({ action: 'payer_released', actorName: null }))).toBe(
+      'The group’s shared balance now pays its running costs, because Priya no longer can'
+    );
+    expect(
+      groupAuditLine(entry({ action: 'payer_released', actorName: null, aboutYou: true }))
+    ).toBe('The group’s shared balance now pays its running costs, because you no longer can');
   });
 
   it('renders nothing for a role change to a role it does not know', () => {

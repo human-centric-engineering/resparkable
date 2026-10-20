@@ -6,6 +6,7 @@ import { LoadError } from '@/components/resparkable/ui/load-error';
 import { getServerSession } from '@/lib/auth/utils';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import {
+  groupBooksSchema,
   groupBudgetSchema,
   groupDetailSchema,
   groupInvitesSchema,
@@ -50,10 +51,13 @@ export default async function ResparkableGroupPage({
   // The budget is answered for every member (the per-person half only for an
   // admin, decided by the route), so it is read alongside the detail rather
   // than after it. A failure costs the page its credits section, not the page.
-  const [session, detail, budget] = await Promise.all([
+  // The books likewise (phase 62): every member reads them, and a failure costs
+  // the page its books, not the page.
+  const [session, detail, budget, books] = await Promise.all([
     getServerSession(),
     readResparkable(RESPARKABLE_API.group(id), groupDetailSchema, null),
     readResparkable(RESPARKABLE_API.groupBudget(id), groupBudgetSchema, null),
+    readResparkable(RESPARKABLE_API.groupBooks(id), groupBooksSchema, null),
   ]);
 
   if (!detail.ok) {
@@ -78,6 +82,7 @@ export default async function ResparkableGroupPage({
       invites={invites?.ok ? invites.data : []}
       joinLinks={joinLinks?.ok ? joinLinks.data : []}
       budget={budget.ok ? budget.data : null}
+      books={books.ok ? books.data : null}
       viewerUserId={session?.user.id ?? ''}
     />
   );

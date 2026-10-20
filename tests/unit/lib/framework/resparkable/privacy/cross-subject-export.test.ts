@@ -458,7 +458,13 @@ describe('collectGroupContributions (phase 48, §23.6)', () => {
 
     expect(
       vi.mocked(prisma.resparkableCreditLedgerEntry.findMany).mock.calls[0]?.[0]?.where
-    ).toEqual({ createdByUserId: 'user_b', space: { kind: 'group' } });
+    ).toEqual({
+      space: { kind: 'group' },
+      // Phase 62: rows that moved their own group balance count too, whoever
+      // started them (a share of somebody else's split, a seat). Rows they
+      // started that moved somebody ELSE's balance are that person's, not theirs.
+      OR: [{ memberUserId: 'user_b' }, { createdByUserId: 'user_b', memberUserId: null }],
+    });
     expect(JSON.stringify(groups)).toContain('transfer_in');
     expect(JSON.stringify(groups)).toContain('billingLedger');
   });

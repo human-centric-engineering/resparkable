@@ -1128,6 +1128,20 @@ export const redeemJoinLinkResponseSchema = z.object({
 
 export type RedeemJoinLinkResponse = z.infer<typeof redeemJoinLinkResponseSchema>;
 
+/** Who pays in a group (phase 62). Mirrors `GroupBillingSettings`. */
+const groupBillingSettingsWire = z.object({
+  seatPriceAdminCredits: z.number(),
+  seatPriceMemberCredits: z.number(),
+  seatPriceViewerCredits: z.number(),
+  operationalCostsPaidBy: z.enum(['pool', 'one_admin', 'admins_split']),
+  operationalPayerUserId: z.string().nullable(),
+  activityCostsPaidBy: z.enum(['pool', 'equal_split', 'allowance']),
+  allowanceSource: z.enum(['carved', 'filled']),
+  shortfallPolicy: z.enum(['debt', 'suspend']),
+});
+
+export type GroupBillingSettingsWire = z.infer<typeof groupBillingSettingsWire>;
+
 /**
  * `GET /resparkable/groups/[id]/budget` (phase 50). `admin` is `null` for
  * everybody who is not an admin of the group, never an empty object: the
@@ -1141,24 +1155,72 @@ export const groupBudgetSchema = z.object({
   you: z.object({
     dailyCreditCap: z.number().nullable(),
     spentLastDayCredits: z.number(),
+    // Phase 62: the caller's own money in the group.
+    balanceCredits: z.number(),
+    allowanceCredits: z.number().nullable(),
+    allowanceRemainingCredits: z.number(),
+    autoTopUpMonthlyCredits: z.number().nullable(),
+    autoTopUpUsedThisMonthCredits: z.number(),
+    suspended: z.boolean(),
+  }),
+  /** Who pays (phase 62), shown to every member. */
+  billing: z.object({
+    settings: groupBillingSettingsWire,
+    pending: z.object({ settings: groupBillingSettingsWire, from: isoDate }).nullable(),
+    monthStartedAt: isoDate,
+    nextMonthStartsAt: isoDate,
+    timeZone: z.string(),
+    operationalPayerName: z.string().nullable(),
   }),
   admin: z
     .object({
       lowBalanceAlertCredits: z.number().nullable(),
       largeRunAlertPercent: z.number().nullable(),
-      windowDays: z.number(),
       members: z.array(
         z.object({
           userId: z.string(),
+          name: z.string().nullable(),
           role: z.string(),
           dailyCreditCap: z.number().nullable(),
-          spentCredits: z.number(),
-          contributedCredits: z.number(),
+          allowanceCredits: z.number().nullable(),
         })
       ),
     })
     .nullable(),
 });
+
+const booksFigures = z.object({
+  seats: z.number(),
+  runningCosts: z.number(),
+  sharedActivity: z.number(),
+  ownActivity: z.number(),
+  topUps: z.number(),
+  creditedBack: z.number(),
+  debtsTakenOn: z.number(),
+});
+
+/**
+ * `GET /resparkable/groups/[id]/books` (phase 62): money by person, category and
+ * week, for every member. No figure about output exists in it to render.
+ */
+export const groupBooksSchema = z.object({
+  timeZone: z.string(),
+  poolBalanceCredits: z.number(),
+  weeks: z.array(z.object({ weekStart: isoDate, totals: booksFigures })),
+  totals: booksFigures,
+  people: z.array(
+    z.object({
+      userId: z.string().nullable(),
+      name: z.string(),
+      isYou: z.boolean(),
+      totals: booksFigures,
+      byWeek: z.array(booksFigures),
+    })
+  ),
+});
+
+export type GroupBooksWire = z.infer<typeof groupBooksSchema>;
+export type GroupBooksFiguresWire = z.infer<typeof booksFigures>;
 
 export type GroupBudgetWire = z.infer<typeof groupBudgetSchema>;
 

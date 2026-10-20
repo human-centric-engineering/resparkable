@@ -37,6 +37,31 @@ export type CreditLedgerEntryKind =
   /** A group top-up, the group's side. */
   | 'transfer_in';
 
+/**
+ * Every value `ResparkableCreditLedgerEntry.booksCategory` may hold (phase 62).
+ * The books read rows by it and drop anything they do not recognise, so a
+ * misspelt category would make money silently vanish from a group's books;
+ * every writer goes through {@link books}, which makes a typo a type error.
+ */
+export const LEDGER_BOOKS_CATEGORIES = [
+  'seats',
+  'runningCosts',
+  'runningCostsOwn',
+  'sharedActivity',
+  'ownActivity',
+  'topUps',
+  'creditedBack',
+  'debtsTakenOn',
+  'none',
+] as const;
+
+export type LedgerBooksCategory = (typeof LEDGER_BOOKS_CATEGORIES)[number];
+
+/** A ledger row's books category, checked against the list at compile time. */
+export function books(category: LedgerBooksCategory): LedgerBooksCategory {
+  return category;
+}
+
 export interface LedgerEntryInput {
   kind: CreditLedgerEntryKind;
   creditsDelta: number;
@@ -48,6 +73,8 @@ export interface LedgerEntryInput {
   relatedCostLogId?: string;
   note?: string;
   createdByAdminId?: string;
+  /** The row's category in a group's books (phase 62). See the schema. */
+  booksCategory?: LedgerBooksCategory;
   /**
    * Who the row is attributed to, when that is not the scope's actor (§23.9's
    * `actorUserId`, which is this table's `createdByUserId`). `undefined` means
@@ -182,56 +209,6 @@ export async function sumMemberSpendSince(
   return 0 - (result._sum.creditsDelta ?? 0);
 }
 
-/** One member's figures in a group's ledger, for the admin's budget view. */
-export interface MemberLedgerSummary {
-  userId: string;
-  /** Credits spent from the group's balance in the window. Positive. */
-  spentCredits: number;
-  /** Credits moved into the group's balance in the window. Positive. */
-  contributedCredits: number;
-}
-
-/**
- * Spend and contributions per member in a space since `since`: the per-person
- * figures §23.12 gives a group **admin** and nobody else.
- *
- * Like {@link sumMemberSpendSince}, this is not an ACL: it filters no content and
- * returns money, not productivity. The service is what keeps it admin-only;
- * members see the balance and nothing about who spent it (23.8). Rows with no
- * author (a run nobody started, a platform grant) are left out, because there is
- * no person to put them against.
- */
-export async function summariseLedgerByMemberSince(
-  scope: SpaceScope,
-  since: Date
-): Promise<MemberLedgerSummary[]> {
-  const rows = await prisma.resparkableCreditLedgerEntry.groupBy({
-    by: ['createdByUserId', 'kind'],
-    where: {
-      ...spaceWhere(scope),
-      kind: { in: ['agent_spend', 'transfer_in'] },
-      createdByUserId: { not: null },
-      createdAt: { gte: since },
-    },
-    _sum: { creditsDelta: true },
-  });
-
-  const byUser = new Map<string, MemberLedgerSummary>();
-  for (const row of rows) {
-    if (!row.createdByUserId) continue;
-    const entry = byUser.get(row.createdByUserId) ?? {
-      userId: row.createdByUserId,
-      spentCredits: 0,
-      contributedCredits: 0,
-    };
-    const sum = row._sum.creditsDelta ?? 0;
-    if (row.kind === 'agent_spend') entry.spentCredits += 0 - sum;
-    else entry.contributedCredits += sum;
-    byUser.set(row.createdByUserId, entry);
-  }
-  return [...byUser.values()];
-}
-
 /**
  * Move credits from a person's own balance into a group's (§23.12, amended
  * 2026-09-25). One transaction, two ledger rows, both attributed to the giver.
@@ -285,6 +262,7 @@ export async function transferCreditsToGroup(
         createdByUserId: giver,
         kind: 'transfer_in',
         creditsDelta: credits,
+        booksCategory: books('topUps'),
       },
     });
 

@@ -7,7 +7,12 @@
  * refusals are 402 and 403 with messages the budget screen shows as they are.
  */
 
-import { ForbiddenError, InsufficientCreditsError, NotFoundError } from '@/lib/api/errors';
+import {
+  ForbiddenError,
+  InsufficientCreditsError,
+  NotFoundError,
+  ValidationError,
+} from '@/lib/api/errors';
 import type { BudgetRefusal } from '@/lib/framework/resparkable/services/group-budget';
 
 export function refuseBudget(reason: BudgetRefusal): never {
@@ -24,5 +29,7 @@ export function refuseBudget(reason: BudgetRefusal): never {
       );
     case 'insufficient_personal_credits':
       throw new InsufficientCreditsError('You do not have that many credits of your own to add.');
+    case 'payer_not_admin':
+      throw new ValidationError('Only an admin of the group can pay its running costs.');
   }
 }

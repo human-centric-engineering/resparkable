@@ -253,9 +253,9 @@ describe('the vocabulary', () => {
 });
 
 describe('which kinds a space is owed (phase 50)', () => {
-  it('gives a person everything but the group digest', () => {
+  it('gives a person everything but the two group kinds', () => {
     expect(jobKindsForSpace('personal')).toEqual(
-      RESPARKABLE_JOB_KINDS.filter((kind) => kind !== 'group_digest')
+      RESPARKABLE_JOB_KINDS.filter((kind) => kind !== 'group_digest' && kind !== 'group_cycle')
     );
   });
 
@@ -264,7 +264,13 @@ describe('which kinds a space is owed (phase 50)', () => {
     for (const personal of ['triage', 'briefing', 'weekly_review', 'horizon_check']) {
       expect(group).not.toContain(personal);
     }
-    expect([...group].sort()).toEqual(['group_digest', 'reindex', 'retention', 'sweep']);
+    expect([...group].sort()).toEqual([
+      'group_cycle',
+      'group_digest',
+      'reindex',
+      'retention',
+      'sweep',
+    ]);
   });
 
   it('covers every kind between the two sets, so none is owed by nobody', () => {

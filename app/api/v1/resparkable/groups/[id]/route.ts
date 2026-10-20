@@ -27,7 +27,7 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { ForbiddenError, NotFoundError, ValidationError } from '@/lib/api/errors';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
@@ -133,6 +133,14 @@ export const DELETE = withAuth<{ id: string }>(async (request, session, { params
       throw new ValidationError('Type the group’s name exactly to delete it', {
         confirmName: ['Does not match the group’s name'],
       });
+    }
+    if (result.reason === 'group_owes') {
+      // Phase 62: a group cannot be deleted while it owes credits. The amount
+      // rides in `details` so the delete screen can offer to pay it.
+      throw new ConflictError(
+        'This group owes credits. Add them to the group before deleting it.',
+        { owes: Math.round((result.owes ?? 0) * 100) / 100 }
+      );
     }
     throw new ForbiddenError('Only an admin can delete a group');
   }

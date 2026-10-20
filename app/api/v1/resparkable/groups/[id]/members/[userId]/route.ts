@@ -34,6 +34,7 @@ import {
   removeMember,
   type MembershipRefusal,
 } from '@/lib/framework/resparkable/services/membership';
+import { releasePayerAndTell } from '@/lib/framework/resparkable/services/group-budget';
 import { sendMembershipChangedNotice } from '@/lib/framework/resparkable/services/membership-notice';
 import { updateGroupMemberSchema } from '@/lib/framework/resparkable/validations';
 
@@ -56,6 +57,10 @@ function refuse(reason: MembershipRefusal): never {
       throw new ConflictError('This is the group’s only admin. Make somebody else an admin first.');
     case 'unknown_role':
       throw new ValidationError('Unknown role');
+    case 'group_owes':
+      throw new ConflictError(
+        'You are the last member, and the group still owes credits. Add credits to the group before you leave, and it will close.'
+      );
   }
 }
 
@@ -84,6 +89,13 @@ export const PATCH = withAuth<{ id: string; userId: string }>(
       });
     }
 
+    // An admin who paid the group's running costs and is no longer an admin
+    // stops paying them; the pool takes over and the admins are told (§23.14
+    // q10). A no-op for anybody who was not the payer.
+    if (result.value.changed && result.value.from === 'admin' && body.role !== 'admin') {
+      await releasePayerAndTell(id, userId);
+    }
+
     return successResponse({ groupId: id, role: body.role });
   }
 );
@@ -106,6 +118,10 @@ export const DELETE = withAuth<{ id: string; userId: string }>(
         subjectUserId: userId,
         change: { kind: 'removed' },
       });
+    }
+
+    if (result.value.kind === 'left' || result.value.kind === 'removed') {
+      await releasePayerAndTell(id, userId);
     }
 
     if (result.value.groupDeleted) {

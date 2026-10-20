@@ -9,11 +9,25 @@ import { after } from 'next/server';
 import {
   applyLedgerEntryWithBalance,
   ensureCreditAccount,
-  findCreditAccount,
   sumMemberSpendSince,
   type LedgerEntryInput,
 } from '@/lib/framework/resparkable/repo/billing';
+import {
+  debitEqualSplit,
+  debitMemberBalance,
+  debitPoolWithinAllowance,
+  findGroupWithClockBySpaceId,
+  findJoinedMembership,
+  type SpendDetail,
+} from '@/lib/framework/resparkable/repo/group-billing';
 import { findMembershipBySpace } from '@/lib/framework/resparkable/repo/groups';
+import {
+  canAffordOperational,
+  planForRun,
+  resolveCharge,
+  topUpAutomatically,
+  type ChargePlan,
+} from '@/lib/framework/resparkable/services/group-billing';
 import {
   DAILY_CAP_WINDOW_MS,
   notifyGroupBudgetThresholds,
@@ -21,8 +35,8 @@ import {
 import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { resolveBillingSettings } from '@/lib/framework/resparkable/settings';
-import { APIError, ForbiddenError, InsufficientCreditsError } from '@/lib/api/errors';
-import type { ResparkableCreditLedgerEntry } from '@prisma/client';
+import { APIError, ForbiddenError } from '@/lib/api/errors';
+import { logger } from '@/lib/logging';
 
 /**
  * A member has spent their `dailyCreditCap` from the group's balance.
@@ -44,42 +58,42 @@ export class DailyCreditCapError extends APIError {
 }
 
 /**
- * Refuse a billing-gated action before any provider call is made.
+ * Refuse a billing-gated action before any provider call is made, and say who
+ * will pay for it.
  *
- * Three refusals, in the order a person would want to hear them (§23.12):
+ * The refusals, in the order a person would want to hear them (§23.12):
  *
  *   1. **A viewer spends nothing.** Zero, not a small cap. A viewer has no write
  *      capability bound, and every billed action in the tier is a write or
  *      produces one. This also covers a grantee's viewer scope on somebody
  *      else's personal space, which must never debit its owner.
- *   2. **The space's balance, and only the space's.** Exactly one account is
- *      resolved, and it is the scope's. A group space's empty balance is a
- *      refusal, **never** a redirect to the member's personal balance: that
- *      fallback is the one that ends with a member discovering they paid for the
- *      group out of credits they bought for their own brain.
- *   3. **A group member's daily cap**, when an admin has set one. The blast
+ *   2. **A group member's daily cap**, when an admin has set one. The blast
  *      radius for "any member can spend everyone's credits", enforced here so a
  *      looping workflow is refused before its next provider call, not debited
- *      after it.
+ *      after it. Checked before step 3 because step 3 can run the member's
+ *      agreed automatic top-up, and their own credits must not move for a run
+ *      the cap is about to refuse (phase 62).
+ *   3. **Whoever the group's settings name, and only them** (phase 62,
+ *      `services/group-billing.ts`). Exactly one source is chosen, before the
+ *      run, and an empty one is a refusal: **never** a redirect to the member's
+ *      personal balance, and never a switch to a different group account.
+ *
+ * Returns the {@link ChargePlan} the debit afterwards must be given, so a run is
+ * billed to the source it was cleared against.
  *
  * Lazily backfills a credit account for a pre-phase-29 space (zero balance,
  * no retroactive `newUserGrantCredits`: that grant is for genuinely new
  * users, minted in `ensureResparkableSpace`'s create branch).
  */
-export async function assertCanSpend(scope: SpaceScope): Promise<void> {
+export async function assertCanSpend(scope: SpaceScope): Promise<ChargePlan> {
   if (scope.role === 'viewer') {
     throw new ForbiddenError('Viewers cannot use features that spend credits');
   }
 
-  const account = await ensureCreditAccount(scope);
-  if (account.balanceCredits <= 0) {
-    throw new InsufficientCreditsError(
-      scope.role === 'owner'
-        ? undefined
-        : "This group's credit balance is empty. A group admin can top it up."
-    );
-  }
-
+  // The daily cap comes BEFORE the charge is resolved, because resolving it can
+  // run a member's automatic top-up (phase 62): their own credits must never
+  // move for a run the cap is about to refuse.
+  //
   // `admin | member` are the group roles that reach here; `owner` is a personal
   // space, where the balance is the only cap there is.
   if (scope.role !== 'owner' && scope.actorUserId) {
@@ -91,15 +105,16 @@ export async function assertCanSpend(scope: SpaceScope): Promise<void> {
       if (spent >= cap) throw new DailyCreditCapError();
     }
   }
+  return resolveCharge(scope);
 }
 
 /**
- * Cheap, non-throwing balance check for the queue's skip gate, where there is
- * no member to cap and no role to refuse: the run is the space's own.
+ * Cheap, non-throwing check for the queue's skip gate, where there is no member
+ * to cap and no role to refuse: the run is the space's own. In a group it asks
+ * whoever pays the group's operational costs (phase 62).
  */
 export async function hasPositiveBalance(scope: SpaceScope): Promise<boolean> {
-  const account = await findCreditAccount(scope);
-  return (account?.balanceCredits ?? 0) > 0;
+  return canAffordOperational(scope);
 }
 
 export interface RecordAgentSpendInput {
@@ -112,6 +127,11 @@ export interface RecordAgentSpendInput {
    * request paths leave it out and the scope's actor is recorded.
    */
   authorUserId?: string | null;
+  /**
+   * Who pays, as {@link assertCanSpend} decided before the run. Left out by the
+   * billing pass, which re-derives it from the run's author (`planForRun`).
+   */
+  plan?: ChargePlan;
   /**
    * Wait for a group's budget alerts before returning. The billing pass sets
    * it: nobody is waiting on a tick, and awaiting keeps one pass from starting
@@ -136,8 +156,14 @@ function scheduleAfterResponse(task: () => Promise<unknown>): void {
   }
 }
 
+/** What a debit charged, for the caller's count. */
+export interface RecordedSpend {
+  credits: number;
+  source: ChargePlan['source'];
+}
+
 /**
- * Debit an agent-spend ledger entry for real, already-incurred cost.
+ * Debit real, already-incurred cost to whoever the plan names.
  *
  * Computes the service charge from `ResparkableBillingSettings` and converts
  * to credits via `creditsPerUsd`. The debit always reflects real usage
@@ -150,7 +176,7 @@ function scheduleAfterResponse(task: () => Promise<unknown>): void {
 export async function recordAgentSpend(
   scope: SpaceScope,
   input: RecordAgentSpendInput
-): Promise<ResparkableCreditLedgerEntry | null> {
+): Promise<RecordedSpend | null> {
   // `!Number.isFinite`, not just `<= 0`: `NaN <= 0` is false, so a NaN cost
   // (an unmapped model in the provider's cost table, say) would otherwise
   // fall through into the ledger math and corrupt `balanceCredits` via a
@@ -161,11 +187,9 @@ export async function recordAgentSpend(
   const settings = resolveBillingSettings(await findResparkableBillingSettings());
   const serviceChargeUsd = input.tokenCostUsd * (settings.serviceChargePercent / 100);
   const totalUsd = input.tokenCostUsd + serviceChargeUsd;
-  const creditsDelta = -(totalUsd * settings.creditsPerUsd);
+  const credits = totalUsd * settings.creditsPerUsd;
 
-  const entry: LedgerEntryInput = {
-    kind: 'agent_spend',
-    creditsDelta,
+  const detail: SpendDetail = {
     tokenCostUsd: input.tokenCostUsd,
     serviceChargeUsd,
     totalUsd,
@@ -175,12 +199,61 @@ export async function recordAgentSpend(
       : {}),
     ...(input.relatedCostLogId ? { relatedCostLogId: input.relatedCostLogId } : {}),
   };
+  const author = input.authorUserId !== undefined ? input.authorUserId : scope.actorUserId;
+  const plan = input.plan ?? (await planForRun(scope, author));
 
-  await ensureCreditAccount(scope);
-  const { entry: written, balanceAfter } = await applyLedgerEntryWithBalance(scope, {
-    ...entry,
-    ...(input.authorUserId !== undefined ? { authorUserId: input.authorUserId } : {}),
-  });
+  if (plan.source === 'member') {
+    const debited = await debitMemberBalance(
+      scope,
+      plan.groupId,
+      plan.memberUserId,
+      credits,
+      detail,
+      author
+    );
+    if (debited) {
+      if (debited.balanceAfter < 0) await topUpMembers(scope, [plan.memberUserId]);
+      return { credits, source: 'member' };
+    }
+    // The member left between the pre-flight and the debit. The run happened,
+    // so the pool pays rather than nobody (phase-62-plan.md, known edges).
+  }
+
+  if (plan.source === 'split') {
+    const shares = await debitEqualSplit(scope, plan.groupId, plan.roles, credits, detail, author);
+    if (shares.length > 0) {
+      const short = shares.filter((share) => share.balanceAfter < 0).map((share) => share.userId);
+      if (short.length > 0) await topUpMembers(scope, short);
+      return { credits, source: 'split' };
+    }
+  }
+
+  let balanceAfter: number;
+  if (plan.source === 'allowance' && author) {
+    ({ poolBalanceAfter: balanceAfter } = await debitPoolWithinAllowance(
+      scope,
+      plan.groupId,
+      author,
+      credits,
+      detail
+    ));
+  } else {
+    await ensureCreditAccount(scope);
+    const entry: LedgerEntryInput = {
+      kind: 'agent_spend',
+      creditsDelta: -credits,
+      ...detail,
+      ...(input.authorUserId !== undefined ? { authorUserId: input.authorUserId } : {}),
+      // A group's pool paid: a running cost if nobody started it.
+      ...(scope.role !== 'owner'
+        ? {
+            booksCategory:
+              author === null ? ('runningCosts' as const) : ('sharedActivity' as const),
+          }
+        : {}),
+    };
+    ({ balanceAfter } = await applyLedgerEntryWithBalance(scope, entry));
+  }
 
   // A group's two admin-only alerts (§23.12). After the write, never before it:
   // the debit is real cost already incurred, and an alert is news about it. The
@@ -193,12 +266,35 @@ export async function recordAgentSpend(
   if (scope.role !== 'owner') {
     const alert = () =>
       notifyGroupBudgetThresholds(scope, {
-        before: balanceAfter - creditsDelta,
+        before: balanceAfter + credits,
         after: balanceAfter,
       });
     if (input.awaitAlerts) await alert();
     else scheduleAfterResponse(alert);
   }
 
-  return written;
+  return { credits, source: plan.source === 'allowance' ? 'allowance' : 'space' };
+}
+
+/**
+ * After a debit left members below zero, run each one's agreed automatic
+ * top-up. Best effort: a balance left below zero is a debt, which the shortfall
+ * policy already handles.
+ */
+async function topUpMembers(scope: SpaceScope, memberUserIds: string[]): Promise<void> {
+  try {
+    const group = await findGroupWithClockBySpaceId(scope.spaceId);
+    if (!group) return;
+    for (const userId of memberUserIds) {
+      const membership = await findJoinedMembership(group.id, userId);
+      if (membership?.autoTopUpMonthlyCredits) {
+        await topUpAutomatically(scope, group, membership, 'member');
+      }
+    }
+  } catch (error) {
+    logger.warn('Resparkable group top-up after debit failed', {
+      spaceId: scope.spaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

@@ -33,6 +33,7 @@ import type { ResparkableJobKind } from '@/lib/framework/resparkable/queue/kinds
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
+import { settleGroupCycleForSpace } from '@/lib/framework/resparkable/services/group-billing';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
 import { RESPARKABLE_SCHEDULED_WORKFLOWS } from '@/lib/framework/resparkable/workflows/slugs';
 import { logger } from '@/lib/logging';
@@ -139,6 +140,12 @@ export async function runResparkableJob(
         // brain that is permanently behind is visible rather than merely slow.
         incomplete: result.remaining > 0,
       };
+    }
+    case 'group_cycle': {
+      // Seats, carved allowances and pending settings at the month's start
+      // (phase 62). Nothing to report in the counts; the service logs it.
+      await settleGroupCycleForSpace(scope.spaceId, now);
+      return NOTHING;
     }
     default: {
       const unhandled: never = kind;

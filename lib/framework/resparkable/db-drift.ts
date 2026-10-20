@@ -314,6 +314,27 @@ const ASSIGNEE_USER_KEYS = [
   },
 ] as const;
 
+/**
+ * B16's inventory: phase 62's two money keys into `User`. Both null out. An
+ * erased member's rows stay in the group's books, unattributed, because the
+ * group still paid what it paid; and an erased operational payer leaves the
+ * group's setting pointing at nobody, which the billing service reads as the
+ * pool. A Cascade on the ledger column would delete a group's history of who
+ * paid what when one person closed their account.
+ */
+const BILLING_USER_KEYS = [
+  {
+    table: 'framework_resparkable_credit_ledger_entry',
+    constraint: 'framework_resparkable_credit_ledger_entry_memberUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+  {
+    table: 'framework_resparkable_group',
+    constraint: 'framework_resparkable_group_operationalPayerUserId_fkey',
+    action: 'ON DELETE SET NULL',
+  },
+] as const;
+
 interface UserKey {
   readonly table: string;
   readonly constraint: string;
@@ -636,6 +657,16 @@ export function registerResparkableDriftProbes(): void {
     kind: 'FK constraints',
     table: 'framework_resparkable_task',
     probe: userKeysHaveTheirActions(ASSIGNEE_USER_KEYS),
+  });
+
+  // B16: who pays (phase 62, §23.12). Both SetNull: erasing a member keeps the
+  // group's books and drops who; erasing the operational payer falls back to
+  // the pool.
+  registerAppDriftProbe({
+    name: 'B16 framework_resparkable_*_memberUserId / operationalPayerUserId (2 hand-written FKs → user, SetNull)',
+    kind: 'FK constraints',
+    table: 'framework_resparkable_credit_ledger_entry, framework_resparkable_group',
+    probe: userKeysHaveTheirActions(BILLING_USER_KEYS),
   });
 
   // B14: a grant names a person or a group, never both and never neither

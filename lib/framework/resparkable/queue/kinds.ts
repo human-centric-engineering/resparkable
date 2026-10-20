@@ -55,6 +55,7 @@ export const RESPARKABLE_JOB_KINDS = [
   'sweep',
   'retention',
   'reindex',
+  'group_cycle',
 ] as const;
 
 export type ResparkableJobKind = (typeof RESPARKABLE_JOB_KINDS)[number];
@@ -92,7 +93,7 @@ export const RESPARKABLE_JOB_KINDS_BY_SPACE_KIND: Record<
     'retention',
     'reindex',
   ],
-  group: ['group_digest', 'sweep', 'retention', 'reindex'],
+  group: ['group_digest', 'sweep', 'retention', 'reindex', 'group_cycle'],
 };
 
 /**
@@ -241,6 +242,18 @@ export const RESPARKABLE_JOB_SPECS: Record<ResparkableJobKind, JobKindSpec> = {
   retention: {
     // See `demandGated` above for why this one is not gated.
     cadence: { shape: 'daily', local: { hour: 2, minute: 0 } },
+    demandGated: false,
+    spendsCredits: false,
+  },
+  group_cycle: {
+    // Phase 62: the group's month turning over (seats, carved allowances, a
+    // pending settings change). Daily rather than monthly, because a group's
+    // month starts on the day it was created, and a daily look at whether the
+    // month has turned costs one indexed read. `settleGroupCycle` is idempotent,
+    // so this and the lazy settle in the pre-flight can never charge a seat
+    // twice. Not gated: the calendar decides, not activity, exactly as for
+    // retention, and a seat is owed whether or not anybody wrote anything.
+    cadence: { shape: 'daily', local: { hour: 0, minute: 10 } },
     demandGated: false,
     spendsCredits: false,
   },

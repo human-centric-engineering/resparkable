@@ -22,6 +22,10 @@ import {
   createLinkSchema,
   documentUploadSchema,
   energyProfileSchema,
+  GROUP_BILLING_FIELDS,
+  groupMemberCapSchema,
+  groupOwnBudgetSchema,
+  groupTopUpSchema,
   redeemJoinLinkSchema,
   resparkableAdminSettingsResponseSchema,
   resparkableSettingsSchema,
@@ -30,6 +34,7 @@ import {
   retentionPolicySchema,
   searchQuerySchema,
   snoozeSchema,
+  updateGroupBudgetSchema,
   updateLinkSchema,
   updateSpaceSchema,
 } from '@/lib/framework/resparkable/validations';
@@ -769,5 +774,130 @@ describe('redeemJoinLinkSchema', () => {
 
   it('rejects a missing token', () => {
     expect(redeemJoinLinkSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('updateGroupBudgetSchema (who pays, phase 62)', () => {
+  it('accepts every who-pays field, and GROUP_BILLING_FIELDS names exactly them', () => {
+    const body = {
+      seatPriceAdminCredits: 5,
+      seatPriceMemberCredits: 3,
+      seatPriceViewerCredits: 0,
+      operationalCostsPaidBy: 'one_admin',
+      operationalPayerUserId: 'user_adm',
+      activityCostsPaidBy: 'allowance',
+      allowanceSource: 'filled',
+      shortfallPolicy: 'suspend',
+    };
+
+    const parsed = updateGroupBudgetSchema.safeParse(body);
+
+    expect(parsed.success).toBe(true);
+    expect([...GROUP_BILLING_FIELDS].sort()).toEqual(Object.keys(body).sort());
+  });
+
+  it('still accepts the phase-50 funding and alert fields on their own', () => {
+    expect(updateGroupBudgetSchema.safeParse({ fundingMode: 'member_contributions' }).success).toBe(
+      true
+    );
+    expect(updateGroupBudgetSchema.safeParse({ lowBalanceAlertCredits: null }).success).toBe(true);
+  });
+
+  it('accepts discardPendingBilling only as the literal true', () => {
+    expect(updateGroupBudgetSchema.safeParse({ discardPendingBilling: true }).success).toBe(true);
+    expect(updateGroupBudgetSchema.safeParse({ discardPendingBilling: false }).success).toBe(false);
+  });
+
+  it('accepts a null payer id (clearing it) but not an empty one', () => {
+    expect(updateGroupBudgetSchema.safeParse({ operationalPayerUserId: null }).success).toBe(true);
+    expect(updateGroupBudgetSchema.safeParse({ operationalPayerUserId: '' }).success).toBe(false);
+  });
+
+  it.each([
+    ['a negative seat price', { seatPriceMemberCredits: -1 }],
+    ['a seat price over the cap', { seatPriceAdminCredits: 1_000_001 }],
+    ['a non-finite seat price', { seatPriceViewerCredits: Infinity }],
+    ['an unknown operational payer', { operationalCostsPaidBy: 'everyone' }],
+    ['an unknown activity payer', { activityCostsPaidBy: 'nobody' }],
+    ['an unknown allowance source', { allowanceSource: 'printed' }],
+    ['an unknown shortfall policy', { shortfallPolicy: 'ignore' }],
+    ['an unknown key', { somethingElse: 1 }],
+    ['an empty body', {}],
+  ])('rejects %s', (_label, body) => {
+    expect(updateGroupBudgetSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('groupTopUpSchema', () => {
+  it('defaults the destination to the pool', () => {
+    expect(groupTopUpSchema.parse({ credits: 10 })).toEqual({ credits: 10, to: 'pool' });
+  });
+
+  it('accepts to: me, which fills the caller’s own balance', () => {
+    expect(groupTopUpSchema.parse({ credits: 10, to: 'me' })).toEqual({ credits: 10, to: 'me' });
+  });
+
+  it.each([
+    ['an unknown destination', { credits: 10, to: 'bank' }],
+    ['zero credits', { credits: 0 }],
+    ['negative credits', { credits: -1 }],
+    ['credits over the cap', { credits: 1_000_001 }],
+    ['an unknown key', { credits: 10, extra: true }],
+  ])('rejects %s', (_label, body) => {
+    expect(groupTopUpSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('groupMemberCapSchema', () => {
+  it('accepts a cap alone, an allowance alone, or both', () => {
+    expect(groupMemberCapSchema.safeParse({ dailyCreditCap: 5 }).success).toBe(true);
+    expect(groupMemberCapSchema.safeParse({ allowanceCredits: 30 }).success).toBe(true);
+    expect(
+      groupMemberCapSchema.safeParse({ dailyCreditCap: 5, allowanceCredits: 30 }).success
+    ).toBe(true);
+  });
+
+  it('accepts null for either, which clears it', () => {
+    expect(groupMemberCapSchema.parse({ dailyCreditCap: null })).toEqual({ dailyCreditCap: null });
+    expect(groupMemberCapSchema.parse({ allowanceCredits: null })).toEqual({
+      allowanceCredits: null,
+    });
+  });
+
+  it('rejects a body with neither field', () => {
+    const parsed = groupMemberCapSchema.safeParse({});
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues[0]?.message).toBe('Nothing to change');
+  });
+
+  it.each([
+    ['a negative cap', { dailyCreditCap: -1 }],
+    ['a negative allowance', { allowanceCredits: -1 }],
+    ['an allowance over the cap', { allowanceCredits: 1_000_001 }],
+    ['an unknown key', { dailyCreditCap: 5, extra: true }],
+  ])('rejects %s', (_label, body) => {
+    expect(groupMemberCapSchema.safeParse(body).success).toBe(false);
+  });
+});
+
+describe('groupOwnBudgetSchema', () => {
+  it('accepts a positive automatic top-up and null to withdraw it', () => {
+    expect(groupOwnBudgetSchema.parse({ autoTopUpMonthlyCredits: 40 })).toEqual({
+      autoTopUpMonthlyCredits: 40,
+    });
+    expect(groupOwnBudgetSchema.parse({ autoTopUpMonthlyCredits: null })).toEqual({
+      autoTopUpMonthlyCredits: null,
+    });
+  });
+
+  it.each([
+    ['zero (withdraw with null instead)', { autoTopUpMonthlyCredits: 0 }],
+    ['a negative amount', { autoTopUpMonthlyCredits: -1 }],
+    ['an amount over the cap', { autoTopUpMonthlyCredits: 1_000_001 }],
+    ['a missing field', {}],
+    ['another member’s id', { autoTopUpMonthlyCredits: 40, userId: 'user_b' }],
+  ])('rejects %s', (_label, body) => {
+    expect(groupOwnBudgetSchema.safeParse(body).success).toBe(false);
   });
 });

@@ -138,6 +138,23 @@ const ALLOWLIST: ReadonlyArray<{ file: string; calls: number; why: string }> = [
     why: 'timezone-aware day bucketing in SQL',
   },
   {
+    file: 'lib/framework/resparkable/repo/group-billing-cycle.ts',
+    calls: 2,
+    why:
+      "phase 62: adding carved allowances and charging every member their role's seat in one " +
+      'UPDATE ... RETURNING each, rather than a read and a write per member. Both are keyed on one ' +
+      'group id and touch only framework_resparkable_group_member.',
+  },
+  {
+    file: 'lib/framework/resparkable/repo/group-billing.ts',
+    calls: 4,
+    why:
+      "phase 62: a member's own group balance debited with UPDATE ... RETURNING (the balance after, " +
+      "from the same statement); the equal split's payers locked FOR NO KEY UPDATE and debited in one " +
+      "statement; and the automatic top-up's row lock. All keyed on one group id, all on " +
+      'framework_resparkable_group_member only.',
+  },
+  {
     file: 'lib/framework/resparkable/repo/groups.ts',
     calls: 2,
     why:

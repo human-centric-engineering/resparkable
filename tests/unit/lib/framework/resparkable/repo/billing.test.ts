@@ -63,7 +63,6 @@ import {
   findUnbilledTerminalResparkableExecutions,
   grantCreditsAsAdmin,
   listCreditAccountsForAdmin,
-  summariseLedgerByMemberSince,
   sumMemberSpendSince,
   transferCreditsToGroup,
 } from '@/lib/framework/resparkable/repo/billing';
@@ -312,6 +311,7 @@ describe('transferCreditsToGroup', () => {
       createdByUserId: 'user_g',
       kind: 'transfer_in',
       creditsDelta: 10,
+      booksCategory: 'topUps',
     });
   });
 
@@ -331,66 +331,6 @@ describe('transferCreditsToGroup', () => {
       'the giver must be the owner of their own space'
     );
     expect(updateMany).not.toHaveBeenCalled();
-  });
-});
-
-describe('summariseLedgerByMemberSince', () => {
-  const group = spaceScopeFor({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
-
-  it('negates agent_spend into a positive spentCredits per user', async () => {
-    ledgerGroupBy.mockResolvedValue([
-      { createdByUserId: 'user_a', kind: 'agent_spend', _sum: { creditsDelta: -12.5 } },
-    ]);
-
-    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
-
-    expect(result).toEqual([{ userId: 'user_a', spentCredits: 12.5, contributedCredits: 0 }]);
-  });
-
-  it('adds transfer_in into contributedCredits, not spentCredits', async () => {
-    ledgerGroupBy.mockResolvedValue([
-      { createdByUserId: 'user_a', kind: 'transfer_in', _sum: { creditsDelta: 20 } },
-    ]);
-
-    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
-
-    expect(result).toEqual([{ userId: 'user_a', spentCredits: 0, contributedCredits: 20 }]);
-  });
-
-  it('groups both kinds together per user', async () => {
-    ledgerGroupBy.mockResolvedValue([
-      { createdByUserId: 'user_a', kind: 'agent_spend', _sum: { creditsDelta: -5 } },
-      { createdByUserId: 'user_a', kind: 'transfer_in', _sum: { creditsDelta: 30 } },
-      { createdByUserId: 'user_b', kind: 'agent_spend', _sum: { creditsDelta: -2 } },
-    ]);
-
-    const result = await summariseLedgerByMemberSince(group, new Date('2026-08-01'));
-
-    expect(result).toEqual(
-      expect.arrayContaining([
-        { userId: 'user_a', spentCredits: 5, contributedCredits: 30 },
-        { userId: 'user_b', spentCredits: 2, contributedCredits: 0 },
-      ])
-    );
-    expect(result).toHaveLength(2);
-  });
-
-  it('filters out null-author rows and scopes to the space, asking only for the two relevant kinds', async () => {
-    ledgerGroupBy.mockResolvedValue([]);
-    const since = new Date('2026-08-01');
-
-    await summariseLedgerByMemberSince(group, since);
-
-    expect(ledgerGroupBy).toHaveBeenCalledWith({
-      by: ['createdByUserId', 'kind'],
-      where: {
-        spaceId: 'spc_group',
-        kind: { in: ['agent_spend', 'transfer_in'] },
-        createdByUserId: { not: null },
-        createdAt: { gte: since },
-      },
-      _sum: { creditsDelta: true },
-    });
   });
 });
 

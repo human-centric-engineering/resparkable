@@ -38,12 +38,16 @@ vi.mock('@/lib/framework/resparkable/services/retention', () => ({
 vi.mock('@/lib/framework/resparkable/embedding/indexer', () => ({
   reindexPending: vi.fn(),
 }));
+vi.mock('@/lib/framework/resparkable/services/group-billing', () => ({
+  settleGroupCycleForSpace: vi.fn(),
+}));
 
 import { runResparkableJob } from '@/lib/framework/resparkable/queue/handlers';
 import { reindexPending } from '@/lib/framework/resparkable/embedding/indexer';
 import { queueResparkableWorkflowRun } from '@/lib/framework/resparkable/repo/workflow-runs';
 import { sweepConnections } from '@/lib/framework/resparkable/search/connections';
 import { enforceResparkableRetention } from '@/lib/framework/resparkable/services/retention';
+import { settleGroupCycleForSpace } from '@/lib/framework/resparkable/services/group-billing';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 
 const SCOPE = spaceScope('user_a');
@@ -213,5 +217,31 @@ describe('failure', () => {
     vi.mocked(sweepConnections).mockRejectedValue(new Error('dimension mismatch'));
 
     await expect(runResparkableJob('sweep', SCOPE, NOW)).rejects.toThrow('dimension mismatch');
+  });
+});
+
+describe('group_cycle (phase 62)', () => {
+  it('settles the group’s month for the job’s space at the job’s time, and queues nothing', async () => {
+    vi.mocked(settleGroupCycleForSpace).mockResolvedValue({
+      settled: true,
+      seatsCharged: 3,
+      months: 1,
+    });
+    const groupScope = spaceScope('spc_group');
+
+    const outcome = await runResparkableJob('group_cycle', groupScope, NOW);
+
+    expect(settleGroupCycleForSpace).toHaveBeenCalledWith('spc_group', NOW);
+    expect(queueResparkableWorkflowRun).not.toHaveBeenCalled();
+    expect(outcome.executionsQueued).toBe(0);
+    expect(outcome.incomplete).toBe(false);
+  });
+
+  it('lets a settlement failure propagate, because the drain owns the backoff', async () => {
+    vi.mocked(settleGroupCycleForSpace).mockRejectedValue(new Error('db down'));
+
+    await expect(runResparkableJob('group_cycle', spaceScope('spc_group'), NOW)).rejects.toThrow(
+      'db down'
+    );
   });
 });

@@ -610,6 +610,11 @@ export const resparkableTransferPolicies: TransferPolicySet = {
           'The admin who made an admin_grant entry, kept as an audit trail ' +
           'of the installation that granted it. Not the entry owner — that is ' +
           'userId — so it is never rewritten to the importer’s own id.',
+        memberUserId:
+          'Phase 62: whose balance in a GROUP a row moved. Only group-space ' +
+          'rows carry it, and a group space never transfers (see ' +
+          'ResparkableGroup below), so on a personal entry it is always null. ' +
+          'Backed by a hand-written FK (probe B16) that Prisma cannot see.',
       },
     },
 

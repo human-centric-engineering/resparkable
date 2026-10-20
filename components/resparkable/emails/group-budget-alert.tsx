@@ -1,5 +1,5 @@
 /**
- * The two admin-only budget alerts (§23.12, phase 50).
+ * The admin-only budget alerts (§23.12, phase 50; `payer_gone`, phase 62).
  *
  * One of the three kinds of event the tier emails about (§23.13). Sent to the
  * group's admins only. Members see the balance in the app and hear nothing
@@ -28,23 +28,32 @@ import {
   Text,
 } from '@react-email/components';
 
-export type GroupBudgetAlertKind = 'low_balance' | 'large_run';
+export type GroupBudgetAlertKind =
+  | 'low_balance'
+  | 'large_run'
+  /** The admin who paid the group's running costs left or stopped being an admin. */
+  | 'payer_gone';
 
 export interface GroupBudgetAlertEmailProps {
   kind: GroupBudgetAlertKind;
   groupName: string;
   /** Credits left after the run that tripped the alert, already rounded. */
   balanceCredits: number;
-  /** `low_balance`: the mark it fell to. `large_run`: what the one run cost. */
+  /** `low_balance`: the mark it fell to. `large_run`: what the one run cost. Unused by `payer_gone`. */
   figureCredits: number;
   /** Absolute URL of the group's page, where the budget lives. */
   groupUrl: string;
 }
 
 export function groupBudgetAlertSubject(kind: GroupBudgetAlertKind, groupName: string): string {
-  return kind === 'low_balance'
-    ? `${groupName} is running low on credits`
-    : `One run in ${groupName} used a large share of its credits`;
+  switch (kind) {
+    case 'low_balance':
+      return `${groupName} is running low on credits`;
+    case 'large_run':
+      return `One run in ${groupName} used a large share of its credits`;
+    case 'payer_gone':
+      return `${groupName}'s shared balance now pays its running costs`;
+  }
 }
 
 export function GroupBudgetAlertEmail({
@@ -70,16 +79,23 @@ export function GroupBudgetAlertEmail({
               {figureCredits} you asked to hear about. When it reaches zero, nobody in the group can
               use features that cost credits until it is topped up.
             </Text>
-          ) : (
+          ) : kind === 'large_run' ? (
             <Text style={text}>
               One run in <strong>{groupName}</strong> used {figureCredits} credits. The group has{' '}
               {balanceCredits} left.
             </Text>
+          ) : (
+            <Text style={text}>
+              The admin who paid for <strong>{groupName}</strong>&apos;s running costs, such as the
+              weekly summary, is no longer an admin of the group. The group&apos;s shared balance
+              pays for them from now on. It has {balanceCredits} credits.
+            </Text>
           )}
 
           <Text style={text}>
-            You can top up the balance, change these alerts, or set a daily limit for a member from
-            the group&apos;s page.
+            {kind === 'payer_gone'
+              ? "You can choose another admin to pay them from the group's page."
+              : "You can top up the balance, change these alerts, or set a daily limit for a member from the group's page."}
           </Text>
 
           <Section style={buttonContainer}>
@@ -91,8 +107,9 @@ export function GroupBudgetAlertEmail({
           <Hr style={hr} />
 
           <Text style={footer}>
-            You are receiving this because you are an admin of {groupName} and this alert is
-            switched on. Members of the group are not sent it.
+            {kind === 'payer_gone'
+              ? `You are receiving this because you are an admin of ${groupName}.`
+              : `You are receiving this because you are an admin of ${groupName} and this alert is switched on. Members of the group are not sent it.`}
           </Text>
         </Container>
       </Body>
