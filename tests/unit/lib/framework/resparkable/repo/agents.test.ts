@@ -23,6 +23,7 @@ vi.mock('@/lib/db/client', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { findAgentBinding } from '@/lib/framework/resparkable/repo/agents';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const findUnique = vi.mocked(prisma.aiAgent.findUnique);
 
@@ -41,10 +42,13 @@ beforeEach(() => {
 });
 
 describe('findAgentBinding', () => {
-  it('looks the agent up by slug', async () => {
+  it('looks the agent up by slug, in the org the call acts for', async () => {
     await findAgentBinding('resparkable-connector');
 
-    expect(findUnique.mock.calls[0]?.[0]?.where).toEqual({ slug: 'resparkable-connector' });
+    // Outside any scope at single, the org is the install org.
+    expect(findUnique.mock.calls[0]?.[0]?.where).toEqual({
+      orgId_slug: { orgId: INSTALL_ORG_ID, slug: 'resparkable-connector' },
+    });
   });
 
   it('selects only the model binding, not the whole agent row', async () => {
