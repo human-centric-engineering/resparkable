@@ -663,6 +663,30 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     why: 'The built-in template slugs, built once at load from the code list: a lookup table, not a cache.',
   },
   {
+    file: 'lib/portability/format.ts',
+    holders: ['FORMAT_BY_ID'],
+    posture: 'no-tenant-data',
+    why: 'Account-transfer formats by id, built once from the code list (FORK: Resparkable).',
+  },
+  {
+    file: 'lib/portability/originals-io.ts',
+    holders: ['STORE_BY_MODEL'],
+    posture: 'no-tenant-data',
+    why: 'Original-file stores by model, built once from the code list (FORK: Resparkable).',
+  },
+  {
+    file: 'lib/portability/registry.ts',
+    holders: ['POLICY_BY_MODEL'],
+    posture: 'no-tenant-data',
+    why: 'Transfer policies by model, built once from the code list (FORK: Resparkable).',
+  },
+  {
+    file: 'lib/portability/validation.ts',
+    holders: ['GROUP_VALUES'],
+    posture: 'no-tenant-data',
+    why: 'The transfer group names, built once from the code list (FORK: Resparkable).',
+  },
+  {
     file: 'lib/privacy/erasure-hooks.ts',
     holders: ['hooks'],
     posture: 'no-tenant-data',

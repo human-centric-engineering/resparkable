@@ -52,6 +52,43 @@ export const SYSTEM_MODELS = [
   'DataErasureReceipt',
   'McpAuditLog',
   'AiAdminAuditLog',
+  // FORK (Resparkable): the fork's own models. Resparkable runs single-tenant
+  // and keys its data by person and space, not by org, so none of these carry
+  // `orgId` (`.context/framework/resparkable/scale.md`: multi-tenancy does not
+  // apply). Listed here because Sunrise has no fork seam for this decision.
+  // Moving any of them to tenant-owned means adding the column in the same change.
+  'TransferJob',
+  'ResparkableArea',
+  'ResparkableBillingSettings',
+  'ResparkableBoard',
+  'ResparkableBoardCard',
+  'ResparkableChecklistItem',
+  'ResparkableComment',
+  'ResparkableCreditAccount',
+  'ResparkableCreditLedgerEntry',
+  'ResparkableDocument',
+  'ResparkableEmbedding',
+  'ResparkableEntity',
+  'ResparkableEvent',
+  'ResparkableGoal',
+  'ResparkableGrant',
+  'ResparkableGroup',
+  'ResparkableGroupAuditEntry',
+  'ResparkableGroupInvite',
+  'ResparkableGroupJoinLink',
+  'ResparkableGroupMember',
+  'ResparkableJob',
+  'ResparkableLink',
+  'ResparkableProject',
+  'ResparkableReview',
+  'ResparkableSettings',
+  'ResparkableShareLink',
+  'ResparkableSpace',
+  'ResparkableTag',
+  'ResparkableTask',
+  'ResparkableTaskTag',
+  'ResparkableThought',
+  'ResparkableTimeBlock',
 ] as const;
 
 /**
