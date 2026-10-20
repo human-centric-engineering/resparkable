@@ -38,6 +38,7 @@
 
 import { describe, expect, it } from 'vitest';
 
+import { ORG_MODEL } from '@/lib/portability/import-plan';
 import { MODEL_GRAPH, MODEL_NAMES } from '@/lib/portability/model-graph.generated';
 import type { TransferPolicy } from '@/lib/portability/policy';
 import {
@@ -587,6 +588,8 @@ describe('foreign keys that leave the transferable set', () => {
         // The owner column is set from the session, not resolved from the
         // bundle, so an edge built on it is not a dependency to satisfy.
         if (policy.ownerColumn && edge.fromFields.includes(policy.ownerColumn)) continue;
+        // The org is set the same way, from the importing context.
+        if (edge.toModel === ORG_MODEL) continue;
         if (writable.has(edge.toModel)) continue;
         if (edge.fromFields.some((c) => declared.has(`${policy.model}.${c}`))) continue;
 

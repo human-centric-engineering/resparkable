@@ -109,7 +109,7 @@ function delegateFor(model: string): GenericDelegate {
     );
   }
 
-  const client: Record<string, unknown> = prisma as unknown as Record<string, unknown>;
+  const client: Record<string, unknown> = prisma;
   const delegate = client[node.delegate];
   if (!isDelegate(delegate)) {
     throw new TransferLookupError(

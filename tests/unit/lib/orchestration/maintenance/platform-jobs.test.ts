@@ -92,10 +92,9 @@ const PER_ORG_TASKS = [
   processPendingEvaluationRuns,
   reconcilePlatformAgentsIfStale,
   processTransferJobs,
-  expireTransferArchives,
 ];
 
-const ALL_TASKS = [...PER_ORG_TASKS, enforceSystemRetentionPolicies];
+const ALL_TASKS = [...PER_ORG_TASKS, enforceSystemRetentionPolicies, expireTransferArchives];
 
 const RETENTION_IDLE = {
   deleted: 0,
@@ -209,7 +208,7 @@ describe('PLATFORM_JOB_NAMES', () => {
       ['evaluationRuns', 'per-org'],
       ['auditLogRetention', { system: expect.stringContaining('audit') }],
       ['platformAgents', 'per-org'],
-      ['transferJobs', { system: expect.stringContaining('transfer') }],
+      ['transferJobs', 'per-org'],
       ['transferArchiveExpiry', { system: expect.stringContaining('transfer') }],
     ]);
   });

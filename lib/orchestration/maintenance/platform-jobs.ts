@@ -133,7 +133,7 @@ function job<T>(spec: {
  * | `evaluationRuns`          | every    | per-org | the worker drives one time-slice per tick, so cadence is throughput |
  * | `auditLogRetention`       | 1 hour   | system  | the two audit tables have no org; once, not once per org            |
  * | `platformAgents`          | 15 min   | per-org | catches up an org whose platform agents are behind the running code |
- * | `transferJobs`            | every    | system  | one job per tick, so cadence *is* throughput for a queued transfer  |
+ * | `transferJobs`            | every    | per-org | one job per tick, so cadence *is* throughput for a queued transfer  |
  * | `transferArchiveExpiry`   | 1 hour   | system  | the archive TTL is measured in days                                 |
  *
  * `platformAgents` does real work only after a deploy changes the platform
@@ -236,8 +236,11 @@ export const PLATFORM_JOBS: readonly PlatformJob[] = [
   job({
     name: 'transferJobs',
     intervalMs: 0,
-    // `TransferJob` is a person's, not an org's, so the queue is read once.
-    scope: { system: 'transferJobs: process the account-transfer queue (system table)' },
+    // Per-org although `TransferJob` has no org: an import writes tenant-owned
+    // rows, and only a per-org run stamps them. Resparkable runs single-tenant,
+    // where this is one run in the install org. At multi each org's run would
+    // take the next job whoever's it is, so this needs revisiting before then.
+    scope: 'per-org',
     // One job per tick by design — each is a full read or a full write of
     // somebody's whole account — so the tick cadence *is* the queue's
     // throughput, and throttling this would throttle the feature.

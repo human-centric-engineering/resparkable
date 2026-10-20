@@ -88,7 +88,12 @@ import { randomUUID } from 'node:crypto';
 
 import { executeTransaction } from '@/lib/db/utils';
 import { logger } from '@/lib/logging';
-import { isWritableScalar, type ImportPlan, type ResolvedRow } from '@/lib/portability/import-plan';
+import {
+  isWritableScalar,
+  orgColumnsOf,
+  type ImportPlan,
+  type ResolvedRow,
+} from '@/lib/portability/import-plan';
 import { remapJsonValue } from '@/lib/portability/json-paths';
 import { MODEL_GRAPH } from '@/lib/portability/model-graph.generated';
 import type { FieldMeta, ModelNode } from '@/lib/portability/model-graph-types';
@@ -349,6 +354,8 @@ interface ShapeContext {
   unsupported: ReadonlySet<string>;
   /** Single-column foreign keys, whose values are ids needing substitution. */
   references: ReadonlySet<string>;
+  /** Columns naming the row's org, which the planner set from the importing context. */
+  orgColumns: ReadonlySet<string>;
   policy: TransferPolicy;
   newIds: ReadonlyMap<string, string>;
   heldBack: ReadonlySet<string>;
@@ -387,6 +394,8 @@ function shapeValues(
     // this account. Where the owner column *is* the primary key, writing it
     // would be an attempt to move the row rather than to edit it.
     if (forUpdate && ctx.policy.ownerColumn === column) continue;
+    // Likewise its org: a matched row is already in the importing one.
+    if (forUpdate && ctx.orgColumns.has(column)) continue;
 
     let value: unknown = raw;
 
@@ -505,6 +514,7 @@ function shapeModel(params: ShapeModelParams): ShapedModel {
         .filter((relation) => relation.fromFields.length === 1)
         .map((relation) => relation.fromFields[0])
     ),
+    orgColumns: new Set(orgColumnsOf(node)),
     policy,
     newIds,
     heldBack,
