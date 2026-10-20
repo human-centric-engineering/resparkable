@@ -1022,6 +1022,39 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.14.0 (77 commits, v0.12.1..v0.14.0).** Two upstream
+  releases, 0.13.0 and 0.14.0, taken in one merge rather than the two stages
+  upstream suggests for a large database. Twelve migrations; on this
+  install's tables none of them is slow. `TENANCY_MODE` stays `single`.
+
+  **Agent slugs are unique per org.** `AiAgent.slug` lost its global unique
+  for `orgId_slug`, so the binding resolver, two seeds and the triage eval
+  script now name the org through `requireOrgId()`, which at `single` is the
+  install org.
+
+  **This tier's models are classified for tenancy.** Sunrise's new guard
+  names every model with no `orgId` that is on neither allowlist. This tier's
+  31 models and `TransferJob` belong to a person, not an org, so they sit on
+  `SYSTEM_MODELS`, a core file, under a FORK comment. See Sunrise ask #54 and
+  upstream [#1041](https://github.com/human-centric-engineering/sunrise/issues/1041).
+
+  **An account import lands in the importing org.** Thirty-eight core tables
+  gained `orgId`. The importer now sets it from the importing context, as it
+  sets the owner column from the importing account, rather than copying it
+  from the bundle or nulling it. A null would have left an imported agent in
+  no org, where an `orgId_slug` lookup never finds it. `AiAgent` merges on
+  `[orgId, slug]`, `transferJobs` runs per org so its writes are stamped, and
+  `Org` and `OrgMembership` are excluded from transfer.
+
+  **This tier's system workflows are on the importer's list.** The seven
+  workflows `framework-resparkable/005-workflows.ts` seeds are added to
+  `SYSTEM_WORKFLOW_SLUGS`, another core edit for want of a seam (Sunrise ask
+  #55).
+
+  **The stateful MCP transport is gone upstream**, with resource
+  subscriptions and `maxSessionsPerKey`, so the per-URI update broadcasts this
+  tier fired on agent, workflow and knowledge changes go with it.
+
 - **Merged Sunrise 0.12.1 (101 commits, v0.11.2..v0.12.1).** Two upstream
   releases. The security fix in 0.12.1 is the one to read first: a sign-up
   request could name its own `role`, and cannot any more.
