@@ -91,10 +91,14 @@ const PER_ORG_TASKS = [
   processPendingExecutions,
   processPendingEvaluationRuns,
   reconcilePlatformAgentsIfStale,
-  processTransferJobs,
 ];
 
-const ALL_TASKS = [...PER_ORG_TASKS, enforceSystemRetentionPolicies, expireTransferArchives];
+const ALL_TASKS = [
+  ...PER_ORG_TASKS,
+  enforceSystemRetentionPolicies,
+  processTransferJobs,
+  expireTransferArchives,
+];
 
 const RETENTION_IDLE = {
   deleted: 0,
@@ -208,7 +212,7 @@ describe('PLATFORM_JOB_NAMES', () => {
       ['evaluationRuns', 'per-org'],
       ['auditLogRetention', { system: expect.stringContaining('audit') }],
       ['platformAgents', 'per-org'],
-      ['transferJobs', 'per-org'],
+      ['transferJobs', { system: expect.stringContaining('transfer') }],
       ['transferArchiveExpiry', { system: expect.stringContaining('transfer') }],
     ]);
   });
@@ -544,6 +548,17 @@ describe('runDuePlatformJobs — tenant scope (§108)', () => {
       'Entering system tenant scope',
       expect.objectContaining({ reason: expect.stringContaining('auditLogRetention') })
     );
+  });
+
+  it('drains the transfer queue once, inside the install org, however many orgs are active', async () => {
+    // A per-org run would go once per ACTIVE org, and the second org's run
+    // would claim the next job and stamp somebody's import with its org.
+    orgs(INSTALL_ORG_ID, ORG_B);
+    const seen = contextsSeenBy(processTransferJobs);
+
+    await runDuePlatformJobs(T0);
+
+    expect(seen).toEqual([INSTALL_ORG_ID]);
   });
 
   it('at multi runs each per-org task once per active org, in that org, and folds the summary', async () => {

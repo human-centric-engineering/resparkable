@@ -168,7 +168,7 @@ Called automatically by the unified maintenance tick **before** `reapZombieExecu
 | `evaluationRuns`           | every tick | per-org | the worker drives one time-slice per tick, so cadence is throughput |
 | `auditLogRetention`        | 1 hour     | system  | the two audit tables have no org column — once, not once per org    |
 | `platformAgents`           | 15 min     | per-org | catches up an org behind the running code or missing a declared row |
-| `transferJobs`             | every tick | per-org | one account transfer per tick, so the cadence _is_ the throughput   |
+| `transferJobs`             | every tick | system  | one transfer per tick, run as the install org so writes get its org |
 | `transferArchiveExpiry`    | 1 hour     | system  | the stored-archive TTL is measured in days                          |
 
 **Tick duration grows with the org count, and the overlap guard does not.**

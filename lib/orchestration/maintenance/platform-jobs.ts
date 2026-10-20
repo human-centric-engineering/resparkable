@@ -54,7 +54,8 @@ import { processPendingEvaluationRuns } from '@/lib/orchestration/evaluations/ru
 import { reconcilePlatformAgentsIfStale } from '@/lib/orchestration/agents/reconcile-platform-agents';
 import { expireTransferArchives } from '@/lib/portability/jobs/expiry';
 import { processTransferJobs } from '@/lib/portability/jobs/worker';
-import { requireOrgId } from '@/lib/tenancy/context';
+import { requireOrgId, runAsOrg } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -133,7 +134,7 @@ function job<T>(spec: {
  * | `evaluationRuns`          | every    | per-org | the worker drives one time-slice per tick, so cadence is throughput |
  * | `auditLogRetention`       | 1 hour   | system  | the two audit tables have no org; once, not once per org            |
  * | `platformAgents`          | 15 min   | per-org | catches up an org whose platform agents are behind the running code |
- * | `transferJobs`            | every    | per-org | one job per tick, so cadence *is* throughput for a queued transfer  |
+ * | `transferJobs`            | every    | system  | one job per tick, so cadence *is* throughput for a queued transfer  |
  * | `transferArchiveExpiry`   | 1 hour   | system  | the archive TTL is measured in days                                 |
  *
  * `platformAgents` does real work only after a deploy changes the platform
@@ -236,15 +237,19 @@ export const PLATFORM_JOBS: readonly PlatformJob[] = [
   job({
     name: 'transferJobs',
     intervalMs: 0,
-    // Per-org although `TransferJob` has no org: an import writes tenant-owned
-    // rows, and only a per-org run stamps them. Resparkable runs single-tenant,
-    // where this is one run in the install org. At multi each org's run would
-    // take the next job whoever's it is, so this needs revisiting before then.
-    scope: 'per-org',
+    // `TransferJob` is a person's, not an org's, so the queue is read once.
+    scope: { system: 'transferJobs: process the account-transfer queue (system table)' },
     // One job per tick by design — each is a full read or a full write of
     // somebody's whole account — so the tick cadence *is* the queue's
     // throughput, and throttling this would throttle the feature.
-    run: () => processTransferJobs(),
+    //
+    // FORK (Resparkable): the body runs as the install org. An import writes
+    // tenant-owned rows, which take their org from the scope, and the system
+    // scope has none. Not per-org: that runs once per ACTIVE org whatever
+    // TENANCY_MODE says, so a second org would claim the next job and stamp
+    // somebody's import with an org that is not theirs. Resparkable is
+    // single-tenant; multi needs `TransferJob` to record the requesting org.
+    run: () => runAsOrg(INSTALL_ORG_ID, () => processTransferJobs(), { source: 'job' }),
     // A job that ran means there may be another queued behind it. An orphan
     // that was failed counts too: the sweep found something, so the deployment
     // is not idle.

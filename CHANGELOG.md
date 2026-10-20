@@ -1043,8 +1043,8 @@ release process.
   sets the owner column from the importing account, rather than copying it
   from the bundle or nulling it. A null would have left an imported agent in
   no org, where an `orgId_slug` lookup never finds it. `AiAgent` merges on
-  `[orgId, slug]`, `transferJobs` runs per org so its writes are stamped, and
-  `Org` and `OrgMembership` are excluded from transfer.
+  `[orgId, slug]`, `transferJobs` runs its queue inside the install org so its
+  writes are stamped, and `Org` and `OrgMembership` are excluded from transfer.
 
   **This tier's system workflows are on the importer's list.** The seven
   workflows `framework-resparkable/005-workflows.ts` seeds are added to
