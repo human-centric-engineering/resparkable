@@ -60,7 +60,6 @@ const mockSettings = {
   isEnabled: true,
   serverName: 'resparkable-mcp',
   serverVersion: '1.0.0',
-  maxSessionsPerKey: 5,
   globalRateLimit: 100,
   auditRetentionDays: 30,
 };

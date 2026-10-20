@@ -93,7 +93,7 @@ Admin-only HTTP surface for managing agents, capabilities, and their relationshi
 | `/api/v1/admin/orchestration/webhooks/deliveries/:id/retry`          | POST               | Retry a failed webhook delivery                                                                                                                                                                                                                                    |
 | `/api/v1/admin/orchestration/workflows/:id/execute-stream`           | GET                | SSE stream for workflow execution (EventSource-friendly)                                                                                                                                                                                                           |
 | `/api/v1/admin/orchestration/workflows/:id/save-as-template`         | POST               | Save workflow as a reusable template                                                                                                                                                                                                                               |
-| `/api/v1/admin/orchestration/workflows/templates`                    | GET                | List workflow templates (builtin + custom)                                                                                                                                                                                                                         |
+| `/api/v1/admin/orchestration/workflows/templates`                    | GET                | Built-in templates (from code) + the org's own; `?source=builtin\|custom`                                                                                                                                                                                          |
 | `/api/v1/admin/orchestration/conversations/export`                   | GET                | Export conversations as JSON or CSV                                                                                                                                                                                                                                |
 | `/api/v1/admin/orchestration/conversations/search`                   | POST               | Semantic search across conversation messages                                                                                                                                                                                                                       |
 | `/api/v1/admin/orchestration/hooks`                                  | GET, POST          | List / create event hooks                                                                                                                                                                                                                                          |
@@ -112,7 +112,7 @@ Validation schemas for every payload live in `lib/validations/orchestration.ts`.
 GET /api/v1/admin/orchestration/agents?page=1&limit=20&isActive=true&provider=anthropic&q=support
 ```
 
-Filters: `isActive` (coerced bool), `provider` (exact match), `q` (case-insensitive `OR` across `name` / `slug` / `description`). Response uses `paginatedResponse` — `{ success, data, meta: { page, limit, total, totalPages } }`. Each item includes `_count: { capabilities, conversations }` and `_budget: BudgetSummary | null` (batch-computed via `groupBy` — not per-row). Types: `AiAgentListItem` in `types/orchestration.ts`.
+Filters: `isActive` (coerced bool), `provider` (exact match), `q` (case-insensitive `OR` across `name` / `slug` / `description`). Response uses `paginatedResponse` — `{ success, data, meta: { page, limit, total, totalPages } }`. Each item includes `_count: { capabilities, conversations }`, `_budget: BudgetSummary | null` (batch-computed via `groupBy` — not per-row) and `_unapprovedProviders: string[] | null` — the providers the agent names that its org is no longer approved for (§120 t-745; one policy read for the page, `null` when unknown: no org in scope, or the policy could not be read). `GET /agents/:id` carries the same field. Types: `AiAgentListItem` in `types/orchestration.ts`.
 
 ### Create agent
 
@@ -153,15 +153,20 @@ All `updateAgentSchema` fields are optional and applied conditionally. The **onl
 
 ### System agent protection
 
-Agents seeded by the platform (e.g. `pattern-advisor`, `quiz-master`) have `isSystem: true`. System agents:
+Sunrise's [platform agents](./platform-agents.md) (e.g. `pattern-advisor`, `quiz-master`, the judges) are `isSystem: true` rows, one instance per org, and every reconcile writes their platform-owned fields back. So the API refuses a change to those fields rather than accept it and have it undone (`lib/orchestration/agents/platform-agent-guard.ts`, §116 t-725). The split is the agent field registry's `platformAgent` flag. System agents:
 
 - **Cannot be deleted** — `DELETE` returns 403 `ForbiddenError('System agents cannot be deleted')`.
-- **Cannot be deactivated** — `PATCH { isActive: false }` returns 403 `ForbiddenError('System agents cannot be deactivated')`.
-- **Cannot have their `systemInstructions`, `slug`, or `isActive` changed** — `PATCH` rejects each with a 403 `ForbiddenError` (`'System agent instructions cannot be modified'` / `'System agent slugs cannot be changed'` / `'System agents cannot be deactivated'`), preserving rollback consistency and the internal slug contract.
-- **Can otherwise be edited** — `PATCH` with any other field (model, temperature, guard modes, `runtimePromptManaged`, etc.) succeeds and versions normally.
-- **Can be version-restored, with the protected fields skipped** — `POST /versions/:versionId/restore` applies the snapshot but leaves `slug`, `systemInstructions`, and `isActive` at their current values (the same set guarded above), so a restore can't bypass the read-only guarantees (see [Agent version restore](#agent-version-restore)).
+- **Cannot have a platform-owned field changed** — `PATCH` returns 403 naming every such field it would change, and listing what the org can change. That covers `slug`, `systemInstructions`, `isActive` (in both directions: a retired agent stays off), `profileId`, the knowledge grants and every other behavioural field. Values are compared, not keys: a field sent unchanged passes (JSON by value, grants as sets), so a client echoing the whole agent back is refused only for what it actually changed.
+- **Can have the org's fields changed** — `provider`, `model`, `fallbackProviders`, `providerConfig`, `monthlyBudgetUsd`, `maxCostPerTurnUsd`, `rateLimitRpm`, `retentionDays` succeed and version normally.
+- **Have locked bindings** — the binding routes return 403 for attach, detach, and a change to a binding's `isEnabled`, which the reconcile writes back. `customConfig` and `customRateLimit` stay writable: the reconcile never writes them. `mcp-system`'s definition leaves its bindings to the org (`capabilityBindings: 'org'`), so every binding route accepts them there.
+- **Have a locked widget config** — `PATCH /agents/:id/widget-config` returns 403.
+- **Can be version-restored, org fields only** — `POST /versions/:versionId/restore` applies the snapshot's org-tunable fields and leaves the platform-owned fields and the grants at their current values (see [Agent version restore](#agent-version-restore)).
 
-The `isSystem` flag is set during seeding and is not exposed as a writable field on create/update schemas.
+`GET /agents/:id` carries the same split for the form: `platformAgent: { lockedFields, tunableFields, bindingsLocked }` on a system agent, `null` otherwise.
+
+**Reserved slugs.** Creating an agent, or renaming one, to a registered platform slug returns 400 `VALIDATION_ERROR` with `details.slug`. Clone refuses such a slug when the caller chose it, and skips past it when it generated it. `POST /agents/import` and the config restore skip such an agent with a warning.
+
+The `isSystem` flag is set only by the platform-agent reconcile and is not exposed as a writable field on create/update schemas.
 
 ### Delete agent
 
@@ -252,6 +257,7 @@ Validated by `instructionsRevertSchema`. `versionIndex` is an index into the sto
 3. Validates `versionIndex < history.length` → 400 if out of range.
 4. Pushes the **current** `systemInstructions` onto history with a new timestamp / `changedBy` entry — so the value you're reverting _from_ is recoverable.
 5. Writes the target version into `systemInstructions` and the grown history back to the column in a single Prisma `update`.
+6. In the same transaction, saves the result as a new `AiAgentVersion` (`ensureBaselineVersion` before the update, `recordAgentVersion` after it, from `lib/orchestration/agents/agent-versioning.ts`), so the newest version still equals what the agent runs and chat turns are pinned to it (t-779).
 
 Without step 4, an accidental revert would be permanent. Don't remove it.
 
@@ -284,7 +290,7 @@ Restores an agent to a previous version snapshot. Loads the `AiAgentVersion.snap
 
 **Fields re-applied on restore** are the registry's versioned scalar set (`versionedScalarFieldNames()` — the single source of truth, so a new versioned field is restored automatically), **plus the knowledge grants** (`grantedTagIds` / `grantedDocumentIds`, reconnected from the snapshot; ids whose tag/document was deleted since are dropped so a stale id can't FK-fail the restore) and **`knowledgeAccessMode`** (restored together with the grants, followed by an access-resolver cache invalidation). `systemInstructions` is restored with the same history-push the PATCH route uses.
 
-**System agents (`isSystem: true`) are restorable**, but the fields the PATCH route guards as read-only are **skipped** — `slug`, `systemInstructions`, and `isActive` keep their current values; everything else in the snapshot is applied. Non-system agents restore the full config.
+**System agents (`isSystem: true`) are restorable**, but only their org-tunable fields are applied — provider, model, fallbacks, provider config, budget, per-turn cap, rate limit and retention. Every platform-owned field keeps its current value, and the knowledge grants are left as they are: the PATCH route refuses those same fields, and the next reconcile would write them back anyway. Non-system agents restore the full config.
 
 **Response (200):**
 
@@ -368,6 +374,8 @@ Validated by `importAgentsSchema`. `conflictMode` defaults to `'skip'` — the s
 | Slug exists in target DB | Increment `results.skipped`   | Update the row in place, `deleteMany` + rebuild pivot rows |
 | Slug does not exist      | Create the agent + pivot rows | Create the agent + pivot rows                              |
 
+A created or overwritten agent also gets an `AiAgentVersion` for its imported config (`v1` for a created one), so its newest version equals what it runs (t-779); an overwrite first saves an agent with no history as `v1`, so its prior config is kept.
+
 Capability slugs that don't exist in the target environment are collected into `results.warnings[]` rather than failing the whole import — bundles frequently come from superset environments. The entire import runs inside a single `prisma.$transaction`, so any failure rolls the whole operation back. `capabilityDispatcher.clearCache()` is called once at the very end.
 
 Response:
@@ -430,12 +438,12 @@ Capabilities seeded by the platform (e.g. `search_knowledge_base`, `get_pattern_
 GET /api/v1/admin/orchestration/capabilities/:id/agents
 ```
 
-Returns the minimal agent projection for every agent that currently attaches this capability via the `AiAgentCapability` pivot — `[{ id, name, slug, isActive }]`, ordered by agent name. Empty array if nothing attached; 404 on unknown id; 400 on invalid CUID. Mirrors the additive `/agents/:id/capabilities` exception taken in Session 4.2.
+Returns the minimal agent projection for every agent in the caller's org that currently attaches this capability via the `AiAgentCapability` pivot — `[{ id, name, slug, isActive }]`, ordered by agent name — with `meta: { otherOrgAgentCount }` for agents in other orgs (active or not), counted and never named (§107 t-752; `0` at `single`; with no org entered — an admin API key — nothing is the caller's, so the array is empty and every agent is in the count). The array keeps its pre-t-752 shape. Empty array if nothing attached; 404 on unknown id; 400 on invalid CUID. Mirrors the additive `/agents/:id/capabilities` exception taken in Session 4.2.
 
 Consumers:
 
 - **Capabilities list page** — `_agents` array is now returned inline on each capability from `GET /capabilities`, so the list page no longer makes per-row requests. This endpoint is still used by the edit page.
-- **Capability edit page** — the Safety tab's "Used by N agents" card, and the delete confirmation dialog (so admins see exactly who breaks when they soft-delete).
+- **Capability edit page** — the Safety tab's "Used by N agents" card and the quarantine card's blast radius. The soft-delete warning lives on the list page and reads the list's inline `_agents` / `_otherOrgAgentCount`.
 
 ## Providers
 
@@ -469,7 +477,7 @@ No DNS resolution happens at validate-time — defending against DNS rebinding w
 curl '/api/v1/admin/orchestration/providers?isActive=true&providerType=anthropic&q=claude'
 ```
 
-Filters: `isActive` (coerced bool), `providerType` (`anthropic` / `openai-compatible`), `isLocal` (coerced bool), `q` (case-insensitive match on `name` / `slug`). Response is paginated; each row carries `apiKeyPresent` and `circuitBreaker: { state, failureCount, openedAt, config }` (from in-memory breaker state, defaults to `{ state: 'closed', failureCount: 0 }` if no breaker exists).
+Filters: `isActive` (coerced bool), `providerType` (`anthropic` / `openai-compatible`), `isLocal` (coerced bool), `q` (case-insensitive match on `name` / `slug`). Response is paginated; each row carries `apiKeyPresent`, `approvedForOrg` (whether the org in context may use it, §120 t-745: always `true` at `single` and for the install org, `null` when unknown: no org in scope, or the policy could not be read) and `circuitBreaker: { state, failureCount, openedAt, config }` (from in-memory breaker state, defaults to `{ state: 'closed', failureCount: 0 }` if no breaker exists).
 
 ```bash
 curl -X POST /api/v1/admin/orchestration/providers \
@@ -593,7 +601,7 @@ Empty body. Runs structural validation (`validateWorkflow`) then semantic valida
 
 **Structural error codes:** `MISSING_ENTRY`, `UNKNOWN_TARGET`, `UNREACHABLE_STEP`, `CYCLE_DETECTED`, `DUPLICATE_STEP_ID`, `MISSING_APPROVAL_PROMPT`, `MISSING_CAPABILITY_SLUG`, `MISSING_GUARD_RULES`, `MISSING_EVALUATE_RUBRIC`, `MISSING_EXTERNAL_URL`.
 
-**Semantic error codes:** `UNKNOWN_MODEL_OVERRIDE`, `INACTIVE_PROVIDER`, `INACTIVE_CAPABILITY`.
+**Semantic error codes:** `UNKNOWN_MODEL_OVERRIDE`, `INACTIVE_PROVIDER`, `PROVIDER_NOT_APPROVED` (at `multi`; §120 t-743), `INACTIVE_CAPABILITY`, `INACTIVE_AGENT`.
 
 ```json
 {
@@ -986,7 +994,7 @@ Empty body. Re-runs the chunker + embedder on an existing document — use it af
 curl -X POST /api/v1/admin/orchestration/knowledge/seed
 ```
 
-Empty body. Resolves `path.join(process.cwd(), 'prisma/seeds/data/chunks/chunks.json')` and calls `seedChunks`. **Idempotent** — if the "Agentic Design Patterns" document already exists, the seeder is a no-op. Safe to call on every deploy. Returns `{ seeded: true }`.
+Empty body. Resolves `path.join(process.cwd(), 'prisma/seeds/data/chunks/chunks.json')` and calls `seedChunks`, which writes the **caller's org's** copy of the "Agentic Design Patterns" document into that org's default knowledge base. **Idempotent** — if the org already holds the document (by its slug), or an earlier version of it, the seeder is a no-op. The install org normally has its copy already: the platform-agent reconcile writes it there, beside the install-only pattern advisor and quiz master. Returns `{ seeded: true }`.
 
 ### List patterns
 
@@ -1055,7 +1063,7 @@ Empty body. Finds every chunk where `embedding IS NULL` and embeds in batches vi
 curl /api/v1/admin/orchestration/knowledge/embedding-status
 ```
 
-Returns `{ total, embedded, pending, hasActiveProvider }`. `hasActiveProvider` is `true` when either an active `AiProviderConfig` exists or `OPENAI_API_KEY` is set in env. Rate-limited.
+Returns `{ total, embedded, pending, hasActiveProvider }`. `hasActiveProvider` is `true` when the embedding resolver actually resolves a provider (`resolveEmbeddingAvailability()`); `providerState` carries the reason when it does not. A bare `OPENAI_API_KEY` with no provider row no longer counts (t-740). Rate-limited.
 
 ### Graph
 

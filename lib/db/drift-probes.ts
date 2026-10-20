@@ -17,6 +17,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { ORG_ISOLATION_POLICY } from '@/lib/tenancy/isolation';
 
 export interface ProbeResult {
   ok: boolean;
@@ -36,16 +37,28 @@ export interface DriftObject {
 }
 
 /**
- * Existence probe by index name in pg_indexes.
+ * Existence probe by index name in pg_indexes. An optional
+ * `definitionContains` substring asserts the index definition text — use it
+ * when a migration re-creates an index under the same name with a different
+ * column set (the per-org partial uniques of §107 t-708), where the name
+ * alone would vouch for the old shape.
  */
-export function indexExists(indexName: string): Probe {
+export function indexExists(indexName: string, definitionContains?: string): Probe {
   return async () => {
-    const rows = await prisma.$queryRaw<Array<{ count: bigint }>>`
-      SELECT count(*)::bigint AS count
+    const rows = await prisma.$queryRaw<Array<{ def: string | null }>>`
+      SELECT indexdef AS def
       FROM pg_indexes
       WHERE indexname = ${indexName}
     `;
-    return { ok: Number(rows[0]?.count ?? 0n) === 1 };
+    const def = rows[0]?.def;
+    if (rows.length !== 1 || !def) return { ok: false };
+    if (definitionContains && !def.includes(definitionContains)) {
+      return {
+        ok: false,
+        note: `definition missing "${definitionContains}" — saw: ${def}`,
+      };
+    }
+    return { ok: true };
   };
 }
 
@@ -169,7 +182,7 @@ export function rlsEnabled(tableName: string, opts?: { requireForced?: boolean }
     if (!row.enabled) {
       return {
         ok: false,
-        note: 'RLS is not enabled — every role reads every row. Run ALTER TABLE … ENABLE ROW LEVEL SECURITY (see db:tenancy:enable once it ships).',
+        note: 'RLS is not enabled — every role reads every row. Run npm run db:tenancy:enable (ALTER TABLE … ENABLE ROW LEVEL SECURITY).',
       };
     }
     if (requireForced && !row.forced) {
@@ -186,10 +199,13 @@ export function rlsEnabled(tableName: string, opts?: { requireForced?: boolean }
  * Existence probe for one named RLS policy on one table (`pg_policies`).
  *
  * The companion to `rlsEnabled`, and the probe every RLS table needs: policies
- * are Prisma-unmodelled objects, so `prisma migrate dev` emits `DROP POLICY`
- * for them exactly as it does for the HNSW indexes this registry was built
- * around. A policy can also exist while RLS is disabled (`CREATE POLICY` on an
- * un-enabled table is inert), so register both probes per protected table.
+ * are Prisma-unmodelled objects, and — unlike the HNSW indexes this registry
+ * was built around — `prisma migrate diff` does not see them at all
+ * (measured, §107 t-704): it neither lists nor drops them, so nothing but
+ * this probe notices a hand-run `DROP POLICY`, a restore from before the
+ * policies' migration, or a fork migration that removed one. A policy can
+ * also exist while RLS is disabled (`CREATE POLICY` on an un-enabled table
+ * is inert), so register both probes per protected table.
  * Scoped to `current_schema()` so a same-named policy in a backup schema can
  * neither answer for a dropped live policy nor inflate the count past 1.
  */
@@ -204,6 +220,39 @@ export function policyExists(tableName: string, policyName: string): Probe {
     `;
     return { ok: Number(rows[0]?.count ?? 0n) === 1 };
   };
+}
+
+/**
+ * The T-series drift probes, derived from the roster (model → table). Every
+ * table gets a policy probe; at `multi` each also gets an enabled-and-forced
+ * probe, because there RLS being off is the failure that reads as healthy.
+ * Names are `T<n>` / `T<n>f` in roster order, which `mergeDriftProbes` keeps
+ * distinct from the A-series and from a fork's.
+ */
+export function tenancyDriftProbes(
+  roster: ReadonlyMap<string, string>,
+  options: { multi: boolean }
+): DriftObject[] {
+  const probes: DriftObject[] = [];
+  let n = 0;
+  for (const [model, table] of roster) {
+    n += 1;
+    probes.push({
+      name: `T${n} ${ORG_ISOLATION_POLICY} on ${table} (${model})`,
+      kind: 'RLS policy',
+      table,
+      probe: policyExists(table, ORG_ISOLATION_POLICY),
+    });
+    if (options.multi) {
+      probes.push({
+        name: `T${n}f RLS enabled + forced on ${table}`,
+        kind: 'RLS flags',
+        table,
+        probe: rlsEnabled(table, { requireForced: true }),
+      });
+    }
+  }
+  return probes;
 }
 
 /**

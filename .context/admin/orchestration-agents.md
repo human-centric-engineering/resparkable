@@ -25,20 +25,20 @@ All three are async server components using `serverFetch()` + `parseApiResponse(
 
 Columns:
 
-| Column      | Source                              | Notes                                                                                                  |
-| ----------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| ☐ select    | Local `Set<string>` state           | Clears on page change / refetch                                                                        |
-| Name        | `agent.name`                        | **Sortable** (page-local). Links to edit page. Visibility badge inline. Description below              |
-| Profile     | `agent.profile`                     | Badge linking to the profile detail page. Shield icon for system profiles. `—` for unassigned.         |
-| Tools       | `agent._count.capabilities`         | Inline from list API. Links to edit page when > 0                                                      |
-| Chats       | `agent._count.conversations`        | **Sortable** (page-local)                                                                              |
-| Model       | `agent.provider` + `agent.model`    | Combined: `provider / model`                                                                           |
-| Budget      | `agent.monthlyBudgetUsd`            | `—` when `null`                                                                                        |
-| Spend MTD   | `agent._budget.spent`               | **Sortable** (page-local). Inline from list API (batch `groupBy`). `—` when no budget                  |
-| Last active | `agent.lastActiveAt`                | **Sortable** (page-local). Relative time (`2h ago`). Absolute timestamp in tooltip. `Never` when null. |
-| Created     | `agent.createdAt`                   | **Sortable** (page-local). Relative time (`3d ago`). Creator name in tooltip via `agent.creator`       |
-| Status      | `agent.isActive`                    | `<Switch>` — optimistic PATCH, reverts on failure                                                      |
-| ⋯ Actions   | Dropdown: Edit · Duplicate · Delete |                                                                                                        |
+| Column      | Source                              | Notes                                                                                                      |
+| ----------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| ☐ select    | Local `Set<string>` state           | Clears on page change / refetch                                                                            |
+| Name        | `agent.name`                        | **Sortable** (page-local). Links to edit page. Visibility badge inline. Description below                  |
+| Profile     | `agent.profile`                     | Badge linking to the profile detail page. Shield icon for system profiles. `—` for unassigned.             |
+| Tools       | `agent._count.capabilities`         | Inline from list API. Links to edit page when > 0                                                          |
+| Chats       | `agent._count.conversations`        | **Sortable** (page-local)                                                                                  |
+| Model       | `agent.provider` + `agent.model`    | Combined: `provider / model`. A "Not approved" badge when `agent._unapprovedProviders` is non-empty (§120) |
+| Budget      | `agent.monthlyBudgetUsd`            | `—` when `null`                                                                                            |
+| Spend MTD   | `agent._budget.spent`               | **Sortable** (page-local). Inline from list API (batch `groupBy`). `—` when no budget                      |
+| Last active | `agent.lastActiveAt`                | **Sortable** (page-local). Relative time (`2h ago`). Absolute timestamp in tooltip. `Never` when null.     |
+| Created     | `agent.createdAt`                   | **Sortable** (page-local). Relative time (`3d ago`). Creator name in tooltip via `agent.creator`           |
+| Status      | `agent.isActive`                    | `<Switch>` — optimistic PATCH, reverts on failure                                                          |
+| ⋯ Actions   | Dropdown: Edit · Duplicate · Delete |                                                                                                            |
 
 ### Default sort vs explicit sort
 
@@ -130,6 +130,8 @@ Values that "win" on the `better` direction render in green. Ties and missing nu
 Both are thin server shells that parallel-fetch the provider list and the aggregated model registry so the form's Model tab hydrates without a loading flicker. Missing providers/models → the form falls back to free-text inputs with an amber warning banner (see [`agent-form.md`](./agent-form.md)).
 
 The edit page additionally fetches the agent itself via `GET /agents/:id`. A `null` response triggers `notFound()`, which renders the stock Next.js 404 page.
+
+When the agent names a provider its org is no longer approved for (§120 t-745), the edit page shows `<UnapprovedProvidersBanner>` at the top, from `GET /agents/:id`'s `_unapprovedProviders`. It says whether the agent cannot respond at all (its primary is refused) or only loses failover (a fallback is), and where a platform admin grants providers. It is hidden when the agent names none, or when it is unknown (`null`: no org in scope, or the policy could not be read).
 
 The edit page also prefetches the agent's evaluation-quality trend via `GET /agents/:id/evaluation-trend` and renders an `EvaluationTrendChart` (recharts `LineChart`) above the form. The chart hides itself when fewer than 2 completed evaluations exist for the agent — a single point isn't a trend. See [`evaluation-metrics.md`](../orchestration/evaluation-metrics.md) for the per-metric rubric and the noisy-scores caveat.
 

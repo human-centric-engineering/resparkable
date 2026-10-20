@@ -16,6 +16,7 @@ import { ChevronDown, ChevronRight, Loader2, Pencil, Trash2 } from 'lucide-react
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-access';
 import {
   Dialog,
   DialogContent,
@@ -96,6 +97,13 @@ type DialogState =
        */
       phase: 'initial' | 'force-confirm' | 'agent-blocked';
       blockedAgents?: Array<{ id: string; name: string; slug: string }>;
+      /**
+       * Grants (agent-blocked) or documents (force-confirm) another org
+       * holds. A tag is global config: those count, but are never named.
+       */
+      otherOrgCount?: number;
+      /** The caller's own grants, which can exceed the (capped) `blockedAgents` list. */
+      ownGrantCount?: number;
     };
 
 export interface KnowledgeTagsTableProps {
@@ -112,10 +120,16 @@ interface TagUsage {
     status: string;
   }>;
   agents: Array<{ id: string; name: string; slug: string; isActive: boolean }>;
+  /** Other orgs' use of the tag: counted, never listed (t-731). */
+  otherOrgDocumentCount?: number;
+  otherOrgAgentCount?: number;
 }
 
 export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): React.ReactElement {
   const router = useRouter();
+  const readOnly = useSharedSettingsReadOnly();
+  // The action column is dropped when read-only; spanning rows follow it.
+  const columnCount = 6 + (readOnly ? 0 : 1);
   const [tags, setTags] = useState<KnowledgeTagListItem[]>(initialTags);
   const [dialog, setDialog] = useState<DialogState>({ kind: 'closed' });
   const [busy, setBusy] = useState(false);
@@ -147,6 +161,8 @@ export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): Re
         [tag.id]: {
           documents: detail?.documents ?? [],
           agents: detail?.agents ?? [],
+          otherOrgDocumentCount: detail?.otherOrgDocumentCount ?? 0,
+          otherOrgAgentCount: detail?.otherOrgAgentCount ?? 0,
         },
       }));
     } catch (err) {
@@ -180,10 +196,12 @@ export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): Re
 
   return (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <BulkDeleteUnusedButton tags={tags} onRefresh={() => void refresh()} />
-        <Button onClick={() => setDialog({ kind: 'create' })}>New tag</Button>
-      </div>
+      {!readOnly && (
+        <div className="flex items-center justify-between gap-2">
+          <BulkDeleteUnusedButton tags={tags} onRefresh={() => void refresh()} />
+          <Button onClick={() => setDialog({ kind: 'create' })}>New tag</Button>
+        </div>
+      )}
 
       <div className="bg-card rounded-md border">
         <Table>
@@ -195,15 +213,19 @@ export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): Re
               <TableHead className="text-right">Documents</TableHead>
               <TableHead className="text-right">Agents</TableHead>
               <TableHead>Updated</TableHead>
-              <TableHead />
+              {!readOnly && <TableHead />}
             </TableRow>
           </TableHeader>
           <TableBody>
             {tags.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-muted-foreground py-12 text-center text-sm">
-                  No tags yet. Create one above, or run the backfill script to lift legacy
-                  knowledge-category strings into tags.
+                <TableCell
+                  colSpan={columnCount}
+                  className="text-muted-foreground py-12 text-center text-sm"
+                >
+                  {readOnly
+                    ? 'No tags yet. Tags are shared by every organisation and are created from the install organisation.'
+                    : 'No tags yet. Create one above, or run the backfill script to lift legacy knowledge-category strings into tags.'}
                 </TableCell>
               </TableRow>
             ) : (
@@ -242,37 +264,39 @@ export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): Re
                       <TableCell className="text-muted-foreground text-xs">
                         <ClientDate date={tag.updatedAt} />
                       </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDialog({ kind: 'edit', tag });
-                            }}
-                            aria-label={`Edit ${tag.name}`}
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDialog({ kind: 'delete', tag, phase: 'initial' });
-                            }}
-                            aria-label={`Delete ${tag.name}`}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
-                      </TableCell>
+                      {!readOnly && (
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDialog({ kind: 'edit', tag });
+                              }}
+                              aria-label={`Edit ${tag.name}`}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDialog({ kind: 'delete', tag, phase: 'initial' });
+                              }}
+                              aria-label={`Delete ${tag.name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      )}
                     </TableRow>
                     {expanded ? (
                       <TableRow className="bg-muted/30 hover:bg-muted/30">
                         <TableCell />
-                        <TableCell colSpan={6} className="py-3">
+                        <TableCell colSpan={columnCount - 1} className="py-3">
                           <TagUsagePanel
                             loading={isLoadingUsage}
                             error={usageError && expandedId === tag.id ? usageError : null}
@@ -372,18 +396,29 @@ export function KnowledgeTagsTable({ initialTags }: KnowledgeTagsTableProps): Re
               // Server tells us which guard tripped:
               //   - agent grants exist → `agent-blocked`, no escape hatch
               //   - documents only → `force-confirm`, operator can re-try with ?force
-              const details = (err.details ?? {}) as {
-                agentCount?: number;
-                agents?: Array<{ id: string; name: string; slug: string }>;
+              const details = err.details ?? {};
+              const count = (key: string): number => {
+                const value = details[key];
+                return typeof value === 'number' ? value : 0;
               };
-              if ((details.agentCount ?? 0) > 0) {
+              const agentCount = count('agentCount');
+              if (agentCount > 0) {
+                const otherOrgCount = count('otherOrgAgentCount');
                 setDialog({
                   ...dialog,
                   phase: 'agent-blocked',
-                  blockedAgents: details.agents ?? [],
+                  blockedAgents: Array.isArray(details.agents)
+                    ? (details.agents as Array<{ id: string; name: string; slug: string }>)
+                    : [],
+                  otherOrgCount,
+                  ownGrantCount: agentCount - otherOrgCount,
                 });
               } else if (dialog.phase === 'initial') {
-                setDialog({ ...dialog, phase: 'force-confirm' });
+                setDialog({
+                  ...dialog,
+                  phase: 'force-confirm',
+                  otherOrgCount: count('otherOrgDocumentCount'),
+                });
               } else {
                 setError(err.message);
               }
@@ -585,7 +620,9 @@ function DeleteDialog({
   onConfirm,
 }: DialogCommonProps & { onConfirm: () => Promise<void> }): React.ReactElement | null {
   if (state.kind !== 'delete') return null;
-  const { tag, phase, blockedAgents } = state;
+  const { tag, phase, blockedAgents, otherOrgCount = 0, ownGrantCount = 0 } = state;
+  // The server names at most 50 of the caller's own grants; say how many more.
+  const unlistedOwnGrants = Math.max(0, ownGrantCount - (blockedAgents?.length ?? 0));
 
   const isAgentBlocked = phase === 'agent-blocked';
   const isForceConfirm = phase === 'force-confirm';
@@ -630,7 +667,20 @@ function DeleteDialog({
                 </li>
               ))}
             </ul>
+            {unlistedOwnGrants > 0 ? (
+              <p className="text-muted-foreground mt-2 text-xs">
+                …and {unlistedOwnGrants} more in this organisation.
+              </p>
+            ) : null}
           </div>
+        ) : null}
+
+        {(isAgentBlocked || isForceConfirm) && otherOrgCount > 0 ? (
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+            {isAgentBlocked
+              ? `${otherOrgCount} agent${otherOrgCount === 1 ? '' : 's'} in other organisations also hold${otherOrgCount === 1 ? 's' : ''} this grant. They are not listed here: remove those grants from inside each organisation.`
+              : `${otherOrgCount} of these documents ${otherOrgCount === 1 ? 'is in another organisation' : 'are in other organisations'}. Deleting the tag strips it from theirs too.`}
+          </p>
         ) : null}
 
         {error ? <p className="text-destructive text-sm">{error}</p> : null}
@@ -747,6 +797,20 @@ function TagUsagePanel({
 
   const docCount = usage.documents.length;
   const agentCount = usage.agents.length;
+  const otherDocs = usage.otherOrgDocumentCount ?? 0;
+  const otherAgents = usage.otherOrgAgentCount ?? 0;
+  // A tag is global config: other orgs' use is counted here, never listed.
+  const elsewhere =
+    otherDocs + otherAgents > 0 ? (
+      <p className="text-muted-foreground text-xs md:col-span-2">
+        Also used in other organisations: {otherDocs} document{otherDocs === 1 ? '' : 's'} and{' '}
+        {otherAgents} agent grant{otherAgents === 1 ? '' : 's'}, not listed here.
+      </p>
+    ) : null;
+
+  if (docCount === 0 && agentCount === 0 && elsewhere) {
+    return <div className="grid gap-4 md:grid-cols-2">{elsewhere}</div>;
+  }
 
   if (docCount === 0 && agentCount === 0) {
     return (
@@ -759,6 +823,7 @@ function TagUsagePanel({
 
   return (
     <div className="grid gap-4 md:grid-cols-2">
+      {elsewhere}
       <div className="grid gap-1">
         <div className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
           Documents ({docCount})

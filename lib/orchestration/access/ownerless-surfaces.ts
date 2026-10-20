@@ -129,12 +129,13 @@ export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] 
 
   // ── Admin surfaces that scope by a road the helper does not offer ─────────
   {
-    path: 'app/api/v1/admin/orchestration/conversations/search/route.ts',
+    path: 'lib/orchestration/chat/conversation-semantic-search.ts',
     disposition: 'by-design',
     reason:
-      'a pgvector cosine-distance query, not expressible through Prisma’s builder, so ' +
-      'the three arms are hand-written in SQL and pinned against ' +
-      '`conversationVisibilityWhere` in `conversations/policy-narrowing.test.ts`.',
+      'the admin conversation search’s pgvector cosine-distance query, not expressible ' +
+      'through Prisma’s builder, so the three arms are hand-written in SQL and pinned ' +
+      'against `conversationVisibilityWhere` in `conversations/policy-narrowing.test.ts`; ' +
+      'moved out of the route (§107 t-709) so the isolation harness drives the statement.',
   },
   {
     path: 'app/api/v1/admin/orchestration/conversations/clear/route.ts',
@@ -232,6 +233,14 @@ export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] 
       'the signed approval token is the whole authorization — no session, no admin ' +
       'check — and it reads exactly the one execution the token was minted for.',
   },
+  {
+    path: 'lib/orchestration/approval-route-helpers.ts',
+    disposition: 'by-design',
+    reason:
+      'reads the one execution a verified approval token names — its `orgId` and its org’s ' +
+      'status, nothing else — to enter that org before the action runs (§107 t-708); the ' +
+      'token is the whole authorization, as on the status route.',
+  },
 
   // ── Engine, scheduler and maintenance: the work is the organisation’s ─────
   {
@@ -282,6 +291,15 @@ export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] 
     reason:
       'the Art. 15 manifest, keyed on the data subject’s own `userId` by construction; ' +
       'an ownerless row has no subject to be exported to.',
+  },
+  {
+    path: 'lib/privacy/org-sources.ts',
+    disposition: 'by-design',
+    reason:
+      'the org-data manifest (§106 t-672, widened to every tenant-owned model in §107 t-705), ' +
+      'keyed on `orgId` by construction: the org receives its own rows whoever inside it ' +
+      'authored them, and the route that assembles it (`GET /api/v1/admin/orgs/:id/export`) is what ' +
+      'decides who may ask.',
   },
   {
     path: 'lib/orchestration/evaluations/run-cases/workflow-case.ts',

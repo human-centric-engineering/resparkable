@@ -25,11 +25,16 @@ import type { LlmResponseFormat, ReasoningEffort } from '@/lib/orchestration/llm
 import { calculateCost, logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
+import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import { getDefaultModelForTask } from '@/lib/orchestration/llm/settings-resolver';
 import { isProviderEligible } from '@/lib/orchestration/llm/provider-eligibility';
 import type { ExecutionContext } from '@/lib/orchestration/engine/context';
 import { ExecutorError } from '@/lib/orchestration/engine/errors';
-import { isRequestFault, ProviderError } from '@/lib/orchestration/llm/provider';
+import {
+  isRequestFault,
+  PROVIDER_NOT_PERMITTED,
+  ProviderError,
+} from '@/lib/orchestration/llm/provider';
 import { interpolatePrompt } from '@/lib/orchestration/engine/interpolate-prompt';
 import {
   GEN_AI_OPERATION_NAME,
@@ -112,6 +117,9 @@ export async function runLlmCall(
         params.modelOverride && params.modelOverride.length > 0 ? params.modelOverride : null;
       const modelId = override ?? (await getDefaultModelForTask('chat'));
 
+      // A matrix-only model is unknown until hydrated, and this runs from
+      // scheduled and triggered executions too, not only the admin route.
+      await hydrateModelRegistryFromDb();
       const modelInfo = getModel(modelId);
       if (!modelInfo) {
         throw new ExecutorError(
@@ -152,14 +160,14 @@ export async function runLlmCall(
             executionId: ctx.executionId,
             modelId,
             providerSlug: modelInfo.provider,
-            fix: 'The rule registered via registerProviderEligibility() in lib/app/llm-providers.ts did not permit this provider — by policy, or because it threw (a rule that cannot be evaluated denies). Either point the chat task default at a permitted model, give the step an explicit modelOverride, or widen the rule.',
+            fix: 'This provider is not permitted: at TENANCY_MODE=multi, by the org’s approved providers (GET /api/v1/admin/orgs/[id]/providers); or by the rule registered via registerProviderEligibility() in lib/app/llm-providers.ts — by policy, or because it threw (a rule that cannot be evaluated denies). Either point the chat task default at a permitted model, give the step an explicit modelOverride, or widen the rule.',
           });
           // NOT retriable. A policy denial is deterministic, so a `retry`
           // strategy would spend the step's whole retry budget re-asking a
           // question whose answer cannot change within the run.
           throw new ExecutorError(
             params.stepId,
-            'provider_not_permitted',
+            PROVIDER_NOT_PERMITTED,
             'The model for this step resolves to a provider this deployment does not permit',
             undefined,
             false
@@ -169,7 +177,13 @@ export async function runLlmCall(
 
       let provider;
       try {
-        provider = await getProvider(modelInfo.provider);
+        // The gate (§120 t-741) is told the same thing the check above turned
+        // on: an override is the operator's choice, the task default is ours.
+        provider = await getProvider(modelInfo.provider, {
+          task: 'chat',
+          source: override === null ? 'primary' : 'explicit',
+          primarySlug: null,
+        });
       } catch (err) {
         throw new ExecutorError(
           params.stepId,

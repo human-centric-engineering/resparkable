@@ -108,7 +108,7 @@ One card per `AiMessage`, ordered by `createdAt asc`. Each card shows:
 - **Timestamp** — localised date+time.
 - **Content** — plain `<p>` with `whitespace-pre-wrap` for non-tool roles; `<pre>` monospace block for tool messages (tool output is raw JSON/text).
 - **Metadata bar** — inline chips for `modelId` (top-level column, not nested in metadata), `providerSlug`, `tokenUsage.input` (`"N in"`), `tokenUsage.output` (`"N out"`), `latencyMs` (`"N ms"`), `costUsd` (`"$0.0000"`). Row only renders if at least one field is present.
-- **Provenance pin row** — small `outline` badges showing `agent <id-prefix>` and `workflow exec <id-prefix> @ <version-prefix>` when those scalars are populated on the message row. Mirrors the `SupervisorVerdictBadge` styling in `ExecutionDetailView` so the execution page and the conversation page share visual vocabulary. Omitted when no version pins are set (direct chat with the live agent).
+- **Provenance pin row** — small `outline` badges showing `agent <id-prefix>` and `workflow exec <id-prefix> @ <version-prefix>` when those scalars are populated on the message row. Mirrors the `SupervisorVerdictBadge` styling in `ExecutionDetailView` so the execution page and the conversation page share visual vocabulary. Omitted when no version pins are set (an agent with no `AiAgentVersion` rows, or an error marker written before the agent loaded).
 - **Raw toggle** — only appears when `metadata` has at least one key. Expands a `<pre>` with `JSON.stringify(metadata, null, 2)`.
 - **Inline tool-call trace** — when an assistant message carries `provenance.capabilityCalls` (always-on for capability-using assistant turns; not gated by `includeTrace`), `<MessageTrace>` (`components/admin/orchestration/chat/message-trace.tsx`) renders a collapsible strip with one card per dispatched capability: slug, args JSON, latency, success state, optional cost, and a result preview. Pre-feature conversations and capability-free turns leave `provenance` null and the strip is absent. See `.context/orchestration/chat.md#inline-trace-annotations-admin-only` for the full wire contract.
 
@@ -150,7 +150,7 @@ Tags are stored as `AiConversation.tags: String[]` (Postgres `text[]`, default `
 - Endpoint supports `format=json|csv`, `agentId`, `isActive`, `q`, `messageSearch`, `tag`, `dateFrom`, `dateTo`. Defaults to `json`.
 - Hard cap: 500 conversations per export, 500 messages per conversation.
 - Rate limit: 1/min per admin IP via `adminLimiter` keyed on `export:<ip>`.
-- CSV columns: `conversation_id, conversation_title, agent_slug, user_id, message_role, message_content, created_at` (one row per message). `csvEscape` quotes values containing `, "` or newline.
+- CSV columns: `conversation_id, conversation_title, agent_slug, user_id, message_role, message_content, created_at` (one row per message). `csvEscape` quotes values containing `,`, `"`, CR or LF (a lone CR is a record break to a spreadsheet), and prefixes a leading formula trigger with `'`.
 - JSON payload wraps data in `{ success: true, data: [...], meta: { total, totalMatching, capped } }` and serves it as a file download via `Content-Disposition: attachment`. `capped: true` indicates the 500-conversation cap was hit; `totalMatching` shows the untruncated count.
 
 ### Bulk clear (API only, no UI)

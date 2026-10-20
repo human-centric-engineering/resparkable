@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-access';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
@@ -51,6 +52,7 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { API } from '@/lib/api/endpoints';
+import { agentCount, OtherOrgUsage } from '@/components/admin/orchestration/other-org-usage';
 
 type QuarantineMode = 'quarantined-soft' | 'quarantined-hard';
 
@@ -77,6 +79,8 @@ export interface QuarantineCapabilityCardProps {
   attribution?: QuarantineAttribution | null;
   /** Agents currently binding this capability — drives the confirmation blast-radius copy. */
   affectedAgents: Array<{ id: string; name: string; slug: string }>;
+  /** Agents in other orgs binding it: counted, never named (§107 t-752). A quarantine reaches them too. */
+  otherOrgAffectedCount?: number;
 }
 
 const MODE_LABELS: Record<QuarantineMode, string> = {
@@ -92,21 +96,29 @@ export function CapabilityQuarantineCard({
   state,
   attribution,
   affectedAgents,
-}: QuarantineCapabilityCardProps): React.ReactElement {
+  otherOrgAffectedCount = 0,
+}: QuarantineCapabilityCardProps): React.ReactElement | null {
   const isQuarantined = state.quarantineState !== 'active';
+  // Quarantine is a change to the shared capability (§107 t-753): outside the
+  // install org at `multi` the card only reports a quarantine in place.
+  const readOnly = useSharedSettingsReadOnly();
+  if (readOnly && !isQuarantined) return null;
   return isQuarantined ? (
     <QuarantinedView
+      readOnly={readOnly}
       capabilityId={capabilityId}
       capabilityName={capabilityName}
       state={state}
       attribution={attribution ?? null}
       affectedAgents={affectedAgents}
+      otherOrgAffectedCount={otherOrgAffectedCount}
     />
   ) : (
     <ActiveView
       capabilityId={capabilityId}
       capabilityName={capabilityName}
       affectedAgents={affectedAgents}
+      otherOrgAffectedCount={otherOrgAffectedCount}
     />
   );
 }
@@ -117,10 +129,12 @@ function ActiveView({
   capabilityId,
   capabilityName,
   affectedAgents,
+  otherOrgAffectedCount,
 }: {
   capabilityId: string;
   capabilityName: string;
   affectedAgents: QuarantineCapabilityCardProps['affectedAgents'];
+  otherOrgAffectedCount: number;
 }): React.ReactElement {
   const [mode, setMode] = React.useState<QuarantineMode>('quarantined-soft');
   const [reason, setReason] = React.useState('');
@@ -305,10 +319,10 @@ function ActiveView({
           <div className="flex items-center justify-between gap-2">
             <p className="text-muted-foreground text-xs">
               Will affect{' '}
-              <strong>
-                {affectedAgents.length} agent{affectedAgents.length === 1 ? '' : 's'}
-              </strong>{' '}
-              currently using this capability.
+              <strong>{agentCount(affectedAgents.length + otherOrgAffectedCount)}</strong> with this
+              capability attached
+              {otherOrgAffectedCount > 0 ? ', in every organisation' : ''}. Counts include
+              deactivated agents.
             </p>
             <Button
               type="button"
@@ -338,10 +352,11 @@ function ActiveView({
                 : 'Soft mode: every agent will see a tool-unavailable error and can route around it.'}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          {affectedAgents.length > 0 && (
+          {affectedAgents.length + otherOrgAffectedCount > 0 && (
             <div className="rounded-md border border-amber-500/50 bg-amber-50 p-3 text-xs dark:bg-amber-950/30">
               <p className="mb-2 font-medium">
-                {affectedAgents.length} agent{affectedAgents.length === 1 ? '' : 's'} affected:
+                {agentCount(affectedAgents.length + otherOrgAffectedCount)} affected
+                {affectedAgents.length > 0 ? ':' : '.'}
               </p>
               <ul className="space-y-0.5 pl-4">
                 {affectedAgents.slice(0, 8).map((a) => (
@@ -356,6 +371,11 @@ function ActiveView({
                   </li>
                 )}
               </ul>
+              <OtherOrgUsage
+                count={otherOrgAffectedCount}
+                afterList={affectedAgents.length > 0 && affectedAgents.length <= 8}
+                className="mt-2"
+              />
             </div>
           )}
           <AlertDialogFooter>
@@ -373,16 +393,20 @@ function ActiveView({
 // ─── Quarantined view ──────────────────────────────────────────────────────
 
 function QuarantinedView({
+  readOnly,
   capabilityId,
   state,
   attribution,
   affectedAgents,
+  otherOrgAffectedCount,
 }: {
+  readOnly: boolean;
   capabilityId: string;
   capabilityName: string;
   state: QuarantineCapabilityState;
   attribution: QuarantineAttribution | null;
   affectedAgents: QuarantineCapabilityCardProps['affectedAgents'];
+  otherOrgAffectedCount: number;
 }): React.ReactElement {
   const [lifting, setLifting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -452,18 +476,23 @@ function QuarantinedView({
           </div>
         )}
 
-        <AffectedAgentsPopover affectedAgents={affectedAgents} />
+        <AffectedAgentsPopover
+          affectedAgents={affectedAgents}
+          otherOrgAffectedCount={otherOrgAffectedCount}
+        />
 
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => void lift()}
-          disabled={lifting}
-          className="w-full sm:w-auto"
-        >
-          <ShieldCheck className="mr-1 h-3 w-3" />
-          {lifting ? 'Lifting…' : 'Lift quarantine'}
-        </Button>
+        {!readOnly && (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => void lift()}
+            disabled={lifting}
+            className="w-full sm:w-auto"
+          >
+            <ShieldCheck className="mr-1 h-3 w-3" />
+            {lifting ? 'Lifting…' : 'Lift quarantine'}
+          </Button>
+        )}
       </CardContent>
     </Card>
   );
@@ -480,10 +509,12 @@ function QuarantinedView({
  */
 function AffectedAgentsPopover({
   affectedAgents,
+  otherOrgAffectedCount,
 }: {
   affectedAgents: QuarantineCapabilityCardProps['affectedAgents'];
+  otherOrgAffectedCount: number;
 }): React.ReactElement {
-  const count = affectedAgents.length;
+  const count = affectedAgents.length + otherOrgAffectedCount;
   if (count === 0) {
     return (
       <p className="text-muted-foreground text-xs">No agents currently use this capability.</p>
@@ -500,30 +531,35 @@ function AffectedAgentsPopover({
             type="button"
             className="text-muted-foreground hover:text-foreground text-xs underline-offset-2 hover:underline"
           >
-            {count} agent{count === 1 ? '' : 's'} affected →
+            {agentCount(count)} affected →
           </button>
         </PopoverTrigger>
         <PopoverContent className="w-72 p-0" align="start">
           <div className="border-b px-3 py-2">
-            <p className="text-sm font-medium">
-              {count} agent{count === 1 ? '' : 's'} affected
-            </p>
+            <p className="text-sm font-medium">{agentCount(count)} affected</p>
           </div>
-          <ul className="max-h-64 overflow-y-auto py-1">
-            {affectedAgents.map((agent) => (
-              <li key={agent.id}>
-                <Link
-                  href={`/admin/orchestration/agents/${agent.id}`}
-                  className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
-                >
-                  <span className="truncate">{agent.name}</span>
-                  <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
-                    {agent.slug}
-                  </span>
-                </Link>
-              </li>
-            ))}
-          </ul>
+          {affectedAgents.length > 0 && (
+            <ul className="max-h-64 overflow-y-auto py-1">
+              {affectedAgents.map((agent) => (
+                <li key={agent.id}>
+                  <Link
+                    href={`/admin/orchestration/agents/${agent.id}`}
+                    className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
+                  >
+                    <span className="truncate">{agent.name}</span>
+                    <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
+                      {agent.slug}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+          <OtherOrgUsage
+            count={otherOrgAffectedCount}
+            afterList={affectedAgents.length > 0}
+            className="px-3 py-2"
+          />
         </PopoverContent>
       </Popover>
     </div>

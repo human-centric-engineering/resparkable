@@ -21,6 +21,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 import { ProvidersList } from '@/components/admin/orchestration/providers-list';
 import type { ProviderRow } from '@/components/admin/orchestration/providers-list';
 
@@ -812,6 +813,117 @@ describe('ProvidersList', () => {
           expect.objectContaining({ body: { isActive: true } })
         );
       });
+    });
+  });
+
+  // ── Read-only (§107 t-753) ────────────────────────────────────────────────
+
+  describe('read-only outside the install org (§107 t-753)', () => {
+    function renderReadOnly(ui: React.ReactElement) {
+      return render(
+        <SharedSettingsAccessProvider readOnly canSwitch>
+          {ui}
+        </SharedSettingsAccessProvider>
+      );
+    }
+
+    async function openFirstMenu(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(document.querySelector('button[aria-haspopup="menu"]')!);
+    }
+
+    it('hides the Add provider link but keeps the rows', () => {
+      // Contrast: without the provider the same fixture shows the link
+      // (see 'renders "+ Add provider" link').
+      const { unmount } = render(<ProvidersList initialProviders={THREE_PROVIDERS} />);
+      expect(screen.getByRole('link', { name: /add provider/i })).toBeInTheDocument();
+      unmount();
+
+      renderReadOnly(<ProvidersList initialProviders={THREE_PROVIDERS} />);
+
+      expect(screen.queryByRole('link', { name: /add provider/i })).not.toBeInTheDocument();
+      expect(screen.getByText('Anthropic')).toBeInTheDocument();
+      expect(screen.getByText('OpenAI')).toBeInTheDocument();
+      expect(screen.getByText('Ollama')).toBeInTheDocument();
+      expect(screen.getByText(/3 providers configured/i)).toBeInTheDocument();
+    });
+
+    it('hides the empty-state Add provider CTA but keeps the empty message', () => {
+      const { unmount } = render(<ProvidersList initialProviders={[]} />);
+      expect(screen.getByRole('link', { name: /add provider/i })).toBeInTheDocument();
+      unmount();
+
+      renderReadOnly(<ProvidersList initialProviders={[]} />);
+
+      expect(screen.getByText(/no providers configured yet/i)).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /add provider/i })).not.toBeInTheDocument();
+    });
+
+    it('says where providers are set up, not to edit .env, in the empty state', () => {
+      // Contrast: with no env keys the editable page gives the server-ops
+      // instruction, which an admin in another org cannot act on.
+      const { unmount } = render(<ProvidersList initialProviders={[]} hasAnyEnvKey={false} />);
+      expect(screen.getByText(/add an llm api key to your \.env/i)).toBeInTheDocument();
+      unmount();
+
+      for (const hasAnyEnvKey of [false, true]) {
+        const { unmount: done } = renderReadOnly(
+          <ProvidersList initialProviders={[]} hasAnyEnvKey={hasAnyEnvKey} />
+        );
+        expect(screen.queryByText(/\.env/)).not.toBeInTheDocument();
+        expect(screen.getByText(/set up from the install organisation/i)).toBeInTheDocument();
+        done();
+      }
+    });
+
+    it('active provider menu: View replaces Edit, Deactivate and Delete permanently are gone, View models stays', async () => {
+      const user = userEvent.setup();
+      const { unmount } = render(<ProvidersList initialProviders={[makeProvider()]} />);
+      await openFirstMenu(user);
+      // Contrast: editable menu offers all of them.
+      const edit = await screen.findByRole('menuitem', { name: /^edit$/i });
+      expect(edit.querySelector('svg.lucide-pencil')).not.toBeNull();
+      expect(screen.getByRole('menuitem', { name: /^deactivate$/i })).toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /delete permanently/i })).toBeInTheDocument();
+      unmount();
+
+      renderReadOnly(<ProvidersList initialProviders={[makeProvider()]} />);
+      await openFirstMenu(user);
+
+      const view = await screen.findByRole('menuitem', { name: /^view$/i });
+      expect(view).toHaveAttribute('href', '/admin/orchestration/providers/prov-1');
+      // An eye, not the edit pencil: the item no longer edits.
+      expect(view.querySelector('svg.lucide-eye')).not.toBeNull();
+      expect(view.querySelector('svg.lucide-pencil')).toBeNull();
+      expect(screen.queryByRole('menuitem', { name: /^edit$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: /^deactivate$/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('menuitem', { name: /delete permanently/i })
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /view models/i })).toBeInTheDocument();
+    });
+
+    it('inactive provider menu: Reactivate is gone, View and View models stay', async () => {
+      const inactive = makeProvider({ isActive: false });
+      const user = userEvent.setup();
+      const { unmount } = render(<ProvidersList initialProviders={[inactive]} />);
+      await openFirstMenu(user);
+      expect(await screen.findByRole('menuitem', { name: /reactivate/i })).toBeInTheDocument();
+      unmount();
+
+      renderReadOnly(<ProvidersList initialProviders={[inactive]} />);
+      await openFirstMenu(user);
+
+      expect(await screen.findByRole('menuitem', { name: /^view$/i })).toBeInTheDocument();
+      expect(screen.queryByRole('menuitem', { name: /reactivate/i })).not.toBeInTheDocument();
+      expect(screen.getByRole('menuitem', { name: /view models/i })).toBeInTheDocument();
+      expect(apiClient.patch).not.toHaveBeenCalled();
+      expect(apiClient.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps the test-connection button available', () => {
+      renderReadOnly(<ProvidersList initialProviders={[THREE_PROVIDERS[0]]} />);
+
+      expect(screen.getByRole('button', { name: /test connection/i })).toBeEnabled();
     });
   });
 });

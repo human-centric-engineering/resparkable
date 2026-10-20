@@ -69,6 +69,7 @@ const PROVIDERS = [
     metadata: {},
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
   },
   {
     id: 'prov-openai',
@@ -85,6 +86,7 @@ const PROVIDERS = [
     metadata: {},
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
   },
 ];
 
@@ -129,6 +131,7 @@ const MODELS = [
 
 function makeAgent(model: string, provider: string = 'openai') {
   return {
+    orgId: null,
     id: 'agent-toggle-test',
     name: 'Toggle Test Agent',
     slug: 'toggle-test',

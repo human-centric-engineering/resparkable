@@ -54,6 +54,7 @@ function makeConfig(slug: string) {
     metadata: null,
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
     createdBy: 'user-1',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -87,7 +88,10 @@ describe('getProviderWithFallbacks', () => {
     breaker.recordFailure();
     expect(breaker.state).toBe('open');
 
-    mockFindFirst.mockResolvedValue(makeConfig('fallback-1'));
+    // Each slug resolves to its own row, so the primary IS buildable and only
+    // its open breaker turns it down (checked after the fetch, §120 t-744).
+    mockFindFirst.mockImplementation((async (args: { where: { slug?: string } }) =>
+      args.where.slug ? makeConfig(args.where.slug) : null) as never);
 
     const { usedSlug } = await getProviderWithFallbacks('primary', ['fallback-1']);
     expect(usedSlug).toBe('fallback-1');
@@ -112,7 +116,8 @@ describe('getProviderWithFallbacks', () => {
   it('skips provider not found and tries next', async () => {
     // Primary exists but is not found in DB
     mockFindFirst
-      .mockResolvedValueOnce(null) // primary not found
+      .mockResolvedValueOnce(null) // primary: no row with that slug
+      .mockResolvedValueOnce(null) // ...nor with that name
       .mockResolvedValue(makeConfig('fallback-1'));
 
     const { usedSlug } = await getProviderWithFallbacks('primary', ['fallback-1']);

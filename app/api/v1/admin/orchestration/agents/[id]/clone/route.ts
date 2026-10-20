@@ -22,12 +22,17 @@ import { getClientIP } from '@/lib/security/ip';
 import { cloneAgentBodySchema } from '@/lib/validations/orchestration';
 import { cloneCopiedScalarFields } from '@/lib/orchestration/agents/agent-field-registry';
 import {
+  assertAgentSlugNotReserved,
+  isReservedAgentSlug,
+} from '@/lib/orchestration/agents/platform-agent-guard';
+import {
   INITIAL_VERSION_SUMMARY,
   asSnapshotJson,
   buildAgentSnapshot,
 } from '@/lib/orchestration/agents/agent-versioning';
 import { cuidSchema } from '@/lib/validations/common';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import { assertAgentProvidersApproved } from '@/lib/orchestration/agents/provider-approval';
 
 export const POST = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
   const clientIP = getClientIP(request);
@@ -73,7 +78,17 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   // (set explicitly below), so it's a safe copy with no special privileges.
 
   const name = body.name ?? `${source.name} (Copy)`;
+  // A slug the caller chose is refused outright if a platform agent holds it;
+  // a generated one just moves on to its next variant (§116 t-725).
+  if (body.slug !== undefined) assertAgentSlugNotReserved(body.slug);
   const baseSlug = body.slug ?? `${source.slug}-copy`;
+
+  // A clone is a new agent, so everything it copies is new to it: at multi, the
+  // source's providers must be ones the org is approved for (§120 t-743).
+  await assertAgentProvidersApproved({
+    provider: source.provider,
+    fallbackProviders: source.fallbackProviders,
+  });
 
   // Attempt slug with collision retry
   const MAX_SLUG_ATTEMPTS = 5;
@@ -81,6 +96,7 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
 
   for (let attempt = 0; attempt < MAX_SLUG_ATTEMPTS; attempt++) {
     const slug = attempt === 0 ? baseSlug : `${baseSlug}-${attempt + 1}`;
+    if (isReservedAgentSlug(slug)) continue;
 
     try {
       newAgent = await prisma.$transaction(async (tx) => {

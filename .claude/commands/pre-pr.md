@@ -200,6 +200,12 @@ If there are no TypeScript files and no documentation files, report "No changes 
 rather than being averaged away. If Step 1 passed, every changed file is at or
 above 80% on all four metrics and there is nothing to re-derive here.
 
+Still glance down the per-file numbers you record below. Until t-749 this gate
+passed `--coverage.thresholds.perFile=true`, which vitest reads as the string
+`"true"`, and so it silently checked the average. A file under 80% sitting in a
+report that says PASS means the gate has stopped doing its job, and that is a
+finding.
+
 What is left for this step is reading the report, not recomputing the verdict.
 Parse `coverage/coverage-summary.json` — now scoped to the changed files, not
 the whole repo — and record the per-file numbers in the Step 6 summary so the
@@ -309,7 +315,7 @@ when uncommitted `.ts` files were left out. Test files are read from the working
 tree, so a test you have just written does count.
 
 **4g. Direct data imports bypassing the API**
-Flag non-type imports in pages, layouts, and components that pull data or constants from `lib/` modules when that data is seeded into the database and should be fetched via the API. The key indicator is importing runtime values (not just types) from modules whose data is also available through an API endpoint or is seeded into the database — e.g., importing `BUILTIN_WORKFLOW_TEMPLATES` from `@/lib/orchestration/workflows/templates` instead of fetching templates from the API. Type-only imports (`import type { ... }`) are fine — the concern is runtime coupling to data that should come through the API boundary. This enforces the same API-first separation as 4l below: components should fetch data from the API, not import it directly from server-side modules.
+Flag non-type imports in pages, layouts, and components that pull data or constants from server-side modules (`lib/`, `prisma/seeds/data/`) when that data is served through an API endpoint or seeded into the database, and should be fetched via the API. The key indicator is importing runtime values (not just types) from modules whose data is also available through an API endpoint or is seeded into the database — e.g., importing `BUILTIN_WORKFLOW_TEMPLATES` from `@/prisma/seeds/data/templates` instead of fetching `GET /api/v1/admin/orchestration/workflows/templates`. Type-only imports (`import type { ... }`) are fine — the concern is runtime coupling to data that should come through the API boundary. This enforces the same API-first separation as 4l below: components should fetch data from the API, not import it directly from server-side modules.
 
 **4h. N+1 client-side fetches in list/table components**
 Flag components (under `components/` or `app/`) that fire per-row API calls to fetch supplementary data for a list or table. The telltale pattern is a `useEffect` (or similar) that iterates over an array of items and calls `fetch()` per item — e.g., `agents.map(async (agent) => fetch(\`/api/.../\${agent.id}/budget\`))`. The correct pattern is to enrich the list API endpoint to return supplementary data inline (via Prisma `include`, `\_count`, or batch aggregates like `groupBy`), so the page makes a single HTTP request. Indicators to look for: `Promise.all(items.map(... fetch ...))`inside a`useEffect`, state shaped like `Record<string, X | null>` populated by per-item fetches, or multiple identical API calls differing only by an ID path segment. A single detail fetch (e.g., clicking a row to load its full record) is fine — this check targets bulk per-row fetches on list views.

@@ -142,6 +142,8 @@ interface Data {
 export class ApplyAuditChangesCapability extends BaseCapability<Args, Data> {
   readonly slug = 'apply_audit_changes';
   readonly processesPii = false;
+  /** Provider models are shared settings: refused outside the install org at `multi` (§107 t-751). */
+  readonly writesSharedSettings = true;
 
   readonly functionDefinition: CapabilityFunctionDefinition = {
     name: 'apply_audit_changes',

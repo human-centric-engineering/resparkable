@@ -60,6 +60,8 @@ interface Data {
 export class DeactivateProviderModelsCapability extends BaseCapability<Args, Data> {
   readonly slug = 'deactivate_provider_models';
   readonly processesPii = false;
+  /** Provider models are shared settings: refused outside the install org at `multi` (§107 t-751). */
+  readonly writesSharedSettings = true;
 
   readonly functionDefinition: CapabilityFunctionDefinition = {
     name: 'deactivate_provider_models',

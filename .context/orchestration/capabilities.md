@@ -281,14 +281,15 @@ adding the column to the guard, not by review, which is the argument for
 extending that roster the moment a foreign key appears rather than after the
 first incident on it.
 
-**The reach is narrower than that sounds, and saying so matters.** No embed turn
-reaches `logCost` today: `AiConversation.userId` is a foreign key to `user` as
-well, nothing mints a `User` row for a visitor, and so an embed visitor's first
-message already fails at conversation-create ([#705](https://github.com/human-centric-engineering/sunrise/issues/705)).
-The guard is correct and forward-looking, not currently load-bearing — its value
-is that the cost-row loss cannot appear the moment #705 is fixed. `isEmbedUserId` (`lib/embed/auth.ts`) is the predicate,
-and it sits next to the mint so the prefix has one definition; the chat handler
-reduces a visitor to `null` through its own `attributableUserId`.
+**It became load-bearing with [#705](https://github.com/human-centric-engineering/sunrise/issues/705)
+(t-765).** Until then no embed turn reached `logCost`: the conversation-create
+wrote the visitor id into `AiConversation.userId`, a foreign key to `user` too,
+and the first message failed there. A visitor's conversation is now owned
+through `embedVisitorId` with no `userId`, so every embed turn logs cost, and
+this guard is what keeps those rows. `isEmbedUserId` (`lib/embed/auth.ts`) is the predicate,
+and it sits next to the mint so the prefix has one definition; `userIdForUserRef`
+beside it reduces a visitor to `null`, and the chat handler uses it for every
+cost row.
 
 That guard reads `logCost` call sites, and **a value can also reach a foreign key
 one hop away**, through a function that accepts an attribution and forwards it.
@@ -388,6 +389,9 @@ export abstract class BaseCapability<TArgs = unknown, TData = unknown> {
   /** PII declaration — set true if args or results carry personal data. */
   readonly processesPii: boolean; // default: false
 
+  /** Shared-settings declaration — set true if it writes a GLOBAL_CONFIG_MODELS row. */
+  readonly writesSharedSettings: boolean; // default: false
+
   abstract execute(args: TArgs, context: CapabilityContext): Promise<CapabilityResult<TData>>;
 
   validate(rawArgs: unknown): TArgs; // throws CapabilityValidationError
@@ -421,6 +425,10 @@ If your capability handles emails, phone numbers, customer records, free-text us
 
 The registry refuses to register a capability that declares `processesPii = true` without an override — startup fails fast. Six built-ins ship with overrides today: `call_external_api`, `escalate_to_human`, `run_workflow`, `read_user_memory`, `write_user_memory`, `upload_to_storage`. See [`.context/security/pii-redaction.md`](../security/pii-redaction.md) for the full contract, a worked example, and the masking primitives in `lib/security/redact.ts`.
 
+### Shared-settings obligation
+
+If your capability creates, changes or deletes a shared setting — a row of one of the `GLOBAL_CONFIG_MODELS` (providers, provider models, capabilities, agent profiles, knowledge tags, feature flags, MCP config, orchestration settings) — set `readonly writesSharedSettings = true`. At `TENANCY_MODE=multi` the dispatcher then refuses it outside the install org with `{ code: 'shared_settings_install_org_only' }`, before approval or execution: any org's workflow can reach a capability through a `tool_call` step, and one org's change would land in every org (§107 t-751). Three built-ins declare it: `add_provider_models`, `deactivate_provider_models`, `apply_audit_changes`. `tests/unit/scripts/ci/shared-settings-writes.test.ts` fails naming a capability class that writes one of those models without the flag. See [Row Isolation](../tenancy/isolation.md#the-policy).
+
 ## Dispatch Pipeline
 
 `capabilityDispatcher.dispatch(slug, rawArgs, context)` runs this pipeline, returning as soon as any step fails:
@@ -432,6 +440,7 @@ The registry refuses to register a capability that declares `processesPii = true
 4. **Per-agent binding** — `prisma.aiAgentCapability.findMany({ agentId })`, cached per agent for 5 minutes. An explicit row with `isEnabled: false` → `{ code: 'capability_disabled_for_agent' }`. Missing row = default-allow with base-capability defaults.
    4a. **Capability guard** — if a `guard` was attached at registration (a fork seam; core attaches none), it's `await`ed here with the full `context`. `{ allow: false }` → `{ code: 'capability_guard_denied' }` (the guard's optional `reason` is folded into the client-surfaced message; no internal ids). A guard that **throws** fails **closed** — same denial, logged via `logger.error`. Placed after enablement and before the rate limiter, so a denied call consumes no rate token. See [App-contributed capabilities](#app-contributed-capabilities-forks).
    4b. **Scope binding** — when the capability declared `scopedBy` **and** the caller's scope is authoritative, each bound key is filled if the caller omitted it and refused with `{ code: 'scope_conflict' }` if the caller named a different value. Placed beside the guard, and for the guard's reason: a cross-scope call is an authorization failure, not a malformed request, so it must not spend the legitimate tenant's rate token. Inert for a capability that declared nothing. See [The scope binding](#the-scope-binding-scopedby-dispatch-steps-4b--7a).
+   4c. **Shared settings** — a handler declaring `writesSharedSettings`, at `multi`, outside the install org or a system scope → `{ code: 'shared_settings_install_org_only' }`, with a message that names the rule rather than telling an end user to switch org. After the binding, so an unbound agent keeps its own refusal; before the rate limit and approval. No `skipFollowup`, because an `agent_call` step reads that flag as its final answer (§107 t-751).
 5. **Rate limit** — effective limit = `binding.effectiveRateLimit ?? entry.rateLimit`. If non-null, a sliding-window `RateLimiter` keyed by slug (token = `agentId`) checks the request. Exceeded → `{ code: 'rate_limited' }`.
 6. **Approval gate** — `entry.requiresApproval: true` → `{ code: 'requires_approval', skipFollowup: true }`. The handler never runs. (The admin queue that resolves approvals is a later slice.)
 7. **Validate args** — `handler.validate(dispatchArgs)`. `CapabilityValidationError` → `{ code: 'invalid_args', message }`.
@@ -467,7 +476,7 @@ A workflow execution isn't bound to an agent, so `executors/tool-call.ts` dispat
 
 The exemption exists because the remedy strict mode implies is unavailable here, not because workflows are trusted in general. `AiAgentCapability.agentId` is a foreign key to `AiAgent.id`, and the FK rejects `workflow:<cuid>` — so an operator told to "create the binding rows before enabling strict" **cannot create this one**. Before the exemption, enabling strict failed every `tool_call` step in every workflow with `capability_disabled_for_agent` and no configuration that fixed it. Because the error is per-step, it read as a capability misconfiguration; an operator would audit `AiAgentCapability`, find nothing wrong, and be left with silently dead scheduled workflows.
 
-That differs from the `mcp-system` caveat in the same env var's description, which **is** actionable: `mcp-system` is a real seeded `AiAgent` row (`prisma/seeds/008-mcp-server.ts`), so the rows can be added.
+That differs from the `mcp-system` caveat in the same env var's description, which **is** actionable: `mcp-system` is a real `AiAgent` row — a [platform agent](./platform-agents.md), one instance per org — so the FK accepts binding rows for it, and an operator adds them in each org that needs them. Those rows are the org's: `mcp-system` is the one platform agent whose bindings a reconcile never creates, removes or re-enables (`capabilityBindings: 'org'` in `lib/orchestration/agents/platform-agent-definitions/mcp-system.ts`), because its tools are the MCP Tools page's, not its own.
 
 What makes it safe rather than merely convenient: strict mode is about an **agent** reaching a capability it was never granted, and all three agent-facing dispatch paths take the tool name from a model. A `tool_call` step's `capabilitySlug` is Zod-parsed config on a workflow definition, and every workflow write route is `withAdminAuth` — so the step **is** the explicit grant, authored by an admin. Nothing constructs a `tool_call` step at runtime either: an `orchestrator` step builds a synthetic `agent_call` step and delegates to `executeAgentCall`, which dispatches under the real agent id and is checked against that agent's advertised set.
 
@@ -655,6 +664,8 @@ Returns `{ memories: [{ key, value, updatedAt }] }`. When `key` is omitted, retu
 
 Stores or updates a memory for the current user+agent pair. Uses `prisma.aiUserMemory.upsert` with compound unique `(userId, agentId, key)`.
 
+Both memory capabilities refuse a run with no user (`no_user_context`) and an anonymous embed widget visitor (`anonymous_visitor`, #705 t-765): `AiUserMemory.userId` is a foreign key to `User`, and a visitor is not one.
+
 ```json
 {
   "name": "write_user_memory",
@@ -715,6 +726,8 @@ Per-agent binding `customConfig`:
 - `allowedWorkflowSlugs: string[]` — required, min 1. The LLM may only invoke workflows on this list. Fail-closed if the binding is missing or malformed.
 - `defaultBudgetUsd?: number` — optional. Caller-side override on the child execution's per-execution cap, equivalent to passing `budgetLimitUsd` to the engine directly.
 
+**Who the child execution belongs to.** The calling user, as `AiWorkflowExecution.userId`. An anonymous embed widget visitor is not a `User`, so for a visitor the child runs **unowned** (`userId` null), as a scheduled or inbound run does (#705, t-765). Steps that need a user, such as `judge_call`, refuse an unowned run by their own rule.
+
 **Per-execution cap resolution.** When the agent invokes a workflow, the engine receives a `budgetLimitUsd` resolved by `resolveMaxCostPerExecution` (in `lib/orchestration/llm/cost-caps.ts`) using this fall-back chain:
 
 1. `customConfig.defaultBudgetUsd` (caller override on this binding)
@@ -730,6 +743,18 @@ Result `data` is a discriminated union on `status`:
 - `'pending_approval'` — `{ executionId, stepId, prompt, expiresAt, approveToken, rejectToken }`. Tokens are raw HMAC strings; the chat surface (admin or embed) constructs the channel-specific URL at POST time.
 
 Workflow failure surfaces as a capability error (`code: 'workflow_failed'`) so the LLM treats it as a tool failure rather than a sad-path success. See [Streaming Chat — In-chat approvals](./chat.md#in-chat-approvals) for the full event sequence.
+
+### `send_message_to_channel`
+
+Replies to a person on the channel they contacted you on (SMS, WhatsApp), through the outbound adapter for the conversation's recorded provider. Takes `conversationId` and `message` (plus an optional WhatsApp `template`); the binding's `customConfig` carries the provider credentials by env-var name. Setup, guards (STOP opt-out, WhatsApp 24-hour window, length cap, throttle, idempotency) and the worked example are in the [SMS / WhatsApp inbound-reply recipe](./recipes/sms-whatsapp-inbound-reply.md); adding a provider is in [outbound-adapters.md](./outbound-adapters.md).
+
+**It sends only within the conversation being handled** (t-770). The `conversationId` argument is chosen by whoever drives the call, so an unrestricted one would let a steered model, or a run's starter, message anyone who ever wrote to the operator's number:
+
+- a workflow step, fixed (`tool_call`) or AI-driven (`agent_call`, the orchestrator), only to the run's `AiWorkflowExecution.replyConversationId`. The inbound route sets it to the conversation the inbound message resolved to and the rerun route copies it (`ExecuteOptions.replyConversationId`) only when the admin sets `resendReply` on a finished original; nothing else does. A fixed step is not trusted on its own: its args can come from a prior step's model output, or from the run's input, which a model calling `run_workflow` chooses;
+- an interactive chat only to its own conversation, which is never a channel thread;
+- an MCP client or an anonymous embed widget visitor, never.
+
+Anything else is refused with `conversation_not_permitted` (an embed visitor with `anonymous_visitor`) and logged, before the conversation is read. Sending to another thread on purpose (outreach, reminders) is not supported yet.
 
 ### `upload_to_storage`
 

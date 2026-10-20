@@ -121,6 +121,7 @@
 import { logger } from '@/lib/logging';
 import { isPlatformAdmin } from '@/lib/auth/roles';
 import { hasScope } from '@/lib/auth/api-key-scopes';
+import { orgAdministers } from '@/lib/tenancy/roles';
 import { createAppInitGate } from '@/lib/fork-init';
 import { initAppAuthorizationPolicy } from '@/lib/app/authorization';
 
@@ -180,6 +181,22 @@ export interface AuthorizationPrincipal {
    * requires a platform admin with a browser session.
    */
   scopes?: readonly string[];
+  /**
+   * The org this request acts for (§106), when the guard entered one — the
+   * session's active org, the key's org, or the verified resolver header.
+   * Absent for a platform credential (an `admin` key) and for a principal
+   * built outside the guards. **Told, not sniffed**: the policy reads the
+   * caller's org facts from here and never from the tenant context, so it is
+   * testable with a plain object and correct for a caller holding a principal
+   * but no context (the feature's journal decision).
+   */
+  orgId?: string;
+  /**
+   * The caller's role in `orgId` — `OWNER` / `ADMIN` / `MEMBER` from
+   * `lib/tenancy/roles.ts` — or `null` when they hold none. Absent when
+   * `orgId` is.
+   */
+  orgRole?: string | null;
 }
 
 /**
@@ -450,14 +467,68 @@ function administersEverything(viewer: AuthorizationPrincipal): boolean {
 }
 
 /**
- * Sunrise's own policy: what the guards did before this module existed.
+ * Whether this principal administers the org a resource belongs to (§106).
  *
- * Platform admin administers everything and reads everyone; everyone else reads
- * themselves. Exported so a fork can spread it and replace one face — see
+ * The org arm of the default policy, and everything it does NOT grant is the
+ * point: an org OWNER/ADMIN administers rows that carry THEIR org and nothing
+ * else. A `null` resource, or one without an `orgId`, grants nothing — those
+ * are the platform-ops surfaces (every core admin route: no core admin
+ * resolver names an org until §107), which stay platform-only: the control-
+ * plane split in the tenancy playbook. And both sides must be present:
+ * `resource.orgId === viewer.orgId` with both `undefined` is `true`, which is
+ * the trap the fork seam's docblock warns about, so the comparison is guarded
+ * on the resource side explicitly. And it is a **session** grant: an API-key
+ * principal never takes this arm, whatever org role the entry projected
+ * onto it — a key's standing is its scopes, and `administersEverything` is
+ * where those are read.
+ *
+ * The core routes that DO name an org are the org members routes
+ * (`app/api/v1/orgs/[id]/members/**`, §106 t-672): `{ kind: 'org', id,
+ * orgId }`, no `ownerId`, so this arm is what admits an org's own OWNER/ADMIN
+ * to its roster while they act in it. Byte-identical at `single` still, by
+ * construction and by test: on the install org the OWNER set is the
+ * platform-admin set (the install-org role follows the platform role), so
+ * this arm admits exactly whom `administersEverything` admits there; on every
+ * other core route no resource carries an org, and `authorization.test.ts`
+ * asserts every existing case answers the same with and without org facts on
+ * the principal.
+ */
+function administersOrgOf(
+  viewer: AuthorizationPrincipal,
+  resource: AuthorizationResource | null
+): boolean {
+  // A credential is narrower than its owner (#542), and none of the API-key
+  // scopes mean "administer the org": `enterApiKeyOrg` projects the OWNER's
+  // platform role onto a key at `single`, so without this a `chat` key
+  // minted by a platform admin would read the install org's roster where the
+  // same key is refused every admin route. An `admin` key is already admitted
+  // by `administersEverything`; any other key gets no org-level grant until
+  // a scope for it exists.
+  if (viewer.credential === 'api-key') return false;
+  if (!resource?.orgId || !viewer.orgId) return false;
+  return resource.orgId === viewer.orgId && orgAdministers(viewer.orgRole);
+}
+
+/**
+ * Sunrise's own policy: what the guards did before this module existed, plus
+ * the org arm (§106).
+ *
+ * Platform admin administers everything and reads everyone; an org
+ * OWNER/ADMIN administers what carries their org and reads the OWNERLESS rows
+ * that carry it; everyone else reads themselves. The `'subject'` arm is
+ * deliberately unchanged for an org admin — a row another member owns is not
+ * theirs to read through `canRead` until `subjectScope` can express "rows in
+ * my org" (§107), because the two faces must agree
+ * ({@link checkAuthorizationParity}) and a `SubjectFilter` today names one
+ * user or everyone. So an org admin may `canAdminister` an org row another
+ * member owns while `canRead` refuses it: the two faces answer different
+ * questions on that row, and the narrower one wins on the read path.
+ * Exported so a fork can spread it and replace one face — see
  * {@link AuthorizationPolicy}.
  */
 export const DEFAULT_AUTHORIZATION_POLICY: AuthorizationPolicy = {
-  canAdminister: (viewer) => Promise.resolve(administersEverything(viewer)),
+  canAdminister: (viewer, resource) =>
+    Promise.resolve(administersEverything(viewer) || administersOrgOf(viewer, resource)),
 
   canRead: (viewer, target) => {
     switch (target.kind) {
@@ -473,6 +544,18 @@ export const DEFAULT_AUTHORIZATION_POLICY: AuthorizationPolicy = {
         // every caller through while the diff, and the log, still showed a
         // policy being consulted — an allow wearing the costume of a check. So
         // the default narrows to platform staff and says so.
+        //
+        // Except (§106) a row that carries an org: that is not "nobody's", it is
+        // the org's, and its OWNER/ADMIN may read it. Answered BEFORE the
+        // diagnostic below, because an org resource with no `ownerId` is a
+        // fork's steady state, not a misconfigured resolver. Only the `this-row`
+        // question can say which org; the capability question
+        // (`any-row-of-this-kind`) names no row, and admitting an org admin to
+        // it would hand them every org's ownerless rows of that kind until
+        // §107 scopes those queries by org — so it stays platform-only.
+        if (target.asking === 'this-row' && administersOrgOf(viewer, target.resource)) {
+          return Promise.resolve(true);
+        }
         //
         // Same answer for both questions, deliberately: whether the caller may
         // read ownerless rows of a kind is the same question as whether they may

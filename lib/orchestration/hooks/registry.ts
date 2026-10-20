@@ -14,11 +14,15 @@
  *
  * Dispatch is fire-and-forget — failures are logged and persisted to the
  * delivery table but never propagate to the caller.
+ *
+ * Tenancy posture: org-keyed — `hookCacheByOrg`, because `eventType` is a
+ * label two orgs share (lib/tenancy/process-state.ts).
  */
 
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
+import { loggableUrl } from '@/lib/logging/redact-path';
 import { describeFetchFailure } from '@/lib/errors/fetch-error';
 import {
   HookEventPayloadSchema,
@@ -36,6 +40,7 @@ import {
   signHookPayload,
 } from '@/lib/orchestration/hooks/signing';
 import { noteMaintenanceWork } from '@/lib/orchestration/maintenance/idle-gate';
+import { requireTenantContext } from '@/lib/tenancy/context';
 
 /** Cache TTL — reload hooks from DB every 60 seconds */
 const CACHE_TTL_MS = 60_000;
@@ -57,17 +62,62 @@ interface CachedHook {
   secret: string | null;
 }
 
-let hookCache: Map<string, CachedHook[]> | null = null;
-let cacheLoadedAt = 0;
+interface OrgHookCache {
+  byType: Map<string, CachedHook[]>;
+  loadedAt: number;
+}
 
 /**
- * Load enabled hooks from the database, grouped by event type.
- * Results are cached for CACHE_TTL_MS.
+ * The hook cache, **per org** (§108 t-712).
+ *
+ * `AiEventHook` is tenant-owned and `eventType` is a label two orgs both use,
+ * so one process-wide map keyed by event type served whichever org refreshed
+ * it last to every org for the next minute: org B's `conversation.started`
+ * would POST its payload to org A's URL, signed with org A's secret, while B's
+ * own hooks never fired. Keyed by org the entries cannot cross, and the
+ * delivery row each dispatch writes lands against a hook the emitting org can
+ * see.
+ *
+ * **There is no `'system'` partition, deliberately.** Under `runAsSystem` the
+ * data layer sets `app.bypass_rls`, so the `findMany` below would return
+ * EVERY org's hooks — and one such entry, cached under a shared sentinel key,
+ * would fan a single event out to every org's webhook URL, each signed with
+ * that org's secret. That is the defect this module just fixed, reintroduced
+ * through the back door. So a null-org scope is refused rather than keyed
+ * (§108 t-712, review round 1). Nothing emits under `runAsSystem` today; this
+ * is what keeps that true.
+ *
+ * Partitions older than the TTL are dropped on the next refresh, so the map
+ * does not accumulate one entry per org that has ever emitted — each holds
+ * every enabled hook's action, filter and secret, and stale ones are of no
+ * use to anybody.
+ */
+const hookCacheByOrg = new Map<string, OrgHookCache>();
+
+/**
+ * Load the calling org's enabled hooks from the database, grouped by event
+ * type. Results are cached per org for CACHE_TTL_MS.
+ *
+ * Two call stacks are refused rather than served, and `emitHookEvent` —
+ * fire-and-forget — logs each: one that entered no context at all (`multi`
+ * only; at `single` the context resolves to the install org, so there is one
+ * partition and the behaviour is unchanged), and one running as the system
+ * scope, which has no org to name. Both are the same answer: **an event that
+ * cannot say whose it is cannot say whose hooks to fire**, and reading wide
+ * is never the fallback.
  */
 async function loadHooks(): Promise<Map<string, CachedHook[]>> {
+  const { orgId } = requireTenantContext();
+  if (orgId === null) {
+    throw new Error(
+      'Hook dispatch has no org: this call stack runs as the system scope, which sees every ' +
+        "org's hooks. Emit the event inside runAsOrg — see lib/tenancy/process-state.ts."
+    );
+  }
   const now = Date.now();
-  if (hookCache && now - cacheLoadedAt < CACHE_TTL_MS) {
-    return hookCache;
+  const cached = hookCacheByOrg.get(orgId);
+  if (cached && now - cached.loadedAt < CACHE_TTL_MS) {
+    return cached.byType;
   }
 
   const hooks = await prisma.aiEventHook.findMany({
@@ -113,15 +163,26 @@ async function loadHooks(): Promise<Map<string, CachedHook[]>> {
     byType.set(hook.eventType, list);
   }
 
-  hookCache = byType;
-  cacheLoadedAt = now;
+  // Drop every partition the TTL has expired, this one included, before
+  // writing the fresh entry. One org's refresh is the natural moment to
+  // collect the orgs that have stopped emitting.
+  for (const [key, entry] of hookCacheByOrg) {
+    if (now - entry.loadedAt >= CACHE_TTL_MS) hookCacheByOrg.delete(key);
+  }
+  hookCacheByOrg.set(orgId, { byType, loadedAt: now });
   return byType;
 }
 
-/** Invalidate the hook cache (e.g., after CRUD operations). */
+/**
+ * Invalidate the hook cache (e.g., after CRUD operations).
+ *
+ * Clears **every** org's partition, not just the caller's. An admin route
+ * editing a hook runs inside one org, but the cost of dropping the others is a
+ * single re-read each and the cost of getting the partitioning wrong is a hook
+ * that keeps firing after it was disabled.
+ */
 export function invalidateHookCache(): void {
-  hookCache = null;
-  cacheLoadedAt = 0;
+  hookCacheByOrg.clear();
 }
 
 /**
@@ -195,7 +256,7 @@ async function dispatchWebhook(
   } catch (err: unknown) {
     logger.warn('Hook webhook dispatch setup failed', {
       hookId,
-      url: action.url,
+      url: loggableUrl(action.url),
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -310,7 +371,7 @@ async function attemptDelivery(
 
   logger.warn('Hook webhook delivery failed', {
     deliveryId,
-    url,
+    url: loggableUrl(url),
     attempt: newAttempts,
     maxAttempts: MAX_ATTEMPTS,
     exhausted,

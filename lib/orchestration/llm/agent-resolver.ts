@@ -20,14 +20,19 @@
 import type { AiAgent, AiProviderConfig } from '@/types/prisma';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
-import { isApiKeyEnvVarSet } from '@/lib/orchestration/llm/provider-manager';
+import { filterProvidersWithCredential } from '@/lib/orchestration/llm/provider-credentials';
 import { ProviderError } from '@/lib/orchestration/llm/provider';
 import { getDefaultModelForTask } from '@/lib/orchestration/llm/settings-resolver';
+import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
+import { getTenantContext } from '@/lib/tenancy/context';
 // The fork's eligibility rule wires itself, lazily, inside
 // `resolveEligibleProviders`. It used to be a module-load side effect here,
 // which made registration depend on who imported this file — see that module's
 // `ensureWired` for why that was wrong.
-import { resolveEligibleProviders } from '@/lib/orchestration/llm/provider-eligibility';
+import {
+  resolveEligibleProviders,
+  type BindingProvenance,
+} from '@/lib/orchestration/llm/provider-eligibility';
 import type { TaskType } from '@/types/orchestration';
 
 /** Number of system fallbacks to attach when an agent has no explicit provider. */
@@ -37,6 +42,19 @@ export interface ResolvedAgentBinding {
   providerSlug: string;
   model: string;
   fallbacks: string[];
+  /**
+   * Whether the primary was auto-picked or the agent's own, and whether the
+   * fallbacks are the agent's list or the system fill. Pass it to
+   * `getProviderWithFallbacks` (or `primaryCallContext` / `fallbackCallContext`
+   * for `getProvider`) so the call-time gate gives the eligibility rule the
+   * right `source`. Always set by this resolver; optional so a binding built
+   * elsewhere still type-checks. A call made without it is evaluated as
+   * unrecorded for its position — the primary as both kinds of primary, a
+   * fallback as both kinds of fallback — which a rule cannot answer more
+   * leniently than the recorded source, but which no longer tells the rule
+   * which of the two it is (§120 t-741). Pass it.
+   */
+  provenance?: BindingProvenance;
 }
 
 /** Pick of the AiAgent fields the resolver actually reads. */
@@ -81,6 +99,9 @@ export async function resolveAgentProviderAndModel(
   agent: ResolvableAgent,
   task: TaskType = 'chat'
 ): Promise<ResolvedAgentBinding> {
+  // Callers read `getModel(model)` (the chat history budget, cost) before
+  // they fetch the provider, so hydrate here too, not only in `getProvider`.
+  await hydrateModelRegistryFromDb();
   const providerSet = typeof agent.provider === 'string' && agent.provider.length > 0;
   const modelSet = typeof agent.model === 'string' && agent.model.length > 0;
 
@@ -99,6 +120,7 @@ export async function resolveAgentProviderAndModel(
           primarySlug: agent.provider,
         })),
       ],
+      provenance: { task, primary: 'explicit', fallbacks: 'explicit' },
     };
   }
 
@@ -141,7 +163,8 @@ export async function resolveAgentProviderAndModel(
       logger.error('No configured provider is eligible for this request', {
         task,
         reachableCandidates: candidates.map((c) => c.slug),
-        fix: 'The rule registered via registerProviderEligibility() in lib/app/llm-providers.ts permitted none of them — by policy, or because it threw (a rule that cannot be evaluated denies). Check above for a resolver failure; if there is none, widen the rule or give the agent an explicit provider.',
+        orgId: getTenantContext()?.orgId ?? null,
+        fix: "None of them is permitted. At TENANCY_MODE=multi the usual reason is the org's approved providers (§120 t-742): an org other than the install org starts with none, so grant them with PUT /api/v1/admin/orgs/[id]/providers; a call outside any org scope is permitted nothing. Otherwise the rule registered via registerProviderEligibility() in lib/app/llm-providers.ts permitted none of them — by policy, or because it threw (a rule that cannot be evaluated denies). Check above for a policy or resolver failure; if there is none, widen the grant or the rule, or give the agent an explicit provider.",
       });
       throw new NoEligibleProviderError();
     }
@@ -186,19 +209,30 @@ export async function resolveAgentProviderAndModel(
     fallbackCount: fallbacks.length,
   });
 
-  return { providerSlug, model, fallbacks };
+  return {
+    providerSlug,
+    model,
+    fallbacks,
+    provenance: {
+      task,
+      primary: providerSet ? 'explicit' : 'primary',
+      fallbacks: usingExplicit ? 'explicit' : 'system',
+    },
+  };
 }
 
 /**
- * Find every active provider whose `apiKeyEnvVar` is set in
- * `process.env` (or whose row is `isLocal` and therefore needs no
- * key). Ordered by `createdAt` so the first user-configured provider
- * wins on ties.
+ * Find every active provider that has a credential in this context (by
+ * default: its `apiKeyEnvVar` is set in `process.env`), or whose row is
+ * `isLocal` and therefore needs no key. Asked through the credential seam
+ * (§120 t-744), so a fork whose keys are not in the environment still has
+ * reachable providers. Ordered by `createdAt` so the first user-configured
+ * provider wins on ties.
  */
 async function pickActiveProviderCandidates(): Promise<AiProviderConfig[]> {
   const rows = await prisma.aiProviderConfig.findMany({
     where: { isActive: true },
     orderBy: { createdAt: 'asc' },
   });
-  return rows.filter((row) => row.isLocal || isApiKeyEnvVarSet(row.apiKeyEnvVar));
+  return filterProvidersWithCredential(rows);
 }

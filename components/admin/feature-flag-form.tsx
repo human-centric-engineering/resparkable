@@ -11,6 +11,10 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -55,6 +59,7 @@ interface FeatureFlagFormProps {
 }
 
 export function FeatureFlagForm({ open, onOpenChange, onSuccess, flag }: FeatureFlagFormProps) {
+  const readOnly = useSharedSettingsReadOnly();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -219,7 +224,8 @@ export function FeatureFlagForm({ open, onOpenChange, onSuccess, flag }: Feature
             <Button type="button" variant="outline" onClick={handleClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isSubmitting}>
+            <SharedSettingsSaveHint />
+            <Button type="submit" disabled={readOnly || isSubmitting}>
               <Save className="mr-2 h-4 w-4" />
               {isSubmitting
                 ? isEditMode

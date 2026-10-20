@@ -27,8 +27,12 @@ npx @sentry/wizard@latest -i nextjs
 
 The wizard will:
 
-- Create `sentry.client.config.ts`, `sentry.server.config.ts`, `sentry.edge.config.ts`
-- Create `instrumentation.ts` and `instrumentation-client.ts` for Next.js 16+
+- Create `instrumentation-client.ts` (the browser SDK's init on Next.js 16,
+  which builds with Turbopack), `sentry.server.config.ts` and
+  `sentry.edge.config.ts`, loaded from `instrumentation.ts`
+- Older wizard runs also wrote `sentry.client.config.ts`; `@sentry/nextjs` 11
+  loads it only on a webpack build, so on Next 16 the client's `Sentry.init` is
+  the one in `instrumentation-client.ts`
 - Update `next.config.js` with the Sentry wrapper
 - Create example pages to test the integration
 - Configure the tunnel route to bypass ad blockers
@@ -73,6 +77,126 @@ See the [Sentry Next.js documentation](https://docs.sentry.io/platforms/javascri
 ```bash
 npm run dev
 ```
+
+## Sentry 11: Set What It Collects
+
+`@sentry/nextjs` 11 (Sunrise 0.14.0) **collects request and response bodies,
+headers, cookies, query parameters, database query parameters, local variables
+in stack frames and gen-AI prompts and outputs by default**. Sunrise's agents
+carry user chat content and personal data through every one of those, so a
+fork that turns Sentry on without setting this sends that data to Sentry. Set
+`dataCollection` in every `Sentry.init` the wizard writes
+(`instrumentation-client.ts`, `sentry.server.config.ts`,
+`sentry.edge.config.ts`), and widen it only for what you have decided to send:
+
+```typescript
+import * as Sentry from '@sentry/nextjs';
+import { scrubSentryEvent, scrubSentrySpan } from '@/lib/errors/sentry';
+
+Sentry.init({
+  dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
+  // Page URLs: drop query strings and fragments, collapse id- and
+  // credential-shaped path segments (see "Page URLs" below). `beforeSend` is
+  // needed in instrumentation-client.ts and sentry.edge.config.ts; the Node
+  // server config can leave it out.
+  beforeSend: scrubSentryEvent,
+  beforeSendSpan: scrubSentrySpan,
+  // Collect nothing about the request, the user or the data by default.
+  // (Session Replay is separate; see below.)
+  dataCollection: {
+    userInfo: false,
+    cookies: false,
+    httpHeaders: false,
+    httpBodies: [],
+    urlQueryParams: false,
+    graphQL: { document: false, variables: false },
+    genAI: { inputs: false, outputs: false },
+    databaseQueryData: false,
+    queues: false,
+    stackFrameVariables: false,
+  },
+});
+```
+
+`setErrorTrackingUser()` still attaches the user you pass it; `userInfo: false`
+stops only the SDK filling in `user.*` from request data on its own.
+
+### Page URLs
+
+A page URL can carry a credential or personal data: a token or an email in the
+query string or the fragment, or a token as a path segment (a share page such
+as `/s/<token>`). `urlQueryParams: false` covers only query strings the SDK
+collected itself. `lib/errors/sentry.ts` covers the rest:
+
+- **Error events, by default.** Sunrise registers `scrubSentryEvent` on
+  Sentry's global scope the first time it uses Sentry: on the client from
+  `ErrorHandlingProvider` (`initErrorTracking()`), on the Node server from
+  `instrumentation.ts`. It reduces an event's `request.url`, transaction
+  name, message and exception values, stack frames' file URLs (an inline
+  script's frame is the page URL) and every string in `extra` (nested objects
+  included) to origin plus path, and scrubs the trace context and the
+  breadcrumbs the event carries (a fetch or xhr `url`, a navigation's `from` /
+  `to`, a console breadcrumb's message and arguments), its `logentry` and any
+  request headers. The registration runs late in two places, so **also set
+  `beforeSend: scrubSentryEvent`** there: in `instrumentation-client.ts`,
+  because `ErrorHandlingProvider` registers only after hydration and an error
+  raised while the page loads would otherwise go out unscrubbed; and in
+  `sentry.edge.config.ts`, because the edge runtime does not run
+  `instrumentation.ts`'s Node branch. Scrubbing twice changes nothing.
+  `beforeBreadcrumb` is not needed.
+- **Spans: add `beforeSendSpan: scrubSentrySpan`** to each `Sentry.init`.
+  Under v11's default `traceLifecycle: 'stream'`, spans go out one by one and
+  never pass through an event processor. It scrubs every URL and path in each
+  span's name and attribute values, and in its links' attributes (`url.full`,
+  `http.url`, `next.span_name`, a captured `referer` header…), and drops
+  `url.fragment`, `url.query` and the raw path-parameter values
+  (`url.path.parameter.*`, `url.path.params.*`, `params.*`).
+
+Each id- or credential-shaped path segment becomes `[param]`
+(`collapseDynamicSegments()` in `lib/logging/redact-path.ts`, which lists what
+it cannot catch). The tail of a path from `/_next/static/` on, and in a file
+path (a server stack frame) from `/node_modules/` on, is kept as built so source
+maps and issue grouping still work; segments before it are still collapsed. A
+copied Error keeps its `cause` / `errors` chain, scrubbed the same way; a
+built-in class (`TypeError`, `AggregateError`…) keeps its class, and any other
+(a `DOMException`, your own subclass) becomes a plain `Error` with the same
+name, because its getters cannot run on a copy. Any other object becomes a
+plain object of its own properties, scrubbed. The global client error handler
+(`lib/errors/handler.ts`) already sends the page as the collapsed pathname,
+under `extra.path`, and scrubs the URLs in its context and in the error it
+reports. Request headers are scrubbed like the rest; tags are not. Keep
+`httpHeaders` off anyway, as above.
+
+**If you set `traceLifecycle: 'static'`**, `scrubSentrySpan` is never called
+(it takes the streamed span shape). The global event processor still scrubs
+each transaction and its child spans. Standalone spans (INP and other web
+vitals sent outside a transaction) pass through neither and are **not**
+scrubbed under `'static'`; stay on `'stream'` if you send them.
+
+**Session Replay is not governed by `dataCollection`.** The wizard adds
+`replayIntegration()` to the client init, and a replay records what the admin
+saw, chat content included. Either leave it out, or mask everything and record
+only sessions that errored:
+
+```typescript
+Sentry.init({
+  // …dsn and dataCollection as above
+  replaysSessionSampleRate: 0,
+  replaysOnErrorSampleRate: 1.0,
+  integrations: [Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true })],
+});
+```
+
+Two other v11 changes a setup written for v10 hits:
+
+- **`withSentryConfig` moved** to `@sentry/nextjs/config`:
+  `import { withSentryConfig } from '@sentry/nextjs/config';`
+- **Node 20.19+** is required; Sunrise runs on Node 24.
+
+The calls `lib/errors/sentry.ts` makes (`withScope`, `captureException`,
+`captureMessage`, `setUser`) are unchanged. See Sentry's
+[v10 → v11 migration guide](https://docs.sentry.io/platforms/javascript/migration/v10-to-v11/)
+for the rest.
 
 ## Using the Abstraction Layer
 
@@ -281,7 +405,7 @@ If you're getting too many events:
    ```typescript
    Sentry.init({
      tracesSampleRate: 0.1, // 10% of transactions
-     replaysSessionSampleRate: 0.01, // 1% of sessions
+     replaysSessionSampleRate: 0.01, // 1% of sessions, masked as in "Sentry 11" above
    });
    ```
 

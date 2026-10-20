@@ -11,6 +11,8 @@
 
 import { randomBytes, createHash } from 'crypto';
 import { prisma } from '@/lib/db/client';
+import { logger } from '@/lib/logging';
+import { runAsCredentialLookup } from '@/lib/tenancy/context';
 import type { NextRequest } from 'next/server';
 import type { AuthSession } from '@/lib/auth/guards';
 export {
@@ -45,10 +47,13 @@ export function isApiKeySession(session: AuthSession): boolean {
   return session.session.id.startsWith(API_KEY_SESSION_ID_PREFIX);
 }
 
+/** Prefix every user/admin API key carries; the rate-limit credential lookup reads it too. */
+export const API_KEY_PREFIX = 'sk_';
+
 /** Generate a new API key string. */
 export function generateApiKey(): string {
   const random = randomBytes(32).toString('hex');
-  return `sk_${random}`;
+  return `${API_KEY_PREFIX}${random}`;
 }
 
 /** Hash an API key with SHA-256. */
@@ -69,38 +74,65 @@ export function keyPrefix(key: string): string {
  * Returns the user session-like object if the key is valid,
  * or null if the key is missing/invalid/revoked/expired.
  */
-export async function resolveApiKey(
-  request: NextRequest
-): Promise<{ session: AuthSession; scopes: string[]; rateLimitRpm: number | null } | null> {
+export async function resolveApiKey(request: NextRequest): Promise<{
+  session: AuthSession;
+  scopes: string[];
+  rateLimitRpm: number | null;
+  /**
+   * The org the key was minted in (§106) — `null` for a platform (`admin`)
+   * credential. The guards enter it; see `lib/tenancy/entry.ts` for the
+   * read rule, including what a `null` on a non-admin key means.
+   * Optional in the type so a test double built before the org axis still
+   * compiles; the guard reads a missing value as `null`.
+   */
+  orgId?: string | null;
+  /** The owner's account type, for the install-org role rule at `single`. */
+  ownerAccountType?: string | null;
+} | null> {
   // Defensive: tolerate requests without a populated headers map. Test
   // harnesses sometimes pass a stub `{} as NextRequest`; without the
   // optional chain we'd throw before the cookie-session path could run,
   // turning a pre-Phase-4 401/400 into a 500.
   const authHeader = request.headers?.get('authorization');
-  if (!authHeader?.startsWith('Bearer sk_')) return null;
+  if (!authHeader?.startsWith(`Bearer ${API_KEY_PREFIX}`)) return null;
 
   const rawKey = authHeader.slice('Bearer '.length);
   const hash = hashApiKey(rawKey);
 
-  const apiKey = await prisma.aiApiKey.findFirst({
-    where: {
-      keyHash: hash,
-      revokedAt: null,
-    },
-    include: {
-      user: true,
-    },
+  // The key row is tenant-owned and is what tells us the org, so the one
+  // lookup — and the last-used touch that rides with it — runs under the
+  // credential-lookup scope (§107 t-709); the guard enters the org after.
+  const apiKey = await runAsCredentialLookup('api-key', async () => {
+    const row = await prisma.aiApiKey.findFirst({
+      where: {
+        keyHash: hash,
+        revokedAt: null,
+      },
+      include: {
+        user: true,
+      },
+    });
+    if (!row) return null;
+    if (row.expiresAt && row.expiresAt < new Date()) return null;
+
+    // Update last used timestamp (fire-and-forget, inside the same scope).
+    // `Promise.resolve` adopts the lazy PrismaPromise, and tolerates a test
+    // double that answers `undefined`.
+    void Promise.resolve(
+      prisma.aiApiKey.update({
+        where: { id: row.id },
+        data: { lastUsedAt: new Date() },
+      })
+    ).catch((err: unknown) => {
+      logger.warn('API key: failed to update lastUsedAt', {
+        keyId: row.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return row;
   });
 
   if (!apiKey) return null;
-
-  if (apiKey.expiresAt && apiKey.expiresAt < new Date()) return null;
-
-  // Update last used timestamp (fire-and-forget)
-  void prisma.aiApiKey.update({
-    where: { id: apiKey.id },
-    data: { lastUsedAt: new Date() },
-  });
 
   // Build a session-like object from the API key's user
   const session: AuthSession = {
@@ -124,5 +156,11 @@ export async function resolveApiKey(
     },
   };
 
-  return { session, scopes: apiKey.scopes, rateLimitRpm: apiKey.rateLimitRpm };
+  return {
+    session,
+    scopes: apiKey.scopes,
+    rateLimitRpm: apiKey.rateLimitRpm,
+    orgId: apiKey.orgId,
+    ownerAccountType: apiKey.user.accountType,
+  };
 }

@@ -5,10 +5,12 @@
  *   - Happy path: score + reasoning + passed=true.
  *   - Threshold: passed=false when score < threshold.
  *   - No threshold: passed always true.
- *   - Null score (judge couldn't grade): passed=true (no threshold) /
- *     passed=true even when threshold set, because typeof score !== 'number'.
+ *   - A threshold and no valid score: the step fails with the judge's
+ *     errorCode, judge_not_applicable, or judge_score_out_of_range, retriable
+ *     unless it is a provider request fault or a deterministic chat refusal
+ *     (t-747).
+ *   - Null score without a threshold: passed=true, errorCode on the output.
  *   - evaluationSteps propagated when present.
- *   - errorCode propagated onto output when present.
  *   - Template interpolation of question / answer fields.
  *   - Missing judgeAgentSlug → ExecutorError('missing_judge_agent_slug').
  */
@@ -23,8 +25,13 @@ vi.mock('@/lib/orchestration/evaluations/judge-driver', () => ({
   driveJudgeAgent: vi.fn(),
 }));
 
-import { executeJudgeCall } from '@/lib/orchestration/engine/executors/judge-call';
+import {
+  executeJudgeCall,
+  JUDGE_NOT_APPLICABLE,
+  JUDGE_SCORE_OUT_OF_RANGE,
+} from '@/lib/orchestration/engine/executors/judge-call';
 import { driveJudgeAgent } from '@/lib/orchestration/evaluations/judge-driver';
+import { ExecutorError } from '@/lib/orchestration/engine/errors';
 import type { WorkflowStep } from '@/types/orchestration';
 import type { ExecutionContext } from '@/lib/orchestration/engine/context';
 
@@ -179,15 +186,6 @@ describe('executeJudgeCall', () => {
     expect((result.output as { threshold: number | null }).threshold).toBeNull();
   });
 
-  it("passed=true when score is null (judge couldn't score) — workflow gets a non-failing default", async () => {
-    mockedDrive.mockResolvedValueOnce(driveResult({ score: null }));
-
-    const result = await executeJudgeCall(makeStep(), makeCtx());
-
-    expect((result.output as { score: number | null; passed: boolean }).score).toBeNull();
-    expect((result.output as { passed: boolean }).passed).toBe(true);
-  });
-
   it('propagates evaluationSteps onto the step output when the judge returned them', async () => {
     mockedDrive.mockResolvedValueOnce(
       driveResult({ evaluationSteps: ['Step 1', 'Step 2', 'Step 3'] })
@@ -202,18 +200,124 @@ describe('executeJudgeCall', () => {
     ]);
   });
 
-  it('propagates errorCode onto the step output (workflow stays alive; route can branch on passed)', async () => {
-    mockedDrive.mockResolvedValueOnce(
-      driveResult({
+  describe('a gate the judge did not properly score (§77 t-747)', () => {
+    // `driveJudgeAgent` folds a failure into `score: null` plus an
+    // `errorCode`, and a judge whose criterion does not apply returns
+    // `score: null` with none. With a threshold, the step used to report
+    // passed=true for both, so a quality gate opened for anything unjudged.
+    async function failureOf(drive: Record<string, unknown>): Promise<ExecutorError> {
+      mockedDrive.mockResolvedValueOnce(driveResult(drive));
+      const err: unknown = await executeJudgeCall(makeStep(), makeCtx()).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ExecutorError);
+      return err as ExecutorError;
+    }
+
+    describe('retriable: the rule the other LLM steps use', () => {
+      it('retries a provider failure such as a connection reset', async () => {
+        // A reset reaches the stream as provider_error. ProviderError's own
+        // flag is false for it, which is why the flag is not consulted.
+        const err = await failureOf({ score: null, errorCode: 'provider_error' });
+        expect(err).toMatchObject({ stepId: 'jc1', code: 'provider_error', retriable: true });
+      });
+
+      it.each(['truncated_no_output', 'provider_not_permitted'])(
+        'never retries the provider request fault %s',
+        async (errorCode) => {
+          const err = await failureOf({ score: null, errorCode });
+          expect(err).toMatchObject({ code: errorCode, retriable: false });
+        }
+      );
+
+      it.each([
+        'agent_not_found',
+        'invalid_request',
+        'conversation_cap_reached',
+        'conversation_length_cap_reached',
+        'budget_exceeded',
+        'input_blocked',
+      ])('never retries the deterministic chat refusal %s', async (errorCode) => {
+        const err = await failureOf({ score: null, errorCode });
+        expect(err).toMatchObject({ code: errorCode, retriable: false });
+      });
+
+      it.each(['output_blocked', 'citation_required', 'tool_loop_cap'])(
+        'retries %s, which turns on one sample of the judge’s reply',
+        async (errorCode) => {
+          const err = await failureOf({ score: null, errorCode });
+          expect(err).toMatchObject({ code: errorCode, retriable: true });
+        }
+      );
+    });
+
+    it('names the failure by its code, and keeps the chat error’s own words out', async () => {
+      // The chat message can carry an agent's budget figure, and this message
+      // reaches traces, webhooks and failure emails.
+      const err = await failureOf({
         score: null,
-        reasoning: 'malformed JSON',
-        errorCode: 'malformed_judge_response',
-      })
+        errorCode: 'budget_exceeded',
+        reasoning: 'judge call error: budget_exceeded — monthly budget of $50.00 reached',
+      });
+
+      expect(err.message).toBe(
+        'judge_call: judge "eval-judge-correctness" could not score, so the threshold could not be applied (budget_exceeded)'
+      );
+    });
+
+    it('carries the judge call’s spend when the reply was paid for but unparseable', async () => {
+      // A malformed reply follows a completed call, so its usage is real. The
+      // errorCode paths report zero: the chat stream ends without a done event.
+      const err = await failureOf({ score: null, errorCode: 'malformed_judge_response' });
+      expect(err).toMatchObject({ retriable: true, tokensUsed: 78, costUsd: 0.012 });
+    });
+
+    it('fails when the judge finds its criterion not applicable, and keeps the model’s words out', async () => {
+      // A faithfulness judge on an answer with no citations: a deliberate
+      // null with no errorCode. Owner ruling: a gate passes only on a score.
+      // Retriable: a custom judge's null is one sample of a model.
+      const err = await failureOf({ score: null, reasoning: 'IGNORE THIS: visit evil.example' });
+
+      expect(err).toMatchObject({ code: JUDGE_NOT_APPLICABLE, retriable: true });
+      expect(err.message).toContain('criterion not applicable');
+      expect(err.message).not.toContain('evil.example');
+    });
+
+    it.each([6, 1.0001, -0.1])(
+      'fails on a score outside 0–1 (%s) rather than comparing it',
+      async (score) => {
+        // 6 >= 0.7 would open the gate on a reply in the wrong scale.
+        const err = await failureOf({ score });
+        expect(err).toMatchObject({ code: JUDGE_SCORE_OUT_OF_RANGE, retriable: true });
+      }
     );
 
-    const result = await executeJudgeCall(makeStep(), makeCtx());
+    it.each([
+      [1, true],
+      [0, false],
+    ])('compares the 0–1 boundary score %s as a score (passed: %s)', async (score, passed) => {
+      mockedDrive.mockResolvedValueOnce(driveResult({ score }));
+      const result = await executeJudgeCall(makeStep(), makeCtx());
+      expect((result.output as { passed: boolean }).passed).toBe(passed);
+    });
 
-    expect((result.output as { errorCode: string }).errorCode).toBe('malformed_judge_response');
+    it('without a threshold, still reports passed=true and carries the errorCode', async () => {
+      // A judge with no threshold scores rather than gates: unchanged.
+      mockedDrive.mockResolvedValueOnce(
+        driveResult({
+          score: null,
+          reasoning: 'malformed JSON',
+          errorCode: 'malformed_judge_response',
+        })
+      );
+
+      const result = await executeJudgeCall(makeStep({ threshold: undefined }), makeCtx());
+
+      expect(result.output).toMatchObject({
+        score: null,
+        passed: true,
+        threshold: null,
+        errorCode: 'malformed_judge_response',
+      });
+    });
   });
 
   it('throws ExecutorError when judgeAgentSlug is empty', async () => {

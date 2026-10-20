@@ -29,6 +29,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { KnowledgeTagsTable } from '@/components/admin/orchestration/knowledge/knowledge-tags-table';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 import type { KnowledgeTagListItem } from '@/types/orchestration';
 import type { PaginationMeta } from '@/types/api';
 
@@ -255,6 +256,48 @@ describe('KnowledgeTagsTable', () => {
         expect(screen.getByText('Sales Guide')).toBeInTheDocument();
         expect(screen.getByText('Support Bot')).toBeInTheDocument();
       });
+    });
+
+    it('counts, without listing, other orgs’ use of the tag (t-731)', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        documents: [],
+        agents: [],
+        otherOrgDocumentCount: 3,
+        otherOrgAgentCount: 1,
+      });
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByText('Used Tag').closest('tr')!);
+
+      expect(
+        await screen.findByText(
+          /Also used in other organisations: 3 documents and\s+1 agent grant, not listed here\./
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Nothing references this tag yet/)).not.toBeInTheDocument();
+    });
+
+    it('shows other orgs’ use beside the caller’s own lists', async () => {
+      vi.mocked(apiClient.get).mockResolvedValue({
+        documents: [
+          { id: 'd1', name: 'Sales Guide', fileName: 'sales.pdf', scope: 'app', status: 'ready' },
+        ],
+        agents: [],
+        otherOrgDocumentCount: 1,
+        otherOrgAgentCount: 0,
+      });
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByText('Used Tag').closest('tr')!);
+
+      expect(await screen.findByText('Sales Guide')).toBeInTheDocument();
+      expect(
+        screen.getByText(/Also used in other organisations: 1 document and/)
+      ).toBeInTheDocument();
     });
 
     it('shows inactive badge for inactive agents in usage panel', async () => {
@@ -582,6 +625,89 @@ describe('KnowledgeTagsTable', () => {
       });
     });
 
+    it('says how many grants other orgs hold when only they block the delete (t-731)', async () => {
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('Agent blocked', 'CONFLICT', 409, {
+          agentCount: 2,
+          agents: [],
+          otherOrgAgentCount: 2,
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByRole('button', { name: /delete used tag/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      expect(
+        await screen.findByText(
+          '2 agents in other organisations also hold this grant. They are not listed here: remove those grants from inside each organisation.'
+        )
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
+    });
+
+    it('says how many of the caller’s own grants are beyond the listed ones', async () => {
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('Agent blocked', 'CONFLICT', 409, {
+          agentCount: 5,
+          agents: [{ id: 'a1', name: 'Support Bot', slug: 'support-bot' }],
+          otherOrgAgentCount: 1,
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByRole('button', { name: /delete used tag/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      // 5 grants: 1 in another org, 4 here, of which 1 is listed.
+      expect(await screen.findByText('…and 3 more in this organisation.')).toBeInTheDocument();
+    });
+
+    it('ignores a non-numeric count in the error details', async () => {
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('Agent blocked', 'CONFLICT', 409, {
+          agentCount: 1,
+          agents: 'not a list',
+          otherOrgAgentCount: '3',
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByRole('button', { name: /delete used tag/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      expect(await screen.findByRole('heading', { name: /cannot delete/i })).toBeInTheDocument();
+      expect(screen.queryByText(/in other organisations/)).not.toBeInTheDocument();
+    });
+
+    it('warns before a forced delete strips the tag from other orgs’ documents (t-731)', async () => {
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('Tag in use', 'CONFLICT', 409, {
+          agentCount: 0,
+          documentCount: 6,
+          otherOrgDocumentCount: 1,
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />);
+
+      await user.click(screen.getByRole('button', { name: /delete used tag/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      expect(
+        await screen.findByText(
+          '1 of these documents is in another organisation. Deleting the tag strips it from theirs too.'
+        )
+      ).toBeInTheDocument();
+    });
+
     it('shows agent-blocked phase on 409 with agents', async () => {
       vi.mocked(apiClient.delete).mockRejectedValue(
         new APIClientError('Agent blocked', 'CONFLICT', 409, {
@@ -769,6 +895,100 @@ describe('KnowledgeTagsTable', () => {
       // Dialog should open, not usage panel
       expect(screen.getByRole('dialog')).toBeInTheDocument();
       expect(screen.queryByText(/loading usage/i)).not.toBeInTheDocument();
+    });
+  });
+
+  describe('read-only outside the install org (§107 t-753)', () => {
+    function renderReadOnly(tags: KnowledgeTagListItem[]) {
+      return render(
+        <SharedSettingsAccessProvider readOnly canSwitch>
+          <KnowledgeTagsTable initialTags={tags} initialMeta={MOCK_META} />
+        </SharedSettingsAccessProvider>
+      );
+    }
+
+    it('drops the action column, so headers and cells still line up', () => {
+      const { unmount } = render(
+        <KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />
+      );
+      const editableHeaders = screen.getAllByRole('columnheader').length;
+      expect(screen.getAllByRole('row')[1].querySelectorAll('td')).toHaveLength(editableHeaders);
+      unmount();
+
+      renderReadOnly([TAG_WITH_USE]);
+      const headers = screen.getAllByRole('columnheader').length;
+      expect(headers).toBe(editableHeaders - 1);
+      expect(screen.getAllByRole('row')[1].querySelectorAll('td')).toHaveLength(headers);
+    });
+
+    it('says where tags come from in the empty state, instead of pointing at a hidden button', () => {
+      const { unmount } = render(<KnowledgeTagsTable initialTags={[]} initialMeta={MOCK_META} />);
+      expect(screen.getByText(/Create one above/)).toBeInTheDocument();
+      unmount();
+
+      renderReadOnly([]);
+      expect(screen.queryByText(/Create one above/)).not.toBeInTheDocument();
+      expect(
+        screen.getByText(
+          /Tags are shared by every organisation and are created from the install organisation/
+        )
+      ).toBeInTheDocument();
+      // The empty row still spans every column there is.
+      expect(screen.getAllByRole('cell')[0]).toHaveAttribute(
+        'colspan',
+        String(screen.getAllByRole('columnheader').length)
+      );
+    });
+
+    it('hides New tag, the bulk-delete control and its "all in use" text', () => {
+      // Contrast: the same fixtures editable show both controls.
+      const editable = render(
+        <KnowledgeTagsTable initialTags={[TAG_UNUSED]} initialMeta={MOCK_META} />
+      );
+      expect(screen.getByRole('button', { name: /new tag/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /delete 1 unused tag/i })).toBeInTheDocument();
+      editable.unmount();
+      const allInUse = render(
+        <KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />
+      );
+      expect(screen.getByText('All tags are in use.')).toBeInTheDocument();
+      allInUse.unmount();
+
+      renderReadOnly([TAG_UNUSED, TAG_WITH_USE]);
+      // Rows still render
+      expect(screen.getByText('Unused Tag')).toBeInTheDocument();
+      expect(screen.getByText('Used Tag')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /new tag/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /unused tag/i })).not.toBeInTheDocument();
+      expect(screen.queryByText('All tags are in use.')).not.toBeInTheDocument();
+    });
+
+    it('hides the per-row Edit and Delete buttons but still expands a row to show usage', async () => {
+      const editable = render(
+        <KnowledgeTagsTable initialTags={[TAG_WITH_USE]} initialMeta={MOCK_META} />
+      );
+      expect(screen.getByRole('button', { name: 'Edit Used Tag' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Delete Used Tag' })).toBeInTheDocument();
+      editable.unmount();
+
+      vi.mocked(apiClient.get).mockResolvedValue({
+        documents: [
+          { id: 'd1', name: 'Sales Guide', fileName: 'sales.pdf', scope: 'app', status: 'ready' },
+        ],
+        agents: [],
+      });
+      const user = userEvent.setup();
+      renderReadOnly([TAG_WITH_USE]);
+
+      expect(screen.queryByRole('button', { name: 'Edit Used Tag' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Delete Used Tag' })).not.toBeInTheDocument();
+
+      // Read-only drill-down survives
+      await user.click(screen.getByText('Used Tag').closest('tr')!);
+      expect(await screen.findByText('Sales Guide')).toBeInTheDocument();
+      expect(apiClient.post).not.toHaveBeenCalled();
+      expect(apiClient.patch).not.toHaveBeenCalled();
+      expect(apiClient.delete).not.toHaveBeenCalled();
     });
   });
 });

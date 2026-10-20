@@ -28,6 +28,7 @@ vi.mock('@/lib/db/client', () => ({
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
 import { exportOrchestrationConfig } from '@/lib/orchestration/backup/exporter';
+import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -475,5 +476,39 @@ describe('exportOrchestrationConfig', () => {
     // Second findMany call is for capabilities
     const capCall = mockFindMany.mock.calls[1][0] as { where?: { isSystem?: boolean } };
     expect(capCall?.where?.isSystem).toBe(false);
+  });
+  it('leaves out system workflows and template rows holding a built-in slug, and nothing else (§116 t-727, t-729)', async () => {
+    mockFindMany
+      .mockResolvedValueOnce([]) // agents
+      .mockResolvedValueOnce([]) // capabilities
+      .mockResolvedValueOnce([]) // workflows
+      .mockResolvedValueOnce([]); // webhooks
+    mockFindMany.mockResolvedValueOnce([]); // knowledgeTags
+    mockFindUnique.mockResolvedValue(null);
+
+    await exportOrchestrationConfig();
+
+    // Third findMany call is for workflows. Two kinds are left out: a system
+    // workflow, by its flag or its reserved slug (the seed's, as system agents
+    // and capabilities are; the importer refuses the slug, so a bundle must
+    // not carry it — t-729),
+    // and a TEMPLATE row with a built-in slug, a seed-era copy of a template
+    // served from code. The same slug on an ordinary workflow (a retired row
+    // an install switched back on) is live config and must be backed up.
+    const wfCall = mockFindMany.mock.calls[2][0] as {
+      where?: {
+        isSystem?: boolean;
+        slug?: { notIn?: string[] };
+        NOT?: { isTemplate?: boolean; slug?: { in?: string[] } };
+      };
+    };
+    expect(wfCall?.where).toEqual({
+      isSystem: false,
+      slug: { notIn: ['tpl-provider-model-audit'] },
+      NOT: { isTemplate: true, slug: { in: expect.any(Array) } },
+    });
+    expect([...(wfCall?.where?.NOT?.slug?.in ?? [])].sort()).toEqual(
+      BUILTIN_WORKFLOW_TEMPLATES.map((t) => t.slug).sort()
+    );
   });
 });

@@ -39,6 +39,7 @@ vi.mock('@/lib/db/client', () => ({
       findFirst: vi.fn(),
       update: vi.fn(),
     },
+    orgMembership: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   },
 }));
@@ -347,6 +348,22 @@ describe('POST /api/v1/chat/stream', () => {
       expect(streamChat).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
     });
 
+    it('looks a platform slug up among system agents only (§116 t-725)', async () => {
+      // As the chat handler will load it: an org's own agent under a platform
+      // slug is not found here rather than passing and failing mid-stream.
+      vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(null);
+      const request = createMockRequest({ ...validPayload, agentSlug: 'pattern-advisor' });
+
+      const response = await POST(request);
+
+      expect(response.status).toBe(404);
+      expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ slug: 'pattern-advisor', isSystem: true }),
+        })
+      );
+    });
+
     it('should return 404 when agent has visibility="internal"', async () => {
       // Arrange: query returns null because visibility filter excludes internal agents
       vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(null);
@@ -621,6 +638,44 @@ describe('POST /api/v1/chat/stream', () => {
       expect(response.status).toBe(200);
       expect(sseResponse).toHaveBeenCalledOnce();
       expect(prisma.$executeRaw).toHaveBeenCalledOnce();
+    });
+
+    it('refuses a token minted in another org with the words used for a bad token, and spends no use (§106 t-673)', async () => {
+      // The caller's session acts in OTHER (membership verified by the real
+      // guard); the token belongs to THIRD. Same 403 and message as a token
+      // that does not exist — the increment never runs.
+      const OTHER = 'cmorg000000000000000other';
+      const THIRD = 'cmorg000000000000000third';
+      const inOther = createMockSession();
+      vi.mocked(auth.api.getSession).mockResolvedValue({
+        ...inOther,
+        session: { ...inOther.session, activeOrgId: OTHER },
+      });
+      vi.mocked(prisma.orgMembership.findUnique).mockResolvedValue({
+        role: 'MEMBER',
+        org: { status: 'ACTIVE' },
+      } as never);
+      vi.mocked(prisma.aiAgentInviteToken.findFirst).mockResolvedValue({
+        id: 'tok-5',
+        orgId: THIRD,
+        revokedAt: null,
+        expiresAt: null,
+        maxUses: null,
+        useCount: 0,
+      } as never);
+      const request = createMockRequest({
+        ...validPayload,
+        agentSlug: 'private-bot',
+        inviteToken: 'elsewhere-token',
+      });
+
+      const response = await POST(request);
+      const body = await parseResponse<ErrorResponseBody>(response);
+
+      expect(response.status).toBe(403);
+      expect(body.error.message).toBe('Invalid or revoked invite token');
+      expect(prisma.$executeRaw).not.toHaveBeenCalled();
+      expect(streamChat).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
     });
 
     it('should allow access with unlimited token (maxUses null)', async () => {

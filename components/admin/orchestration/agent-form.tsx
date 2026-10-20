@@ -40,6 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { API } from '@/lib/api/endpoints';
+import { cn } from '@/lib/utils';
 import { fieldLabels, fieldToTab } from '@/lib/orchestration/agents/agent-field-registry';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
@@ -52,6 +53,7 @@ import { InstructionsHistoryPanel } from '@/components/admin/orchestration/instr
 import { AgentCapabilitiesTab } from '@/components/admin/orchestration/agent-capabilities-tab';
 import { AgentInviteTokensTab } from '@/components/admin/orchestration/agent-invite-tokens-tab';
 import { AgentVersionHistoryTab } from '@/components/admin/orchestration/agent-version-history-tab';
+import { describeTunableFields } from '@/components/admin/orchestration/platform-agent-fields';
 import { AgentTestCard } from '@/components/admin/orchestration/agent-test-card';
 import { EmbedConfigPanel } from '@/components/admin/orchestration/agents/embed-config-panel';
 import { KnowledgeAccessSection } from '@/components/admin/orchestration/knowledge-access-section';
@@ -79,8 +81,8 @@ const agentFormSchema = z
     // Set at create time only (via ?kind= query param); not editable on
     // existing agents. 'chat' or 'judge'.
     // `AiAgent.kind` is a free `String` column, not an enum —
-    // `prisma/seeds/017-case-generator-agent.ts` seeds `kind: 'generator'` and
-    // that seed runs on every install (seeds are discovered by filename), so
+    // the `eval-case-generator` platform agent is `kind: 'generator'` and
+    // every org gets an instance of it (§116), so
     // one agent in a stock database is of a kind the old
     // `z.enum(['chat','judge'])` could not represent. The list returns every
     // kind when unfiltered, so an admin could open it and get a form that
@@ -188,6 +190,21 @@ const createFormSchema = agentFormSchema.superRefine((data, ctx) => {
 export type AgentWithGrants = AiAgent & {
   grantedTagIds?: string[];
   grantedDocumentIds?: string[];
+  /**
+   * On a system (platform) agent, what the API refuses to change and what
+   * this org may tune — returned by `GET /agents/:id` from the same rule the
+   * API enforces. `null` or absent for an org's own agent.
+   */
+  platformAgent?: {
+    lockedFields: string[];
+    tunableFields: string[];
+    bindingsLocked: boolean;
+  } | null;
+  /**
+   * Providers the agent names that its org is no longer approved for (§120
+   * t-745), from `GET /agents/:id`. `null` when unknown (no org in scope, or the policy could not be read).
+   */
+  _unapprovedProviders?: string[] | null;
 };
 
 /** Slim profile summary passed to the form for the dropdown + preview. */
@@ -203,7 +220,13 @@ export interface AgentProfileSummary {
 export interface AgentFormProps {
   mode: 'create' | 'edit';
   agent?: AgentWithGrants;
-  providers: (AiProviderConfig & { apiKeyPresent?: boolean })[] | null;
+  /**
+   * `approvedForOrg` is whether the org in context may use the provider
+   * (§120 t-745): `false` disables the option, absent or `null` (unknown)
+   * leaves it to the save to refuse.
+   */
+  providers:
+    (AiProviderConfig & { apiKeyPresent?: boolean; approvedForOrg?: boolean | null })[] | null;
   models: ModelOption[] | null;
   /**
    * Server-resolved effective defaults. Used to pre-fill provider/model
@@ -243,6 +266,16 @@ export function AgentForm({
   const schedule = useTimeout();
   const isEdit = mode === 'edit';
 
+  // A platform agent's fields split into the platform's (read-only here) and
+  // the org's (§116 t-725). The API sends the split; a group is locked only
+  // when every field in it is.
+  const platformAgent = isEdit ? (agent?.platformAgent ?? null) : null;
+  const lockedFields = useMemo(() => new Set(platformAgent?.lockedFields ?? []), [platformAgent]);
+  // Each locked control is disabled on its own rather than through a
+  // fieldset: a disabled fieldset also disables the <FieldHelp> buttons
+  // inside it, and a locked field's help is still worth reading.
+  const locked = (field: string): boolean => lockedFields.has(field);
+
   // On a fresh create, honour `?kind=judge` from the URL (used by the
   // "Create custom judge" CTA in the run-create form). On edit, the
   // existing agent's kind is the source of truth.
@@ -272,6 +305,18 @@ export function AgentForm({
   const authorModel = () => setAuthored((a) => ({ ...a, model: true }));
 
   const providerFallback = !providers || providers.length === 0;
+
+  // A provider the org is not approved for is offered disabled, with the
+  // reason, rather than hidden (§120 t-745) — unless the agent already holds
+  // it: the save refuses only what a write introduces, so keeping, swapping
+  // or dropping a held provider stays possible.
+  const heldProviders = useMemo(
+    () => new Set(isEdit ? [agent?.provider ?? '', ...(agent?.fallbackProviders ?? [])] : []),
+    [isEdit, agent?.provider, agent?.fallbackProviders]
+  );
+  const notApproved = (p: { slug: string; approvedForOrg?: boolean | null }): boolean =>
+    p.approvedForOrg === false && !heldProviders.has(p.slug);
+  const someNotApproved = (providers ?? []).some((p) => p.approvedForOrg === false);
   const modelFallback = !models || models.length === 0;
 
   // Resolve the provider/model to seed into the form. Important: use `||`
@@ -633,6 +678,9 @@ export function AgentForm({
         // `updateAgentObjectSchema` requires non-empty when present.
         const editPayload: Record<string, unknown> = { ...payload };
         delete editPayload.kind;
+        // A platform agent's platform-owned fields are read-only here and the
+        // API refuses a change to them, so they are never sent (§116 t-725).
+        for (const field of lockedFields) delete editPayload[field];
         if (!authored.provider || data.provider.length === 0) delete editPayload.provider;
         if (!authored.model || data.model.length === 0) delete editPayload.model;
 
@@ -644,6 +692,11 @@ export function AgentForm({
         // Authorship describes edits made since the form was last seeded. The
         // save re-seeds it, so the slate is clean again.
         setAuthored({ provider: false, model: false });
+        // Re-render the server page with the saved row, so what it derives
+        // from the agent follows the save: the stranded-provider banner, and
+        // which providers this form treats as held (§120 t-745). Form state
+        // is seeded from `defaultValues` only, so this does not reset it.
+        router.refresh();
         setSaved(true);
         schedule(() => setSaved(false), 2500);
       } else {
@@ -734,6 +787,27 @@ export function AgentForm({
         </div>
       )}
 
+      {/* Above the tabs: every tab has locked controls to explain. */}
+      {isEdit && agent?.isSystem && (
+        <div
+          data-testid="platform-agent-banner"
+          className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          <Shield className="h-4 w-4 shrink-0" />
+          <span>
+            This is a platform agent. The platform sets what it is — its instructions, settings,
+            knowledge
+            {platformAgent?.bindingsLocked === false ? '' : ' and capabilities'} — and updates it
+            with each release, so those are read-only here and it cannot be deleted. Here, this org
+            sets its{' '}
+            {describeTunableFields(platformAgent?.tunableFields ?? [], {
+              capabilitiesToo: platformAgent?.bindingsLocked === false,
+            })}
+            .
+          </span>
+        </div>
+      )}
+
       <Tabs defaultValue="general" className="w-full">
         <TabsList className="w-full justify-start">
           <TabsTrigger value="general">General</TabsTrigger>
@@ -784,16 +858,6 @@ export function AgentForm({
 
         {/* ================= TAB 1 — GENERAL ================= */}
         <TabsContent value="general" className="space-y-4 pt-4">
-          {isEdit && agent?.isSystem && (
-            <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
-              <Shield className="h-4 w-4 shrink-0" />
-              <span>
-                This is a system agent used internally by the platform. It cannot be deleted or
-                deactivated. Editing instructions, model, and capabilities is supported — changes
-                are versioned and can be reverted.
-              </span>
-            </div>
-          )}
           <div className="grid gap-2">
             <Label htmlFor="name">
               Name{' '}
@@ -802,7 +866,12 @@ export function AgentForm({
                 chat UI.
               </FieldHelp>
             </Label>
-            <Input id="name" {...register('name')} placeholder="Research Assistant" />
+            <Input
+              id="name"
+              {...register('name')}
+              placeholder="Research Assistant"
+              disabled={locked('name')}
+            />
             {errors.name && <p className="text-destructive text-xs">{errors.name.message}</p>}
           </div>
 
@@ -848,6 +917,7 @@ export function AgentForm({
             <Textarea
               id="description"
               rows={3}
+              disabled={locked('description')}
               {...register('description')}
               placeholder="Summarizes research papers and answers follow-up questions."
             />
@@ -878,6 +948,7 @@ export function AgentForm({
               </Label>
               <Select
                 value={currentProfileId ?? '__none__'}
+                disabled={locked('profileId')}
                 onValueChange={(v) =>
                   setValue('profileId', v === '__none__' ? null : v, { shouldDirty: true })
                 }
@@ -914,7 +985,7 @@ export function AgentForm({
               id="isActive"
               checked={currentIsActive}
               onCheckedChange={(v) => setValue('isActive', v)}
-              disabled={isEdit && agent?.isSystem}
+              disabled={locked('isActive')}
             />
           </div>
 
@@ -937,6 +1008,7 @@ export function AgentForm({
             </Label>
             <Select
               value={currentVisibility}
+              disabled={locked('visibility')}
               onValueChange={(v) =>
                 setValue('visibility', v as AgentFormData['visibility'], { shouldValidate: true })
               }
@@ -1005,6 +1077,18 @@ export function AgentForm({
                 the dropdown. There is no default vendor: the field is pre-filled with the provider
                 this agent would actually use, and left empty when none could be resolved.
               </FieldHelp>
+              {someNotApproved && (
+                <FieldHelp
+                  title="Providers not approved for this organisation"
+                  ariaLabel="Why some providers are unavailable"
+                >
+                  An organisation may use only the providers a platform admin has approved it for. A
+                  provider it is not approved for is shown greyed out and cannot be chosen, here or
+                  as a fallback — every call to it would be refused. A platform admin grants
+                  providers on the organisation&apos;s page under Management → Organisations. A
+                  provider this agent already uses stays selectable, so it can be kept or removed.
+                </FieldHelp>
+              )}
             </Label>
             {providerFallback ? (
               <Input
@@ -1025,13 +1109,18 @@ export function AgentForm({
                 </SelectTrigger>
                 <SelectContent>
                   {providers.map((p) => (
-                    <SelectItem key={p.id} value={p.slug}>
+                    <SelectItem key={p.id} value={p.slug} disabled={notApproved(p)}>
                       <span className="flex items-center gap-2">
                         {p.name}
                         {p.apiKeyPresent ? (
                           <span className="text-xs text-green-600">● key set</span>
                         ) : (
                           <span className="text-xs text-red-600">● no key</span>
+                        )}
+                        {p.approvedForOrg === false && (
+                          <span className="text-muted-foreground text-xs">
+                            · not approved for this organisation
+                          </span>
                         )}
                       </span>
                     </SelectItem>
@@ -1070,7 +1159,9 @@ export function AgentForm({
                 <FieldHelp title="Automatic provider failover">
                   If the primary provider is experiencing errors, the agent will try these providers
                   in order. Failover kicks in after repeated failures within a short window. Only
-                  providers other than the primary are shown. Leave unchecked to disable failover.
+                  providers other than the primary are shown. Leave unchecked to disable failover. A
+                  provider this organisation is not approved for is greyed out: a fallback to it
+                  would be refused like any other call.
                 </FieldHelp>
               </Label>
               <div className="bg-card space-y-2 rounded-md border p-3">
@@ -1078,12 +1169,20 @@ export function AgentForm({
                   .filter((p) => p.slug !== currentProvider)
                   .map((p) => {
                     const checked = watch('fallbackProviders').includes(p.slug);
+                    const disabled = notApproved(p);
                     return (
-                      <label key={p.id} className="flex items-center gap-2 text-sm">
+                      <label
+                        key={p.id}
+                        className={cn(
+                          'flex items-center gap-2 text-sm',
+                          disabled && 'text-muted-foreground'
+                        )}
+                      >
                         <input
                           type="checkbox"
                           className="bg-card rounded border-gray-300"
                           checked={checked}
+                          disabled={disabled}
                           onChange={(e) => {
                             const current = watch('fallbackProviders');
                             setValue(
@@ -1096,6 +1195,11 @@ export function AgentForm({
                         />
                         {p.name}
                         <span className="text-muted-foreground font-mono text-xs">{p.slug}</span>
+                        {p.approvedForOrg === false && (
+                          <span className="text-muted-foreground text-xs">
+                            · not approved for this organisation
+                          </span>
+                        )}
                       </label>
                     );
                   })}
@@ -1226,6 +1330,7 @@ export function AgentForm({
               step={0.05}
               value={[currentTemp]}
               onValueChange={([v]) => setValue('temperature', v, { shouldValidate: true })}
+              disabled={locked('temperature')}
             />
           </div>
 
@@ -1242,6 +1347,7 @@ export function AgentForm({
               id="maxTokens"
               type="number"
               {...register('maxTokens', { valueAsNumber: true })}
+              disabled={locked('maxTokens')}
             />
             {errors.maxTokens && (
               <p className="text-destructive text-xs">{errors.maxTokens.message}</p>
@@ -1252,6 +1358,7 @@ export function AgentForm({
             id="reasoningEffort"
             value={watch('reasoningEffort')}
             onChange={(v) => setValue('reasoningEffort', v, { shouldDirty: true })}
+            disabled={locked('reasoningEffort')}
           />
 
           <div className="grid gap-2">
@@ -1374,6 +1481,7 @@ export function AgentForm({
             <Switch
               id="enableVoiceInput"
               checked={currentVoiceInput}
+              disabled={locked('enableVoiceInput')}
               onCheckedChange={(v) => setValue('enableVoiceInput', v, { shouldDirty: true })}
             />
           </div>
@@ -1424,7 +1532,7 @@ export function AgentForm({
             <Switch
               id="enableImageInput"
               checked={currentImageInput}
-              disabled={!supportsVision}
+              disabled={locked('enableImageInput') || !supportsVision}
               onCheckedChange={(v) => setValue('enableImageInput', v, { shouldDirty: true })}
             />
           </div>
@@ -1478,7 +1586,7 @@ export function AgentForm({
             <Switch
               id="enableDocumentInput"
               checked={currentDocumentInput}
-              disabled={!supportsDocuments}
+              disabled={locked('enableDocumentInput') || !supportsDocuments}
               onCheckedChange={(v) => setValue('enableDocumentInput', v, { shouldDirty: true })}
             />
           </div>
@@ -1502,6 +1610,7 @@ export function AgentForm({
             <Input
               id="maxHistoryTokens"
               type="number"
+              disabled={locked('maxHistoryTokens')}
               placeholder="Use model default"
               {...register('maxHistoryTokens', {
                 setValueAs: (v: string | number) =>
@@ -1534,6 +1643,7 @@ export function AgentForm({
             <Input
               id="maxHistoryMessages"
               type="number"
+              disabled={locked('maxHistoryMessages')}
               min={0}
               max={500}
               placeholder="Use platform default (50)"
@@ -1560,6 +1670,7 @@ export function AgentForm({
               </Label>
               <Select
                 value={currentInputGuard ?? '__global__'}
+                disabled={locked('inputGuardMode')}
                 onValueChange={(v) =>
                   setValue(
                     'inputGuardMode',
@@ -1593,6 +1704,7 @@ export function AgentForm({
               </Label>
               <Select
                 value={currentOutputGuard ?? '__global__'}
+                disabled={locked('outputGuardMode')}
                 onValueChange={(v) =>
                   setValue(
                     'outputGuardMode',
@@ -1628,6 +1740,7 @@ export function AgentForm({
               </Label>
               <Select
                 value={currentCitationGuard ?? '__global__'}
+                disabled={locked('citationGuardMode')}
                 onValueChange={(v) =>
                   setValue(
                     'citationGuardMode',
@@ -1666,6 +1779,7 @@ export function AgentForm({
               <Checkbox
                 id="runtimePromptManaged"
                 checked={currentRuntimePromptManaged}
+                disabled={locked('runtimePromptManaged')}
                 onCheckedChange={(v) => {
                   const next = v === true;
                   setValue('runtimePromptManaged', next, { shouldDirty: true });
@@ -1703,6 +1817,7 @@ export function AgentForm({
                 <Textarea
                   id="runtimePromptNote"
                   rows={2}
+                  disabled={locked('runtimePromptNote')}
                   placeholder="Optional: where is the real prompt built? e.g. lib/questionnaire/extractor-capability.ts"
                   {...register('runtimePromptNote', {
                     setValueAs: (v: string) => (v === '' ? null : v),
@@ -1734,6 +1849,7 @@ export function AgentForm({
             <Textarea
               id="persona"
               rows={5}
+              disabled={locked('persona')}
               placeholder={
                 selectedProfile?.persona
                   ? `Profile says: ${selectedProfile.persona.slice(0, 80)}${selectedProfile.persona.length > 80 ? '…' : ''}`
@@ -1746,6 +1862,7 @@ export function AgentForm({
                 <Checkbox
                   id="personaAppend"
                   checked={currentPersonaMode === 'append'}
+                  disabled={locked('personaMode')}
                   onCheckedChange={(v) =>
                     setValue('personaMode', v ? 'append' : 'override', { shouldDirty: true })
                   }
@@ -1774,6 +1891,7 @@ export function AgentForm({
             <Textarea
               id="systemInstructions"
               rows={16}
+              disabled={locked('systemInstructions')}
               {...register('systemInstructions')}
               className="font-mono text-xs"
             />
@@ -1781,6 +1899,8 @@ export function AgentForm({
               <span>
                 {errors.systemInstructions ? (
                   <span className="text-destructive">{errors.systemInstructions.message}</span>
+                ) : locked('systemInstructions') ? (
+                  'Set by the platform.'
                 ) : (
                   'Changes are saved when you click Save changes.'
                 )}
@@ -1808,6 +1928,7 @@ export function AgentForm({
             <Textarea
               id="guardrails"
               rows={4}
+              disabled={locked('guardrails')}
               placeholder={
                 selectedProfile?.guardrails
                   ? `Profile says: ${selectedProfile.guardrails.slice(0, 80)}${selectedProfile.guardrails.length > 80 ? '…' : ''}`
@@ -1820,6 +1941,7 @@ export function AgentForm({
                 <Checkbox
                   id="guardrailsAppend"
                   checked={currentGuardrailsMode === 'append'}
+                  disabled={locked('guardrailsMode')}
                   onCheckedChange={(v) =>
                     setValue('guardrailsMode', v ? 'append' : 'override', { shouldDirty: true })
                   }
@@ -1855,6 +1977,7 @@ export function AgentForm({
             <Textarea
               id="brandVoiceInstructions"
               rows={4}
+              disabled={locked('brandVoiceInstructions')}
               placeholder={
                 selectedProfile?.brandVoiceInstructions
                   ? `Profile says: ${selectedProfile.brandVoiceInstructions.slice(0, 80)}${selectedProfile.brandVoiceInstructions.length > 80 ? '…' : ''}`
@@ -1869,6 +1992,7 @@ export function AgentForm({
                 <Checkbox
                   id="voiceAppend"
                   checked={currentVoiceMode === 'append'}
+                  disabled={locked('voiceMode')}
                   onCheckedChange={(v) =>
                     setValue('voiceMode', v ? 'append' : 'override', { shouldDirty: true })
                   }
@@ -1895,6 +2019,7 @@ export function AgentForm({
             tagIds={watch('knowledgeTagIds')}
             documentIds={watch('knowledgeDocumentIds')}
             agentId={agent?.id}
+            disabled={locked('knowledgeAccessMode')}
             onModeChange={(next) => setValue('knowledgeAccessMode', next, { shouldDirty: true })}
             onTagsChange={(next) => setValue('knowledgeTagIds', next, { shouldDirty: true })}
             onDocumentsChange={(next) =>
@@ -1930,6 +2055,7 @@ export function AgentForm({
             </Label>
             <Select
               value={watch('knowledgeRetrievalMode')}
+              disabled={locked('knowledgeRetrievalMode')}
               onValueChange={(v) =>
                 setValue('knowledgeRetrievalMode', v as AgentFormData['knowledgeRetrievalMode'], {
                   shouldDirty: true,
@@ -1962,6 +2088,7 @@ export function AgentForm({
                 id="knowledgeTriggerKeywords"
                 placeholder="e.g. refund, warranty, returns"
                 {...register('knowledgeTriggerKeywords')}
+                disabled={locked('knowledgeTriggerKeywords')}
               />
               {errors.knowledgeTriggerKeywords && (
                 <p className="text-destructive text-xs">
@@ -1985,12 +2112,14 @@ export function AgentForm({
               id="topicBoundaries"
               placeholder="e.g. competitor pricing, legal advice, medical"
               {...register('topicBoundaries')}
+              disabled={locked('topicBoundaries')}
             />
           </div>
 
           {isEdit && agent && (
             <InstructionsHistoryPanel
               agentId={agent.id}
+              readOnly={locked('systemInstructions')}
               onReverted={() => {
                 // Revert mutates the server-side instructions; re-pull the
                 // fresh agent into the form so the textarea reflects reality.
@@ -2014,7 +2143,10 @@ export function AgentForm({
         {/* ================= TAB 4 — CAPABILITIES ================= */}
         <TabsContent value="capabilities" className="pt-4">
           {isEdit && agent ? (
-            <AgentCapabilitiesTab agentId={agent.id} />
+            <AgentCapabilitiesTab
+              agentId={agent.id}
+              bindingsLocked={platformAgent?.bindingsLocked ?? false}
+            />
           ) : (
             <div className="bg-card text-muted-foreground space-y-2 rounded-md border p-6 text-sm leading-relaxed">
               <p>
@@ -2051,6 +2183,7 @@ export function AgentForm({
           {isEdit && agent ? (
             <AgentVersionHistoryTab
               agentId={agent.id}
+              platformTunableFields={platformAgent?.tunableFields ?? null}
               onRestored={() => {
                 // Re-pull the fresh agent into the form after a version restore.
                 void (async () => {
@@ -2132,6 +2265,10 @@ export function AgentForm({
                     // defect this form exists to prevent, arriving through the
                     // restore path.
                     setAuthored({ provider: false, model: false });
+                    // A restore can change the provider and fallbacks, so the
+                    // server page re-derives the stranded-provider banner and
+                    // the held set, as after a save (§120 t-745).
+                    router.refresh();
                   } catch {
                     // Silent — the version tab already shows its own error state.
                   }
@@ -2172,7 +2309,11 @@ export function AgentForm({
         {/* ================= TAB 8 — EMBED ================= */}
         <TabsContent value="embed" className="pt-4">
           {isEdit && agent ? (
-            <EmbedConfigPanel agentId={agent.id} appUrl={process.env.NEXT_PUBLIC_APP_URL ?? ''} />
+            <EmbedConfigPanel
+              agentId={agent.id}
+              appUrl={process.env.NEXT_PUBLIC_APP_URL ?? ''}
+              appearanceLocked={locked('widgetConfig')}
+            />
           ) : (
             <div className="bg-card text-muted-foreground space-y-2 rounded-md border p-6 text-sm leading-relaxed">
               <p>

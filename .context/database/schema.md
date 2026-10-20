@@ -150,6 +150,9 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { env } from '@/lib/env';
+import { withTenancy, type TenancyClient } from '@/lib/db/tenancy-extension';
+import { getTenantContext, isMultiTenant } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -164,15 +167,26 @@ if (env.NODE_ENV !== 'production') globalForPrisma.pool = pool;
 // Create Prisma adapter
 const adapter = new PrismaPg(pool);
 
-// Create Prisma client
-export const prisma =
+// The base client is what survives a hot reload (it owns the pool)
+const baseClient =
   globalForPrisma.prisma ??
   new PrismaClient({
     adapter,
     log: env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
   });
 
-if (env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+if (env.NODE_ENV !== 'production') globalForPrisma.prisma = baseClient;
+
+// The tenancy chokepoint (§107) is applied fresh on every evaluation: it
+// stamps `orgId` on every tenant-owned create and, at TENANCY_MODE=multi,
+// scopes every operation to the org the request entered. It closes over the
+// tenant context module, which a dev reload re-creates — so never retain the
+// extended client. See .context/tenancy/context.md#the-data-layer--libdbtenancy-extensionts
+export const prisma: TenancyClient = withTenancy(baseClient, {
+  isMultiTenant,
+  getTenantContext,
+  installOrgId: INSTALL_ORG_ID,
+});
 ```
 
 **Key differences from Prisma 6:**
@@ -184,7 +198,7 @@ if (env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
 ## Prisma Schema
 
-The canonical schema lives in [`prisma/schema/`](../../prisma/schema/) — a multi-file folder (Prisma 7) split by domain (`base`, `auth`, `orchestration-*`, `mcp`, `platform`, `app`). Prisma concatenates every `.prisma` in the folder into one datamodel. Read it directly — this document covers design decisions, conventions, and rationale, not the schema definition itself. Apps built on Resparkable put their own models in `prisma/schema/app.prisma`, which ships **empty** and which core never adds models to (or in a sibling `prisma/schema/app-<name>.prisma`), so fork models merge cleanly on upstream sync. The platform's own app-domain models — `ContactSubmission`, `FeatureFlag`, `AuthBootstrap` — live in `platform.prisma`.
+The canonical schema lives in [`prisma/schema/`](../../prisma/schema/) — a multi-file folder (Prisma 7) split by domain (`base`, `auth`, `orchestration-*`, `mcp`, `tenancy`, `platform`, `app`). Prisma concatenates every `.prisma` in the folder into one datamodel. Read it directly — this document covers design decisions, conventions, and rationale, not the schema definition itself. Apps built on Resparkable put their own models in `prisma/schema/app.prisma`, which ships **empty** and which core never adds models to (or in a sibling `prisma/schema/app-<name>.prisma`), so fork models merge cleanly on upstream sync. The platform's own app-domain models — `ContactSubmission`, `FeatureFlag`, `AuthBootstrap` — live in `platform.prisma`.
 
 ## Schema Design Decisions
 
@@ -426,13 +440,26 @@ embedding Unsupported("vector(1536)")?
 - The column is indexed with an HNSW index using `vector_cosine_ops` (m=16, ef_construction=64) for approximate nearest-neighbour search.
 - Embeddings are 1536 dimensions, matching OpenAI's `text-embedding-3-small` output.
 
+### Per-org slugs (§107 t-708)
+
+`AiAgent`, `AiKnowledgeBase` and `AiKnowledgeDocument` key their `slug` on
+`@@unique([orgId, slug])`, so two orgs can each hold an agent called `support`.
+`AiWorkflow.slug` stays a global `@unique`: it is the unauthenticated
+`inbound/:channel/:slug` URL segment, which has to resolve before any org is
+known. A lookup by slug is a `findFirst({ where: { slug } })` inside the
+caller's org (the tenancy context scopes it at `multi`, the same row at
+`single`) or the compound key `orgId_slug` where the caller already has the
+org (`requireOrgId()`, [`tenancy/context.md`](../tenancy/context.md)).
+`tests/unit/lib/tenancy/org-scoped-slugs.test.ts` fails naming a tenant-owned
+model whose slug is still global.
+
 ### Knowledge document deduplication
 
-`ai_knowledge_document` has a **partial unique index** that prevents duplicate "ready" documents with the same content hash:
+`ai_knowledge_document` has a **partial unique index** that prevents duplicate "ready" documents with the same content hash within an org (per org since `20260921120000_org_scoped_slugs`; two orgs may each hold the same file):
 
 ```sql
 CREATE UNIQUE INDEX idx_knowledge_doc_file_hash_ready
-ON ai_knowledge_document ("fileHash")
+ON ai_knowledge_document ("orgId", "fileHash")
 WHERE status = 'ready';
 ```
 

@@ -137,7 +137,7 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/agents/:id/embed-tokens`                | GET, POST          | List / create embed tokens for widget auth                                                                                                                                                                                 | 5.1     |
 | `/agents/:id/embed-tokens/:tokenId`       | PATCH, DELETE      | Update / delete an embed token                                                                                                                                                                                             | 5.1     |
 | `/agents/:id/widget-config`               | GET, PATCH         | Read / update per-agent widget appearance + copy                                                                                                                                                                           | 5.1     |
-| `/workflows/templates`                    | GET                | List workflow templates (builtin + custom)                                                                                                                                                                                 | 5.1     |
+| `/workflows/templates`                    | GET                | Built-in templates (from code) + the org's own; `?source=`                                                                                                                                                                 | 5.1     |
 | `/workflows/:id/save-as-template`         | POST               | Save a workflow as a reusable template                                                                                                                                                                                     | 5.1     |
 | `/workflows/:id/schedules`                | GET, POST          | List / create cron schedules for a workflow                                                                                                                                                                                | 5.1     |
 | `/workflows/:id/schedules/:scheduleId`    | GET, PATCH, DELETE | Read / update / delete a workflow schedule                                                                                                                                                                                 | 5.1     |
@@ -145,7 +145,7 @@ Validation schemas for every request body / query live in `lib/validations/orche
 **Schedule constraints:** Maximum 10 schedules per workflow. Workflow must be active (`isActive: true`) to create schedules. Create, update, and delete operations are audit-logged via `logAdminAction`. Create/update accept an optional `scope` (a flat string→string map stamped onto fired runs; `null` on update clears it via `Prisma.DbNull`) — see [Scheduling — Static scope carrier](../orchestration/scheduling.md#static-scope-carrier). The `POST /triggers` + `PATCH /triggers/:id` inbound-trigger routes accept the same `scope` field.
 
 | `/executions` | GET | List workflow executions (paginated) | 5.1 |
-| `/conversations/export` | POST | Export conversations as JSON | 5.1 |
+| `/conversations/export` | GET | Export conversations as JSON or CSV (`?format=csv`; default JSON) | 5.1 |
 | `/conversations/:id/messages` | GET | List messages for a conversation | 5.1 |
 | `/conversations/search` | GET | Full-text search across conversations | 5.1 |
 | `/knowledge/patterns` | GET | List all design patterns | 3.3 |
@@ -162,11 +162,16 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/mcp/keys/:id` | GET, PATCH, DELETE | Read / update / revoke MCP API key | 6 |
 | `/mcp/keys/:id/rotate` | POST | Rotate an MCP API key | 6 |
 | `/mcp/audit` | GET | Query MCP audit log | 6 |
-| `/mcp/sessions` | GET | List MCP sessions | 6 |
-| `/mcp/sessions/:id` | GET | Read a single MCP session | 6 |
 | `/audit-log` | GET | Admin action audit trail (paginated, filterable) | 8 |
 
-120 admin route files, 8 consumer chat route files, 1 webhook trigger route file, 2 public approval route files (131 total). For architecture detail see `.context/orchestration/admin-api.md`.
+Measured on 2026-09-24, with the command beside each figure so the next reader
+re-derives rather than trusts: **201** admin route files
+(`find app/api/v1/admin -name route.ts | wc -l`), **192** of them under
+`orchestration/`, **9** consumer chat, **4** embed, **1** MCP transport, **242**
+under `app/api/v1` in total. The previous sentence here claimed 120 admin and 131
+overall, which had drifted by roughly seventy — it is quoted rather than quietly
+replaced because a count with no provenance is how that happens. For architecture
+detail see `.context/orchestration/admin-api.md`.
 
 ### Public Approval Endpoints (Token-Authenticated)
 
@@ -235,7 +240,7 @@ Returns the full audit array. Malformed rows are logged server-side and skipped 
 
 ### `POST /agents/:id/instructions-revert`
 
-Body: `{ index: number }` — revert to a previous history entry. The current value is pushed onto history before the overwrite, so the revert itself is also recoverable.
+Body: `{ index: number }` — revert to a previous history entry. The current value is pushed onto history before the overwrite, so the revert itself is also recoverable. The revert also adds an agent version, as any change to versioned config does.
 
 ### `POST /agents/:id/clone`
 
@@ -247,7 +252,7 @@ Optional body: `{ name?: string, slug?: string }`. Defaults: name = `"{source.na
 
 Bulk agent operations. Body: `{ action: 'activate' | 'deactivate' | 'delete', agentIds: string[] }`. System agents (`isSystem = true`) are excluded from all mutations. Delete is a soft delete (sets `isActive = false`).
 
-Response: `{ action, requested, affected }` — `affected` may be less than `requested` when system agents are filtered out.
+Response: `{ action, requested, affected }` — `affected` may be less than `requested` when system agents are filtered out. `isActive` is versioned, so each agent the action changes gets a new agent version in the same transaction; a concurrent edit that takes a version number returns a retryable `409`.
 
 ### `GET /agents/compare`
 
@@ -273,7 +278,7 @@ Reusable library of `persona`, `brandVoiceInstructions`, and `guardrails` text t
 
 ### `GET /agent-profiles`
 
-Paginated list. Query: `page`, `limit`, `q` (matches name + slug). Each row carries `agentCount` derived from `_count.agents` so the list view can show how many agents inherit from each profile before an operator edits it. Ordered by `updatedAt desc`.
+Paginated list. Query: `page`, `limit`, `q` (matches name + slug). Each row carries `agentCount`, the agents attached in **every** org (profiles are global config; §107 t-731, `agentProfileUsage`), so the list view can show how many agents inherit from each profile before an operator edits it. Ordered by `updatedAt desc`.
 
 ### `POST /agent-profiles`
 
@@ -281,7 +286,7 @@ Create. Body validated by `agentProfileFormSchema` — `name` and `slug` require
 
 ### `GET /agent-profiles/:id`
 
-Detail. Response includes `agents: [{ id, slug, name, isActive }]` so the edit page can show every agent currently inheriting from this profile.
+Detail. Response includes `agents: [{ id, slug, name, isActive }]`, the caller's org's agents inheriting from this profile, so the edit page can list them. It also includes `otherOrgAgentCount`: a profile is global config, so changes reach other orgs' inheriting agents too, and they are counted but not listed (§107 t-731).
 
 ### `PATCH /agent-profiles/:id`
 
@@ -289,7 +294,7 @@ Partial update via `updateAgentProfileSchema`. **Slug is intentionally not in th
 
 ### `DELETE /agent-profiles/:id`
 
-Hard delete. The FK on `ai_agent.profileId` is `ON DELETE SET NULL`, so attached agents are detached cleanly — their own override texts remain unchanged; they just stop inheriting. Response: `{ id, deleted: true, detachedAgentCount }`. Same number is recorded in the `agent_profile.delete` audit log entry's `metadata`.
+Hard delete. The FK on `ai_agent.profileId` is `ON DELETE SET NULL`, so attached agents are detached cleanly — their own override texts remain unchanged; they just stop inheriting. Response: `{ id, deleted: true, detachedAgentCount }`, counted in every org, since every org's attached agents are detached. Same number is recorded in the `agent_profile.delete` audit log entry's `metadata`.
 
 ---
 
@@ -299,7 +304,7 @@ Hard delete. The FK on `ai_agent.profileId` is `ON DELETE SET NULL`, so attached
 
 List. Query: `page`, `limit`, `isActive`, `q`.
 
-Each item includes `_agents: Array<{ id, name, slug, isActive }>` — the agents currently using this capability, flattened from the `AiAgentCapability` pivot. Types: `AiCapabilityListItem` in `types/orchestration.ts`.
+Each item includes `_agents: Array<{ id, name, slug, isActive }>` — the caller's org's agents currently using this capability, flattened from the `AiAgentCapability` pivot — and `_otherOrgAgentCount`, agents in other orgs (active or not, as `_agents`), counted and never named (§107 t-752; `0` at `single`; with no org entered — an admin API key — `_agents` is empty and every agent is in the count). Types: `AiCapabilityListItem` in `types/orchestration.ts`.
 
 ### `POST /capabilities`
 
@@ -333,7 +338,7 @@ Create. Body validated by `providerConfigSchema` — which runs `checkSafeProvid
 
 ### `GET / PATCH / DELETE /providers/:id`
 
-Standard CRUD. `PATCH` merges the update and re-runs the SSRF guard in `buildProviderFromConfig` as defense-in-depth.
+Standard CRUD. `PATCH` merges the update and re-runs the SSRF guard in `buildProviderFromConfig` as defense-in-depth. `DELETE` deactivates. `DELETE ?permanent=true` removes the row, and is refused with `409` while any agent (primary or fallback) or cost row in **any** org still references the slug. The provider is global config, so the check counts every org (§107 t-731, `providerUsage`) and reports counts only.
 
 ### `POST /providers/:id/test`
 
@@ -396,7 +401,7 @@ Create a model entry. Body validated by `createProviderModelSchema`. Sets `isDef
 
 ### `GET / PATCH / DELETE /provider-models/:id`
 
-Standard CRUD. `PATCH` sets `isDefault: false` on seed-managed rows (opt-out from future seed updates). `DELETE` is a soft delete (`isActive = false`). Both are rate-limited.
+Standard CRUD. `PATCH` sets `isDefault: false` on seed-managed rows (opt-out from future seed updates). `DELETE` removes the row, and is refused with `409 MODEL_IN_USE` while any active agent bound to the `(providerSlug, modelId)` pair, or any active workflow pinning the model in a step's `modelOverride` (draft or published), still references it. The model is global config, so the check counts every org (§107 t-731, `providerModelUsage`). `details.agents` and `details.workflows` name only the caller's org's rows, and `details.otherOrgAgentCount` / `details.otherOrgWorkflowCount` count the rest. Both are rate-limited.
 
 ### `GET /provider-models/recommend?intent=thinking`
 
@@ -557,10 +562,11 @@ Guards: execution must be `failed`, `stepId` must reference a failed step in the
 Re-run a previously-executed workflow against either its current published version or a caller-specified version, carrying the original execution's `inputData` and `budgetLimitUsd` forward. The new execution row carries `parentExecutionId` pointing at the original, which the admin detail view renders as a "Re-run of execution X" breadcrumb.
 
 ```jsonc
-// Request — both fields optional
+// Request — every field optional
 {
   "versionId": "<workflow-version-cuid>", // defaults to publishedVersionId
   "budgetLimitUsd": 5.0, // defaults to original's budget
+  "resendReply": true, // let a re-run of a COMPLETED run reply to the person again (t-770)
 }
 
 // Response: SSE stream of ExecutionEvent
@@ -572,6 +578,8 @@ The response is an SSE stream — clients capture the new `executionId` from the
 Guards: execution must belong to `session.user.id` (cross-user returns 404 to avoid existence leaks). `versionId`, when provided, must belong to the original workflow — cross-workflow pins return 400 with a typed `ValidationError`. `prepareWorkflowExecution` then runs structural + semantic validation on the chosen version's snapshot before the engine starts.
 
 Side effects: every capability dispatch, notification, and external call in the workflow re-fires. The admin UI dialog (`<RerunExecutionDialog>`) surfaces this explicitly in the confirmation body.
+
+**Replying to the person who wrote in** (t-770). An execution an inbound message started carries `replyConversationId`, the only conversation `send_message_to_channel` lets it send to. A re-run gets it only when the request sets `resendReply: true` (the dialog's "Send the reply to the person again" checkbox, offered unticked for any such run) and the original has finished (completed, failed or cancelled). Without it the re-run texts nobody, whatever the original's outcome: a run can send and then fail, or complete without sending, and Sunrise records only that a provider accepted a message, not that it arrived. A run still in flight would reply itself when it resumes, so its re-run never gets it.
 
 ### `GET /approvals/history`
 

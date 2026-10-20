@@ -35,11 +35,12 @@ import type { AiAgent, AiProviderConfig } from '@/types/prisma';
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 const mockPush = vi.fn();
+const mockRefresh = vi.fn();
 
 vi.mock('next/navigation', async () => {
   const { createMockRouter } = await import('@/tests/types/mocks');
   return {
-    useRouter: () => createMockRouter({ push: mockPush }),
+    useRouter: () => createMockRouter({ push: mockPush, refresh: mockRefresh }),
     useSearchParams: () => ({ get: () => null }),
   };
 });
@@ -226,6 +227,26 @@ describe('AgentForm — function coverage gaps', () => {
       });
     });
 
+    it('re-renders the server page after a successful PATCH, so its banner and held providers follow the save (§120 t-745)', async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.patch).mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      render(
+        <AgentForm
+          mode="edit"
+          agent={makeAgent()}
+          providers={MOCK_PROVIDERS}
+          models={MOCK_MODELS}
+        />
+      );
+
+      const form = screen.getByRole('button', { name: /save changes/i }).closest('form');
+      await act(async () => {
+        fireEvent.submit(form!);
+      });
+
+      await waitFor(() => expect(mockRefresh).toHaveBeenCalledTimes(1));
+    });
+
     it('shows inline error banner on PATCH APIClientError', async () => {
       // Arrange
       const { apiClient, APIClientError } = await import('@/lib/api/client');
@@ -393,8 +414,12 @@ describe('AgentForm — function coverage gaps', () => {
     });
 
     it('isActive switch is disabled for system agent in edit mode', () => {
-      // Arrange: system agent cannot be deactivated
-      const systemAgent = makeAgent({ isSystem: true });
+      // Arrange: system agent cannot be deactivated. The form learns that from
+      // the edit policy GET /agents/:id returns with every system agent.
+      const systemAgent = {
+        ...makeAgent({ isSystem: true }),
+        platformAgent: { lockedFields: ['isActive'], tunableFields: [], bindingsLocked: true },
+      };
       render(
         <AgentForm
           mode="edit"

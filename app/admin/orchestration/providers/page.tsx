@@ -4,6 +4,7 @@ import Link from 'next/link';
 import type { ProviderRow } from '@/components/admin/orchestration/providers-list';
 import type { ModelRow } from '@/components/admin/orchestration/provider-models-matrix';
 import { ProvidersTabs } from '@/components/admin/orchestration/providers-tabs';
+import { SharedSettingsReadOnlyNotice } from '@/components/admin/shared-settings-access';
 import { FieldHelp } from '@/components/ui/field-help';
 import { API } from '@/lib/api/endpoints';
 import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
@@ -89,6 +90,8 @@ export default async function ProvidersListPage() {
           LLM backend configuration and per-model analysis matrix.
         </p>
       </header>
+
+      <SharedSettingsReadOnlyNotice />
 
       <ProvidersTabs
         initialProviders={providers}

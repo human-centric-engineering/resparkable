@@ -23,6 +23,7 @@ import {
   AgentProfileForm,
   type AgentProfileRow,
 } from '@/components/admin/orchestration/agent-profile-form';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 
 const mockPush = vi.fn();
 const mockPost = vi.fn();
@@ -237,5 +238,91 @@ describe('AgentProfileForm — edit mode', () => {
   it('omits the attached-agents panel when no agents are attached', () => {
     render(<AgentProfileForm mode="edit" profile={makeProfile({ agents: [] })} />);
     expect(screen.queryByText(/agents using this profile/i)).not.toBeInTheDocument();
+  });
+
+  it('counts, without listing, other orgs’ agents that inherit from it (t-731)', () => {
+    render(
+      <AgentProfileForm
+        mode="edit"
+        profile={makeProfile({
+          agents: [{ id: 'a1', slug: 'support', name: 'Support', isActive: true }],
+          otherOrgAgentCount: 2,
+        })}
+      />
+    );
+
+    expect(screen.getByText('Agents using this profile (1)')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Also, 2 agents in other organisations inherit from this profile\. Changes here reach them too/
+      )
+    ).toBeInTheDocument();
+  });
+
+  it('shows the panel when only other orgs’ agents inherit from it', () => {
+    render(
+      <AgentProfileForm mode="edit" profile={makeProfile({ agents: [], otherOrgAgentCount: 1 })} />
+    );
+
+    // No own list, so no own count or "each of these agents" blurb over an empty list.
+    expect(screen.getByRole('heading', { name: 'Agents using this profile' })).toBeInTheDocument();
+    expect(screen.queryByText(/each of these agents/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/^1 agent in other organisations inherits from this profile/)
+    ).toBeInTheDocument();
+  });
+});
+
+describe('AgentProfileForm — read-only outside the install org (§107 t-753)', () => {
+  it('disables the submit button in create mode with valid input and never POSTs', async () => {
+    const user = userEvent.setup();
+    mockPost.mockResolvedValue({});
+
+    // Contrast: same form without the provider -> submit enabled with the same input
+    const editable = render(<AgentProfileForm mode="create" />);
+    await user.type(screen.getByRole('textbox', { name: /^name/i }), 'VIP Concierge Team');
+    expect(screen.getByRole('button', { name: /create profile/i })).toBeEnabled();
+    editable.unmount();
+
+    render(
+      <SharedSettingsAccessProvider readOnly canSwitch>
+        <AgentProfileForm mode="create" />
+      </SharedSettingsAccessProvider>
+    );
+    await user.type(screen.getByRole('textbox', { name: /^name/i }), 'VIP Concierge Team');
+
+    // Form is valid and filled in, so readOnly is the only reason it is disabled
+    expect(screen.getByRole('textbox', { name: /^slug/i })).toHaveValue('vip-concierge-team');
+    const submit = screen.getByRole('button', { name: /create profile/i });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByText('Read-only here: changes save from the install organisation.')
+    ).toBeInTheDocument();
+    await user.click(submit);
+    expect(mockPost).not.toHaveBeenCalled();
+    // The Cancel link survives
+    expect(screen.getByRole('link', { name: /cancel/i })).toBeInTheDocument();
+  });
+
+  it('disables the save button in edit mode and never PATCHes, while the profile stays visible', async () => {
+    const user = userEvent.setup();
+    mockPatch.mockResolvedValue({});
+
+    // Contrast: same profile without the provider -> save enabled
+    const editable = render(<AgentProfileForm mode="edit" profile={makeProfile()} />);
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled();
+    editable.unmount();
+
+    render(
+      <SharedSettingsAccessProvider readOnly canSwitch>
+        <AgentProfileForm mode="edit" profile={makeProfile()} />
+      </SharedSettingsAccessProvider>
+    );
+
+    expect(screen.getByRole('textbox', { name: /^name/i })).toHaveValue('Support Family');
+    const save = screen.getByRole('button', { name: /save changes/i });
+    expect(save).toBeDisabled();
+    await user.click(save);
+    expect(mockPatch).not.toHaveBeenCalled();
   });
 });

@@ -15,100 +15,105 @@ POST /api/v1/mcp           ← Streamable HTTP transport
   |-- Bearer auth (smcp_ key → SHA-256 → McpApiKey lookup)
   |-- isEnabled check (McpServerConfig singleton)
   |-- JSON-RPC envelope validation
-  |-- Session management (Mcp-Session-Id header)
+  |-- MCP-Protocol-Version header → the revision to answer at
   v
 lib/orchestration/mcp/protocol-handler.ts
   |
+  |-- initialize                → answered for older clients; issues no session id
   |-- tools/list                → tool-registry.ts → McpExposedTool + AiCapability (+ annotations on 2025-06-18)
   |-- tools/call                → tool-registry.ts → capabilityDispatcher.dispatch() (+ rich content blocks)
   |-- resources/list, /templates, /read
   |                             → resource-registry.ts → resparkable:// URI handlers
-  |-- resources/subscribe, /unsubscribe
-  |                             → session-manager.ts subscriptionsBySession map
   |-- prompts/list, /get        → prompt-registry.ts (DB-backed cache, legacy fallback)
-  |-- logging/setLevel          → session-manager.ts setLogLevel
   |-- completion/complete       → completion-registry.ts (static lookup only)
   v
 Audit log (fire-and-forget → McpAuditLog)
-SSE push (notifications/{tools,resources,prompts}/list_changed,
-          notifications/resources/updated, /message, /progress)
+
+GET /api/v1/mcp     → 405, Allow: POST
+DELETE /api/v1/mcp  → 405, Allow: POST
 ```
 
-## Session model — `MCP_SESSION_MODE`
+## One transport, and it holds nothing
 
-**`stateless` is the default, and is the only mode that is correct where more
-than one process serves traffic.**
+**Every request stands alone.** No `Mcp-Session-Id` is issued, one arriving is
+ignored, `GET` and `DELETE` answer `405` with `Allow: POST` **and an empty body**,
+and there is no server-to-client stream. (The empty body is a wire change worth
+knowing: the stateless `GET` used to put a JSON-RPC `-32005` envelope in its 405,
+so anything parsing that body now has nothing to parse. Read the status and the
+`Allow` header.) There is no mode switch: `MCP_SESSION_MODE` was removed
+in §39 t-718 along with the stateful transport it selected.
 
-|                                                                    | `stateless` (default)                          | `stateful`                      |
-| ------------------------------------------------------------------ | ---------------------------------------------- | ------------------------------- |
-| Holds                                                              | nothing                                        | an in-memory `Map`, per process |
-| Correct on                                                         | any topology                                   | one long-running process only   |
-| Issues `Mcp-Session-Id`                                            | no                                             | yes                             |
-| `GET` (SSE stream)                                                 | `405` + `Allow: POST`                          | SSE stream                      |
-| `DELETE`                                                           | `405` (still audited)                          | `204` / `404`                   |
-| `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel` | refuse with `STATELESS_UNSUPPORTED` (`-32005`) | work                            |
-
-### The bug this exists for
-
-`initialize` mints a session on instance A and returns its id. The client's next
-call is load-balanced to instance B, which looks that id up in its **own** empty
-map and returns `404 Session not found or expired`. Observed in production on
-Vercel: one session id, one instant, three instances, two 404s and a 200. It is
-worst immediately after a deploy, when several fresh instances exist, and "works
-on retry" purely by routing luck.
-
-**No client retry recovers this.** The session is not lost — it is invisible to
-live siblings — so re-initialising repeats the race.
-
-In stateless mode the server issues no session id, and per the Streamable HTTP
-transport a client sends `Mcp-Session-Id` only if the server gave it one. There
-is nothing to look up and nothing to fail to find. A stale id from a previous
-stateful deploy is ignored rather than rejected.
-
-### `stateful` is a legacy-compatibility mode
-
-Not "the full-featured one". MCP revision
+That is the shape MCP revision
 [`2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
-removes protocol-level sessions and the `initialize` handshake outright, and
-tells a modern-only server to answer GET and DELETE with `405` and to ignore
-`Mcp-Session-Id` — which is what `stateless` already does, down to the status
-code. The features `stateful` restores are ones the protocol has removed or
-deprecated: `logging/setLevel` is gone, Logging is deprecated, and
-`resources/subscribe` is replaced by `subscriptions/listen`.
+specifies. It removes protocol-level sessions, the session headers and the
+`initialize` handshake; removes the GET stream and with it SSE resumability and
+message redelivery; tells a modern-only server to answer `405` for GET and DELETE
+and to **ignore** a legacy `Mcp-Session-Id` or `Last-Event-ID` rather than error
+on one; and tells a server needing cross-call state to use explicit handles
+passed as tool arguments. `initialize` is still answered, because a
+`2024-11-05` or `2025-06-18` client opens with one.
 
-**Choose `stateful` if you need the SSE stream or one of the three continuity
-methods, and you run exactly one process.** There is one further difference,
-below the fold: `stateful` remembers what `initialize` negotiated, so a client
-that omits `MCP-Protocol-Version` on later requests keeps its `2025-06-18` tool
-annotations where `stateless` falls back to `2024-11-05` — see
-[Protocol version without a session](#protocol-version-without-a-session).
+### Why the other transport went
 
-What is _not_ a reason is serving older clients. That gets it exactly
-backwards:
+It held its sessions in a per-process `Map`, which is wrong anywhere more than
+one process serves traffic — and that was not theoretical. `initialize` minted a
+session on instance A and returned its id; the client's next call was
+load-balanced to instance B, which looked that id up in its **own** empty map and
+returned `404 Session not found or expired`. Observed in production on Vercel,
+**before the startup guard landed in 0.10.0 (#644)**: one session id, one
+instant, three instances, two 404s and a 200. No client retry recovered it,
+because the session was not lost — it was invisible to live siblings — so
+re-initialising repeated the race. Once the guard shipped, that deploy stopped
+being reachable rather than stopping being broken, which is why the next
+paragraph can say nothing was running the mode and this one can say it was
+observed running.
 
-| Client                                              | `stateless`                                                                                                               | `stateful`                                                                                |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `2024-11-05` / `2025-06-18` (sends `initialize`)    | connects — `initialize` is dispatched normally, it just gets no session id back, and per the transport it then sends none | connects                                                                                  |
-| `2026-07-28` (sends no `initialize`, no session id) | connects                                                                                                                  | **refused** — a request with no `Mcp-Session-Id` gets `400 Missing Mcp-Session-Id header` |
+It had also become actively wrong for current clients: a `2026-07-28` client
+sends no `initialize` and no session id, and got `400 Missing Mcp-Session-Id
+header` for it.
 
-So `stateless` **connects** for every client `stateful` does, plus the ones it
-cannot. (Serving is a hair different — see the annotations note above.)
+Nothing was running it when it was removed. It threw at module scope on `VERCEL`
+or `AWS_LAMBDA_FUNCTION_NAME`, the platform deploys to Vercel, and the owner
+confirmed on 2026-09-23 that no fork ran it.
 
-### Choosing, and the guard
+### What went with it, and where push lives now
 
-Selecting `stateful` on a platform that announces itself (`VERCEL`,
-`AWS_LAMBDA_FUNCTION_NAME`) **throws at startup** with the fix in the message,
-mirroring the `TENANCY_MODE` guard in `lib/db/client.ts`. That is a safety net,
-not a boundary: a container deploy with `replicas: 2`, or a clustered Node
-process, hits the identical bug and the guard will not fire. Which is the other
-half of why the default is `stateless` rather than a documented opt-in.
+| Gone                                                   | Replacement in revision 2026-07-28                                                  |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `GET` SSE stream                                       | `subscriptions/listen` — a stream opened from a REQUEST, with a filter              |
+| `resources/subscribe` / `resources/unsubscribe`        | the `resourceSubscriptions: string[]` filter on that request                        |
+| `notifications/{tools,prompts,resources}/list_changed` | the `toolsListChanged` / `promptsListChanged` / `resourcesListChanged` filter flags |
+| `logging/setLevel` + `notifications/message`           | nothing — Logging is deprecated in the spec                                         |
+| `notifications/progress`                               | still in the spec, but needs a stream to travel down                                |
 
-### Protocol version without a session
+An attempt at one of the three removed methods now gets `METHOD_NOT_FOUND`, like
+any other unimplemented method. It used to get `STATELESS_UNSUPPORTED`
+(`-32005`), which said "the method exists, the deployment cannot carry it" — true
+while one of two transports could, and misleading now. That error code is gone
+from `JsonRpcErrorCode`.
 
-With no session remembering what `initialize` negotiated, the version comes from
-the client's `MCP-Protocol-Version` header (sent from spec revision 2025-06-18
-onward). The route delegates to `negotiateMcpProtocolVersion`, which is the same
-function the `initialize` path uses:
+**`subscriptions/listen` is not implemented** (Hub idea #8). It is a different
+design problem from the one that killed the old transport: a long-lived stream on
+a function-per-request platform, rather than state shared across processes. Two
+things settled on the way out are the design input for it, and are on the project
+journal rather than only here:
+
+- **A push audience is decided by what CHANGED, not by who is subscribed.** Every
+  org's clients would filter on the same `sunrise://…` URI, so the URI decides
+  nothing. The three `listChanged` flags concern `McpExposedTool`,
+  `McpExposedPrompt`, `McpExposedResource` and `AiCapability` — all
+  `GLOBAL_CONFIG_MODELS` (`lib/tenancy/classification.ts`) — so every listener
+  hears them. A `resourceSubscriptions` entry over `sunrise://agents` is one
+  org's contents, and only that org should hear it.
+- **A session id is not a capability; the key is.** This gets easier rather than
+  harder: a listen stream is a request with its own org scope, so there is no id
+  for a caller to present, and nothing to check it against.
+
+### The protocol version, per request
+
+The version comes from the client's `MCP-Protocol-Version` header (a MUST on
+every request from spec revision 2025-06-18 onward). The route delegates to
+`negotiateMcpProtocolVersion`, the same function the `initialize` path uses:
 
 | Header                             | Result                                              |
 | ---------------------------------- | --------------------------------------------------- |
@@ -117,13 +122,12 @@ function the `initialize` path uses:
 | date-shaped, newer than our latest | **downgraded to our latest**, not floored           |
 | date-shaped, older and unknown     | oldest supported                                    |
 
-**A client that negotiated `2025-06-18` but omits the header on later requests
-gets `2024-11-05` semantics, and loses tool annotations it would have kept in
-stateful mode.** That is the correct reading — spec revision 2025-06-18 makes the
-header a MUST on every subsequent request, so a client that omits it is
-non-conforming, and there is no session here to remember what it agreed to. It
-also fails safe: MCP's defaults for an absent annotation are
-`destructiveHint: true` / `readOnlyHint: false`, the cautious assumption.
+**A client that negotiated `2025-06-18` at `initialize` but omits the header on
+later requests gets `2024-11-05` semantics, and loses tool annotations.** That is
+the correct reading — the header is a MUST, so a client that omits it is
+non-conforming, and nothing here remembers what it agreed to. It also fails safe:
+MCP's defaults for an absent annotation are `destructiveHint: true` /
+`readOnlyHint: false`, the cautious assumption.
 
 The forward-dated row is the one that matters. A `2026-07-28` client understands
 strictly more than the server does; flooring it to `2024-11-05` would mean the
@@ -134,36 +138,46 @@ function that already draws the distinction.
 
 ### What `initialize` advertises
 
-Refusing the three continuity methods is the backstop; **not advertising them is
-the fix**, because a conforming client then never asks. In stateless mode
-`tools`, `resources` and `prompts` are advertised as `{}` (no `listChanged`, no
-`subscribe`) and `logging` is dropped entirely — `logging: {}` _is_ the signal
-that `logging/setLevel` works, so emptying it would still advertise it.
-`completions` is advertised in both modes; `completion/complete` is a plain
-request/response lookup that needs no continuity.
+`{ tools: {}, resources: {}, prompts: {}, completions: {} }`, and the four empty
+objects are the point. Every capability that PROMISED A PUSH is absent:
+`listChanged`, `resources.subscribe`, and `logging: {}` — which _is_ the signal
+that `logging/setLevel` works, so emptying it would still have advertised it.
+They are absent from the `McpCapabilities` type as well as from the response, so
+re-adding one has to be deliberate; under 2026-07-28 the listen filter is a
+request parameter rather than an `initialize` capability, so they would not come
+back in this shape anyway.
 
-Progress tokens are the deliberate exception: accepted and never delivered.
-Refusing an entire `tools/call` over an optional `_meta.progressToken` hint would
-break work that otherwise succeeds, and the spec makes progress a MAY.
+`completions` stays: `completion/complete` is a plain request/response lookup
+that pushes nothing.
+
+**The server never advertises a capability it cannot serve.** Not advertising is
+the fix rather than refusing the call, because a conforming client then never
+asks.
+
+An optional `_meta.progressToken` on `tools/call` or `resources/read` is
+**ignored** — not validated, not refused. Nothing can deliver a progress
+notification, so refusing a whole tool call over a field the server discards
+would fail work for no gain. Same rule the spec states for a stray session
+header: ignore what you no longer honour.
 
 ## Key Files
 
-| Area          | Files                                                                                                             |
-| ------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Core library  | `lib/orchestration/mcp/` (16 files, platform-agnostic)                                                            |
-| Transport     | `app/api/v1/mcp/route.ts` (POST/GET/DELETE)                                                                       |
-| Admin API     | `app/api/v1/admin/orchestration/mcp/` (7 route trees: tools, resources, prompts, keys, sessions, settings, audit) |
-| Admin UI      | `app/admin/orchestration/mcp/` (7 pages: dashboard + tools, resources, prompts, keys, sessions, settings, audit)  |
-| Components    | `components/admin/orchestration/mcp/` (9 components)                                                              |
-| Types         | `types/mcp.ts`                                                                                                    |
-| Validation    | `lib/validations/mcp.ts`                                                                                          |
-| Prisma models | McpServerConfig, McpExposedTool, McpExposedResource, McpExposedPrompt, McpApiKey, McpAuditLog                     |
+| Area          | Files                                                                                                   |
+| ------------- | ------------------------------------------------------------------------------------------------------- |
+| Core library  | `lib/orchestration/mcp/` (12 files + 4 resource handlers, platform-agnostic)                            |
+| Transport     | `app/api/v1/mcp/route.ts` (POST; GET and DELETE answer 405)                                             |
+| Admin API     | `app/api/v1/admin/orchestration/mcp/` (6 route trees: tools, resources, prompts, keys, settings, audit) |
+| Admin UI      | `app/admin/orchestration/mcp/` (7 pages: dashboard + tools, resources, prompts, keys, settings, audit)  |
+| Components    | `components/admin/orchestration/mcp/` (8 components)                                                    |
+| Types         | `types/mcp.ts`                                                                                          |
+| Validation    | `lib/validations/mcp.ts`                                                                                |
+| Prisma models | McpServerConfig, McpExposedTool, McpExposedResource, McpExposedPrompt, McpApiKey, McpAuditLog           |
 
 ## Security Model
 
 | Layer              | Mechanism                                                                               |
 | ------------------ | --------------------------------------------------------------------------------------- |
-| Auth               | Bearer token (`smcp_` prefix, SHA-256 hashed), scope-based                              |
+| Auth               | Bearer token (`smcp_` prefix, SHA-256 hashed), scope-based, bound to one org (§106)     |
 | Master switch      | `McpServerConfig.isEnabled` — 503 when off                                              |
 | Default-deny       | Everything disabled by default; each tool/resource must be explicitly enabled           |
 | Rate limiting      | IP-level (100/min) -> per-key (configurable) -> per-tool (via dispatcher)               |
@@ -185,7 +199,8 @@ break work that otherwise succeeds, and the spec makes progress a MAY.
 4. Scopes control access: `tools:list`, `tools:execute`, `resources:read`, `prompts:read`
 5. Keys can be revoked immediately; `expiresAt` for automatic expiry
 6. **Application scope carrier** — a key may carry an optional `scope` (`McpApiKey.scope`, a flat string→string map, distinct from the protocol `scopes` above). It is validated on read (`mcpKeyScopeSchema`) and folded into `CapabilityContext.scope` for every `tools/call`. That carrier is marked **authoritative**, so it may drive a capability's declared scope binding: a capability registered with `{ scopedBy: 'projectId' }` has that argument filled when the caller omits it, and a call naming a different value is refused with `scope_conflict` (step 7a re-asserts on the args `execute` actually receives, so a schema transform cannot undo it). A capability that declares no binding is untouched. See [the scope binding](./capabilities.md#the-scope-binding-scopedby-dispatch-steps-4b--7a). Core names no keys; a fork maps it to its own domain (e.g. `{ projectId }`). NULL = unscoped (unchanged behaviour). Set it as opaque JSON on create/PATCH; clearing it via PATCH uses the `Prisma.DbNull` sentinel. A malformed stored value is dropped at auth (key treated as unscoped) rather than failing authentication.
-7. **Key rotation:** `POST /api/v1/admin/orchestration/mcp/keys/:id/rotate` — generates new key material, returns new plaintext once, immediately invalidates the old key. Optionally set `{ expiresAt }` in the body.
+7. **Key rotation:** `POST /api/v1/admin/orchestration/mcp/keys/:id/rotate` — generates new key material, returns new plaintext once, immediately invalidates the old key. Optionally set `{ expiresAt }` in the body. The key's org is never touched.
+8. **Org binding (§106)** — a key is bound at mint to the org the admin's request was acting in (`orgId`, returned on create, in the list and after a rotation), and the transport runs every request inside it: `authenticateMcpRequest` answers the key's org and `app/api/v1/mcp/route.ts` wraps each method in `runAsOrg(orgId, …, { source: 'mcp-key' })`, so tool calls, resource reads and the audit row all carry it. A key outlives its creator (`createdBy` is `SetNull`) but not its org (`Cascade`). There is no user behind a key at request time, so the org's own status is checked on the same read as the key: **a suspended org's keys are refused** (`401`) and work again once it is reinstated. A key whose `orgId` is `null` (minted before 0.13.0's backfill re-run) reads as the install org at `single` and is refused at `multi`. See [`tenancy/context.md`](../tenancy/context.md).
 
 ## Authentication & OAuth 2.1 Roadmap
 
@@ -195,7 +210,7 @@ The server currently authenticates clients with **bearer tokens** (the `smcp_` k
 
 401 responses include a `WWW-Authenticate: Bearer realm="resparkable-mcp", error="invalid_token"` header (RFC 6750 / RFC 9728). 2025-spec OAuth-capable clients use this to detect that the server is bearer-only and skip OAuth discovery rather than failing on the missing `/.well-known/oauth-authorization-server` endpoint. End users keep pasting an `smcp_` key into their client config exactly as before.
 
-This is sufficient for the common deployment shape (single org, dev or internal use, admins distributing keys to developers they trust). It is **not** sufficient for multi-tenant SaaS where end-users connect their own MCP clients with their own identity — that's what OAuth solves.
+This is sufficient for the common deployment shape (dev or internal use, admins distributing keys to developers they trust), and a key is bound to an org (below), so at `multi` a key acts only in the org it was minted in. What bearer auth does **not** give a multi-tenant SaaS is per-end-user identity — every caller on a key is the key — and per-org scoping of the tools and prompts a key can see (§107/§111); the first is what OAuth solves.
 
 ### When OAuth becomes necessary
 
@@ -339,70 +354,49 @@ The admin create form's type dropdown lists core types only; create an app-typed
 
 After creation, **`uri` and `resourceType` are immutable** — the registry routes reads by URI prefix and dispatches by `resourceType`, so changing either mid-life would orphan in-flight client subscriptions. To rename or re-type a resource, delete it and create a new one (per the dialog warning in the admin UI).
 
-### Subscriptions
+### Subscriptions, and what replaces them
 
-MCP clients can call `resources/subscribe { uri }` to receive `notifications/resources/updated { uri }` whenever the underlying data changes. `resources/unsubscribe { uri }` removes the subscription. In `stateful` mode the server advertises `resources: { subscribe: true }` in `initialize` so clients know the methods are supported; under the default `stateless` mode it does not, and the methods refuse — see below.
+**`resources/subscribe` and `resources/unsubscribe` are gone** (§39 t-718), along
+with the per-URI `notifications/resources/updated` fan-out, the 50-per-session
+subscription cap, and the named `resource-update-hooks` helpers that mutation
+routes called. All of it delivered down one pipe — the SSE sink a stateful session
+held — and there is no such sink. A call gets `METHOD_NOT_FOUND`, and `initialize`
+advertises no `resources.subscribe`, so a conforming client never asks.
 
-Limits and rules (enforced in the protocol handler / session manager):
+Under revision 2026-07-28 a client would express the same interest as a
+`resourceSubscriptions: string[]` filter on a `subscriptions/listen` request. That
+is not implemented — see
+[What went with it, and where push lives now](#what-went-with-it-and-where-push-lives-now)
+for the two design decisions carried forward, including why the audience is
+decided by what changed rather than by who subscribed.
 
-- **Concrete URIs only.** Subscribing to a template URI (`resparkable://patterns/{id}`) is rejected with `INVALID_PARAMS` — subscribe to concrete instances (`resparkable://patterns/5`) instead. The check rejects on `{` or `}` before any registry lookup so clients cannot probe what's registered.
-- **Registered URIs only.** Subscribing to a URI the registry doesn't know about is rejected — ghost subscriptions would never receive an update notification anyway.
-- **50 subscriptions per session.** Excess returns `INVALID_REQUEST` with a "Subscription limit exceeded" message. Unsubscribe first.
-- **Idempotent.** Duplicate subscribe / unsubscribe returns `ok` with no side effect.
-- **Tied to session lifetime.** Subscriptions are cleared on `destroySession` and on session-expiry eviction (1 h TTL). Clients that lose their session re-subscribe after re-initialise.
-- **Per-session fan-out.** `broadcastMcpResourceUpdated(uri)` only delivers to sessions subscribed to that URI, not to every connected client.
+The mutation sites that used to fire an update are recoverable rather than listed
+here: `git log -S notifyMcpAgentsChanged` finds all of them, which a hand-copied
+table in this file would not stay accurate about.
 
-What fires an updated notification:
+**`clearMcpToolCache()`, `clearMcpResourceCache()` and `clearMcpPromptCache()`
+stayed at every one of those sites.** Cache invalidation is what makes the next
+`tools/list` correct, and has nothing to do with push.
 
-| Mutation                                                    | Fires for URI                    |
-| ----------------------------------------------------------- | -------------------------------- |
-| Admin `PATCH /api/v1/admin/orchestration/mcp/resources/:id` | the row's `uri`                  |
-| Knowledge document POST / confirm / PATCH / DELETE          | `resparkable://knowledge/search` |
-| Agent POST / PATCH / DELETE                                 | `resparkable://agents`           |
-| Workflow POST / PATCH / DELETE                              | `resparkable://workflows`        |
+## Progress notifications and the Logging API
 
-The wiring lives in `lib/orchestration/mcp/resource-update-hooks.ts` as named helpers (`notifyMcpAgentsChanged`, `notifyMcpWorkflowsChanged`, `notifyMcpKnowledgeChanged`). Mutation routes import the named helper rather than hard-coding the URI string — one place to change if a resource URI ever moves.
+**Both are gone** (§39 t-718), because both were server-push over a session's SSE
+stream.
 
-**Subscriptions need `MCP_SESSION_MODE=stateful`** — under the default they are refused with `STATELESS_UNSUPPORTED` (`-32005`) and `initialize` does not advertise `subscribe`, so a conforming client never asks. That is deliberate: a subscription that returns success and never notifies is indistinguishable, from the client's side, from a resource that never changes.
+- `notifications/progress` had a reporter (`createProgressReporter`), a
+  50-per-second-per-session cap and an opt-in per capability. A capability that
+  wants to report progress today has nowhere to send it. An optional
+  `_meta.progressToken` on `tools/call` or `resources/read` is accepted and
+  ignored — see [What `initialize` advertises](#what-initialize-advertises) for
+  why that is not an error.
+- `logging/setLevel` and `notifications/message` had the 8 RFC 5424 levels, a
+  per-session minimum severity defaulting to `warning`, and an `emitMcpLog` helper
+  with its own rate caps. `emitMcpLog` never had a caller in the platform — it was
+  a fork seam — and Logging is deprecated in revision 2026-07-28, so it goes
+  rather than waiting for a transport that will not carry it.
 
-**And even in `stateful`, the subscription map is per-Node.js-process**, so a mutation on instance A doesn't notify subs on instance B — which is the same defect as the session map, and why `stateful` is confined to a single long-running process.
-
-## Progress notifications
-
-Long-running `tools/call` and `resources/read` requests can carry an optional `_meta.progressToken` (string or number, max 256 chars, must be finite). The server validates the token shape on dispatch and rejects malformed tokens with `INVALID_PARAMS` rather than ignoring them silently.
-
-A capability that opts into progress reporting receives a `report(progress, total?)` callback wired through `createProgressReporter` in `lib/orchestration/mcp/progress-tracker.ts`. The reporter:
-
-- Pushes `notifications/progress { progressToken, progress, total? }` to **only the originating session** (not broadcast to other clients).
-- Rate-limits to **50 notifications per session per second** (sliding 1 s window). Excess is silently dropped — progress is a UX hint, never a correctness signal, so the underlying operation must never block on backpressure.
-- Drops notifications safely after session expiry or SSE disconnect.
-
-Capabilities that don't opt in get a no-op reporter (`NOOP_PROGRESS_REPORTER`) so they can always call `progress(...)` without guarding.
-
-## Logging API
-
-Clients call `logging/setLevel { level }` to set the minimum severity they want pushed via `notifications/message`. The session-level filter defaults to `warning` so clients that never call `setLevel` don't get flooded with `info`/`debug` chatter. The 8 levels per RFC 5424:
-
-| Level       | Rank | Typical use                                           |
-| ----------- | ---- | ----------------------------------------------------- |
-| `debug`     | 0    | Diagnostic detail (resource handler fallbacks)        |
-| `info`      | 1    | Normal operational events                             |
-| `notice`    | 2    | Notable conditions (e.g. cost-cap hit on a tool call) |
-| `warning`   | 3    | Recoverable issues — default                          |
-| `error`     | 4    | Operation failed                                      |
-| `critical`  | 5    | Component failure                                     |
-| `alert`     | 6    | Immediate action required                             |
-| `emergency` | 7    | System unusable                                       |
-
-Server-side calls into `emitMcpLog(sessionId, level, logger?, data)` (or `null` to broadcast to every session that passes its filter) push `notifications/message { level, logger?, data }`. Caps applied per session:
-
-| Cap                                  | Value                                                                                                                          |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
-| Notifications per second per session | 100 (sliding window; excess silently dropped)                                                                                  |
-| `logger` field length                | 64 chars (truncated)                                                                                                           |
-| `data` payload                       | 4 KB serialised — overlong payloads are replaced with `{ truncated: true, reason: '...' }` so clients still see a notification |
-
-Use sparingly — this is for events the client genuinely cares about (cost-cap hits, resource handler fallbacks). Internal server-side logging continues to go to `lib/logging`, not the MCP wire.
+Internal server-side logging is unaffected: it goes to `lib/logging`, and never
+went to the MCP wire.
 
 ## Completion API
 
@@ -516,20 +510,37 @@ A common temptation is to use prompts as "lightweight tools" — admin types a t
 
 Heuristic: if the server is expected to execute logic, call APIs, mutate state, or compute results autonomously, it belongs in a **tool**, not a prompt. Prompts are templates the user runs; tools are functions the model runs.
 
-## Session Management
+## Session management — there is none
 
-**Everything below applies to `MCP_SESSION_MODE=stateful` only.** Under the
-default (`stateless`) none of it happens: no session is created, no
-`Mcp-Session-Id` is issued, `maxSessionsPerKey` is never consulted, and there is
-nothing to evict or terminate. See
-[Session model](#session-model--mcp_session_mode).
+There is no session map, no TTL, no eviction sweep, no per-key session cap and no
+admin Sessions page. `GET /api/v1/admin/orchestration/mcp/sessions` and
+`DELETE …/sessions/:id` are removed, and `McpServerConfig.maxSessionsPerKey` is
+dropped by migration — it was read in exactly one place, the `createSession` call
+on the transport that went.
 
-- In-memory `Map<string, McpSession>`, 1hr TTL
-- Created on `initialize`, identified by `Mcp-Session-Id` header
-- `maxSessionsPerKey` enforced per API key
-- Sessions lost on restart (clients re-initialize per MCP spec)
-- Expired sessions are evicted lazily on `getSession()` access, not by a proactive timer — an expired session may still appear in the admin sessions list until it is next accessed or the list is refreshed
-- Admin can force-terminate sessions via `DELETE /api/v1/admin/orchestration/mcp/sessions/:id` or the Sessions page UI
+Three things that were true of sessions are worth keeping, because each one is a
+rule rather than a detail:
+
+- **A session id was never a capability; the key is.** `POST`, `DELETE` and — from
+  §108 t-716 — `GET` all refused a session whose `apiKeyId` was not the
+  authenticated key's. `GET` was the path that attached the SSE listener, so
+  before that fix a caller with any valid key could open the stream with another
+  key's `Mcp-Session-Id` and receive that session's pushes while its owner
+  silently stopped receiving them. Whatever replaces push must not reintroduce an
+  id a caller presents; a `subscriptions/listen` request carries its own auth and
+  its own org scope, which is the shape to keep.
+- **A timer is stamped where it was armed, not where it fires.** The eviction
+  sweep was armed through `runDetached` (§108 t-715) because the manager was a
+  lazily constructed singleton, so the first MCP request after boot built it —
+  inside that request's org — and an `AsyncLocalStorage` store is captured when
+  `setInterval` is _called_. No timer in the tree needs detaching today; the rule
+  and the primitive both remain. See
+  [Tenant context](../tenancy/context.md#a-timer-is-stamped-where-it-was-armed-not-where-it-fires).
+- **Liveness measured by POSTs, not by an open stream, was a design flaw.** A
+  client that subscribed and then only listened was evicted at the 1-hour TTL: its
+  sink was dropped, the stream went silent, and the SSE keepalive kept the
+  connection looking healthy until its next POST returned 404. Anything
+  long-lived that comes back has to refresh on the stream it is actually using.
 
 ## Admin Pages
 
@@ -541,19 +552,20 @@ nothing to evict or terminate. See
 | `/admin/orchestration/mcp/prompts`   | Create/edit/disable slash-command prompt templates |
 | `/admin/orchestration/mcp/keys`      | Create/revoke API keys                             |
 | `/admin/orchestration/mcp/audit`     | Audit log with manual purge button                 |
-| `/admin/orchestration/mcp/settings`  | Rate limits, session limits, retention             |
+| `/admin/orchestration/mcp/settings`  | Rate limits and audit retention                    |
 
 ## MCP Protocol Compliance
 
 - Transport: Streamable HTTP
-- Protocol versions: `2025-06-18` (latest) and `2024-11-05` (back-compat). Negotiated during `initialize` in `stateful` mode; taken from the `MCP-Protocol-Version` header per request under the default `stateless` mode, since no session remembers a negotiation ([details](#protocol-version-without-a-session)).
+- Protocol versions: `2025-06-18` (latest) and `2024-11-05` (back-compat). Answered at `initialize`, and taken from the `MCP-Protocol-Version` header on every request, since nothing remembers a negotiation ([details](#the-protocol-version-per-request)).
 - Messages: JSON-RPC 2.0 (single and batch requests)
-- Capabilities advertised: in `stateful` mode, `tools.listChanged`, `resources.listChanged`, `prompts.listChanged`, `resources.subscribe`, `logging` and `completions` — all six ship today. Under the default `stateless` mode only `completions` is advertised, plus bare `tools` / `resources` / `prompts` objects with no `listChanged` or `subscribe`, because the rest need a session that outlives the request. **The server never advertises a capability it cannot serve**, which is the whole reason that list changes with the mode.
-- Resource templates: `resources/templates/list` advertises parameterized URI patterns
+- Capabilities advertised: `completions`, plus bare `tools` / `resources` / `prompts` objects. No `listChanged`, no `resources.subscribe`, no `logging` — each of those promises a push, and there is no stream to push down ([details](#what-initialize-advertises)). **The server never advertises a capability it cannot serve.**
+- Resource templates: `resources/templates/list` advertises parameterized URI patterns (a URI with a `{param}` expression, `{?q}` included; a fixed URI with a plain query string is not one). A templated row appears there only; `resources/list` carries the concrete rows
 - Pagination: `tools/list` and `resources/list` support cursor-based pagination (50 items/page)
 - Batch requests: JSON-RPC 2.0 array batches (max 20 requests per batch)
-- SSE notifications (`stateful` only): `notifications/tools/list_changed` and `notifications/resources/list_changed` pushed to connected clients when admin toggles tools/resources. Under the default `stateless` mode there is no SSE stream — `GET` answers `405` — so nothing is pushed and no listener is ever registered.
+- Server-push: none. `GET` answers `405 Allow: POST`, no notification is ever emitted, and no listener is registered. Revision 2026-07-28 moves push to `subscriptions/listen`, which Sunrise does not implement ([details](#what-went-with-it-and-where-push-lives-now)).
 - Client notifications accepted: `notifications/initialized`, `notifications/roots/list_changed`, `notifications/cancelled`
+- `Mcp-Session-Id` and `Last-Event-ID`: ignored on the way in, never issued on the way out, per revision 2026-07-28
 
 ### Version negotiation
 
@@ -566,7 +578,7 @@ nothing to evict or terminate. See
 | A forward-dated unknown version (e.g. `2099-01-01`) | Latest supported (`2025-06-18`) | Graceful downgrade for newer clients                   |
 | Any other unknown / malformed value                 | `INVALID_PARAMS` error          | Surface mismatch rather than silently misbehave        |
 
-In `stateful` mode the negotiated version is stored on the session (`McpSession.protocolVersion`) and reused for every later request. Under the default `stateless` mode nothing is stored — the table above governs `initialize`'s response, and each subsequent request derives its own version from the `MCP-Protocol-Version` header ([details](#protocol-version-without-a-session)). Either way the value reaches per-call handlers the same way, for branching on features that exist only in newer revisions. The legacy `MCP_PROTOCOL_VERSION` export still resolves to the oldest supported version so downstream imports keep working.
+Nothing is stored. The table above governs `initialize`'s own response, and every request — including that one — derives the version it is answered at from the `MCP-Protocol-Version` header ([details](#the-protocol-version-per-request)). The value reaches per-call handlers as `HandlerContext.protocolVersion`, for branching on features that exist only in newer revisions; it replaced a whole session object, which was the only thing any handler read off one. The legacy `MCP_PROTOCOL_VERSION` export still resolves to the oldest supported version so downstream imports keep working.
 
 ### Authentication challenge (WWW-Authenticate)
 
@@ -574,18 +586,21 @@ In `stateful` mode the negotiated version is stored on the session (`McpSession.
 
 ### Error codes
 
-| Code   | Name                  | Meaning                                                                                                                                                                                                                |
-| ------ | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| -32700 | PARSE_ERROR           | Body is not valid JSON, or body exceeds the 1 MB size cap                                                                                                                                                              |
-| -32600 | INVALID_REQUEST       | JSON-RPC envelope is malformed, batch is empty / too large, or `initialize` is mixed with other requests                                                                                                               |
-| -32601 | METHOD_NOT_FOUND      | Unknown method                                                                                                                                                                                                         |
-| -32602 | INVALID_PARAMS        | Method-specific param validation failed                                                                                                                                                                                |
-| -32603 | INTERNAL_ERROR        | Unhandled server error (no internals leaked)                                                                                                                                                                           |
-| -32001 | UNAUTHORIZED          | Missing / invalid bearer token (paired with HTTP 401 + `WWW-Authenticate`)                                                                                                                                             |
-| -32002 | SESSION_NOT_FOUND     | Unknown / expired `Mcp-Session-Id`, or session belongs to a different key                                                                                                                                              |
-| -32003 | SERVER_DISABLED       | Master `isEnabled` toggle is off                                                                                                                                                                                       |
-| -32004 | RATE_LIMITED          | Per-key or global rate limit exceeded — client should back off and retry                                                                                                                                               |
-| -32005 | STATELESS_UNSUPPORTED | The method needs a session that outlives the request, and this server runs `MCP_SESSION_MODE=stateless`. Distinct from METHOD_NOT_FOUND: the method exists and is implemented, the deployment topology cannot carry it |
+| Code   | Name             | Meaning                                                                                                  |
+| ------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| -32700 | PARSE_ERROR      | Body is not valid JSON, or body exceeds the 1 MB size cap                                                |
+| -32600 | INVALID_REQUEST  | JSON-RPC envelope is malformed, batch is empty / too large, or `initialize` is mixed with other requests |
+| -32601 | METHOD_NOT_FOUND | Unknown method                                                                                           |
+| -32602 | INVALID_PARAMS   | Method-specific param validation failed                                                                  |
+| -32603 | INTERNAL_ERROR   | Unhandled server error (no internals leaked)                                                             |
+| -32001 | UNAUTHORIZED     | Missing / invalid bearer token (paired with HTTP 401 + `WWW-Authenticate`)                               |
+| -32003 | SERVER_DISABLED  | Master `isEnabled` toggle is off                                                                         |
+| -32004 | RATE_LIMITED     | Per-key or global rate limit exceeded — client should back off and retry                                 |
+
+`-32002 SESSION_NOT_FOUND` and `-32005 STATELESS_UNSUPPORTED` were removed with
+the stateful transport (§39 t-718). Nothing can emit either, so they are gone from
+`JsonRpcErrorCode` rather than left as constants a fork might still switch on. A
+call to one of the three removed methods answers `-32601 METHOD_NOT_FOUND`.
 
 ## Client Configuration
 
@@ -606,4 +621,4 @@ Claude Desktop example (`claude_desktop_config.json`):
 
 ## No External Dependencies
 
-JSON-RPC 2.0 is hand-rolled (~100 lines of types). Crypto uses Node.js built-in `crypto`. SSE reuses `lib/api/sse.ts`. Rate limiting reuses `lib/security/rate-limit.ts`.
+JSON-RPC 2.0 is hand-rolled (~100 lines of types). Crypto uses Node.js built-in `crypto`. Rate limiting reuses `lib/security/rate-limit.ts`. It used to reuse `lib/api/sse.ts` as well; MCP streams nothing now (§39 t-718), and that bridge belongs to the chat and workflow-execution routes.

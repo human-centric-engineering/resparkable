@@ -14,9 +14,11 @@ stated as plainly as the capabilities — the parts of the read axis that are
 - **The fork's file:** [`lib/app/authorization.ts`](../../lib/app/authorization.ts) — ships empty
 - **Guards that consult it:** [`lib/auth/guards.ts`](../../lib/auth/guards.ts)
 
-> **Scope of this page.** It describes what ships today. Anything owned by the
-> multi-tenancy programme (the org input, `Org`/`OrgMembership`, RLS) is marked
-> as such and is **not** available; see
+> **Scope of this page.** It describes what ships today. The org input ships
+> as of §106 (the guard enters an org for every request and the default
+> policy reads it — see [the org input](#the-org-input) below and
+> [`tenancy/context.md`](../tenancy/context.md)); row isolation (RLS) is
+> still the programme's and is marked as such; see
 > [`multi-tenancy-design.md`](../architecture/multi-tenancy-design.md).
 
 ---
@@ -28,18 +30,82 @@ The mistake this design exists to avoid is a single widening `role` string.
 different questions, and folding them into one enum means every new combination
 is a new value.
 
-| Axis          | Question                                                           | Supplied by                    | State today                                                                                                         |
-| ------------- | ------------------------------------------------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| **Tier**      | Is this principal platform staff, a customer's admin, or a member? | #366                           | `scope.tier` is carried; nothing in core populates it. A fork branches on it in its own policy.                     |
-| **Ownership** | Within one tenant, over _whose_ rows?                              | #367                           | `scope.ownership` (`'own' \| 'team' \| 'all'`) is carried; `canRead` / `subjectScope` are the faces that answer it. |
-| **Org**       | Which tenant's rows exist at all?                                  | Multi-tenancy programme (§106) | **Does not ship.** `scope.org` is a reserved key. Between-tenant isolation is enforced by RLS, not by this policy.  |
+| Axis          | Question                                                           | Supplied by                    | State today                                                                                                                                                                                    |
+| ------------- | ------------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tier**      | Is this principal platform staff, a customer's admin, or a member? | #366                           | `scope.tier` is carried; nothing in core populates it. A fork branches on it in its own policy.                                                                                                |
+| **Ownership** | Within one tenant, over _whose_ rows?                              | #367                           | `scope.ownership` (`'own' \| 'team' \| 'all'`) is carried; `canRead` / `subjectScope` are the faces that answer it.                                                                            |
+| **Org**       | Which tenant's rows exist at all?                                  | Multi-tenancy programme (§106) | **Ships.** The guard enters an org per request; `viewer.orgId` / `viewer.orgRole` carry it and `scope.org` repeats it. Between-tenant isolation is enforced by RLS (§107), not by this policy. |
 
 `AuthorizationScope` is an open struct with every member optional, so each axis
 arrives as a new key rather than a new signature. That is the whole reason the
-struct exists — a later `scope.org` must not be a sweep of every caller. For the
+struct exists — `scope.org` arrived as a new key and swept no caller. For the
 same reason **every face returns a `Promise`** although today's default body
-needs none: the org input requires a membership lookup, and converting a
+needs none: a fork's org policy may look something up, and converting a
 synchronous seam to an asynchronous one later is a caller sweep.
+
+## The org input
+
+The guard decides which org a request acts for **once**, at the boundary
+([`lib/tenancy/entry.ts`](../../lib/tenancy/entry.ts): the session's active
+org, the API key's org, or the proxy-written resolver header — verified
+against membership wherever a non-install org is named), and then carries it
+two ways: **on the principal** — `viewer.orgId` and `viewer.orgRole` (`OWNER` /
+`ADMIN` / `MEMBER` from [`lib/tenancy/roles.ts`](../../lib/tenancy/roles.ts),
+or `null` for no membership) — and as the tenant context the handler runs
+inside. `scope.org` carries the same id for a policy that prefers to read it
+there. The policy is _told_ the org facts and never reads the tenant context
+itself: that keeps it testable with a plain object and correct for a caller
+holding a principal but no context (the feature's journal decision).
+
+A platform credential — an `admin`-scoped API key — enters **no** org: no
+`orgId` on the principal, no scope, the handler runs outside any context.
+
+**What the default policy does with it.** An org `OWNER`/`ADMIN`:
+
+- **administers a resource that carries their org** —
+  `resource.orgId === viewer.orgId`, with `resource.orgId` present. A `null`
+  resource, or one without an `orgId`, grants **nothing**: those are the
+  platform-ops surfaces (every core _admin_ route — no core admin resolver
+  names an org until §107), which stay platform-only. That is the control-plane
+  split in the tenancy playbook. The core routes that _do_ name an org are the
+  org members routes (`/api/v1/orgs/[id]/members/**`, §106 t-672), and this
+  arm is what admits an org's own OWNER/ADMIN there while they act in it —
+  see [org-endpoints.md](../api/org-endpoints.md). A single-tenant install
+  stays byte-identical: on the install org the OWNER set _is_ the
+  platform-admin set (the role follows the platform role and is kept in
+  step), so the arm admits exactly whom the platform check admits; on every
+  other core route no resource carries an org, and
+  `authorization-org.test.ts` sweeps every principal × every question those
+  routes can ask, with and without org facts, and asserts identical answers.
+- **is a session grant.** An `api-key` principal never takes the arm, whatever
+  `orgRole` the entry projected onto it: a key is narrower than its owner
+  (#542) and only the `admin` scope administers, through the platform check.
+- **reads the ownerless `this-row` of a resource that carries their org** —
+  answered _before_ the once-per-kind diagnostic, because an org resource with
+  no `ownerId` is a fork's steady state, not a misconfigured resolver.
+- does **not** reach the capability question (`'any-row-of-this-kind'`): that
+  names no row, and admitting an org admin to it would hand them every org's
+  ownerless rows of that kind until the data layer scopes those reads by org.
+  So `checkOwnerlessReachability` over a roster of only org admins reports
+  every kind closed — deliberately — and platform staff must stay on the
+  roster.
+
+`subjectScope` and the `'subject'` arm are unchanged: an org admin is narrowed
+to their own rows like any member — so on an org row **another member owns**,
+`canAdminister` says yes and `canRead` says no. That is deliberate: widening
+the subject arm would break parity with `subjectScope`, which can name one
+user or everyone and cannot yet say "rows in my org" (§107). The narrower
+face wins on the read path. **So an org admin is a _narrowed_ admin**,
+and the first _admin_ route whose resolver names an org-carrying resource owes
+an `ownership` declaration and must read `session.subjectFilter` — the scenario
+`guards-ownership-development.test.ts` names. None exists in core until §107;
+the org members routes are `withAuth`, declare `ownership: 'resource'`, and
+read nothing outside the resolved org.
+
+The comparison is guarded on the resource side explicitly because
+`resource.orgId === viewer.orgId` with both `undefined` is `true` — the trap the
+fork seam's docblock warns about. A fork's own org policy must guard it the same
+way.
 
 ---
 
@@ -895,8 +961,9 @@ check by searching, and why the rule wants a named function.
 **That is correct today and it is not a bug list.** Single-tenant Sunrise has one
 class of admin, so provenance is all `createdBy` is for. It is listed because
 those are the models a fork adding a customer tier must revisit — the
-classification is in the playbook's
-[model inventory](../architecture/multi-tenancy.md#model-inventory), and a
+classification is `GLOBAL_CONFIG_MODELS` in
+[`lib/tenancy/classification.ts`](../../lib/tenancy/classification.ts) (the
+playbook's hand-written inventory it replaced is gone), and a
 `createdBy` FK is what makes them _reachable_ by the ownership axis, not what
 makes them scoped.
 
@@ -928,8 +995,12 @@ minting one already requires a platform admin with a browser session, and
 `app/api/v1/user/api-keys/route.ts` documents why that check deliberately asks
 `isPlatformAdmin` rather than `canAdminister`.
 
-Keys do not bind an org yet, so "an org-bound key can never carry `admin`" is
-**not** something this seam enforces today. It arrives with the org axis.
+"An org-bound key can never carry `admin`" holds at mint and at the guard
+(§106): an `admin` key is stored with no org and refused when asked for from
+inside a customer org, and both guards refuse a key that carries an org
+before the policy is asked (`withAdminAuth` at its scope floor, `withAuth`
+through `enterApiKeyOrg`) — so a fork's policy cannot widen it. See
+[`tenancy/identity.md`](../tenancy/identity.md#credentials).
 
 ---
 
@@ -938,7 +1009,7 @@ Keys do not bind an org yet, so "an org-bound key can never carry `admin`" is
 - [`lib/auth/authorization.ts`](../../lib/auth/authorization.ts) — the contract, with the reasoning for each shape decision
 - [`lib/app/authorization.ts`](../../lib/app/authorization.ts) — the fork's scaffold, with two worked policies
 - [`integration.md`](./integration.md) — `withAuth` / `withAdminAuth` usage
-- [`../architecture/multi-tenancy.md`](../architecture/multi-tenancy.md) — the model inventory and the control-plane split
+- [`../architecture/multi-tenancy.md`](../architecture/multi-tenancy.md) — enabling the capability, and the control-plane split
 - [`../architecture/multi-tenancy-design.md`](../architecture/multi-tenancy-design.md) — the org axis; design principles and the Q6 ruling
 - [`../architecture/fork-init-seams.md`](../architecture/fork-init-seams.md) — the init-gate contract every `lib/app/*` seam shares
 - [`CUSTOMIZATION.md`](../../CUSTOMIZATION.md) §4 — the fork-facing seam list

@@ -200,6 +200,84 @@ Returns paginated log entries with optional filtering.
 }
 ```
 
+## Whose lines a reader sees
+
+Every entry carries the org whose request or job produced it, and the query
+returns only the reading org's (§108 t-714). The buffer itself stays
+process-wide — one ring, every org's lines in it — so `getBufferSize()` is the
+ring's occupancy and not a count of what anyone can read. `total` in the
+response is computed after the scope filter, so the pager offers a reader only
+their own pages.
+
+An entry is **unstamped** (`orgId: null`) when it was produced outside any
+tenant scope: at boot, inside a `runAsSystem` job, or on a request
+authenticated by a platform credential — an admin API key with no org, which
+the guards run unscoped in both modes, and which is how a cron calls the
+maintenance tick.
+
+A fourth producer is a **repeating timer whose work belongs to the process
+rather than to one org** (§108 t-715). An `AsyncLocalStorage` propagates into
+`setInterval`, so such a timer would otherwise attribute every line it writes to
+whichever org happened to build the holder — for the life of the process, where
+that holder is a lazily constructed singleton. They are armed through
+[`runDetached`](../tenancy/context.md#a-timer-is-stamped-where-it-was-armed-not-where-it-fires),
+so their lines are unstamped and read like any other line produced outside a
+scope. **No timer in the tree is currently detached** — the one that
+was, `McpSessionManager`'s session-eviction sweep, went with the stateful MCP
+transport (§39 t-718), so this producer writes nothing today and the rule is here
+for the next timer of its kind. Note that "outlives the request" is not the test:
+a webhook delivery retry does, and it still belongs to the org that armed it.
+
+| Entry               | At `single` | At `multi`                           |
+| ------------------- | ----------- | ------------------------------------ |
+| stamped with an org | visible     | visible to that org only             |
+| unstamped (`null`)  | visible     | visible only to a reader with no org |
+
+**At `single` the page shows the process's lines, exactly as it always has** —
+the scope rule applies at `multi`, which is where something confines it (the
+same gate as the [per-org retention windows](../orchestration/retention.md#per-org-windows)).
+Hiding anything at `single` would empty the page of what an operator opens it
+for while protecting nothing, since there is one org. It would also not even be
+safe to do narrowly: `forEachOrg` iterates every ACTIVE org in **both** modes,
+so a single-mode install holding a second org stamps that org's job lines with
+it, and a rule scoped to the install org would have made them vanish.
+
+At `multi` a **platform operator has no cross-org view through this page**.
+That is the owner's ruling (2026-09-23) — `multi` is not used until the whole
+phase is built, so it is not a view anyone loses today — and §111's to supply.
+
+### What an org admin will not see at `multi`, and why
+
+A request's **own 500 is visible** to the org that made it. The guards log
+through `handleAPIError` in their outer `catch`, which sits after
+`inTenantScope` has exited — so §108 t-714 re-enters the entered org around
+that call. Without it the org whose request failed would have been the one org
+unable to see its own error, on the page that exists for exactly that.
+
+Three classes stay unstamped, each produced before an org is chosen:
+
+- **A refused org entry** — a non-member, or a suspended org — logged by the
+  guard before any scope exists.
+- **The proxy's HTTP access lines**, which run ahead of the guard entirely.
+- **An MCP transport failure before the key is authenticated**, for the same
+  reason: there is no org yet. A failure _after_ it is inside the org, like
+  the guards' (`app/api/v1/mcp/route.ts`).
+
+Boot-time lines and everything a `runAsSystem` job writes — the whole
+maintenance tick — are unstamped too, for the same reason.
+
+**At `multi`, nobody reaches any of that through the UI.** The table above says
+an unstamped line is visible to "a reader with no org", and the only reader
+that can be is a platform-admin **API key**: `enterSessionOrg` refuses a
+session with no active org at `multi`, so every browser-authenticated admin
+always has one. In practice that means `curl` with a platform key, and it means
+a failing nightly tick leaves `/admin/logs` empty of any trace for every human
+looking at it. Giving the page a system view is part of the operator view §111
+supplies.
+
+None of this is new behaviour in the logger; it is what scoping the _read_
+makes visible.
+
 ## Integration with Logger
 
 The structured logger automatically writes to the log buffer:
@@ -218,6 +296,10 @@ addLogEntry({
   error: errorDetails,
 });
 ```
+
+The logger passes no org: `addLogEntry` reads it from the tenant context
+itself, so every producer is stamped by one rule and the logging hot path
+knows nothing about tenancy.
 
 ## Production Considerations
 
@@ -253,5 +335,5 @@ sequenceDiagram
 
 - [Overview](./overview.md) - Admin dashboard architecture
 - [Error Handling](../errors/overview.md) - Logging integration
-- [Logging Best Practices](../errors/logging.md) - When and what to log
+- [Logging Best Practices](../logging/best-practices.md) - When and what to log
 - [Log Aggregation](../monitoring/log-aggregation.md) - Production log services

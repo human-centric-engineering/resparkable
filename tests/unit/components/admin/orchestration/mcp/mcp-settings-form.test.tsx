@@ -43,6 +43,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { McpSettingsForm } from '@/components/admin/orchestration/mcp/mcp-settings-form';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -50,7 +51,6 @@ const FULL_SETTINGS = {
   isEnabled: true,
   serverName: 'Resparkable MCP Server',
   serverVersion: '1.0.0',
-  maxSessionsPerKey: 5,
   globalRateLimit: 60,
   auditRetentionDays: 90,
 };
@@ -68,35 +68,34 @@ describe('McpSettingsForm', () => {
 
   describe('Initial render', () => {
     it('renders all form fields with initial values', () => {
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
       expect(document.getElementById('serverName')).toHaveValue('Resparkable MCP Server');
       expect(document.getElementById('serverVersion')).toHaveValue('1.0.0');
-      expect(document.getElementById('maxSessionsPerKey')).toHaveValue(5);
       expect(document.getElementById('globalRateLimit')).toHaveValue(60);
       expect(document.getElementById('auditRetentionDays')).toHaveValue(90);
     });
 
     it('renders defaults when initialSettings is null', () => {
-      render(<McpSettingsForm initialSettings={null} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={null} />);
       expect(document.getElementById('serverName')).toHaveValue('Resparkable MCP Server');
       expect(document.getElementById('globalRateLimit')).toHaveValue(60);
     });
 
     it('renders FieldHelp tooltips for numeric fields', () => {
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
       expect(screen.getByText('Server Configuration')).toBeInTheDocument();
     });
   });
 
   describe('Button state', () => {
     it('disables save button when form is pristine', () => {
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
       expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled();
     });
 
     it('enables save button when form is dirty', async () => {
       const user = userEvent.setup();
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
 
       const nameInput = document.getElementById('serverName') as HTMLInputElement;
       await user.clear(nameInput);
@@ -110,7 +109,7 @@ describe('McpSettingsForm', () => {
     it('calls apiClient.patch with correct payload on submit', async () => {
       vi.mocked(apiClient.patch).mockResolvedValue({});
 
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
 
       const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
       await act(async () => {
@@ -124,7 +123,6 @@ describe('McpSettingsForm', () => {
             body: expect.objectContaining({
               serverName: 'Resparkable MCP Server',
               globalRateLimit: 60,
-              maxSessionsPerKey: 5,
               auditRetentionDays: 90,
             }),
           })
@@ -135,7 +133,7 @@ describe('McpSettingsForm', () => {
     it('shows Saved indicator after successful submission', async () => {
       vi.mocked(apiClient.patch).mockResolvedValue({});
 
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
 
       const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
       await act(async () => {
@@ -154,7 +152,7 @@ describe('McpSettingsForm', () => {
         new APIClientError('Rate limit must be between 1 and 10000')
       );
 
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
 
       const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
       await act(async () => {
@@ -169,7 +167,7 @@ describe('McpSettingsForm', () => {
     it('shows generic error for non-API errors', async () => {
       vi.mocked(apiClient.patch).mockRejectedValue(new Error('network failure'));
 
-      render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+      render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
 
       const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
       await act(async () => {
@@ -183,24 +181,118 @@ describe('McpSettingsForm', () => {
   });
 });
 
-describe('an inert setting says so (#609)', () => {
-  it('marks Max Sessions Per Key as having no effect under stateless', () => {
-    // `MCP_SESSION_MODE=stateless` (the default) creates no sessions, so the cap
-    // is never consulted. The field still validates and still saves — what it
-    // must not do is look like it is working. An operator setting this as a
-    // concurrency control on a shared key would otherwise get no cap and no
-    // signal.
-    render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked={false} />);
-
-    expect(screen.getByText(/No effect/i)).toBeInTheDocument();
-    expect(screen.getByText(/MCP_SESSION_MODE=stateless/)).toBeInTheDocument();
+describe('McpSettingsForm validation and saved indicator', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it('says nothing when sessions ARE tracked', () => {
-    // The counterpart, or the assertion above would pass against a component
-    // that always shows the warning.
-    render(<McpSettingsForm initialSettings={FULL_SETTINGS} sessionsAreTracked />);
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-    expect(screen.queryByText(/No effect/i)).not.toBeInTheDocument();
+  function setField(id: string, value: string) {
+    fireEvent.change(document.getElementById(id) as HTMLInputElement, { target: { value } });
+  }
+
+  async function submit() {
+    const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+    await act(async () => {
+      fireEvent.submit(form!);
+    });
+  }
+
+  it.each([
+    ['serverName', '', 'Required'],
+    ['serverVersion', '', 'Required'],
+    ['globalRateLimit', '0', 'Min 1'],
+    ['globalRateLimit', '10001', 'Max 10,000'],
+    ['auditRetentionDays', '-1', 'Min 0'],
+    ['auditRetentionDays', '3651', 'Max 3,650'],
+  ])('shows "%s" error for invalid value %j: %s', async (id, value, message) => {
+    render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
+
+    setField(id, value);
+    await submit();
+
+    expect(await screen.findByText(message)).toBeInTheDocument();
+    expect(apiClient.patch).not.toHaveBeenCalled();
+  });
+
+  it('shows the Saved indicator, then clears it after 3000ms', async () => {
+    vi.mocked(apiClient.patch).mockResolvedValue({});
+    render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
+    setField('serverName', 'Renamed');
+
+    // Fake only setTimeout so promises and waitFor's polling keep working.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await submit();
+    // Let the mocked PATCH resolve and the post-save state updates flush.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Saved')).toBeInTheDocument();
+    expect(apiClient.patch).toHaveBeenCalledWith(
+      expect.stringContaining('/mcp/settings'),
+      expect.objectContaining({ body: expect.objectContaining({ serverName: 'Renamed' }) })
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(2999);
+    });
+    expect(screen.getByText('Saved')).toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(screen.queryByText('Saved')).not.toBeInTheDocument();
+  });
+});
+
+describe('the session cap is gone, not merely inert (§39 t-718)', () => {
+  it('renders no Max Sessions Per Key field at all', () => {
+    // It used to render with a "No effect" caption under the default session
+    // mode — a setting that validated and saved and was never consulted. The
+    // column behind it is dropped, so there is nothing to caption.
+    render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
+
+    expect(document.getElementById('maxSessionsPerKey')).toBeNull();
+    expect(screen.queryByText(/max sessions per key/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('read-only outside the install org (§107 t-753)', () => {
+  async function makeDirty() {
+    const user = userEvent.setup();
+    const nameInput = document.getElementById('serverName') as HTMLInputElement;
+    await user.clear(nameInput);
+    await user.type(nameInput, 'Edited Name');
+    return user;
+  }
+
+  it('keeps Save Settings disabled after the form is dirtied, and never PATCHes', async () => {
+    // Contrast: the identical edit enables Save without the provider.
+    const { unmount } = render(<McpSettingsForm initialSettings={FULL_SETTINGS} />);
+    await makeDirty();
+    expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled();
+    unmount();
+
+    render(
+      <SharedSettingsAccessProvider readOnly canSwitch>
+        <McpSettingsForm initialSettings={FULL_SETTINGS} />
+      </SharedSettingsAccessProvider>
+    );
+    // The form still renders its current values
+    expect(document.getElementById('globalRateLimit')).toHaveValue(60);
+    const user = await makeDirty();
+    expect(document.getElementById('serverName')).toHaveValue('Edited Name');
+
+    const save = screen.getByRole('button', { name: /save settings/i });
+    expect(save).toBeDisabled();
+    expect(
+      screen.getByText('Read-only here: changes save from the install organisation.')
+    ).toBeInTheDocument();
+    await user.click(save);
+    expect(apiClient.patch).not.toHaveBeenCalled();
   });
 });

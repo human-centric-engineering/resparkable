@@ -12,6 +12,11 @@
  * test cannot reach, because the deletion it guards against is performed by
  * Postgres rather than by any line of application code (#502).
  *
+ * And it proves the contact-form delete (t-767): `ContactSubmission` has no FK,
+ * so `eraseUser()` deletes it by address. The subject's address holds a `_`,
+ * and a stranger's differs only there — an `ILIKE` would take both, the exact
+ * match the service uses takes only the subject's.
+ *
  * Skips cleanly (exit 0) when no database is reachable, so it is safe to invoke
  * anywhere — it only does real work where a DB exists (CI's `validate` job,
  * which provisions Postgres + migrations + seeds, and locally with a running
@@ -28,6 +33,9 @@
 import { prisma } from '@/lib/db/client';
 import { eraseUser } from '@/lib/privacy/erase-user';
 import { PLATFORM_ADMIN_ROLE, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
+import { runAsOrg } from '@/lib/tenancy/context';
 
 const PREFIX = 'smoke-test-erasure';
 const stamp = Date.now();
@@ -65,17 +73,30 @@ async function main(): Promise<void> {
   let inboundConversationId: string | null = null;
   let inboundExecutionId: string | null = null;
   let workflowId: string | null = null;
+  let subjectContactId: string | null = null;
+  let strangerContactId: string | null = null;
 
   try {
     // Subject (ADMIN so we also prove a config-creator's createdBy is nulled).
     const subject = await prisma.user.create({
       data: {
         name: `${PREFIX} subject`,
-        email: `${PREFIX}-subject-${stamp}@example.com`,
+        // The `_` is load-bearing: the stranger's contact address below
+        // differs only there, so a pattern match would erase their message.
+        email: `${PREFIX}_subject-${stamp}@example.com`,
+        // Verified: contact messages are matched only to a proven address.
+        emailVerified: true,
         role: PLATFORM_ADMIN_ROLE,
       },
     });
     subjectUserId = subject.id;
+
+    // Org membership (§106): the person's data — cascades with them, and the
+    // org itself stands. `prisma.user.create` bypasses the auth hook that
+    // normally writes this, so it is created here explicitly.
+    const membership = await prisma.orgMembership.create({
+      data: { orgId: INSTALL_ORG_ID, userId: subject.id, role: ORG_OWNER_ROLE },
+    });
 
     // Org config (retained → createdBy SetNull) + personal data (cascade).
     const agent = await prisma.aiAgent.create({
@@ -238,6 +259,36 @@ async function main(): Promise<void> {
     });
     startedTransferId = startedTransfer.id;
 
+    // Contact-form messages: keyed by address alone (no FK), so only the
+    // service's own delete reaches them. The stranger's address is the
+    // subject's with the `_` replaced — the one row an `ILIKE` would also take.
+    const subjectContact = await prisma.contactSubmission.create({
+      data: {
+        name: `${PREFIX} subject`,
+        email: subject.email,
+        subject: 'smoke',
+        message: 'subject contact message',
+      },
+    });
+    subjectContactId = subjectContact.id;
+    const strangerEmail = subject.email.replace('_', 'x');
+    const strangerContact = await prisma.contactSubmission.create({
+      data: {
+        name: `${PREFIX} stranger`,
+        email: strangerEmail,
+        subject: 'smoke',
+        message: 'stranger contact message',
+      },
+    });
+    strangerContactId = strangerContact.id;
+    // The rows are stored as the contact route stores them (`emailSchema`:
+    // trimmed, lower-cased), which is the form erasure matches on. A fixture
+    // address outside that form would fail the delete check for the wrong reason.
+    check(
+      subject.email === subject.email.trim().toLowerCase(),
+      'subject address is already in the stored (normalised) form'
+    );
+
     // Erase.
     const result = await eraseUser({
       userId: subject.id,
@@ -259,6 +310,24 @@ async function main(): Promise<void> {
     check(
       (await prisma.aiMessage.findUnique({ where: { id: message.id } })) === null,
       'message cascade-deleted via its conversation'
+    );
+    check(
+      (await prisma.orgMembership.findUnique({ where: { id: membership.id } })) === null,
+      'org membership cascade-deleted (personal data)'
+    );
+    check(
+      (await prisma.org.findUnique({ where: { id: INSTALL_ORG_ID } })) !== null,
+      'the install org survives erasing one of its OWNERs'
+    );
+
+    // Contact submissions: the subject's deleted, the stranger's kept.
+    check(
+      (await prisma.contactSubmission.findUnique({ where: { id: subjectContact.id } })) === null,
+      'subject’s contact submission deleted (no FK — erased by address)'
+    );
+    check(
+      (await prisma.contactSubmission.findUnique({ where: { id: strangerContact.id } })) !== null,
+      'stranger’s contact submission survives (exact match, not ILIKE)'
     );
 
     // Org config retained, creator de-attributed.
@@ -342,6 +411,13 @@ async function main(): Promise<void> {
       await prisma.dataErasureReceipt
         .deleteMany({ where: { id: receiptId } })
         .catch(() => undefined);
+    const contactIds = [subjectContactId, strangerContactId].filter(
+      (id): id is string => id !== null
+    );
+    if (contactIds.length > 0)
+      await prisma.contactSubmission
+        .deleteMany({ where: { id: { in: contactIds } } })
+        .catch(() => undefined);
     if (auditId)
       await prisma.aiAdminAuditLog.deleteMany({ where: { id: auditId } }).catch(() => undefined);
     if (subjectUserId)
@@ -377,7 +453,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(async (err) => {
+// The install org is the org a smoke runs for: at `multi` a tenant-owned
+// read outside any scope refuses rather than reads wide (§107 t-708).
+runAsOrg(INSTALL_ORG_ID, main, { source: 'job' }).catch(async (err) => {
   console.error('\n✗ smoke:erasure failed:', err);
   try {
     await prisma.$disconnect();

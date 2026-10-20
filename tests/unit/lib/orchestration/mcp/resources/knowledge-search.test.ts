@@ -35,6 +35,7 @@ function makeSearchResult(
   return {
     chunk: {
       id: 'chunk-1',
+      orgId: null,
       chunkKey: 'chunk-key-1',
       documentId: 'doc-1',
       section: null,
@@ -356,7 +357,7 @@ describe('handleKnowledgeSearch', () => {
       // Assert: logger.info was called to surface the unscoped usage
       expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
         'MCP knowledge search via unscoped service key',
-        expect.objectContaining({ apiKeyId: 'unscoped-key-99' })
+        expect.objectContaining({ keyId: 'unscoped-key-99' })
       );
     });
 

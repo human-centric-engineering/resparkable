@@ -8,6 +8,23 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The org's provider policy (§120 t-743): approves everything unless a test
+// refuses a slug. Hoisted, so it applies however the route is imported.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
+
+/** Refuse exactly these slugs, as an org with no grant for them would. */
+function refuse(...barred: string[]) {
+  mockUnapprovedProviders.mockImplementation(async (slugs) =>
+    slugs.filter((slug) => barred.includes(slug))
+  );
+}
 import { NextRequest } from 'next/server';
 import { GET, POST } from '@/app/api/v1/admin/orchestration/agents/route';
 import {
@@ -180,6 +197,46 @@ describe('GET /api/v1/admin/orchestration/agents', () => {
       expect(data.meta).toBeDefined();
       expect(data.data[0]).toHaveProperty('_count');
       expect(data.data[0]).toHaveProperty('_budget');
+    });
+
+    it('marks each agent with the providers its org is no longer approved for (§120 t-745)', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const agents = [
+        makeAgent({ provider: 'openai', fallbackProviders: ['anthropic', 'voyage'] }),
+        makeAgent({ id: 'cmjbv4i3x00003wsloputgwu2', slug: 'agent-2', fallbackProviders: [] }),
+      ];
+      vi.mocked(prisma.aiAgent.findMany).mockResolvedValue(agents as never);
+      vi.mocked(prisma.aiAgent.count).mockResolvedValue(2);
+      vi.mocked(prisma.aiCostLog.groupBy).mockResolvedValue([] as never);
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(null);
+      mockUnapprovedProviders.mockImplementationOnce(async (slugs) =>
+        slugs.filter((slug) => slug === 'openai' || slug === 'voyage')
+      );
+
+      const response = await GET(makeGetRequest());
+
+      const data = await parseJson<{ data: Array<{ _unapprovedProviders: unknown }> }>(response);
+      expect(data.data.map((agent) => agent._unapprovedProviders)).toEqual([
+        ['openai', 'voyage'],
+        [],
+      ]);
+      // One policy question for the page, not one per agent.
+      expect(mockUnapprovedProviders).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports _unapprovedProviders as null, and still lists, when the policy cannot be read', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findMany).mockResolvedValue([makeAgent()] as never);
+      vi.mocked(prisma.aiAgent.count).mockResolvedValue(1);
+      vi.mocked(prisma.aiCostLog.groupBy).mockResolvedValue([] as never);
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(null);
+      mockUnapprovedProviders.mockRejectedValueOnce(new Error('connection reset'));
+
+      const response = await GET(makeGetRequest());
+
+      expect(response.status).toBe(200);
+      const data = await parseJson<{ data: Array<{ _unapprovedProviders: unknown }> }>(response);
+      expect(data.data[0]._unapprovedProviders).toBeNull();
     });
 
     it('returns empty array when no agents exist', async () => {
@@ -480,6 +537,25 @@ describe('POST /api/v1/admin/orchestration/agents', () => {
     });
   });
 
+  describe('Reserved slugs (§116 t-725)', () => {
+    it.each(['quiz-master', 'mcp-system', 'provider-model-auditor'])(
+      'refuses to create an agent with the platform slug %s',
+      async (slug) => {
+        vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+
+        const response = await POST(makePostRequest({ ...VALID_AGENT, slug }));
+
+        expect(response.status).toBe(400);
+        const data = await parseJson<{ error: { code: string; details: { slug: string[] } } }>(
+          response
+        );
+        expect(data.error.code).toBe('VALIDATION_ERROR');
+        expect(data.error.details.slug[0]).toContain('reserved for a platform agent');
+        expect(prisma.aiAgent.create).not.toHaveBeenCalled();
+      }
+    );
+  });
+
   describe('Conflict errors', () => {
     it('returns 409 when slug already exists (P2002)', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
@@ -495,5 +571,56 @@ describe('POST /api/v1/admin/orchestration/agents', () => {
       const data = await parseJson(response);
       expect(data).toMatchObject({ success: false, error: { code: 'CONFLICT' } });
     });
+  });
+});
+
+describe('POST /api/v1/admin/orchestration/agents — approved providers (§120 t-743)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUnapprovedProviders.mockImplementation(async () => []);
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  it('refuses a provider the org is not approved for, naming it, and creates nothing', async () => {
+    refuse('openai');
+
+    const response = await POST(makePostRequest({ ...VALID_AGENT, provider: 'openai' }));
+
+    expect(response.status).toBe(400);
+    const body = await parseJson<{
+      error: { code: string; message: string; details: Record<string, unknown> };
+    }>(response);
+    expect(body.error.code).toBe('VALIDATION_ERROR');
+    expect(body.error.message).toContain('"openai"');
+    expect(body.error.details).toMatchObject({
+      unapprovedProviders: ['openai'],
+      errors: [{ path: 'provider' }],
+    });
+    expect(prisma.aiAgent.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses a fallback the org is not approved for, on the fallback field', async () => {
+    refuse('voyage');
+
+    const response = await POST(
+      makePostRequest({ ...VALID_AGENT, fallbackProviders: ['openai', 'voyage'] })
+    );
+
+    expect(response.status).toBe(400);
+    const body = await parseJson<{ error: { details: Record<string, unknown> } }>(response);
+    expect(body.error.details).toMatchObject({
+      unapprovedProviders: ['voyage'],
+      errors: [{ path: 'fallbackProviders' }],
+    });
+    expect(prisma.aiAgent.create).not.toHaveBeenCalled();
+  });
+
+  it('creates the agent when every provider is approved', async () => {
+    vi.mocked(prisma.aiAgent.create).mockResolvedValue(makeAgent() as never);
+
+    const response = await POST(makePostRequest({ ...VALID_AGENT, fallbackProviders: ['openai'] }));
+
+    expect(response.status).toBe(201);
+    expect(mockUnapprovedProviders).toHaveBeenCalledWith([VALID_AGENT.provider, 'openai']);
   });
 });

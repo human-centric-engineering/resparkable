@@ -18,25 +18,28 @@
 
 ## How to read this
 
-| If you are…                                                                      | Start at                                                                                                                                                                               |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deciding whether to build MT into a fork                                         | [§2 The two questions](#2-the-two-questions) → [§9 Deployment topologies](#9-deployment-topologies)                                                                                    |
-| Already committed and want the work breakdown                                    | [§5 Gap register](#5-gap-register) → [§10 Sequencing](#10-sequencing-shape)                                                                                                            |
-| A fork author worried about upstream merges                                      | [§7 Ownership matrix](#7-ownership-platform-tier-vs-fork-tier) → [§8 Downstream forks](#8-downstream-fork-considerations)                                                              |
-| A Resparkable maintainer triaging #366 / #367                                    | [§6 The decision gate](#6-the-decision-gate) → [§7](#7-ownership-platform-tier-vs-fork-tier)                                                                                           |
-| A Sunrise maintainer asking what to ship for forks without building MT           | [§8 Provisions upstream should ship](#provisions-upstream-should-ship) → [§14.5](#145-what-to-commit-to-for-forks-regardless-of-question-b)                                            |
-| A fork that has already shipped MT and is merging a Sunrise release              | [§8 The standing obligation](#the-standing-obligation-after-mt-ships-in-a-fork) → the playbook's [sync checklist](./multi-tenancy.md#keeping-the-retrofit-alive-across-upstream-syncs) |
-| Answering a tenant asking for their own data storage, region, or encryption keys | [§5B Data handling, residency and storage](#5b-data-handling-residency-and-storage-flexibility)                                                                                        |
-| Answering a tenant asking to bring their own AI provider, models, or API keys    | [§5C Provider credentials and per-tenant AI config](#5c-provider-credentials-and-per-tenant-ai-configuration)                                                                          |
-| About to start building any of it                                                | [§5A Topology and the prerequisite](#5a-topology-and-the-prerequisite-nobody-costed) — **read this first**, it decides whether the rest is the right work                              |
-| Wanting the answer rather than the analysis                                      | [§14 The recommendation](#14-the-recommendation)                                                                                                                                       |
+| If you are…                                                                      | Start at                                                                                                                                                                                 |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Deciding whether to build MT into a fork                                         | [§2 The two questions](#2-the-two-questions) → [§9 Deployment topologies](#9-deployment-topologies)                                                                                      |
+| Already committed and want the work breakdown                                    | [§5 Gap register](#5-gap-register) → [§10 Sequencing](#10-sequencing-shape)                                                                                                              |
+| A fork author worried about upstream merges                                      | [§7 Ownership matrix](#7-ownership-platform-tier-vs-fork-tier) → [§8 Downstream forks](#8-downstream-fork-considerations)                                                                |
+| A Resparkable maintainer triaging #366 / #367                                    | [§6 The decision gate](#6-the-decision-gate) → [§7](#7-ownership-platform-tier-vs-fork-tier)                                                                                             |
+| A Sunrise maintainer asking what to ship for forks without building MT           | [§8 Provisions upstream should ship](#provisions-upstream-should-ship) → [§14.5](#145-what-to-commit-to-for-forks-regardless-of-question-b)                                              |
+| A fork that has already shipped MT and is merging a Sunrise release              | [§8 The standing obligation](#the-standing-obligation-after-mt-ships-in-a-fork) → the playbook's [sync checklist](./multi-tenancy.md#what-the-tests-catch-and-what-a-merge-still-checks) |
+| Answering a tenant asking for their own data storage, region, or encryption keys | [§5B Data handling, residency and storage](#5b-data-handling-residency-and-storage-flexibility)                                                                                          |
+| Answering a tenant asking to bring their own AI provider, models, or API keys    | [§5C Provider credentials and per-tenant AI config](#5c-provider-credentials-and-per-tenant-ai-configuration)                                                                            |
+| About to start building any of it                                                | [§5A Topology and the prerequisite](#5a-topology-and-the-prerequisite-nobody-costed) — **read this first**, it decides whether the rest is the right work                                |
+| Wanting the answer rather than the analysis                                      | [§14 The recommendation](#14-the-recommendation)                                                                                                                                         |
 
 ### Companion documents
 
-- [`multi-tenancy.md`](./multi-tenancy.md) — **the playbook.** The RLS recipe,
-  the model inventory, the proven policy pattern, the pooled-connection
-  gotchas. It covers the _data plane_ and covers it well. This document is the
-  research around it, and deliberately does not repeat it.
+- [`multi-tenancy.md`](./multi-tenancy.md) — **the playbook.** Since §107
+  (2026-09-21) the enablement guide: how to turn the shipped capability on,
+  what a fork adds for its own models, what the tests catch, the surviving
+  gotchas. The model inventory it used to carry is now derived —
+  `lib/tenancy/classification.ts` and its test. This document is the
+  research the capability was built from, and deliberately does not repeat
+  the playbook.
 - Issues **#366** (org-scoped admin axis) and **#367** (intra-tenant ownership
   scope) — the two tracked control-plane seams. Both are currently `blocked`.
 - [`CUSTOMIZATION.md`](../../CUSTOMIZATION.md#the-appplatform-model) — the
@@ -188,7 +191,7 @@ legitimately span tenants.
 | ------------------------ | -------------------------------------------------- | --------------------------------------------------------------------- |
 | `TENANCY_MODE` env       | `lib/env.ts`, default `single`                     | Enum seam, inert                                                      |
 | Client chokepoint        | `lib/db/client.ts:35-42`                           | Throws on `multi`; ~575 importers inherit it                          |
-| RLS playbook             | `.context/architecture/multi-tenancy.md`           | Recipe, inventory, gotchas                                            |
+| RLS playbook             | `.context/architecture/multi-tenancy.md`           | Was recipe + inventory; since §107 the enablement guide               |
 | RLS proof                | `scripts/spikes/rls-isolation-spike.mjs`           | Throwaway script, not wired into CI                                   |
 | Fork seam convention     | `lib/app/*` (22 files)                             | Established pattern with a home for new seams                         |
 | Second-axis precedent    | `AccountType` enum, `prisma/schema/auth.prisma:83` | Proof that an orthogonal axis can be added without overloading `role` |
@@ -222,8 +225,10 @@ what would be required, and who should own the fix.
 
 ### Plane 1 — Row isolation
 
-**Today.** Fully documented in the playbook, not built. The model inventory
-classifies owners, admin-authored global config, and system/cross-tenant models.
+**Today** (as surveyed, 2026-08; built since — §107 shipped row isolation,
+`.context/tenancy/isolation.md`). Fully documented in the playbook, not built.
+The model inventory classifies owners, admin-authored global config, and
+system/cross-tenant models (now `lib/tenancy/classification.ts`).
 The RLS policy pattern is proven against real Postgres including the
 `NULLIF`/empty-string footgun and the per-transaction requirement.
 
@@ -1582,7 +1587,7 @@ lands outside the boundary — silently, because a clean merge looks like a clea
 merge.
 
 The fork-side answer is the per-sync checklist now carried in the playbook
-([Keeping the retrofit alive across upstream syncs](./multi-tenancy.md#keeping-the-retrofit-alive-across-upstream-syncs)):
+([Keeping the retrofit alive across upstream syncs](./multi-tenancy.md#what-the-tests-catch-and-what-a-merge-still-checks)):
 diff for new models, new `$queryRaw*` sites, new process-global state and new
 jobs, then run the two-tenant harness. The upstream-side answer is
 [§12](#12-documentation-drift)'s two enforcement tests — a raw-SQL allowlist and
@@ -1803,11 +1808,11 @@ nothing to fix now and becomes a compliance finding later.
 
 Three concrete drifts found while verifying, and one recommendation.
 
-| Drift                                                                                                                                                                                                                    | Where                    | Status               |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | -------------------- |
-| "The schema has **60 models**" — it now has **61**                                                                                                                                                                       | `multi-tenancy.md`       | **Fixed** 2026-08-07 |
-| Raw-SQL table lists 6 files; Appendix A found 3 more, and by v0.11.2 the inventory had grown again (15 files under `lib/`+`app/`, 12 of them request-path) — the allowlist guard test, once landed, is the living record | `multi-tenancy.md:47-54` | Open                 |
-| `lib/tenancy/client.ts` named as a covered seam; the file does not exist (the seam is `lib/db/client.ts`)                                                                                                                | `VERSIONING.md`          | **Fixed** 2026-09-01 |
+| Drift                                                                                                                                                                                                                    | Where              | Status                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| "The schema has **60 models**" — it now has **61**                                                                                                                                                                       | `multi-tenancy.md` | **Fixed** 2026-08-07                                                                                                |
+| Raw-SQL table lists 6 files; Appendix A found 3 more, and by v0.11.2 the inventory had grown again (15 files under `lib/`+`app/`, 12 of them request-path) — the allowlist guard test, once landed, is the living record | `multi-tenancy.md` | **Closed** 2026-09-21 — the table is gone with the rewrite; `tests/unit/db-raw-sql-allowlist.test.ts` is the record |
+| `lib/tenancy/client.ts` named as a covered seam; the file does not exist (the seam is `lib/db/client.ts`)                                                                                                                | `VERSIONING.md`    | **Fixed** 2026-09-01                                                                                                |
 
 None is serious in isolation. Together they make the point: **a hand-maintained
 inventory of security-relevant sites drifts within months** — the model count
@@ -2017,8 +2022,8 @@ rest and is the one to do first.
 things the playbook did not previously state: where tenancy code lives in their
 tier, which core edits are sanctioned, and what they must re-check on every
 upstream sync. Those are now the playbook's
-[fork-tier map](./multi-tenancy.md#where-a-forks-tenancy-code-lives) and
-[sync checklist](./multi-tenancy.md#keeping-the-retrofit-alive-across-upstream-syncs).
+[fork-tier map](./multi-tenancy.md#what-a-fork-adds-for-its-own-models) and
+[sync checklist](./multi-tenancy.md#what-the-tests-catch-and-what-a-merge-still-checks).
 Keeping two short sections current is cheaper than answering the same question
 once per fork — and cheaper still than the alternative, which is a fork
 discovering the answer from a leak.

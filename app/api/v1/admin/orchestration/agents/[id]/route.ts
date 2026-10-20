@@ -40,14 +40,23 @@ import {
   buildAgentSnapshot,
   nextAgentVersionNumber,
 } from '@/lib/orchestration/agents/agent-versioning';
+import {
+  assertAgentSlugNotReserved,
+  assertPlatformOwnedFieldsUnchanged,
+  platformAgentEditPolicy,
+  sameGrantSet,
+} from '@/lib/orchestration/agents/platform-agent-guard';
 import { invalidateAgentAccess } from '@/lib/orchestration/knowledge/resolveAgentDocumentAccess';
-import { notifyMcpAgentsChanged } from '@/lib/orchestration/mcp/resource-update-hooks';
 import {
   systemInstructionsHistorySchema,
   updateAgentSchema,
   type SystemInstructionsHistoryEntry,
 } from '@/lib/validations/orchestration';
 import { cuidSchema } from '@/lib/validations/common';
+import {
+  assertAgentProvidersApproved,
+  strandedAgentProviders,
+} from '@/lib/orchestration/agents/provider-approval';
 
 /**
  * Cap on each string value inside an outbound `changes` payload. Agents'
@@ -96,10 +105,17 @@ export const GET = withAdminAuth<{ id: string }>(async (request, _session, { par
   // always set in the query above, but defensive defaults keep tests that mock
   // findUnique with a partial shape from blowing up at runtime.
   const { grantedTags, grantedDocuments, ...rest } = agent;
+  // What the edit page's stranded-agent banner reads (§120 t-745); `null`
+  // when that is unknown (no org in scope, or the policy could not be read).
+  const stranded = await strandedAgentProviders([agent]);
   const response = {
     ...rest,
     grantedTagIds: (grantedTags ?? []).map((g) => g.tagId),
     grantedDocumentIds: (grantedDocuments ?? []).map((g) => g.documentId),
+    // What PATCH and the binding routes refuse on a system agent, so the form
+    // shows exactly those controls read-only. `null` for an org's own agent.
+    platformAgent: platformAgentEditPolicy(agent),
+    _unapprovedProviders: stranded ? (stranded.get(agent.id) ?? []) : null,
   };
 
   log.info('Agent fetched', { agentId: id });
@@ -129,30 +145,30 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
 
   const body = await validateRequestBody(request, updateAgentSchema);
 
-  // System-agent read-only guards. These three fields are the
-  // SYSTEM_AGENT_PROTECTED_FIELDS set (lib/orchestration/agents/agent-field-registry.ts) —
-  // the version-restore route skips the same set. Keep both in step: a new
-  // protected field is added to the constant AND guarded here (the messages are
-  // field-specific, so the guards aren't a generic loop).
+  // A system agent is a platform agent (§116): every field the platform owns
+  // is written back by the next reconcile, so a change to one is refused here
+  // rather than accepted and quietly undone. Compared by value, so a client
+  // echoing the whole agent back is refused only for what it actually changed.
+  // The org-tunable fields (provider, model, spend, rate, retention) pass.
+  assertPlatformOwnedFieldsUnchanged(
+    current,
+    {
+      ...current,
+      grantedTagIds: currentGrantedTagIds,
+      grantedDocumentIds: currentGrantedDocumentIds,
+    },
+    body
+  );
 
-  // System agents cannot be deactivated via PATCH (equivalent to deletion).
-  if (current.isSystem && body.isActive === false) {
-    throw new ForbiddenError('System agents cannot be deactivated');
+  // No agent of the org's may take a platform agent's slug.
+  if (body.slug !== undefined && body.slug !== current.slug) {
+    assertAgentSlugNotReserved(body.slug);
   }
 
-  // System agent slugs are used internally — prevent mutation.
-  if (current.isSystem && body.slug !== undefined && body.slug !== current.slug) {
-    throw new ForbiddenError('System agent slugs cannot be changed');
-  }
-
-  // System agent instructions are read-only to preserve rollback consistency.
-  if (
-    current.isSystem &&
-    body.systemInstructions !== undefined &&
-    body.systemInstructions !== current.systemInstructions
-  ) {
-    throw new ForbiddenError('System agent instructions cannot be modified');
-  }
+  // At multi, a provider this write introduces must be one the org is approved
+  // for (§120 t-743). What the agent already holds is not re-checked, so a
+  // stranded agent can still be edited.
+  await assertAgentProvidersApproved(body, current);
 
   // Build the update payload. Only include fields the caller actually sent.
   // Plain scalar fields are assigned generically from the registry's
@@ -242,23 +258,13 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
   );
 
   // Grant changes don't go through the `data` object (they're join-row writes),
-  // but they're versioned in the snapshot so callers can roll them back. Detect
-  // sorted-array equality to avoid spurious version bumps on no-op reorder.
-  function arraysEqualUnordered(a: string[], b: string[]): boolean {
-    if (a.length !== b.length) return false;
-    const sortedA = [...a].sort();
-    const sortedB = [...b].sort();
-    for (let i = 0; i < sortedA.length; i++) {
-      if (sortedA[i] !== sortedB[i]) return false;
-    }
-    return true;
-  }
+  // but they're versioned in the snapshot so callers can roll them back. Compare
+  // as sets — the guard's rule — so a reorder or a repeated id is not a change.
   const tagGrantsChanged =
-    body.grantedTagIds !== undefined &&
-    !arraysEqualUnordered(body.grantedTagIds, currentGrantedTagIds);
+    body.grantedTagIds !== undefined && !sameGrantSet(body.grantedTagIds, currentGrantedTagIds);
   const docGrantsChanged =
     body.grantedDocumentIds !== undefined &&
-    !arraysEqualUnordered(body.grantedDocumentIds, currentGrantedDocumentIds);
+    !sameGrantSet(body.grantedDocumentIds, currentGrantedDocumentIds);
   const grantsChanged = tagGrantsChanged || docGrantsChanged;
 
   // Captured inside the version-snapshot branch and surfaced in the
@@ -453,8 +459,6 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
       void dispatchWebhookEvent('agent_updated', agentUpdatedPayload);
     }
 
-    notifyMcpAgentsChanged();
-
     return successResponse(agent);
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
@@ -524,8 +528,6 @@ export const DELETE = withAdminAuth<{ id: string }>(async (request, session, { p
     entityName: current.name,
     clientIp: clientIP,
   });
-
-  notifyMcpAgentsChanged();
 
   return successResponse({ id, isActive: false });
 });

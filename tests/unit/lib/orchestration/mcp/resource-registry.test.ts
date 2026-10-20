@@ -175,6 +175,32 @@ describe('listMcpResources', () => {
       'resparkable://agents',
     ]);
   });
+
+  it('leaves templated rows to resources/templates/list, keeping concrete ones, query strings included', async () => {
+    // A row is a template when its URI has a `{param}` expression — the same
+    // test listMcpResourceTemplates() applies. It must appear in exactly one
+    // of the two lists.
+    vi.mocked(prisma.mcpExposedResource.findMany).mockResolvedValue([
+      makeResourceRow({ uri: 'resparkable://agents', name: 'Agents' }),
+      makeResourceRow({ id: 'res-4', uri: 'fork://search?scope=all', name: 'Scoped search' }),
+      makeResourceRow({ id: 'res-2', uri: 'fork://project/{slug}', name: 'Project' }),
+      makeResourceRow({
+        id: 'res-3',
+        uri: 'resparkable://knowledge/search?q={query}',
+        name: 'Search',
+      }),
+    ] as never);
+
+    const concrete = await listMcpResources();
+    // A fixed URI with a query string is read as-is, so it stays a plain resource.
+    expect(concrete.map((r) => r.uri)).toEqual(['resparkable://agents', 'fork://search?scope=all']);
+
+    const templates = await listMcpResourceTemplates();
+    expect(templates.map((t) => t.uriTemplate)).toEqual([
+      'fork://project/{slug}',
+      'resparkable://knowledge/search?q={query}',
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -606,10 +632,10 @@ describe('listMcpResourceTemplates', () => {
     });
   });
 
-  it('returns templates for resources whose URI contains ? query params', async () => {
+  it('returns templates for resources whose query string holds a {param} expression', async () => {
     vi.mocked(prisma.mcpExposedResource.findMany).mockResolvedValue([
       makeResourceRow({
-        uri: 'resparkable://knowledge/search?q=foo',
+        uri: 'resparkable://knowledge/search?q={query}',
         name: 'Knowledge Search',
         description: 'Search with query',
         mimeType: 'application/json',
@@ -619,10 +645,10 @@ describe('listMcpResourceTemplates', () => {
     const result = await listMcpResourceTemplates();
 
     expect(result).toHaveLength(1);
-    expect(result[0].uriTemplate).toBe('resparkable://knowledge/search?q=foo');
+    expect(result[0].uriTemplate).toBe('resparkable://knowledge/search?q={query}');
   });
 
-  it('does not return resources without placeholders or query strings', async () => {
+  it('does not return resources without a {param} expression', async () => {
     vi.mocked(prisma.mcpExposedResource.findMany).mockResolvedValue([
       makeResourceRow({ uri: 'resparkable://agents', name: 'Agents' }),
       makeResourceRow({

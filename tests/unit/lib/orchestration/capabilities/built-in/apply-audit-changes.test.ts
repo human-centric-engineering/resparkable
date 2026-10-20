@@ -385,6 +385,12 @@ describe('ApplyAuditChangesCapability', () => {
     });
   });
 
+  describe('shared settings (§107 t-751)', () => {
+    it('declares that it changes a shared setting, so the dispatcher refuses it outside the install org', () => {
+      expect(new ApplyAuditChangesCapability().writesSharedSettings).toBe(true);
+    });
+  });
+
   describe('execute() — model not found', () => {
     it('marks all changes as invalid when model is not found', async () => {
       // Arrange

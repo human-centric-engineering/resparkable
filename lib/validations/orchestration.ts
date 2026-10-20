@@ -21,6 +21,7 @@ import { validateTaskDefaults } from '@/lib/orchestration/llm/model-registry';
 import { reviewSchemaSchema } from '@/lib/orchestration/review-schema/types';
 import { provenanceItemArraySchema } from '@/lib/orchestration/provenance/types';
 import { validateScopes, listValidApiKeyScopes } from '@/lib/auth/api-key-scopes';
+import { jurisdictionSchema } from '@/lib/validations/tenancy';
 
 // ============================================================================
 // Shared Schemas
@@ -1792,6 +1793,9 @@ export const providerConfigSchema = z
 
     isActive: z.boolean().default(true),
 
+    /** Where the vendor processes data; read by an org's provider policy (§120 t-742). */
+    jurisdiction: jurisdictionSchema.optional(),
+
     metadata: metadataSchema,
 
     timeoutMs: z
@@ -1846,6 +1850,9 @@ export const updateProviderConfigSchema = z
     isLocal: z.boolean().optional(),
 
     isActive: z.boolean().optional(),
+
+    /** `null` clears it: the provider then matches no jurisdiction restriction. */
+    jurisdiction: jurisdictionSchema.nullable().optional(),
 
     metadata: metadataSchema,
 
@@ -2343,6 +2350,13 @@ export const rerunExecutionBodySchema = z.object({
     .positive('Budget limit must be positive')
     .max(1000, 'Budget limit must be at most $1,000')
     .optional(),
+  /**
+   * Let the rerun text the person who wrote in (t-770): the dialog's "Send
+   * the reply to the person again". Without it a rerun texts nobody, whatever
+   * the original's outcome, since a run's status says nothing reliable about
+   * whether it already replied. Honoured only for a finished original.
+   */
+  resendReply: z.boolean().optional(),
 });
 
 /** Approve execution request body (POST /executions/[id]/approve). */

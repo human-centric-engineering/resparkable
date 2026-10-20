@@ -8,6 +8,11 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHash } from 'crypto';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { getTenantContext } from '@/lib/tenancy/context';
+
+const mockEnv = vi.hoisted(() => ({ TENANCY_MODE: 'single' }));
+vi.mock('@/lib/env', () => ({ env: mockEnv }));
 
 // ─── Mocks (declared before imports) ────────────────────────────────────────
 
@@ -23,7 +28,9 @@ vi.mock('@/lib/db/client', () => ({
 
 vi.mock('@/lib/logging', () => ({
   logger: {
+    debug: vi.fn(),
     error: vi.fn(),
+    warn: vi.fn(),
   },
 }));
 
@@ -31,6 +38,7 @@ vi.mock('@/lib/logging', () => ({
 
 import {
   isEmbedUserId,
+  userIdForUserRef,
   EMBED_USER_ID_PREFIX,
   resolveEmbedToken,
   isOriginAllowed,
@@ -44,6 +52,8 @@ function makeTokenRecord(overrides: Record<string, unknown> = {}) {
     token: 'tok_abc123',
     isActive: true,
     allowedOrigins: ['https://example.com'],
+    orgId: null,
+    org: null,
     agent: {
       id: 'agent-id-1',
       slug: 'support-bot',
@@ -67,6 +77,7 @@ function expectedUserId(recordId: string, clientIp: string): string {
 describe('resolveEmbedToken', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    mockEnv.TENANCY_MODE = 'single';
   });
 
   it('returns null when token is not found (findUnique returns null)', async () => {
@@ -155,6 +166,59 @@ describe('resolveEmbedToken', () => {
   });
 });
 
+describe('resolveEmbedToken — the org the token acts for (§106, t-673)', () => {
+  const OTHER = 'cmorg000000000000000other';
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockEnv.TENANCY_MODE = 'single';
+  });
+
+  it('reads the org’s status with the token — one query, no second read', async () => {
+    mockFindUnique.mockResolvedValue(makeTokenRecord({ orgId: OTHER, org: { status: 'ACTIVE' } }));
+    const result = await resolveEmbedToken('tok_abc123', '1.2.3.4');
+    expect(result?.orgId).toBe(OTHER);
+    expect(mockFindUnique).toHaveBeenCalledTimes(1);
+    expect(mockFindUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        include: expect.objectContaining({ org: { select: { status: true } } }),
+      })
+    );
+  });
+
+  it('a token minted before the column was written is the install org at single', async () => {
+    mockFindUnique.mockResolvedValue(makeTokenRecord());
+    expect((await resolveEmbedToken('tok_abc123', '1.2.3.4'))?.orgId).toBe(INSTALL_ORG_ID);
+  });
+
+  it('… and is refused at multi', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    mockFindUnique.mockResolvedValue(makeTokenRecord());
+    expect(await resolveEmbedToken('tok_abc123', '1.2.3.4')).toBeNull();
+  });
+
+  it('reads the token row under the credential-lookup scope — at multi with no context entered (t-709)', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    let seen: ReturnType<typeof getTenantContext> | undefined;
+    mockFindUnique.mockImplementation(async () => {
+      seen = getTenantContext();
+      return makeTokenRecord({ orgId: OTHER, org: { status: 'ACTIVE' } });
+    });
+
+    expect(getTenantContext()).toBeNull();
+    expect((await resolveEmbedToken('tok_abc123', '1.2.3.4'))?.orgId).toBe(OTHER);
+    expect(seen).toEqual({ orgId: null, source: 'system' });
+    expect(getTenantContext()).toBeNull();
+  });
+
+  it('a suspended org’s token is refused — the widget on that site stops answering', async () => {
+    mockFindUnique.mockResolvedValue(
+      makeTokenRecord({ orgId: OTHER, org: { status: 'SUSPENDED' } })
+    );
+    expect(await resolveEmbedToken('tok_abc123', '1.2.3.4')).toBeNull();
+  });
+});
+
 describe('isOriginAllowed', () => {
   it('empty allowedOrigins → always returns true (wildcard)', () => {
     expect(isOriginAllowed('https://anything.com', [])).toBe(true); // test-review:accept tobe_true — structural boolean/predicate assertion;
@@ -202,5 +266,20 @@ describe('isEmbedUserId', () => {
     // startsWith, not includes — a real id happening to contain "embed_" is a
     // real user and must keep its attribution.
     expect(isEmbedUserId('user_embed_123')).toBe(false);
+  });
+});
+
+describe('userIdForUserRef', () => {
+  // The value a `User` foreign key or a `userId` payload field gets (#705,
+  // t-765): a visitor is not a `User`, so they are recorded as no one.
+  it('keeps a real user id', () => {
+    expect(userIdForUserRef('cm3x9k2p40000abcd1234efgh')).toBe('cm3x9k2p40000abcd1234efgh');
+  });
+
+  it('records an embed visitor, or no caller, as null', () => {
+    expect(userIdForUserRef(`${EMBED_USER_ID_PREFIX}0123456789abcdef`)).toBeNull();
+    expect(userIdForUserRef(null)).toBeNull();
+    expect(userIdForUserRef(undefined)).toBeNull();
+    expect(userIdForUserRef('')).toBeNull();
   });
 });

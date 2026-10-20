@@ -63,6 +63,11 @@ import { isInviteOnly } from '@/lib/auth/signup-mode';
 import { logger } from '@/lib/logging';
 import { signVisitorId, verifyVisitorId, VISITOR_COOKIE_NAME } from '@/lib/logging/visitor-id';
 import * as visitorIdModule from '@/lib/logging/visitor-id';
+import {
+  __resetTenantResolverForTests,
+  hasTenantResolver,
+  registerTenantResolver,
+} from '@/lib/tenancy/resolver';
 
 function createMockRequest(
   pathname: string,
@@ -511,6 +516,48 @@ describe('proxy (project root)', () => {
     );
   });
 
+  describe('Origin validation — cross-origin token routes (#705, t-765)', () => {
+    // The embed widget runs on a partner's domain, so its POSTs carry a foreign
+    // Origin. These routes authenticate with a token, not a cookie, and check
+    // their own origin allowlist, so the proxy's CSRF check must let them by.
+    it.each([
+      '/api/v1/embed/chat/stream',
+      '/api/v1/embed/speech-to-text',
+      '/api/v1/orchestration/approvals/cmexec123/approve/embed',
+      '/api/v1/orchestration/approvals/cmexec123/reject/embed',
+    ])('lets a cross-origin POST to %s through to the route', async (path) => {
+      const request = createMockRequest(path, {
+        method: 'POST',
+        headers: { origin: 'https://partner.example', host: 'localhost:3000' },
+      });
+
+      const response = await proxy(request);
+
+      expect(response.status).not.toBe(403);
+      expect(applyRateLimit).toHaveBeenCalledWith(request);
+    });
+
+    it.each([
+      // The cookie-authenticated approval routes, one segment away.
+      '/api/v1/orchestration/approvals/cmexec123/approve',
+      '/api/v1/orchestration/approvals/cmexec123/approve/chat',
+      // A prefix that only looks like the embed API.
+      '/api/v1/embedding-models',
+      '/api/v1/admin/orchestration/agents/a1/embed-tokens',
+    ])('still refuses a cross-origin POST to %s', async (path) => {
+      const request = createMockRequest(path, {
+        method: 'POST',
+        headers: { origin: 'https://partner.example', host: 'localhost:3000' },
+      });
+
+      const response = await proxy(request);
+
+      expect(response.status).toBe(403);
+      const body = (await response.json()) as { error: { message: string } };
+      expect(body.error.message).toBe('Invalid request origin');
+    });
+  });
+
   describe('Rate limiting — delegation to applyRateLimit', () => {
     it('calls applyRateLimit for every request that passes origin validation', async () => {
       const request = createMockRequest('/api/v1/users');
@@ -793,6 +840,42 @@ describe('proxy — anonymous visitor id', () => {
     infoSpy.mockRestore();
   });
 
+  // #685: a page carrying a bearer token in its path (a share link) must not
+  // write the live token to the access log.
+  it('collapses a credential-shaped segment in the access-log path', async () => {
+    process.env.LOG_HTTP_ACCESS = 'true';
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+    const token = 'Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z';
+    const request = createMockRequest(`/s/${token}`, { cookies: {}, method: 'GET' });
+
+    await proxy(request);
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      'http_access',
+      expect.objectContaining({ path: '/s/[param]' })
+    );
+    expect(JSON.stringify(infoSpy.mock.calls)).not.toContain(token);
+    infoSpy.mockRestore();
+  });
+
+  it('collapses an email-address segment in the access-log path', async () => {
+    process.env.LOG_HTTP_ACCESS = 'true';
+    const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
+    const request = createMockRequest('/api/v1/admin/invitations/alice%40example.com', {
+      cookies: {},
+      method: 'DELETE',
+    });
+
+    await proxy(request);
+
+    expect(infoSpy).toHaveBeenCalledWith(
+      'http_access',
+      expect.objectContaining({ path: '/api/v1/admin/invitations/[param]' })
+    );
+    expect(JSON.stringify(infoSpy.mock.calls)).not.toContain('alice');
+    infoSpy.mockRestore();
+  });
+
   it('emits no access log line by default (LOG_HTTP_ACCESS unset)', async () => {
     const infoSpy = vi.spyOn(logger, 'info').mockImplementation(() => {});
     const request = createMockRequest('/pricing', { cookies: {} });
@@ -822,5 +905,91 @@ describe('proxy — anonymous visitor id', () => {
     );
     issueSpy.mockRestore();
     errorSpy.mockRestore();
+  });
+});
+
+describe('proxy — tenant resolver header (§106)', () => {
+  // The proxy is the sole writer of x-sunrise-org, the visitor-id shape: set
+  // from a registered resolver, else STRIPPED — a client must never pick its
+  // org by header. Sunrise ships no resolver, so the default is the strip.
+  const TENANT = 'x-sunrise-org';
+
+  afterEach(() => {
+    __resetTenantResolverForTests();
+  });
+
+  it('strips an inbound x-sunrise-org when no resolver is registered (the shipped default)', async () => {
+    expect(hasTenantResolver()).toBe(false);
+    const request = createMockRequest('/', { headers: { [TENANT]: 'attacker-picked-org' } });
+
+    const response = await proxy(request);
+
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBeNull();
+  });
+
+  it('sets x-sunrise-org from a registered resolver', async () => {
+    registerTenantResolver((req) =>
+      req.headers.get('host')?.startsWith('acme.') ? 'org_acme' : null
+    );
+    const request = createMockRequest('/', { headers: { host: 'acme.example.test' } });
+
+    const response = await proxy(request);
+
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBe('org_acme');
+  });
+
+  it('strips an inbound copy when the resolver answers null — the resolver, not the client, decides', async () => {
+    registerTenantResolver(() => null);
+    const request = createMockRequest('/', { headers: { [TENANT]: 'attacker-picked-org' } });
+
+    const response = await proxy(request);
+
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBeNull();
+  });
+
+  it('logs a throwing resolver at error and strips the header — never a 500, never silent', async () => {
+    const boom = new Error('subdomain map missing');
+    registerTenantResolver(() => {
+      throw boom;
+    });
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const request = createMockRequest('/', { headers: { [TENANT]: 'attacker-picked-org' } });
+
+    const response = await proxy(request);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBeNull();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Tenant resolver threw'),
+      boom,
+      expect.objectContaining({ hint: expect.stringContaining('lib/app/tenant-resolver.ts') })
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('logs a malformed resolver answer the same way — a silent strip is the failure being prevented', async () => {
+    registerTenantResolver(() => 'tenant/acme');
+    const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const request = createMockRequest('/', {});
+
+    const response = await proxy(request);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBeNull();
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Tenant resolver threw'),
+      expect.objectContaining({ message: expect.stringContaining('not org-id shaped') }),
+      expect.anything()
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('overwrites an inbound copy with the resolver’s answer', async () => {
+    registerTenantResolver(() => 'org_real');
+    const request = createMockRequest('/', { headers: { [TENANT]: 'attacker-picked-org' } });
+
+    const response = await proxy(request);
+
+    expect(response.headers.get(`x-middleware-request-${TENANT}`)).toBe('org_real');
   });
 });

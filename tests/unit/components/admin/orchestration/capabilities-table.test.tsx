@@ -20,6 +20,8 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { CapabilitiesTable } from '@/components/admin/orchestration/capabilities-table';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
+import { apiClient } from '@/lib/api/client';
 import { createMockFetchResponse } from '@/tests/helpers/mocks';
 import type { PaginationMeta } from '@/types/api';
 import type { AiCapabilityListItem } from '@/types/orchestration';
@@ -77,6 +79,7 @@ function makeCapability(overrides: Partial<AiCapabilityListItem> = {}): AiCapabi
     deletedAt: null,
     metadata: {},
     _agents: [],
+    _otherOrgAgentCount: 0,
     ...overrides,
   } as AiCapabilityListItem;
 }
@@ -642,6 +645,45 @@ describe('CapabilitiesTable', () => {
 
       expect(screen.queryByRole('button', { name: /→/ })).not.toBeInTheDocument();
     });
+
+    it('counts other orgs’ agents into the trigger and says so in the popover, unnamed (§107 t-752)', async () => {
+      const user = userEvent.setup();
+      const capabilities = makeCapabilitiesWithAgents(ONE_AGENT);
+      capabilities[0] = { ...capabilities[0], _otherOrgAgentCount: 2 };
+      render(
+        <CapabilitiesTable
+          initialCapabilities={capabilities}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge', 'api', 'webhook']}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /3 →/ }));
+      await waitFor(() => {
+        expect(screen.getByText(/3 agents using/)).toBeInTheDocument();
+      });
+      expect(screen.getByText('Solo Bot')).toBeInTheDocument();
+      expect(screen.getByText(/…and 2 agents in other organisations/)).toBeInTheDocument();
+    });
+
+    it('opens a popover for a capability only other orgs use, with no list', async () => {
+      const user = userEvent.setup();
+      const capabilities = makeCapabilitiesWithAgents([]);
+      capabilities[0] = { ...capabilities[0], _otherOrgAgentCount: 1 };
+      render(
+        <CapabilitiesTable
+          initialCapabilities={capabilities}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge', 'api', 'webhook']}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /1 →/ }));
+      await waitFor(() => {
+        expect(screen.getByText(/1 agent in other organisations uses it/)).toBeInTheDocument();
+      });
+      expect(screen.queryByRole('link', { name: /agent/i })).not.toBeInTheDocument();
+    });
   });
 
   // ── Sort toggle ────────────────────────────────────────────────────────────
@@ -971,6 +1013,271 @@ describe('CapabilitiesTable', () => {
         const fetchUrls = mockFetch.mock.calls.map((call) => toUrlString(call[0]));
         expect(fetchUrls.some((u) => u.includes('page=2'))).toBe(true); // test-review:accept tobe_true — structural boolean/predicate assertion;
       });
+    });
+  });
+
+  // ── Quarantine badges and filter ───────────────────────────────────────────
+
+  describe('quarantine badges and filter', () => {
+    const past = new Date(Date.now() - 60_000);
+    const future = new Date(Date.now() + 3_600_000);
+    const QUARANTINES: AiCapabilityListItem[] = [
+      makeCapability({
+        id: 'q-soft',
+        name: 'Soft One',
+        quarantineState: 'quarantined-soft',
+        quarantineReason: 'vendor outage',
+      }),
+      makeCapability({
+        id: 'q-hard',
+        name: 'Hard One',
+        quarantineState: 'quarantined-hard',
+        quarantineUntil: future,
+      }),
+      // A past auto-lift is treated as active, as the dispatcher does — the
+      // string form the API serialises to, and the Date form alike.
+      makeCapability({
+        id: 'q-lapsed-string',
+        name: 'Lapsed String',
+        quarantineState: 'quarantined-soft',
+        quarantineUntil: past.toISOString() as unknown as Date,
+      }),
+      makeCapability({
+        id: 'q-lapsed-date',
+        name: 'Lapsed Date',
+        quarantineState: 'quarantined-hard',
+        quarantineUntil: past,
+      }),
+      // An unparseable timestamp fails open to the stored state.
+      makeCapability({
+        id: 'q-garbled',
+        name: 'Garbled Until',
+        quarantineState: 'quarantined-soft',
+        quarantineUntil: 'not-a-date' as unknown as Date,
+      }),
+      makeCapability({ id: 'q-active', name: 'Plain Active' }),
+    ];
+
+    it('badges each effective quarantine and counts them, ignoring lapsed ones', () => {
+      render(
+        <CapabilitiesTable
+          initialCapabilities={QUARANTINES}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge']}
+        />
+      );
+
+      expect(screen.getAllByText('Quarantined · soft')).toHaveLength(2);
+      expect(screen.getAllByText('Quarantined · hard')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: /3 quarantined/ })).toHaveAttribute(
+        'aria-pressed',
+        'false'
+      );
+    });
+
+    it('filters to the quarantined rows and back', async () => {
+      const user = userEvent.setup({ delay: null });
+      render(
+        <CapabilitiesTable
+          initialCapabilities={QUARANTINES}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge']}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /3 quarantined/ }));
+
+      expect(screen.getByRole('button', { name: /3 quarantined/ })).toHaveAttribute(
+        'aria-pressed',
+        'true'
+      );
+      expect(screen.getByText('Soft One')).toBeInTheDocument();
+      expect(screen.getByText('Garbled Until')).toBeInTheDocument();
+      expect(screen.queryByText('Lapsed String')).not.toBeInTheDocument();
+      expect(screen.queryByText('Plain Active')).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /3 quarantined/ }));
+      expect(screen.getByText('Plain Active')).toBeInTheDocument();
+    });
+
+    it('offers no filter when nothing is quarantined', () => {
+      render(
+        <CapabilitiesTable
+          initialCapabilities={THREE_CAPABILITIES}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge']}
+        />
+      );
+
+      expect(screen.queryByRole('button', { name: /quarantined/ })).not.toBeInTheDocument();
+    });
+  });
+
+  // ── Sorting the fetched page ───────────────────────────────────────────────
+
+  describe('sorting the fetched page', () => {
+    const rowNames = () =>
+      screen
+        .getAllByRole('link')
+        .filter((l) =>
+          /\/admin\/orchestration\/capabilities\/cap-/.test(l.getAttribute('href') ?? '')
+        )
+        .map((l) => l.textContent);
+
+    it('orders the fetched page by name, ascending then descending', async () => {
+      const user = userEvent.setup({ delay: null });
+      // The server's order is deliberately neither.
+      mockFetch.mockImplementation(() =>
+        Promise.resolve(
+          makeCapabilitiesListResponse([
+            THREE_CAPABILITIES[1],
+            THREE_CAPABILITIES[2],
+            THREE_CAPABILITIES[0],
+          ])
+        )
+      );
+      render(
+        <CapabilitiesTable
+          initialCapabilities={THREE_CAPABILITIES}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge', 'api', 'webhook']}
+        />
+      );
+
+      // Name is the initial field (desc), so the first click flips it to asc.
+      await user.click(screen.getByRole('button', { name: /^Name/ }));
+      await waitFor(() =>
+        expect(rowNames()).toEqual(['Alpha Search', 'Beta Webhook', 'Gamma Hook'])
+      );
+
+      await user.click(screen.getByRole('button', { name: /^Name/ }));
+      await waitFor(() =>
+        expect(rowNames()).toEqual(['Gamma Hook', 'Beta Webhook', 'Alpha Search'])
+      );
+    });
+
+    it('says the list could not load when the API answers success: false', async () => {
+      const user = userEvent.setup({ delay: null });
+      mockFetch.mockImplementation(() =>
+        Promise.resolve(
+          createMockFetchResponse({ success: false, error: { code: 'X', message: 'nope' } })
+        )
+      );
+      render(
+        <CapabilitiesTable
+          initialCapabilities={THREE_CAPABILITIES}
+          initialMeta={MOCK_META}
+          availableCategories={['knowledge', 'api', 'webhook']}
+        />
+      );
+
+      await user.click(screen.getByRole('button', { name: /^Name/ }));
+
+      expect(
+        await screen.findByText('Could not load capabilities. Try refreshing the page.')
+      ).toBeInTheDocument();
+    });
+  });
+
+  // ── A failed status flip that is not an API error ──────────────────────────
+
+  it('rolls back a status flip and says to try again when the failure is not an API error', async () => {
+    const { apiClient } = await import('@/lib/api/client');
+    vi.mocked(apiClient.patch).mockRejectedValue(new Error('network down'));
+    const user = userEvent.setup({ delay: null });
+    render(
+      <CapabilitiesTable
+        initialCapabilities={THREE_CAPABILITIES}
+        initialMeta={MOCK_META}
+        availableCategories={['knowledge', 'api', 'webhook']}
+      />
+    );
+
+    const [firstSwitch] = screen.getAllByRole('switch');
+    expect(firstSwitch).toBeChecked();
+    await user.click(firstSwitch);
+
+    expect(await screen.findByText(/Couldn't update ".*"\. Try again\./)).toBeInTheDocument();
+    expect(screen.getAllByRole('switch')[0]).toBeChecked();
+  });
+
+  // ── Read-only outside the install org ──────────────────────────────────────
+
+  describe('read-only outside the install org (§107 t-753)', () => {
+    const tableProps = {
+      initialCapabilities: THREE_CAPABILITIES,
+      initialMeta: MOCK_META,
+      availableCategories: ['knowledge', 'api', 'webhook'],
+    };
+
+    function renderReadOnly() {
+      return render(
+        <SharedSettingsAccessProvider readOnly canSwitch>
+          <CapabilitiesTable {...tableProps} />
+        </SharedSettingsAccessProvider>
+      );
+    }
+
+    it('hides the New capability link while the rows and search stay, where the editable table shows it', () => {
+      // Contrast: same fixture, no provider -> link present
+      const editable = render(<CapabilitiesTable {...tableProps} />);
+      expect(screen.getByRole('link', { name: /new capability/i })).toBeInTheDocument();
+      editable.unmount();
+
+      renderReadOnly();
+
+      expect(screen.queryByRole('link', { name: /new capability/i })).not.toBeInTheDocument();
+      // Survives: the list itself
+      expect(screen.getByPlaceholderText('Search capabilities...')).toBeInTheDocument();
+      expect(screen.getByText('Alpha Search')).toBeInTheDocument();
+      expect(screen.getByText('Beta Webhook')).toBeInTheDocument();
+      expect(screen.getByText('Gamma Hook')).toBeInTheDocument();
+    });
+
+    it('disables every status switch and never PATCHes on click, where the editable switches are enabled', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+      // Contrast: same (non-system) fixture, no provider -> every switch enabled
+      const editable = render(<CapabilitiesTable {...tableProps} />);
+      const editableSwitches = screen.getAllByRole('switch');
+      expect(editableSwitches).toHaveLength(3);
+      editableSwitches.forEach((sw) => expect(sw).toBeEnabled());
+      editable.unmount();
+
+      renderReadOnly();
+      const switches = screen.getAllByRole('switch');
+      expect(switches).toHaveLength(3);
+      switches.forEach((sw) => expect(sw).toBeDisabled());
+      // Switch state still reports isActive (Beta Webhook is inactive)
+      expect(switches[0]).toBeChecked();
+      expect(switches[1]).not.toBeChecked();
+
+      await user.click(switches[0]);
+      expect(apiClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('shows View instead of Edit and no Delete item in the row menu, where the editable menu has Edit and Delete', async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+      // Contrast: same fixture, no provider -> Edit + Delete
+      const editable = render(<CapabilitiesTable {...tableProps} />);
+      await user.click(screen.getAllByRole('button', { name: /row actions/i })[0]);
+      const edit = await screen.findByRole('menuitem', { name: /^edit$/i, hidden: true });
+      expect(edit).toBeVisible();
+      expect(edit.querySelector('svg.lucide-eye')).toBeNull();
+      expect(screen.getByRole('menuitem', { name: /delete/i, hidden: true })).toBeInTheDocument();
+      editable.unmount();
+
+      renderReadOnly();
+      await user.click(screen.getAllByRole('button', { name: /row actions/i })[0]);
+
+      const view = await screen.findByRole('menuitem', { name: /^view$/i, hidden: true });
+      expect(view).toBeVisible();
+      // An eye, not the edit icon: the item no longer edits.
+      expect(view.querySelector('svg.lucide-eye')).not.toBeNull();
+      expect(screen.queryByRole('menuitem', { name: /^edit$/i, hidden: true })).toBeNull();
+      expect(screen.queryByRole('menuitem', { name: /delete/i, hidden: true })).toBeNull();
+      expect(apiClient.delete).not.toHaveBeenCalled();
     });
   });
 });

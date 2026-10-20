@@ -11,6 +11,23 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The org's provider policy (§120 t-743): approves everything unless a test
+// refuses a slug. Hoisted, so it applies however the route is imported.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
+
+/** Refuse exactly these slugs, as an org with no grant for them would. */
+function refuse(...barred: string[]) {
+  mockUnapprovedProviders.mockImplementation(async (slugs) =>
+    slugs.filter((slug) => barred.includes(slug))
+  );
+}
 import { NextRequest } from 'next/server';
 import { GET, PATCH, DELETE } from '@/app/api/v1/admin/orchestration/agents/[id]/route';
 import {
@@ -143,6 +160,35 @@ describe('GET /api/v1/admin/orchestration/agents/:id', () => {
       // test-review:accept tobe_true — structural boolean assertion on API response field
       expect(data.success).toBe(true);
       expect(data.data.id).toBe(AGENT_ID);
+    });
+  });
+
+  describe('Stranded by the org provider policy (§120 t-745)', () => {
+    it('names the providers the agent holds that its org is no longer approved for', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(
+        makeAgent({ provider: 'openai', fallbackProviders: ['anthropic', 'voyage'] }) as never
+      );
+      mockUnapprovedProviders.mockImplementationOnce(async (slugs) =>
+        slugs.filter((slug) => slug !== 'anthropic')
+      );
+
+      const response = await GET(makeRequest(), makeParams(AGENT_ID));
+
+      const data = await parseJson<{ data: { _unapprovedProviders: unknown } }>(response);
+      expect(data.data._unapprovedProviders).toEqual(['openai', 'voyage']);
+    });
+
+    it('reports null, and still returns the agent, when the policy cannot be read', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent() as never);
+      mockUnapprovedProviders.mockRejectedValueOnce(new Error('connection reset'));
+
+      const response = await GET(makeRequest(), makeParams(AGENT_ID));
+
+      expect(response.status).toBe(200);
+      const data = await parseJson<{ data: { _unapprovedProviders: unknown } }>(response);
+      expect(data.data._unapprovedProviders).toBeNull();
     });
   });
 
@@ -1266,20 +1312,40 @@ describe('PATCH /api/v1/admin/orchestration/agents/:id — system agent protecti
     expect(data.error.code).toBe('FORBIDDEN');
   });
 
-  it('allows PATCH of non-protected fields on a system agent (e.g. description)', async () => {
-    // Arrange: system agent allows description changes
+  it('allows PATCH of an org-tunable field on a system agent (e.g. monthlyBudgetUsd)', async () => {
+    // Arrange: budget is how the agent runs in this org, so it stays the org's
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
     vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent({ isSystem: true }) as never);
     vi.mocked(prisma.aiAgent.update).mockResolvedValue(
-      makeAgent({ isSystem: true, description: 'Updated desc' }) as never
+      makeAgent({ isSystem: true, monthlyBudgetUsd: 25 }) as never
     );
+
+    const response = await PATCH(
+      makeRequest('PATCH', { monthlyBudgetUsd: 25 }),
+      makeParams(AGENT_ID)
+    );
+
+    expect(response.status).toBe(200);
+    expect(prisma.aiAgent.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ monthlyBudgetUsd: 25 }) })
+    );
+  });
+
+  it('rejects a change to a platform-owned field on a system agent (e.g. description)', async () => {
+    // Arrange: description is what the agent IS — the reconcile writes it back
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent({ isSystem: true }) as never);
 
     const response = await PATCH(
       makeRequest('PATCH', { description: 'Updated desc' }),
       makeParams(AGENT_ID)
     );
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(403);
+    const data = await parseJson<{ error: { code: string; message: string } }>(response);
+    expect(data.error.code).toBe('FORBIDDEN');
+    expect(data.error.message).toContain('description');
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
   });
 
   it('does not trigger slug-protection when slug is the same as current', async () => {
@@ -1400,5 +1466,64 @@ describe('DELETE /api/v1/admin/orchestration/agents/:id', () => {
 
       expect(response.status).toBe(400);
     });
+  });
+});
+
+describe('PATCH /api/v1/admin/orchestration/agents/:id — approved providers (§120 t-743)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUnapprovedProviders.mockImplementation(async () => []);
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  it('refuses switching to a provider the org is not approved for, and writes nothing', async () => {
+    refuse('openai');
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent() as never);
+
+    const response = await PATCH(
+      makeRequest('PATCH', { provider: 'openai' }),
+      makeParams(AGENT_ID)
+    );
+
+    expect(response.status).toBe(400);
+    const body = await parseJson<{ error: { details: Record<string, unknown> } }>(response);
+    expect(body.error.details).toMatchObject({ unapprovedProviders: ['openai'] });
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses adding a fallback the org is not approved for', async () => {
+    refuse('voyage');
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(
+      makeAgent({ fallbackProviders: [] }) as never
+    );
+
+    const response = await PATCH(
+      makeRequest('PATCH', { fallbackProviders: ['voyage'] }),
+      makeParams(AGENT_ID)
+    );
+
+    expect(response.status).toBe(400);
+    expect(prisma.aiAgent.update).not.toHaveBeenCalled();
+  });
+
+  it('lets a stranded agent be edited: providers it already holds are not re-checked', async () => {
+    // Its provider and fallback were approved once and no longer are.
+    refuse('anthropic', 'voyage');
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(
+      makeAgent({ provider: 'anthropic', fallbackProviders: ['voyage'] }) as never
+    );
+    vi.mocked(prisma.aiAgent.update).mockResolvedValue(makeAgent({ name: 'Renamed' }) as never);
+
+    const response = await PATCH(
+      makeRequest('PATCH', {
+        name: 'Renamed',
+        provider: 'anthropic',
+        fallbackProviders: ['voyage'],
+      }),
+      makeParams(AGENT_ID)
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUnapprovedProviders).toHaveBeenCalledWith([]);
   });
 });

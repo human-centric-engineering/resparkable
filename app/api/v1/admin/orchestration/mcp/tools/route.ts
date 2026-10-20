@@ -10,7 +10,7 @@ import { prisma } from '@/lib/db/client';
 import { successResponse, paginatedResponse } from '@/lib/api/responses';
 import { validateRequestBody, validateQueryParams } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
-import { clearMcpToolCache, broadcastMcpToolsChanged } from '@/lib/orchestration/mcp';
+import { clearMcpToolCache } from '@/lib/orchestration/mcp';
 import { createExposedToolSchema, listExposedToolsQuerySchema } from '@/lib/validations/mcp';
 
 export const GET = withAdminAuth(async (request) => {
@@ -40,31 +40,33 @@ export const GET = withAdminAuth(async (request) => {
   return paginatedResponse(items, { page, limit, total });
 });
 
-export const POST = withAdminAuth(async (request, session) => {
-  const log = await getRouteLogger(request);
-  const body = await validateRequestBody(request, createExposedToolSchema);
+export const POST = withAdminAuth(
+  async (request, session) => {
+    const log = await getRouteLogger(request);
+    const body = await validateRequestBody(request, createExposedToolSchema);
 
-  const tool = await prisma.mcpExposedTool.create({
-    data: {
-      capabilityId: body.capabilityId,
-      isEnabled: body.isEnabled,
-      customName: body.customName ?? null,
-      customDescription: body.customDescription ?? null,
-      rateLimitPerKey: body.rateLimitPerKey ?? null,
-      requiresScope: body.requiresScope ?? null,
-    },
-    include: { capability: true },
-  });
+    const tool = await prisma.mcpExposedTool.create({
+      data: {
+        capabilityId: body.capabilityId,
+        isEnabled: body.isEnabled,
+        customName: body.customName ?? null,
+        customDescription: body.customDescription ?? null,
+        rateLimitPerKey: body.rateLimitPerKey ?? null,
+        requiresScope: body.requiresScope ?? null,
+      },
+      include: { capability: true },
+    });
 
-  clearMcpToolCache();
-  broadcastMcpToolsChanged();
+    clearMcpToolCache();
 
-  log.info('MCP exposed tool created', {
-    adminId: session.user.id,
-    toolId: tool.id,
-    capabilitySlug: tool.capability.slug,
-    isEnabled: tool.isEnabled,
-  });
+    log.info('MCP exposed tool created', {
+      adminId: session.user.id,
+      toolId: tool.id,
+      capabilitySlug: tool.capability.slug,
+      isEnabled: tool.isEnabled,
+    });
 
-  return successResponse(tool, undefined, { status: 201 });
-});
+    return successResponse(tool, undefined, { status: 201 });
+  },
+  { writesSharedSettings: true }
+);

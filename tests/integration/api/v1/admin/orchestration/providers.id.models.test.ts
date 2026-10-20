@@ -38,6 +38,7 @@ vi.mock('@/lib/db/client', () => ({
       findMany: vi.fn(() => Promise.resolve([])),
     },
     aiAgent: {
+      groupBy: vi.fn(() => Promise.resolve([])),
       findMany: vi.fn(() => Promise.resolve([])),
     },
   },
@@ -47,7 +48,11 @@ const mockListModels = vi.fn();
 
 vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
   getProvider: vi.fn(() => Promise.resolve({ listModels: mockListModels })),
-  isApiKeyEnvVarSet: vi.fn(() => true),
+}));
+
+// Reachability is the credential seam's answer (§120 t-744), not the env var's.
+vi.mock('@/lib/orchestration/llm/provider-credentials', () => ({
+  hasProviderCredential: vi.fn(async () => true),
 }));
 
 vi.mock('@/lib/orchestration/llm/model-registry', () => ({
@@ -69,7 +74,8 @@ vi.mock('@/lib/orchestration/settings', () => ({
 
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import { getProvider, isApiKeyEnvVarSet } from '@/lib/orchestration/llm/provider-manager';
+import { getProvider } from '@/lib/orchestration/llm/provider-manager';
+import { hasProviderCredential } from '@/lib/orchestration/llm/provider-credentials';
 import { refreshFromOpenRouter } from '@/lib/orchestration/llm/model-registry';
 import { getOrchestrationSettings } from '@/lib/orchestration/settings';
 
@@ -133,7 +139,7 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: API key is present. Individual tests override when needed.
-    vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+    vi.mocked(hasProviderCredential).mockResolvedValue(true);
   });
 
   describe('Authentication & Authorization', () => {
@@ -179,7 +185,7 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
     it('returns 422 when the provider API key env var is not set', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProviderRow() as never);
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(false);
+      vi.mocked(hasProviderCredential).mockResolvedValue(false);
 
       const response = await GET(makeGetRequest(), makeParams(PROVIDER_ID));
 
@@ -205,7 +211,10 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
           isLocal: true,
         }) as never
       );
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(false);
+      // A local row needs no key: that rule is the credential seam's now
+      // (`hasProviderCredential`, tested in provider-credentials.test.ts), and
+      // this is its answer for one. The route must act on it.
+      vi.mocked(hasProviderCredential).mockResolvedValue(true);
       mockListModels.mockResolvedValue([
         makeModelInfo({ id: 'llama3', name: 'Llama 3' }),
         makeModelInfo({ id: 'mistral', name: 'Mistral' }),
@@ -250,7 +259,7 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
           isLocal: true,
         }) as never
       );
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(false);
+      vi.mocked(hasProviderCredential).mockResolvedValue(false);
       mockListModels.mockResolvedValue([makeModelInfo({ id: 'llama3', name: 'Llama 3' })]);
 
       await GET(makeGetRequest(), makeParams(PROVIDER_ID));
@@ -360,9 +369,31 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
       );
       vi.mocked(prisma.aiProviderModel.findMany).mockResolvedValue([] as never);
       vi.mocked(prisma.aiAgent.findMany).mockResolvedValue([
-        { id: 'agent-1', name: 'Triage Bot', slug: 'triage-bot', model: 'gpt-4o-mini' },
-        { id: 'agent-2', name: 'Researcher', slug: 'researcher', model: 'gpt-4o-mini' },
-        { id: 'agent-3', name: 'Summariser', slug: 'summariser', model: 'gpt-4o' },
+        // At single every agent is the caller's (`orgId` is read, but every row counts).
+        {
+          id: 'agent-1',
+          name: 'Triage Bot',
+          slug: 'triage-bot',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          orgId: null,
+        },
+        {
+          id: 'agent-2',
+          name: 'Researcher',
+          slug: 'researcher',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          orgId: null,
+        },
+        {
+          id: 'agent-3',
+          name: 'Summariser',
+          slug: 'summariser',
+          provider: 'openai',
+          model: 'gpt-4o',
+          orgId: null,
+        },
       ] as never);
       mockListModels.mockResolvedValue([
         makeModelInfo({ id: 'gpt-4o-mini', name: 'GPT-4o mini' }),
@@ -377,10 +408,13 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
           models: Array<{
             id: string;
             agents: Array<{ id: string; name: string; slug: string }>;
+            otherOrgAgentCount: number;
           }>;
         };
       }>(response);
 
+      // Nothing elsewhere at single (§107 t-752).
+      expect(data.data.models.map((m) => m.otherOrgAgentCount)).toEqual([0, 0, 0]);
       const byId = new Map(data.data.models.map((m) => [m.id, m.agents]));
       expect(byId.get('gpt-4o-mini')).toHaveLength(2);
       expect(
@@ -398,7 +432,7 @@ describe('GET /api/v1/admin/orchestration/providers/:id/models', () => {
       // cross-provider scan.
       expect(vi.mocked(prisma.aiAgent.findMany)).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { provider: 'openai', isActive: true },
+          where: { isActive: true, provider: { in: ['openai'] } },
         })
       );
     });

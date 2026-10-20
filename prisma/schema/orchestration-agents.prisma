@@ -6,7 +6,7 @@
 model AiAgent {
   id                        String    @id @default(cuid())
   name                      String
-  slug                      String    @unique
+  slug                      String // unique per org (§107 t-708) — @@unique([orgId, slug]) below
   description               String    @db.Text
   systemInstructions        String    @db.Text
   systemInstructionsHistory Json      @default("[]") // [{instructions, changedAt, changedBy}]
@@ -134,6 +134,11 @@ model AiAgent {
   grantedTags      AiAgentKnowledgeTag[]
   mcpApiKeys       McpApiKey[]
 
+  orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
+  org   Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, slug])
+  @@index([orgId])
   @@index([createdBy])
   @@index([provider])
   @@index([isActive, visibility])
@@ -184,11 +189,14 @@ model AiAgentInviteToken {
   revokedAt DateTime? // non-null = revoked
   createdBy String?
   createdAt DateTime  @default(now())
+  orgId     String? // org the token was minted in (§106)
 
   agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   creator User?   @relation("InviteTokenCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  org     Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
+  @@index([orgId])
   @@map("ai_agent_invite_token")
 }
 
@@ -205,7 +213,11 @@ model AiAgentVersion {
   agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   creator User?   @relation("AgentVersionCreator", fields: [createdBy], references: [id], onDelete: SetNull)
 
+  orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
+  org   Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
   @@unique([agentId, version])
+  @@index([orgId])
   @@map("ai_agent_version")
 }
 
@@ -220,11 +232,14 @@ model AiAgentEmbedToken {
   createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  orgId          String? // org the token was minted in (§106)
 
   agent   AiAgent @relation(fields: [agentId], references: [id], onDelete: Cascade)
   creator User?   @relation("EmbedTokenCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  org     Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([agentId])
+  @@index([orgId])
   @@map("ai_agent_embed_token")
 }
 
@@ -288,7 +303,11 @@ model AiAgentCapability {
   agent      AiAgent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
   capability AiCapability @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
 
+  orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
+  org   Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
   @@unique([agentId, capabilityId])
+  @@index([orgId])
   @@index([agentId])
   @@index([capabilityId])
   @@map("ai_agent_capability")

@@ -126,14 +126,15 @@ Lives in `lib/orchestration/workflows/semantic-validator.ts`. Requires Prisma + 
 
 ### Semantic error codes
 
-| `code`                   | `stepId` | Meaning                                                       |
-| ------------------------ | -------- | ------------------------------------------------------------- |
-| `UNKNOWN_MODEL_OVERRIDE` | yes      | Step references a model not in the registry                   |
-| `INACTIVE_PROVIDER`      | yes      | Step's model override belongs to an inactive provider         |
-| `INACTIVE_CAPABILITY`    | yes      | `tool_call` step references an inactive or unknown capability |
-| `INACTIVE_AGENT`         | yes      | `agent_call` step references an inactive or unknown agent     |
+| `code`                   | `stepId` | Meaning                                                                             |
+| ------------------------ | -------- | ----------------------------------------------------------------------------------- |
+| `UNKNOWN_MODEL_OVERRIDE` | yes      | Step references a model not in the registry                                         |
+| `INACTIVE_PROVIDER`      | yes      | Step's model override belongs to an inactive provider                               |
+| `PROVIDER_NOT_APPROVED`  | yes      | At `multi`, the override's provider is not one the org is approved for (§120 t-743) |
+| `INACTIVE_CAPABILITY`    | yes      | `tool_call` step references an inactive or unknown capability                       |
+| `INACTIVE_AGENT`         | yes      | `agent_call` step references an inactive or unknown agent                           |
 
-The `/validate` and `/dry-run` endpoints run both structural and semantic validation. The workflow builder UI currently runs structural checks only (semantic checks require DB access).
+The `/validate` and `/dry-run` endpoints run both structural and semantic validation. `PROVIDER_NOT_APPROVED` is checked on the save paths only — workflow create (`POST /workflows`) and save-as-template, which otherwise publish a v1 without semantic checks, plus publish, rollback and `/validate` — and not by execution or `/dry-run`, where a step the call-time gate refuses takes its own error strategy rather than failing the whole run up front. Publish and rollback re-check only providers the new version **introduces**: one the replaced published version already used is not refused, so a workflow stranded by a later policy change can still publish an unrelated edit. Unlike the other semantic checks, an unreadable provider policy fails the save (500) rather than being skipped; `/validate`, which saves nothing, skips it with a logged error instead. This check also covers `supervisor` steps' overrides, which the existence checks above do not. On create and save-as-template, which run no existence check, an override whose model the registry cannot resolve is refused too where the policy applies, since its provider cannot be checked. At `single` and for the install org none of this runs. The workflow builder UI currently runs structural checks only (semantic checks require DB access).
 
 ## Consumers
 
@@ -152,7 +153,7 @@ Sessions 5.1a + 5.1b shipped the visual builder at `/admin/orchestration/workflo
 
 **What it defers:** Chain sub-step editor and inline edge-condition editing are future work.
 
-**Built-in templates (5.1c).** The toolbar's "Use template" dropdown loads 11 built-in composition recipes seeded from `prisma/seeds/data/templates/` and served to the UI via the workflows API (`GET /api/v1/admin/orchestration/workflows?isTemplate=true`). Each recipe is a full `WorkflowDefinition` demonstrating one or more of the canonical 21 agentic design patterns (see `.context/orchestration/patterns-and-steps.md` for the layered model and `KNOWN_PATTERNS` in `types/orchestration.ts` for the canonical list). The 11 templates: Customer Support, Content Pipeline, SaaS Backend, Research Agent, Conversational Learning, Data Pipeline, Outreach Safety, Code Review, Autonomous Research, Cited Knowledge Advisor, Scheduled Source Monitor. `prisma/seeds/004-builtin-templates.ts` upserts each template as an `AiWorkflow` row with `isTemplate: true` so they show up in the list page and can be browsed via the CRUD surface; the upsert uses `update: {}` for idempotency so re-seeding is always a no-op against admin edits.
+**Built-in templates (5.1c).** The toolbar's "Use template" dropdown loads 12 built-in composition recipes. They are code (`BUILTIN_WORKFLOW_TEMPLATES` in `prisma/seeds/data/templates/`), served to every org, with that org's own templates, by `GET /api/v1/admin/orchestration/workflows/templates` — not database rows (§116 t-727; the rows an earlier seed wrote are retired, see [`workflow-builder.md`](../admin/workflow-builder.md#retired-rows)). Each recipe is a full `WorkflowDefinition` demonstrating one or more of the canonical 21 agentic design patterns (see `.context/orchestration/patterns-and-steps.md` for the layered model and `KNOWN_PATTERNS` in `types/orchestration.ts` for the canonical list). The 12 templates: Customer Support, Content Pipeline, SaaS Backend, Research Agent, Conversational Learning, Data Pipeline, Outreach Safety, Code Review, Autonomous Research, Cited Knowledge Advisor, Scheduled Source Monitor, Inbound Conversation Handler. Picking one loads its definition onto the canvas; saving creates the org's own workflow.
 
 **UI-side default config conventions.** The step registry's `defaultConfig` holds editor-facing defaults that the backend validator does not currently inspect — e.g. `llm_call.temperature = 0.7`, `parallel.timeoutMs = 60000`, `parallel.stragglerStrategy = 'wait-all'`, `rag_retrieve.topK = 5`, `rag_retrieve.similarityThreshold = 0.7`, `human_approval.timeoutMinutes = 60`. They ride along on the stored `WorkflowStep.config` JSON and are honoured opportunistically by the runtime executors (see [`engine.md`](./engine.md)). The same goes for `step.config._layout` — UI metadata, ignored by the validator and the engine.
 

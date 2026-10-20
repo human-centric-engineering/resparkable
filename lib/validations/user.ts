@@ -11,6 +11,7 @@ import { emailSchema, passwordSchema } from '@/lib/validations/auth';
 import { paginationQuerySchema, sortingQuerySchema, cuidSchema } from '@/lib/validations/common';
 import { SPARKEY_PRONOUNS, DEFAULT_SPARKEY_PRONOUN } from '@/lib/resparkable/sparkey-pronoun';
 import { USER_ROLES, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
+import { ORG_ROLES } from '@/lib/tenancy/roles';
 
 /**
  * Update user profile schema (PATCH /api/v1/users/me)
@@ -238,6 +239,15 @@ export const inviteUserSchema = z.object({
 
   /** User's role (defaults to USER) */
   role: z.enum(USER_ROLES).default(DEFAULT_USER_ROLE),
+
+  /**
+   * The org the invitee joins on acceptance (§106). Absent ⇒ the install org.
+   * Who may name one is the authorization policy's call, made in the route.
+   */
+  orgId: z.string().min(1).max(200).optional(),
+
+  /** Their role in that org. Absent ⇒ MEMBER (OWNER for the first member of a new org). */
+  orgRole: z.enum(ORG_ROLES).optional(),
 });
 
 /**

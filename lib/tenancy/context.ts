@@ -1,0 +1,354 @@
+/**
+ * Tenant context — which org the current call stack is acting for (§106).
+ *
+ * The primitive everything downstream reads: the guards ENTER it for every
+ * request they admit, the log context reads it, and the data layer
+ * (`lib/db/tenancy-extension.ts`, §107) stamps and scopes every query by it. It is an `AsyncLocalStorage`, the
+ * `lib/auth/signup-mode.ts` precedent, and not a parameter threaded through
+ * handlers, because the handlers are tenancy-unaware by design: the org is a
+ * property of the request, decided once at the boundary.
+ *
+ * **Who enters it, and who does not.** `withAuth` / `withAdminAuth` enter it
+ * from the session's `activeOrgId`, the org bound to an API key, or the
+ * verified resolver header (`lib/tenancy/entry.ts`); the guard-less routes
+ * enter it from their own credential — the webhook trigger from its API key,
+ * the embed routes from the embed token, the MCP transport from the MCP key
+ * (each credential is bound to an org at mint, t-673); the two routes whose
+ * credential is a signed token naming a ROW — the inbound trigger, the HMAC
+ * approval token — read that row and enter its org (§107 t-708). Every one
+ * of those resolvers reads its credential row before an org is known, and
+ * does so under {@link runAsCredentialLookup} (t-709). An agent invite token
+ * enters nothing: it is a gate the session passes through, checked against
+ * the org the guard entered. Background jobs enter it per job (§108 t-711):
+ * every task in the maintenance tick declares a scope and
+ * `lib/orchestration/maintenance/job-scope.ts` runs it through
+ * {@link forEachOrg} (per org, the default) or {@link runAsSystem} (once,
+ * audited, for system tables only). A path nobody taught to enter an org
+ * still runs outside any context — which at `single` answers the install
+ * org (see {@link requireTenantContext}) and at `multi` refuses, so it
+ * fails loud rather than reads wide.
+ *
+ * **And what belongs to the process rather than to one org has to leave.** The
+ * store propagates into `setInterval`, so a process-lifetime timer armed inside
+ * a request would keep that request's org for ever — {@link runDetached} is how
+ * such a timer is armed (§108 t-715). A timer belonging to one org's work is the
+ * other case and keeps its scope, however long it outlives the request.
+ *
+ * **At `single` the install org is the only answer.** A single-tenant install
+ * runs exactly the same components (design record, request-path diagram);
+ * the difference is that "nothing entered a context" resolves to the install
+ * org instead of throwing. That is what keeps one code path rather than a
+ * dormant multi-tenant branch.
+ *
+ * Not a fork seam: forks resolve a tenant through `lib/app/tenant-resolver.ts`
+ * (the proxy) and read the context through these exports; they do not enter
+ * it themselves.
+ *
+ * Tenancy posture: async-local — the store the rest of the manifest is
+ * defined against (lib/tenancy/process-state.ts).
+ */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { env } from '@/lib/env';
+import { registerLogTenancy } from '@/lib/admin/logs';
+import { prisma } from '@/lib/db/client';
+import { logger } from '@/lib/logging';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import type { OrgRole } from '@/lib/tenancy/roles';
+
+/**
+ * How the org was decided. The design record's seven, plus `implicit` — the
+ * single-tenant fallback {@link requireTenantContext} answers when nothing
+ * entered a context, named so a log line can tell it from a real entry —
+ * and the two signed-token entries of §107 t-708: `inbound-trigger` (a
+ * channel signature over a workflow's trigger row) and `approval-token` (an
+ * HMAC token over an execution id), where the org is the ROW's, read under a
+ * system scope before it is entered.
+ */
+export type TenantContextSource =
+  | 'session'
+  | 'api-key'
+  | 'embed-token'
+  | 'mcp-key'
+  | 'resolver'
+  | 'inbound-trigger'
+  | 'approval-token'
+  | 'system'
+  | 'job'
+  | 'implicit';
+
+export interface TenantContext {
+  /** The org this call stack acts for. `null` only for a `system` scope. */
+  orgId: string | null;
+  source: TenantContextSource;
+  /**
+   * The caller's role in `orgId`, when the entering code looked it up —
+   * stored here so nothing downstream does a second membership read.
+   * Absent for a system scope, a job, or a caller with no membership.
+   */
+  role?: OrgRole | null;
+}
+
+const tenantContext = new AsyncLocalStorage<TenantContext>();
+
+/** True when this install runs more than one org. Read once per call, not cached. */
+export function isMultiTenant(): boolean {
+  return env.TENANCY_MODE === 'multi';
+}
+
+// Teach the admin log buffer whose lines it is holding (§108 t-714).
+//
+// The registration points THIS way — server-only module into the buffer —
+// because `lib/admin/logs.ts` must keep no runtime imports: the logger reaches
+// it with a literal `require`, and the logger is imported by client
+// components, so an edge from the buffer to this module puts `pg` in the
+// browser bundle. `lib/admin/logs.ts` says the same thing at more length.
+registerLogTenancy({
+  orgId: () => getTenantContext()?.orgId ?? null,
+  multi: isMultiTenant,
+});
+
+/** The context the current call stack runs in, or `null` when none was entered. */
+export function getTenantContext(): TenantContext | null {
+  return tenantContext.getStore() ?? null;
+}
+
+/**
+ * The context the current call stack runs in, with the single-tenant answer
+ * when none was entered.
+ *
+ * At `multi` a missing context is a bug — a request path or job that nobody
+ * taught to enter one — and the only safe response is to refuse before a
+ * query runs wide. At `single` the install org is the one org there is, so
+ * the answer is that, marked `implicit`.
+ */
+export function requireTenantContext(): TenantContext {
+  const current = tenantContext.getStore();
+  if (current) return current;
+  if (isMultiTenant()) {
+    throw new Error(
+      'No tenant context: this call stack was not entered for an org. At TENANCY_MODE=multi every ' +
+        'request and job must run inside runAsOrg / runAsSystem / forEachOrg (see .context/tenancy/context.md).'
+    );
+  }
+  return { orgId: INSTALL_ORG_ID, source: 'implicit' };
+}
+
+/**
+ * The org this call stack acts for, for a lookup that has to name it.
+ *
+ * A per-org unique key is the case: `orgId_slug` on an agent, a knowledge
+ * base or a document (§107 t-708) cannot be asked without saying whose
+ * `support` is meant. Same answers as {@link requireTenantContext}, and the
+ * one scope that has no org — `system` — is refused too: a global scope
+ * cannot name one org's row by slug, it has to search
+ * (`findFirst({ where: { slug, orgId } })`).
+ */
+export function requireOrgId(): string {
+  const { orgId } = requireTenantContext();
+  if (orgId) return orgId;
+  throw new Error(
+    'No org in the tenant context: this call stack runs as the system scope, which has no org to name. ' +
+      'A per-org lookup (orgId_slug) belongs inside runAsOrg.'
+  );
+}
+
+/**
+ * Await the callback's result INSIDE the scope, not just call it there.
+ *
+ * A `PrismaPromise` is lazy: the data layer's hook — and with it the read of
+ * this context — runs when the promise is awaited, not when it is created.
+ * `run(ctx, fn)` with a non-async callback (`() => prisma.x.findMany()`)
+ * would hand the promise out of the scope unawaited and lose the context
+ * (measured both ways, §107 t-704). Awaiting here closes that at the seam
+ * rather than with a rule every caller has to remember.
+ */
+async function settleInside<T>(fn: () => Promise<T>): Promise<T> {
+  return await fn();
+}
+
+/**
+ * Run `fn` as `orgId`. The guards call this for every admitted request;
+ * non-request code (a job iterating orgs, a script) calls it directly.
+ *
+ * The scope covers the whole async subtree of `fn` and nothing outside it —
+ * a throw does not leak the context to the next caller, and concurrent work
+ * on the same process does not see it (the ALS guarantees, pinned by test).
+ */
+export function runAsOrg<T>(
+  orgId: string,
+  fn: () => Promise<T>,
+  options: {
+    source?: Exclude<TenantContextSource, 'system' | 'implicit'>;
+    role?: OrgRole | null;
+  } = {}
+): Promise<T> {
+  return tenantContext.run({ orgId, source: options.source ?? 'job', role: options.role }, () =>
+    settleInside(fn)
+  );
+}
+
+/**
+ * The null-org system scope — the one body behind {@link runAsSystem},
+ * {@link runAsCredentialLookup} and {@link runAsCrossOrgCount}, which differ
+ * only in what they log. At `multi` the data layer reads it as the bypass.
+ */
+function inSystemScope<T>(fn: () => Promise<T>): Promise<T> {
+  return tenantContext.run({ orgId: null, source: 'system' }, () => settleInside(fn));
+}
+
+/**
+ * Run `fn` with the audited platform bypass — no org.
+ *
+ * For genuinely global work only: a sweep that must see every org's rows at
+ * once, a migration-time backfill. The `reason` is logged at info on every
+ * entry, because at `multi` this is the one scope the data layer lets
+ * through unscoped (it sets `app.bypass_rls` for the transaction instead of
+ * an org), and an unexplained bypass is exactly what an audit needs to find. Prefer {@link forEachOrg}.
+ */
+export function runAsSystem<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+  logger.info('Entering system tenant scope', { reason });
+  return inSystemScope(fn);
+}
+
+/**
+ * Run `fn` as the system scope for the ONE read that learns which org a
+ * credential belongs to (§107 t-709).
+ *
+ * A key hash, an embed token, an MCP key, a trigger row, an execution named
+ * by an approval token: each is a tenant-owned row that has to be read
+ * before any org is known, so the read runs with the bypass — the same
+ * scope as {@link runAsSystem}, the same `app.bypass_rls` setter — and the
+ * row's org then goes through `resolveCredentialOrg` and `runAsOrg`. The
+ * touch that records the credential's last use rides in the same scope, for
+ * the same reason.
+ *
+ * Logged at debug, not info: this runs once per credential-authenticated
+ * request, and an info line per entry would drown the signal
+ * {@link runAsSystem}'s log exists to give — an unexplained bypass. What an
+ * audit needs here is the other half: the sites are enumerable by grep, and
+ * nothing but the lookup runs inside one.
+ */
+export function runAsCredentialLookup<T>(credential: string, fn: () => Promise<T>): Promise<T> {
+  logger.debug('Entering system tenant scope for a credential lookup', { credential });
+  return inSystemScope(fn);
+}
+
+/**
+ * Run `fn` as the system scope for a read-only count of who uses a piece of
+ * global config, across every org (§107 t-752).
+ *
+ * A provider, model, capability, tag or profile is one row every org shares,
+ * and the agents, workflows and grants that use it are tenant-owned, so the
+ * question "is it in use?" has to see every org: the same scope as
+ * {@link runAsSystem}, the same `app.bypass_rls` setter. The admin pages ask
+ * it on every load — the models matrix, the capabilities list, each delete
+ * check — so an info line per entry would bury the one
+ * {@link runAsSystem} keeps for an unexplained bypass.
+ *
+ * Logged at debug, as {@link runAsCredentialLookup} is, and for its reason:
+ * what an audit needs is that the sites are few and known. There is one —
+ * `lib/orchestration/admin/global-config-usage.ts`, which returns another
+ * org's rows only as numbers — and
+ * `tests/unit/lib/tenancy/cross-org-count-sites.test.ts` (always-run) fails
+ * naming any other caller. Nothing here makes the scope read-only; the
+ * module's queries do, and that is why it is confined to one module.
+ */
+export function runAsCrossOrgCount<T>(reason: string, fn: () => Promise<T>): Promise<T> {
+  logger.debug('Entering system tenant scope for a cross-org usage count', { reason });
+  return inSystemScope(fn);
+}
+
+/**
+ * Run `fn` outside every tenant scope, whatever the caller is inside.
+ *
+ * **For arming something whose lifetime is the PROCESS's from inside a
+ * request** (§108 t-715). An `AsyncLocalStorage` store is captured when
+ * `setInterval` is *called*, not when the callback fires, so a repeating timer
+ * armed inside `runAsOrg` carries that one org for the life of the process:
+ * every line it logs is attributed to whichever org happened to make the first
+ * request after boot, and at `multi` every query it makes is scoped to them.
+ * Lazily constructed singletons are where this bites, and they are lazy on
+ * purpose — a registry filled at boot is empty in the realm that reads it
+ * (`platform.seam-realm`), so "construct it eagerly" is not the fix. Arming
+ * inside `exit()` is: the callback body needs no change.
+ *
+ * **Not {@link runAsSystem}**, which is the nearest thing that already
+ * existed. That one logs its reason at `info` on every entry — once every few
+ * minutes, for the life of the process — and, more importantly, it is the
+ * *audited database bypass*: at `multi` it sets `app.bypass_rls`, which is a
+ * claim about what the code may read. Arming a timer is not making that claim.
+ * This enters no scope at all, so a detached callback that needs an org gets
+ * the same refusal as any other path nobody taught to enter one
+ * ({@link requireTenantContext} throws at `multi`) rather than silently
+ * reading every org's rows.
+ *
+ * **Detach only what the PROCESS outlives its work by.** A timer belonging to
+ * one unit of work — an execution's lease heartbeat, a webhook delivery retry,
+ * an abort timer for one fetch — must KEEP the context it was armed in: its
+ * callback writes that org's rows, and detaching it would break the write
+ * rather than fix an attribution. Note that "outlives the request" is NOT the
+ * test, though it is the tempting one: a delivery retry is armed inside a
+ * request and fires a minute after the response, and it still belongs to that
+ * org. The question is whether the timer's work belongs to one org at all, or
+ * to the process.
+ *
+ * Synchronous and unawaited, unlike the scope-entering runners above: a caller
+ * arms a timer rather than running a query. A detached *query* is a different
+ * request — the audited bypass — so reach for {@link runAsSystem} there and let
+ * it be logged.
+ *
+ * **It has no caller in the platform as of §39 t-718**, and that is worth
+ * saying rather than leaving a reader to grep. Its one caller was
+ * `McpSessionManager`'s eviction sweep, and the whole stateful MCP transport
+ * went. Kept, because the asset is the RULE and this is what enforces it: the
+ * next process-lifetime timer armed from a request needs it, and without it the
+ * choice on offer is `runAsSystem` (wrong — an audited database bypass) or raw
+ * `AsyncLocalStorage.exit` at the call site (right, and re-derived from
+ * scratch each time). `tests/unit/lib/tenancy/context.test.ts` also pins the
+ * Node behaviour the rule rests on, in both directions, including the defect —
+ * so if Node ever stopped propagating into a timer, that is where it would
+ * show. The timer table in `.context/tenancy/context.md` says which scope every
+ * repeating timer in the tree belongs in; every one of them currently keeps its
+ * context, which is why this has nothing to do.
+ */
+export function runDetached<T>(fn: () => T): T {
+  return tenantContext.exit(fn);
+}
+
+/**
+ * Run `fn` once per ACTIVE org, each iteration inside its own org scope.
+ *
+ * Sequential on purpose: per-org batch caps (§108) are meaningless if every
+ * org runs at once, and a job that must iterate orgs concurrently can map
+ * over the ids itself. Suspended orgs are skipped — nothing should act for an
+ * org that has been switched off. The maintenance tick's per-org jobs run
+ * through it (`lib/orchestration/maintenance/job-scope.ts`, §108 t-711).
+ */
+export async function forEachOrg(fn: (orgId: string) => Promise<void>): Promise<void> {
+  for (const orgId of await listActiveOrgIds()) {
+    await runAsOrg(orgId, () => fn(orgId), { source: 'job' });
+  }
+}
+
+/**
+ * The ids of every ACTIVE org, oldest first — the list {@link forEachOrg}
+ * iterates.
+ *
+ * Exposed so a caller that runs several per-org passes can read it **once**
+ * and hand it down (the maintenance tick does: one list per tick rather than
+ * one per job). Keeping it here rather than in the caller is what stops the
+ * `status: 'ACTIVE'` rule from being written down twice and drifting: a
+ * suspended org is skipped, and that must mean the same thing everywhere.
+ *
+ * `Org` is a system model with no policy, so this read answers every org
+ * whatever scope the caller is in. `db` is for a caller holding its own
+ * client — the seed runner connects as the owner.
+ */
+export async function listActiveOrgIds(db: Pick<typeof prisma, 'org'> = prisma): Promise<string[]> {
+  const orgs = await db.org.findMany({
+    where: { status: 'ACTIVE' },
+    select: { id: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  return orgs.map((org) => org.id);
+}

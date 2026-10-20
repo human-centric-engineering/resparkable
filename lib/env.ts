@@ -35,6 +35,25 @@ const serverEnvSchema = z.object({
     message:
       'DATABASE_URL must be a valid PostgreSQL connection string (e.g., postgresql://user:password@localhost:5432/dbname)',
   }),
+  MIGRATE_DATABASE_URL: z
+    .preprocess(
+      // Blank means unset — the templated-but-empty shape a container env file
+      // produces — so every reader (prisma.config.ts, ownerDsn()) agrees.
+      (value) => (value === '' ? undefined : value),
+      z
+        .string()
+        .url({
+          message:
+            'MIGRATE_DATABASE_URL must be a valid PostgreSQL connection string (the owner role, for migrations and db:tenancy:*)',
+        })
+        .optional()
+    )
+    .describe(
+      'Privileged DSN for migrations, seeds and db:tenancy:enable|disable. Optional: falls back to ' +
+        'DATABASE_URL. At TENANCY_MODE=multi the app connects as a NOBYPASSRLS role that does not own ' +
+        'the tables, and this keeps the owner (BYPASSRLS) role for the operations that must see every ' +
+        'row — see .context/tenancy/isolation.md.'
+    ),
   DATABASE_POOL_MAX: z.coerce
     .number()
     .int()
@@ -102,28 +121,11 @@ const serverEnvSchema = z.object({
     .enum(['single', 'multi'])
     .default('single')
     .describe(
-      'Deployment tenancy model. "single" (default) = standard single-tenant install. ' +
-        '"multi" is NOT implemented by the template — it requires the Postgres-RLS retrofit ' +
-        'in .context/architecture/multi-tenancy.md. Setting "multi" without that work makes the ' +
-        'Prisma client throw at startup (see the tenancy seam in lib/db/client.ts) rather than ' +
-        'silently run unscoped queries.'
-    ),
-
-  // MCP session model (see .context/orchestration/mcp.md)
-  MCP_SESSION_MODE: z
-    .enum(['stateless', 'stateful'])
-    .default('stateless')
-    .describe(
-      'How the MCP server holds session state. "stateless" (default) holds none: every ' +
-        'request stands alone, no Mcp-Session-Id is issued, and the three methods that ' +
-        'need continuity (resources/subscribe, resources/unsubscribe, logging/setLevel) ' +
-        'refuse by name. This is the only mode that is correct where more than one ' +
-        'process serves traffic — on Vercel or any function-per-request platform the ' +
-        'handshake otherwise fails intermittently, because initialize lands on one ' +
-        "instance and the next request looks the id up in a sibling's empty map. " +
-        '"stateful" keeps an in-memory Map and is for a single long-running process ' +
-        'only; it is also a legacy-compatibility mode, since MCP revision 2026-07-28 ' +
-        'removes protocol-level sessions and the initialize handshake outright.'
+      'Deployment tenancy model. "single" (default) = standard single-tenant install; the install ' +
+        'org is the only org and no query is scoped. "multi" makes the data layer (lib/db/tenancy-extension.ts) ' +
+        'scope every operation to the org the request entered and refuse one that entered none; it is ' +
+        'correct only with the RLS policies enabled (npm run db:tenancy:enable) and the app connecting as a ' +
+        'NOBYPASSRLS role — see .context/architecture/multi-tenancy-design.md.'
     ),
 
   // Capability authorization model (see lib/orchestration/capabilities/dispatcher.ts)
@@ -335,7 +337,8 @@ export type Env = z.infer<typeof envSchema>;
  * a deploy template produces when it interpolates an unset source — stopped
  * failing the enum and started resolving to `.default('open')`. An invite-only
  * deployment would have booted with open signups and said nothing. The same
- * applied to `TENANCY_MODE`, `MCP_SESSION_MODE` and `CAPABILITY_BINDING_MODE`.
+ * applied to `TENANCY_MODE` and `CAPABILITY_BINDING_MODE` (and to
+ * `MCP_SESSION_MODE`, until §39 t-718 removed it).
  *
  * Blank-is-unset is right for a var we forward as a build arg, because Docker
  * gives us no way to distinguish the two. It is wrong for a server var, where a

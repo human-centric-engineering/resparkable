@@ -16,6 +16,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
+import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-access';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -45,6 +46,9 @@ export function FeatureFlagList({
   onCreateClick,
   onEditClick,
 }: FeatureFlagListProps) {
+  const readOnly = useSharedSettingsReadOnly();
+  // The action column is dropped when read-only; spanning rows follow it.
+  const columnCount = 4 + (readOnly ? 0 : 1);
   const [flags, setFlags] = useState(initialFlags);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -109,10 +113,12 @@ export function FeatureFlagList({
             {flags.length} feature flag{flags.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <Button onClick={onCreateClick}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Flag
-        </Button>
+        {!readOnly && (
+          <Button onClick={onCreateClick}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create Flag
+          </Button>
+        )}
       </div>
 
       {/* Error message */}
@@ -131,19 +137,21 @@ export function FeatureFlagList({
               <TableHead className="hidden md:table-cell">Description</TableHead>
               <TableHead className="text-center">Enabled</TableHead>
               <TableHead className="hidden sm:table-cell">Created</TableHead>
-              <TableHead className="w-12">Actions</TableHead>
+              {!readOnly && <TableHead className="w-12">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {flags.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={5} className="h-24 text-center">
+                <TableCell colSpan={columnCount} className="h-24 text-center">
                   <div className="flex flex-col items-center gap-2">
                     <Info className="text-muted-foreground h-8 w-8" />
                     <p className="text-muted-foreground">No feature flags yet</p>
-                    <Button variant="outline" size="sm" onClick={onCreateClick}>
-                      Create your first flag
-                    </Button>
+                    {!readOnly && (
+                      <Button variant="outline" size="sm" onClick={onCreateClick}>
+                        Create your first flag
+                      </Button>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -180,24 +188,26 @@ export function FeatureFlagList({
                     <Switch
                       checked={flag.enabled}
                       onCheckedChange={() => void handleToggle(flag)}
-                      disabled={togglingId === flag.id}
+                      disabled={readOnly || togglingId === flag.id}
                       aria-label={`Toggle ${flag.name}`}
                     />
                   </TableCell>
                   <TableCell className="text-muted-foreground hidden sm:table-cell">
                     <ClientDate date={flag.createdAt} />
                   </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/20"
-                      onClick={() => setDeleteId(flag.id)}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      <span className="sr-only">Delete {flag.name}</span>
-                    </Button>
-                  </TableCell>
+                  {!readOnly && (
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/20"
+                        onClick={() => setDeleteId(flag.id)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span className="sr-only">Delete {flag.name}</span>
+                      </Button>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))
             )}

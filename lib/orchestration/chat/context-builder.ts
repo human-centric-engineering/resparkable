@@ -29,6 +29,9 @@
  * loader failure self-heals on the next turn. Errors from the fork's one-time
  * init are likewise caught (contributors are simply disabled), never failing
  * a turn.
+ *
+ * Tenancy posture: org-keyed — `cache` by org, then entity, with a shared
+ * 500-entry cap (lib/tenancy/process-state.ts).
  */
 
 import { logger } from '@/lib/logging';
@@ -36,6 +39,7 @@ import { createAppInitGate, restoreMap } from '@/lib/fork-init';
 import { prisma } from '@/lib/db/client';
 import { getPatternDetail } from '@/lib/orchestration/knowledge/search';
 import { initAppContextContributors } from '@/lib/app/context-contributors';
+import { requireTenantContext } from '@/lib/tenancy/context';
 
 const CONTEXT_CACHE_TTL_MS = 60 * 1000;
 const CONTEXT_CACHE_MAX_SIZE = 500;
@@ -57,10 +61,49 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+/**
+ * The org this context belongs to — and a refusal when there is not one.
+ *
+ * `requireTenantContext`, not `getTenantContext`, so that at `single` an
+ * unentered call and an entered one key under the SAME org rather than under
+ * two partitions of the one org, each eating the shared 500-entry cap.
+ *
+ * The system scope is refused outright, exactly as
+ * `lib/orchestration/hooks/registry.ts` refuses it: under `runAsSystem` the
+ * data layer sets `app.bypass_rls`, so `getPatternDetail` would return every
+ * org's knowledge chunks merged into one body and frame them into somebody's
+ * system prompt. Declining to CACHE that body would not stop it being built
+ * and returned. No caller runs under a system scope today; a future one
+ * should fail here rather than quietly produce a cross-org prompt.
+ */
+function requireContextOrg(): string {
+  const { orgId } = requireTenantContext();
+  if (orgId === null) {
+    throw new Error(
+      'buildContext has no org: this call stack runs as the system scope, which reads every ' +
+        "org's rows. Build the context inside runAsOrg — see lib/tenancy/process-state.ts."
+    );
+  }
+  return orgId;
+}
+
 function cacheKey(type: string, id: string, userId?: string): string {
-  // Empty `userId` collapses to a single shared partition (`type:id:`), which
-  // is byte-for-byte the pre-widening key space.
-  return `${type}:${id}:${userId ?? ''}`;
+  // The org comes FIRST, and it is not optional (§108 t-712, review round 1).
+  // `type` and `id` both arrive from the request, and the entries they key
+  // are built from tenant-owned rows: `pattern` is keyed by a pattern NUMBER
+  // over `AiKnowledgeChunk`, and the `default:` branch hands the same pair to
+  // a fork's contributor. So a user who belongs to two orgs — which
+  // `OrgMembership` allows — would otherwise open `pattern:3` in org A and,
+  // within the 60-second TTL, be served org A's knowledge content inside org
+  // B's system prompt. The entity ids being cuids elsewhere does not save
+  // these: a number and a caller-supplied string are not unique across orgs.
+  //
+  // At `single` there is one org, so this is one constant prefix and the key
+  // space is unchanged in shape.
+  const orgId = requireContextOrg();
+  // Empty `userId` collapses to a single shared partition per org
+  // (`org:type:id:`), which is byte-for-byte the pre-widening key space.
+  return `${orgId}:${type}:${id}:${userId ?? ''}`;
 }
 
 /**

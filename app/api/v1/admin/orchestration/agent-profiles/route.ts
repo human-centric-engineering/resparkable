@@ -28,6 +28,7 @@ import {
   listAgentProfilesQuerySchema,
 } from '@/lib/validations/orchestration';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import { agentProfileUsage } from '@/lib/orchestration/admin/global-config-usage';
 
 export const GET = withAdminAuth(async (request, _session) => {
   const log = await getRouteLogger(request);
@@ -50,14 +51,16 @@ export const GET = withAdminAuth(async (request, _session) => {
       orderBy: { updatedAt: 'desc' },
       skip,
       take: limit,
-      include: { _count: { select: { agents: true } } },
     }),
     prisma.aiAgentProfile.count({ where }),
   ]);
 
-  const data = rows.map(({ _count, ...profile }) => ({
+  // Attached agents in every org (t-731): a profile is global config, and a
+  // plain `_count` at `multi` would count only the caller's org's agents.
+  const attached = await agentProfileUsage(rows.map((r) => r.id));
+  const data = rows.map((profile) => ({
     ...profile,
-    agentCount: _count.agents,
+    agentCount: attached.get(profile.id) ?? 0,
   }));
 
   log.info('Agent profiles listed', { count: rows.length, total, page, limit });
@@ -65,45 +68,48 @@ export const GET = withAdminAuth(async (request, _session) => {
   return paginatedResponse(data, { page, limit, total });
 });
 
-export const POST = withAdminAuth(async (request, session) => {
-  const clientIP = getClientIP(request);
+export const POST = withAdminAuth(
+  async (request, session) => {
+    const clientIP = getClientIP(request);
 
-  const log = await getRouteLogger(request);
-  const body = await validateRequestBody(request, agentProfileFormSchema);
+    const log = await getRouteLogger(request);
+    const body = await validateRequestBody(request, agentProfileFormSchema);
 
-  try {
-    const profile = await prisma.aiAgentProfile.create({
-      data: {
-        name: body.name,
-        slug: body.slug,
-        description: body.description ?? null,
-        persona: body.persona ?? null,
-        brandVoiceInstructions: body.brandVoiceInstructions ?? null,
-        guardrails: body.guardrails ?? null,
-        createdBy: session.user.id,
-      },
-    });
+    try {
+      const profile = await prisma.aiAgentProfile.create({
+        data: {
+          name: body.name,
+          slug: body.slug,
+          description: body.description ?? null,
+          persona: body.persona ?? null,
+          brandVoiceInstructions: body.brandVoiceInstructions ?? null,
+          guardrails: body.guardrails ?? null,
+          createdBy: session.user.id,
+        },
+      });
 
-    log.info('Agent profile created', {
-      profileId: profile.id,
-      slug: profile.slug,
-      adminId: session.user.id,
-    });
+      log.info('Agent profile created', {
+        profileId: profile.id,
+        slug: profile.slug,
+        adminId: session.user.id,
+      });
 
-    logAdminAction({
-      userId: session.user.id,
-      action: 'agent_profile.create',
-      entityType: 'agent_profile',
-      entityId: profile.id,
-      entityName: profile.name,
-      clientIp: clientIP,
-    });
+      logAdminAction({
+        userId: session.user.id,
+        action: 'agent_profile.create',
+        entityType: 'agent_profile',
+        entityId: profile.id,
+        entityName: profile.name,
+        clientIp: clientIP,
+      });
 
-    return successResponse({ ...profile, agentCount: 0 }, undefined, { status: 201 });
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      throw new ConflictError(`Agent profile with slug '${body.slug}' already exists`);
+      return successResponse({ ...profile, agentCount: 0 }, undefined, { status: 201 });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictError(`Agent profile with slug '${body.slug}' already exists`);
+      }
+      throw err;
     }
-    throw err;
-  }
-});
+  },
+  { writesSharedSettings: true }
+);

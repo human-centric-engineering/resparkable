@@ -20,7 +20,7 @@
  * - Form validation (empty email)
  * - Suspense boundary fallback
  *
- * @see /Users/simonholmes/Documents/Dev/studio/resparkable/app/(auth)/verify-email/callback/verify-callback-content.tsx
+ * @see app/(auth)/verify-email/callback/verify-callback-content.tsx
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

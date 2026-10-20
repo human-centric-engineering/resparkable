@@ -34,12 +34,18 @@ import type { RateLimitTier } from '@/lib/security/rate-limit';
  *   to IP if no session is present (the route handler will surface 401 if it
  *   requires auth — the rate-limit middleware doesn't enforce auth, it
  *   protects against abuse on top of whatever the route itself enforces).
- * - `'api-key'` — keyed on the API key hash from the `Authorization` header.
- *   Falls back to IP if no key. Used for routes that accept programmatic
- *   access via API keys instead of cookie sessions.
- * - `'embed-token'` — keyed on the embed token + client IP. Used for embedded
- *   widget surfaces where the caller is anonymous but the token identifies
- *   the embedding site.
+ * - `'api-key'` — keyed on the stored id of the API key presented in the
+ *   `Authorization: Bearer` header, once the middleware has looked it up
+ *   (`lib/security/rate-limit-credentials.ts`). Falls back to IP when there
+ *   is no key or it names no live key. Used for routes that accept
+ *   programmatic access via API keys instead of cookie sessions.
+ * - `'embed-token'` — keyed on the stored id of the `X-Embed-Token` token +
+ *   client IP, once looked up. Falls back to IP when there is no token or it
+ *   names no live token. Used for embedded widget surfaces where the caller
+ *   is anonymous but the token identifies the embedding site.
+ *
+ * Neither credential strategy keys on the header as presented: the caller
+ * chooses that value, so it would open a fresh bucket per request (#701).
  */
 export type RateLimitKey = 'ip' | 'session-user' | 'api-key' | 'embed-token';
 
@@ -234,7 +240,10 @@ export const RATE_LIMIT_POLICY: readonly RateLimitRule[] = [
   // server, always API-key-authenticated, much chattier per session (agents
   // iterate through tool calls inside a conversation). It gets its own tier
   // (300/min by default — override with `RATE_LIMIT_MCP`) keyed by api-key
-  // so two customers sharing a NAT'd egress get independent buckets. The
+  // so two customers sharing a NAT'd egress get independent buckets — once
+  // each key is verified; a key that is cold while that IP has spent its
+  // credential-lookup budget shares the IP bucket until the budget frees
+  // (`lib/security/rate-limit-credentials.ts`). The
   // per-customer budget knob is `McpRateLimiter` inside the handler, sized
   // from the `apiKey.rateLimit` field; this section tier is the coarse
   // ceiling above it.
@@ -260,9 +269,9 @@ export const RATE_LIMIT_POLICY: readonly RateLimitRule[] = [
     key: 'api-key',
   },
   // Embed widgets are anonymous; the embed token identifies the embedding
-  // site. Token + IP composite (built by the middleware) mirrors the
-  // long-shipping `embed:user:${token}:${ip}` convention used by the
-  // per-flow `embedChatLimiter`.
+  // site. The middleware keys on the verified token's id + IP, so each
+  // visitor of a site gets their own bucket and an unknown token gets the
+  // IP bucket.
   {
     match: /^\/api\/v1\/embed\//,
     tier: 'api',

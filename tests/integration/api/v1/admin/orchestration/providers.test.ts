@@ -13,6 +13,16 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The org's provider policy (§120 t-745): approves everything unless a test
+// says otherwise. Hoisted, so it applies however the route is imported.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
 import { NextRequest } from 'next/server';
 import { GET, POST } from '@/app/api/v1/admin/orchestration/providers/route';
 import {
@@ -42,8 +52,12 @@ vi.mock('@/lib/db/client', () => ({
   },
 }));
 
+// `apiKeyPresent` is the credential seam's answer (§120 t-744), not the env var's.
+vi.mock('@/lib/orchestration/llm/provider-credentials', () => ({
+  hasProviderKey: vi.fn(async () => false),
+}));
+
 vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
-  isApiKeyEnvVarSet: vi.fn(() => false),
   clearCache: vi.fn(),
 }));
 
@@ -56,7 +70,7 @@ vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
 
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import { isApiKeyEnvVarSet } from '@/lib/orchestration/llm/provider-manager';
+import { hasProviderKey } from '@/lib/orchestration/llm/provider-credentials';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -76,6 +90,7 @@ function makeProvider(overrides: Record<string, unknown> = {}) {
     metadata: null,
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
     createdBy: ADMIN_ID,
     createdAt: new Date('2025-01-01'),
     updatedAt: new Date('2025-01-01'),
@@ -144,7 +159,7 @@ describe('GET /api/v1/admin/orchestration/providers', () => {
   describe('Successful retrieval', () => {
     it('returns paginated providers list with apiKeyPresent field', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       const providers = [
         makeProvider(),
         makeProvider({ id: 'cmjbv4i3x00003wsloputgwu2', slug: 'openai' }),
@@ -167,9 +182,47 @@ describe('GET /api/v1/admin/orchestration/providers', () => {
       expect(data.meta).toBeDefined();
     });
 
+    it('marks each provider with whether the org in context may use it (§120 t-745)', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
+      vi.mocked(prisma.aiProviderConfig.findMany).mockResolvedValue([
+        makeProvider(),
+        makeProvider({ id: 'cmjbv4i3x00003wsloputgwu2', slug: 'openai' }),
+      ]);
+      vi.mocked(prisma.aiProviderConfig.count).mockResolvedValue(2);
+      mockUnapprovedProviders.mockImplementationOnce(async (slugs) =>
+        slugs.filter((slug) => slug === 'openai')
+      );
+
+      const response = await GET(makeGetRequest());
+
+      const data = await parseJson<{ data: Array<{ slug: string; approvedForOrg: unknown }> }>(
+        response
+      );
+      expect(data.data.map((p) => [p.slug, p.approvedForOrg])).toEqual([
+        ['anthropic', true],
+        ['openai', false],
+      ]);
+      expect(mockUnapprovedProviders).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports approvedForOrg as null, and still lists, when the policy cannot be read', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
+      vi.mocked(prisma.aiProviderConfig.findMany).mockResolvedValue([makeProvider()]);
+      vi.mocked(prisma.aiProviderConfig.count).mockResolvedValue(1);
+      mockUnapprovedProviders.mockRejectedValueOnce(new Error('connection reset'));
+
+      const response = await GET(makeGetRequest());
+
+      expect(response.status).toBe(200);
+      const data = await parseJson<{ data: Array<{ approvedForOrg: unknown }> }>(response);
+      expect(data.data[0].approvedForOrg).toBeNull();
+    });
+
     it('returns apiKeyPresent: true when env var is set', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       vi.mocked(prisma.aiProviderConfig.findMany).mockResolvedValue([makeProvider()] as never);
       vi.mocked(prisma.aiProviderConfig.count).mockResolvedValue(1);
 
@@ -182,7 +235,7 @@ describe('GET /api/v1/admin/orchestration/providers', () => {
 
     it('returns apiKeyPresent: false when env var is not set', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(false);
+      vi.mocked(hasProviderKey).mockResolvedValue(false);
       vi.mocked(prisma.aiProviderConfig.findMany).mockResolvedValue([makeProvider()] as never);
       vi.mocked(prisma.aiProviderConfig.count).mockResolvedValue(1);
 
@@ -274,7 +327,7 @@ describe('POST /api/v1/admin/orchestration/providers', () => {
   describe('Successful creation', () => {
     it('creates provider and returns 201 with apiKeyPresent field', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       const created = makeProvider();
       vi.mocked(prisma.aiProviderConfig.create).mockResolvedValue(created);
 
@@ -302,6 +355,19 @@ describe('POST /api/v1/admin/orchestration/providers', () => {
           data: expect.objectContaining({ createdBy: ADMIN_ID }),
         })
       );
+    });
+
+    it('stores a jurisdiction upper-cased, and none when the body names none (§120 t-742)', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiProviderConfig.create).mockResolvedValue(makeProvider());
+
+      await POST(makePostRequest({ ...VALID_PROVIDER, jurisdiction: 'eu' }));
+      await POST(makePostRequest(VALID_PROVIDER));
+
+      const stored = vi
+        .mocked(prisma.aiProviderConfig.create)
+        .mock.calls.map(([args]) => args.data.jurisdiction);
+      expect(stored).toEqual(['EU', null]);
     });
   });
 

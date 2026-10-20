@@ -67,7 +67,7 @@ vi.mock('@/lib/db/client', () => {
       create: vi.fn(),
     },
     aiAgent: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
     },
     $executeRawUnsafe: vi.fn(),
     // The finalise checkpoint writes its revision through writeRevision,
@@ -139,6 +139,8 @@ vi.mock('@/lib/orchestration/knowledge/coverage', async (importOriginal) => {
 // --- Imports after mocks ---
 
 import { prisma } from '@/lib/db/client';
+import { runAsOrg } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 _prismaMock = prisma;
 import { chunkCsvDocument, chunkMarkdownDocument } from '@/lib/orchestration/knowledge/chunker';
 import { buildCoverageWarning } from '@/lib/orchestration/knowledge/coverage';
@@ -293,9 +295,11 @@ describe('uploadDocument', () => {
     const fileHash = createHash('sha256').update(content).digest('hex');
     const winner = makeDocument({ id: 'winner', status: 'processing', fileHash });
 
-    // No 'ready' dedup row yet (the winner is still processing), so we reach create.
-    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.aiKnowledgeDocument.findUnique)
+    // Every slug read is a findFirst within the org (§107 t-708): no 'ready'
+    // dedup row yet (the winner is still processing), the base slug is free
+    // at generation time, and the catch handler finds the winner holding it.
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst)
+      .mockResolvedValueOnce(null) // dedup
       .mockResolvedValueOnce(null) // slug generation: base is free
       .mockResolvedValueOnce(winner as never); // catch handler: winner holds the slug
     vi.mocked(prisma.aiKnowledgeDocument.create).mockRejectedValue(
@@ -316,7 +320,6 @@ describe('uploadDocument', () => {
   it('re-throws a non-slug create error (does not swallow it as a race)', async () => {
     const content = '# Boom';
     vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue(null);
     vi.mocked(prisma.aiKnowledgeDocument.create).mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('fk', {
         code: 'P2003',
@@ -397,6 +400,10 @@ describe('uploadDocument', () => {
     const [sql] = vi.mocked(prisma.$executeRawUnsafe).mock.calls[0] as [string, ...unknown[]];
     expect(sql).toContain('::vector');
     expect(sql).toContain('$1');
+    // A raw INSERT is the one create the tenancy chokepoint cannot stamp: the
+    // chunk's org is read from its document in the same statement (§107).
+    expect(sql).toContain('"orgId"');
+    expect(sql).toContain('(SELECT "orgId" FROM ai_knowledge_document WHERE id = $2)');
   });
 
   it('updates document to status ready with correct chunkCount after successful upload', async () => {
@@ -1480,8 +1487,8 @@ describe('previewDocument', () => {
         slug: `draft-${hash8}`,
       }) as never
     );
-    // generateUniqueDocumentSlug's findUnique sees no conflicting row.
-    vi.mocked(prisma.aiKnowledgeDocument.findUnique).mockResolvedValue(null);
+    // generateUniqueDocumentSlug's findFirst answers the same existing row,
+    // which is the excluded id — so the slug it already owns counts as free.
     vi.mocked(prisma.aiKnowledgeDocument.update).mockResolvedValue(
       makeDocument({ id: 'existing-preview', status: 'pending_review' }) as never
     );
@@ -1512,9 +1519,10 @@ describe('previewDocument', () => {
       metadata: { format: 'pdf' },
       warnings: [],
     });
-    vi.mocked(prisma.aiKnowledgeDocument.findFirst).mockResolvedValue(null); // no existing preview
-    // findUnique: null during slug generation, then the winner in the catch handler.
-    vi.mocked(prisma.aiKnowledgeDocument.findUnique)
+    // findFirst: no existing preview, null during slug generation, then the
+    // winner in the catch handler.
+    vi.mocked(prisma.aiKnowledgeDocument.findFirst)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(winner as never);
     vi.mocked(prisma.aiKnowledgeDocument.create).mockRejectedValue(
@@ -1726,7 +1734,7 @@ describe('confirmPreview', () => {
 describe('getOrCreateDefaultKnowledgeBase', () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it('upserts the row keyed on slug (not id) so a fork with a pre-existing different id is reused', async () => {
+  it("upserts the row keyed on the org's slug (not id) so a fork with a pre-existing different id is reused", async () => {
     vi.mocked(prisma.aiKnowledgeBase.upsert).mockResolvedValue({
       id: DEFAULT_KNOWLEDGE_BASE_ID,
     } as never);
@@ -1735,7 +1743,34 @@ describe('getOrCreateDefaultKnowledgeBase', () => {
 
     expect(prisma.aiKnowledgeBase.upsert).toHaveBeenCalledTimes(1);
     const call = vi.mocked(prisma.aiKnowledgeBase.upsert).mock.calls[0][0];
-    expect(call.where).toEqual({ slug: 'default' });
+    // At `single` nothing entered a context, so the org is the install org.
+    expect(call.where).toEqual({ orgId_slug: { orgId: INSTALL_ORG_ID, slug: 'default' } });
+  });
+
+  it("creates another org's default with a generated id — `kb_default` is the install org's alone", async () => {
+    vi.mocked(prisma.aiKnowledgeBase.upsert).mockResolvedValue({ id: 'kb_generated' } as never);
+
+    const id = await runAsOrg('org_b', () => getOrCreateDefaultKnowledgeBase());
+
+    const call = vi.mocked(prisma.aiKnowledgeBase.upsert).mock.calls[0][0];
+    expect(call.where).toEqual({ orgId_slug: { orgId: 'org_b', slug: 'default' } });
+    expect(call.create).not.toHaveProperty('id');
+    expect(call.create).toMatchObject({ slug: 'default', isDefault: true });
+    expect(id).toBe('kb_generated');
+  });
+
+  it('writes through the client it is given — the seed passes its own', async () => {
+    const upsert = vi.fn().mockResolvedValue({ id: 'kb_seed' });
+
+    const id = await runAsOrg('org_b', () =>
+      getOrCreateDefaultKnowledgeBase({ aiKnowledgeBase: { upsert } } as never)
+    );
+
+    expect(id).toBe('kb_seed');
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { orgId_slug: { orgId: 'org_b', slug: 'default' } } })
+    );
+    expect(prisma.aiKnowledgeBase.upsert).not.toHaveBeenCalled();
   });
 
   it('passes the canonical id, slug, name, description, and isDefault on create', async () => {
@@ -1815,7 +1850,7 @@ describe('createDocumentForCleanup', () => {
       status: 'cleaning',
       uploadedBy: USER_ID,
     } as never);
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
       id: CLEANUP_AGENT_ID,
     } as never);
     vi.mocked(prisma.aiConversation.create).mockResolvedValue({
@@ -1868,6 +1903,17 @@ describe('createDocumentForCleanup', () => {
     );
   });
 
+  it("looks up only the org's platform clean-up agent, never its own agent holding the slug (§116 t-725)", async () => {
+    // Act
+    await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
+
+    // Assert: an org's own agent that took the slug before it was reserved is
+    // not the clean-up assistant.
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { slug: 'cleanup-agent', isSystem: true } })
+    );
+  });
+
   it('returns document, conversationId, and redirectTo pointing at the cleanup page', async () => {
     // Act
     const result = await createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID);
@@ -1881,7 +1927,7 @@ describe('createDocumentForCleanup', () => {
   it('rolls back the document when createCleanupConversation throws', async () => {
     // Arrange: agent not found triggers the throw inside createCleanupConversation
     const convError = new Error('agent unavailable');
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
     vi.mocked(prisma.aiConversation.create).mockRejectedValue(convError);
 
     // Act & Assert: the error propagates
@@ -1912,7 +1958,7 @@ describe('createDocumentForCleanup', () => {
 
   it('throws when the cleanup agent row does not exist', async () => {
     // Arrange: no cleanup agent seeded
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(null);
 
     // Act & Assert: error message contains "not found" and "db:seed"
     await expect(createDocumentForCleanup(CONTENT, FILE_NAME, USER_ID)).rejects.toThrow(
@@ -1970,7 +2016,7 @@ describe('transitionToCleanup', () => {
       name: existingDoc.name,
       status: 'cleaning',
     } as never);
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({ id: CLEANUP_AGENT_ID } as never);
     vi.mocked(prisma.aiConversation.create).mockResolvedValue({ id: CONVERSATION_ID } as never);
     mockSendCleanupReadyEmail.mockResolvedValue(undefined);
   }

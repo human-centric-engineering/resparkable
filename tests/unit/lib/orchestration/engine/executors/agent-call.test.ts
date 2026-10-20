@@ -93,6 +93,7 @@ import { registerTracer, resetTracer } from '@/lib/orchestration/tracing/registr
 import { SPAN_AGENT_CALL_TURN } from '@/lib/orchestration/tracing/attributes';
 import { createContext } from '@/lib/orchestration/engine/context';
 import { logger } from '@/lib/logging';
+import { ProviderCallRefusedError } from '@/lib/orchestration/llm/provider-eligibility';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -223,6 +224,17 @@ describe('executeAgentCall', () => {
 
     expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
       where: { slug: 'summarizer', isActive: true },
+      include: { profile: true },
+    });
+  });
+
+  it("loads a platform slug's system instance only (§116 t-725)", async () => {
+    // An org's own agent that took a platform slug before it was reserved must
+    // not answer a workflow step in the platform agent's place.
+    await executeAgentCall(makeStep({ agentSlug: 'eval-judge-relevance' }), makeCtx());
+
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith({
+      where: { slug: 'eval-judge-relevance', isActive: true, isSystem: true },
       include: { profile: true },
     });
   });
@@ -371,12 +383,19 @@ describe('executeAgentCall', () => {
       providerSlug: 'openai',
       model: 'gpt-4o-mini',
       fallbacks: ['anthropic'],
+      provenance: { task: 'chat', primary: 'primary', fallbacks: 'system' },
     });
 
     await executeAgentCall(makeStep(), makeCtx());
 
     expect(resolveAgentProviderAndModel).toHaveBeenCalled();
-    expect(getProviderWithFallbacks).toHaveBeenCalledWith('openai', ['anthropic']);
+    // The binding's provenance travels with it, so the call-time gate tells the
+    // eligibility rule the primary was auto-picked and the fallbacks are the fill.
+    expect(getProviderWithFallbacks).toHaveBeenCalledWith('openai', ['anthropic'], {
+      task: 'chat',
+      primary: 'primary',
+      fallbacks: 'system',
+    });
     expect(mockChat.mock.calls[0][1].model).toBe('gpt-4o-mini');
   });
 
@@ -387,6 +406,16 @@ describe('executeAgentCall', () => {
       name: 'ExecutorError',
       code: 'agent_call_failed',
       message: 'Rate limited',
+    });
+  });
+
+  it('codes a call-time gate refusal provider_not_permitted and does not retry it (§120 t-741)', async () => {
+    mockChat.mockRejectedValue(new ProviderCallRefusedError('openai'));
+
+    await expect(executeAgentCall(makeStep(), makeCtx())).rejects.toMatchObject({
+      name: 'ExecutorError',
+      code: 'provider_not_permitted',
+      retriable: false,
     });
   });
 

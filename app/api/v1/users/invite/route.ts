@@ -13,6 +13,10 @@
  *   - name: User's full name (required)
  *   - email: User's email address (required, must be unique)
  *   - role: User's role (optional, defaults to USER)
+ *   - orgId: The org the invitee joins on acceptance (optional; defaults to
+ *     the install org) — must exist and be ACTIVE (§106)
+ *   - orgRole: Their role in that org (optional; MEMBER, or OWNER for the
+ *     first member of a new org)
  *
  * Response emailStatus values:
  *   - 'sent': Email was sent successfully
@@ -30,6 +34,10 @@
  *    - If exists and resend=false: Return 200 with 'pending' status (NO link)
  *    - If exists and resend=true: Delete old, create new token, send email
  *    - If not exists: Create new invitation
+ * 6b. Resolve the org (§106): the body's, else on a resend the pending
+ *     invitation's; it must exist and be active, and the policy must let this
+ *     caller administer it (`canAdminister` on an org resource — the seam
+ *     §106 t-671 makes org-aware; today it answers as the admin guard did)
  * 7. Generate/regenerate invitation token
  * 8. Send invitation email
  * 9. Return invitation details (NOT user object)
@@ -38,10 +46,11 @@
  */
 
 import { withAdminAuth } from '@/lib/auth/guards';
+import { canAdminister } from '@/lib/auth/authorization';
 import { prisma } from '@/lib/db/client';
 import { BRAND } from '@/lib/brand';
 import { successResponse, errorResponse } from '@/lib/api/responses';
-import { ErrorCodes } from '@/lib/api/errors';
+import { ErrorCodes, ForbiddenError } from '@/lib/api/errors';
 import { validateRequestBody } from '@/lib/api/validation';
 import { inviteUserSchema } from '@/lib/validations/user';
 import {
@@ -133,6 +142,10 @@ export const POST = withAdminAuth(async (request, session) => {
           email: body.email,
           name: existingInvitation.metadata.name,
           role: existingInvitation.metadata.role,
+          // Where the pending invitation points (§106); a resend keeps it
+          // unless the body names an org.
+          orgId: existingInvitation.metadata.orgId ?? null,
+          orgRole: existingInvitation.metadata.orgRole ?? null,
           invitedAt: existingInvitation.metadata.invitedAt,
           expiresAt: existingInvitation.expiresAt.toISOString(),
           // NO link - can't generate a valid one without resending
@@ -144,12 +157,71 @@ export const POST = withAdminAuth(async (request, session) => {
     );
   }
 
+  // 6b. Which org this invitation joins, and as what (§106). The body's org
+  // keys when it sends either of them (`orgRole` alone means the install org
+  // with an explicit role — `membershipForNewUser` honours it); else, on a
+  // resend, the pending row's — a resend re-sends THIS invitation, and the
+  // admin table's Resend button posts only `{ name, email, role }`, so
+  // without the carry-over a bounced invitation into an org would be
+  // silently re-targeted to the install org. The platform `role` has always
+  // come from the body on a resend; that is unchanged.
+  const bodyNamesTarget = body.orgId !== undefined || body.orgRole !== undefined;
+  const target = bodyNamesTarget
+    ? { orgId: body.orgId, orgRole: body.orgRole }
+    : {
+        orgId: existingInvitation?.metadata.orgId,
+        orgRole: existingInvitation?.metadata.orgRole,
+      };
+
+  // The org is in the body (or the pending row), so this cannot be a
+  // `resource` resolver on the guard (a resolver runs before the body is
+  // read); the same question is asked here instead, of the same policy.
+  // Under Sunrise's default policy `canAdminister` answers for an org
+  // resource exactly as it did for the guard's `null` — platform admins (and
+  // admin-scoped keys) only — so nothing widens today; t-671 is what teaches
+  // it to say yes to an org's own OWNER/ADMIN. Asked on a resend too: the
+  // pending org must still exist, be active, and be one this caller may
+  // invite into.
+  if (target.orgId) {
+    const org = await prisma.org.findUnique({
+      where: { id: target.orgId },
+      select: { id: true, status: true },
+    });
+
+    if (!org || org.status !== 'ACTIVE') {
+      // One answer for "no such org" and "suspended": an inviter who may
+      // administer the org can see its status elsewhere; nobody else should
+      // learn it from this endpoint.
+      return errorResponse('Cannot invite into that organisation', {
+        code: ErrorCodes.VALIDATION_ERROR,
+        status: 400,
+      });
+    }
+
+    const mayInvite = await canAdminister(session.principal, {
+      kind: 'org',
+      id: org.id,
+      orgId: org.id,
+    });
+    if (!mayInvite) {
+      log.warn('Invitation into org refused by the authorization policy', {
+        adminId: session.user.id,
+        orgId: org.id,
+      });
+      throw new ForbiddenError('You cannot invite users into that organisation');
+    }
+  }
+
   // 7. Generate or regenerate invitation token
   const invitationMetadata = {
     name: body.name,
     role: body.role || DEFAULT_USER_ROLE,
     invitedBy: session.user.id,
     invitedAt: new Date().toISOString(),
+    // Only written when named, so an invitation into the install org is
+    // byte-identical to one written before these keys existed.
+    ...(target.orgId ? { orgId: target.orgId } : {}),
+    ...(target.orgRole ? { orgRole: target.orgRole } : {}),
   };
 
   // Use updateInvitationToken for resend (deletes old, creates new)
@@ -161,6 +233,8 @@ export const POST = withAdminAuth(async (request, session) => {
   log.info(existingInvitation ? 'Invitation resent' : 'Invitation created', {
     email: body.email,
     role: body.role,
+    orgId: target.orgId ?? null,
+    orgRole: target.orgRole ?? null,
     invitedBy: session.user.id,
     isResend: !!existingInvitation,
   });
@@ -190,13 +264,13 @@ export const POST = withAdminAuth(async (request, session) => {
     log.warn('Failed to send invitation email', {
       email: body.email,
       error: emailResult.error,
-      emailStatus: emailResult.status,
+      deliveryStatus: emailResult.status,
     });
   } else {
     log.info('Invitation email sent', {
       email: body.email,
-      emailId: emailResult.id,
-      emailStatus: emailResult.status,
+      messageId: emailResult.id,
+      deliveryStatus: emailResult.status,
     });
   }
 
@@ -217,6 +291,8 @@ export const POST = withAdminAuth(async (request, session) => {
         email: body.email,
         name: body.name,
         role: body.role || DEFAULT_USER_ROLE,
+        orgId: target.orgId ?? null,
+        orgRole: target.orgRole ?? null,
         invitedAt: new Date().toISOString(),
         expiresAt: expiresAt.toISOString(),
         link: invitationUrl,

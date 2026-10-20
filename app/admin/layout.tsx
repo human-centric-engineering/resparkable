@@ -7,6 +7,9 @@ import { InFlightExecutionBanner } from '@/components/admin/orchestration/in-fli
 import { BRAND } from '@/lib/brand';
 import { AUTH_LANDING_ROUTE } from '@/lib/auth-landing/route';
 import { canAdminister } from '@/lib/auth/authorization';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { getSharedSettingsAccess } from '@/lib/tenancy/shared-settings-access';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 
 export const metadata: Metadata = {
   title: {
@@ -40,15 +43,33 @@ export default async function AdminLayout({
   // the guards cover the API, this covers the admin tree's own shell. A cookie
   // session is the only way to reach a layout, so the credential is not in
   // doubt here.
+  //
+  // The org (§106) is passed as the session recorded it, and no org ROLE:
+  // this asks with `resource: null`, where the policy's org arm grants nothing
+  // by design (a null resource is a platform-ops surface), so a membership
+  // read here would be a query that cannot change the answer.
+  //
+  // Shared settings are read-only outside the install org at `multi` (§107
+  // t-753); every page below asks the provider rather than working it out.
+  // Started now so its one membership read runs alongside the policy's
+  // instead of after it. It never throws.
+  const sharedSettingsRead = getSharedSettingsAccess(session);
   if (
-    !(await canAdminister({
-      userId: session.user.id,
-      role: session.user.role,
-      credential: 'session',
-    }))
+    !(await canAdminister(
+      {
+        userId: session.user.id,
+        role: session.user.role,
+        credential: 'session',
+        orgId: session.session.activeOrgId ?? INSTALL_ORG_ID,
+      },
+      null,
+      { org: session.session.activeOrgId ?? INSTALL_ORG_ID }
+    ))
   ) {
     redirect(AUTH_LANDING_ROUTE);
   }
+
+  const sharedSettings = await sharedSettingsRead;
 
   return (
     <div className="lattice-field flex h-screen overflow-hidden">
@@ -57,7 +78,16 @@ export default async function AdminLayout({
         <AdminHeader />
         <InFlightExecutionBanner />
         <main className="flex-1 overflow-y-auto overscroll-contain">
-          <div className="p-6">{children}</div>
+          <div className="p-6">
+            <SharedSettingsAccessProvider
+              readOnly={sharedSettings.readOnly}
+              canSwitch={sharedSettings.canSwitch}
+              installOrgMember={sharedSettings.installOrgMember}
+              isInstallOrg={sharedSettings.isInstallOrg}
+            >
+              {children}
+            </SharedSettingsAccessProvider>
+          </div>
         </main>
       </div>
     </div>

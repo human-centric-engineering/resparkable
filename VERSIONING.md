@@ -120,10 +120,13 @@ covered by the version contract.
   - `lib/app/leaf-bootstrap.ts` → `initLeafApp()` — a leaf fork's own one-time boot work
   - `lib/app/llm-providers.ts` → `registerAppProviderEligibility()` — provider-eligibility seam (primitive: `registerProviderEligibility()`, resolved through `lib/orchestration/llm/provider-eligibility.ts`)
   - `lib/app/mcp-resources.ts` → `initAppMcpResources()` — MCP resource-type registry
+  - `lib/app/platform-agents.ts` → `initAppPlatformAgents()` — platform agents every org gets an instance of (primitive: `registerPlatformAgent()` in `lib/orchestration/agents/platform-agents.ts`)
+  - `lib/app/provider-credentials.ts` → `initAppProviderCredentials()` — where a provider row's API key comes from, per org (primitive: `registerProviderCredentialResolver()` in `lib/orchestration/llm/provider-credentials.ts`)
   - `lib/app/protected-nav.ts` → `protectedNavItems` — authenticated-area nav
   - `lib/app/protected-routes.ts` → `appProtectedRoutes` — extra route prefixes the proxy protects
   - `lib/app/public-nav.ts` → `publicNavItems` / `footerNavItems` / `footerLegalItems` — public nav and footer
   - `lib/app/rate-limit.ts` → `registerAppRateLimits()` — rate-limit registry (`registerRateLimitTier()` / `registerRateLimitRule()` / `registerRateLimitKeyResolver()`)
+  - `lib/app/tenant-resolver.ts` → `registerAppTenantResolver()` — the proxy's tenant resolver (primitive: `registerTenantResolver()` in `lib/tenancy/resolver.ts`; Web-standard only)
   - `lib/app/reserved-tiers.ts` → `occupiedTiers` — which reserved namespace tiers this fork occupies
   - `lib/app/robots.ts` → `appDisallowedPaths` — extra `Disallow` paths in robots.txt
   - `lib/app/surface.ts` → `classifySurface()` / `DEFAULT_SURFACE` — per-surface theming classifier
@@ -133,10 +136,23 @@ covered by the version contract.
   than trusting it.** The guard cannot derive this half, and a short list here
   is the same broken promise #732 was about:
   - erasure-hook registry (`lib/privacy/erasure-hooks.ts`)
-  - tenancy seam (`TENANCY_MODE` + `lib/db/client.ts`)
+  - tenancy seam (`TENANCY_MODE` + `lib/db/client.ts`, whose exported client
+    is the base client through `withTenancy()` in `lib/db/tenancy-extension.ts`
+    — `orgId` stamped on every tenant-owned create, every operation scoped by
+    `set_config` at `multi`; the tenant context `lib/tenancy/context.ts`
+    — `getTenantContext` / `requireTenantContext` / `requireOrgId` /
+    `runAsOrg` / `runAsSystem` / `runAsCredentialLookup` / `forEachOrg` —
+    plus the `x-sunrise-org` request-header contract between `proxy.ts` and
+    the guards; and the operator surface that turns the capability on —
+    `MIGRATE_DATABASE_URL`, `db:tenancy:enable|disable|role`,
+    `orgIsolationPolicySql()` in `lib/tenancy/isolation.ts` — with the
+    classification allowlists in `lib/tenancy/classification.ts` that a
+    fork's model is tested against. Enabling it is
+    [`.context/architecture/multi-tenancy.md`](./.context/architecture/multi-tenancy.md))
   - the ESLint app-boundary rule governing `lib/app/**` (root `eslint.config.mjs`)
   - brand mark component (`components/brand/brand-mark.tsx` — fork-owned scaffold; the default returns `BRAND.name` as a bare string, so a fork replaces markup rather than filling a blank)
   - fork theme (`app/brand-theme.css` — per-surface CSS-variable overrides, ships empty, imported by `app/layout.tsx`)
+  - browser-tab icons (`app/favicon.ico`, `app/icon.svg` — fork-replaced assets on the Next file convention, linked by Next with no `layout.tsx` entry)
   - fork schema tier (`prisma/schema/app.prisma` — ships empty; the reserved `/app` and `/framework` tiers generally, see [`CUSTOMIZATION.md`](./CUSTOMIZATION.md#the-appplatform-model))
 
 - **Documented public APIs** —
@@ -148,6 +164,9 @@ covered by the version contract.
     [`.context/api/orchestration-endpoints.md`](./.context/api/orchestration-endpoints.md)
 - **Published Prisma model interfaces** —
   - `User`
+  - `Org` and `OrgMembership` (`prisma/schema/tenancy.prisma`) — the identity a
+    fork's own tenant-owned models bind to; see
+    [`.context/tenancy/identity.md`](./.context/tenancy/identity.md)
   - The `Ai*` orchestration models the admin API exposes (see
     [`.context/orchestration/admin-api.md`](./.context/orchestration/admin-api.md))
 

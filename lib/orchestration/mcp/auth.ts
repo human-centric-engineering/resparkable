@@ -11,9 +11,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { mcpKeyScopeSchema } from '@/lib/validations/mcp';
+import { resolveCredentialOrg } from '@/lib/tenancy/entry';
+import { runAsCredentialLookup } from '@/lib/tenancy/context';
 import type { McpAuthContext } from '@/types/mcp';
 
-const KEY_PREFIX = 'smcp_';
+/** Prefix every MCP API key carries; the rate-limit credential lookup reads it too. */
+export const MCP_API_KEY_PREFIX = 'smcp_';
 const KEY_BYTE_LENGTH = 32;
 
 /** Base62 alphabet for compact key encoding */
@@ -52,7 +55,7 @@ export function hashApiKey(plaintext: string): string {
  */
 export function generateApiKey(): { plaintext: string; hash: string; prefix: string } {
   const encoded = randomBase62(KEY_BYTE_LENGTH);
-  const plaintext = `${KEY_PREFIX}${encoded}`;
+  const plaintext = `${MCP_API_KEY_PREFIX}${encoded}`;
   const hash = hashApiKey(plaintext);
   const prefix = plaintext.slice(0, 12);
   return { plaintext, hash, prefix };
@@ -62,21 +65,31 @@ export function generateApiKey(): { plaintext: string; hash: string; prefix: str
  * Verify a bearer token against the database.
  *
  * Returns the auth context if valid, or null if the key is missing,
- * inactive, or expired. Updates `lastUsedAt` fire-and-forget.
+ * inactive, or expired — or if it cannot enter an org (§106, t-673): its
+ * org is suspended, or it carries none at `multi`. The org's status is read
+ * with the key, and the context's `orgId` is the read rule's answer, so the
+ * transport runs each request inside `runAsOrg(auth.orgId, …)`. Updates
+ * `lastUsedAt` fire-and-forget.
  */
 export async function authenticateMcpRequest(
   bearerToken: string,
   clientIp: string,
   userAgent: string
 ): Promise<McpAuthContext | null> {
-  if (!bearerToken || !bearerToken.startsWith(KEY_PREFIX)) {
+  if (!bearerToken || !bearerToken.startsWith(MCP_API_KEY_PREFIX)) {
     return null;
   }
 
   const keyHash = hashApiKey(bearerToken);
-  const key = await prisma.mcpApiKey.findUnique({
-    where: { keyHash },
-  });
+  // The key row is tenant-owned and is what tells us the org: the one lookup
+  // runs under the credential-lookup scope (§107 t-709), and the transport
+  // enters the org it answers.
+  const key = await runAsCredentialLookup('mcp-key', () =>
+    prisma.mcpApiKey.findUnique({
+      where: { keyHash },
+      include: { org: { select: { status: true } } },
+    })
+  );
 
   if (!key) {
     return null;
@@ -92,18 +105,31 @@ export async function authenticateMcpRequest(
     return null;
   }
 
-  // Fire-and-forget lastUsedAt update
-  void prisma.mcpApiKey
-    .update({
+  const entry = resolveCredentialOrg(
+    { orgId: key.orgId, orgStatus: key.org?.status ?? null },
+    'mcp-key'
+  );
+  if ('refused' in entry) {
+    logger.warn('MCP auth: key cannot enter its org', {
+      keyPrefix: key.keyPrefix,
+      refused: entry.refused,
+    });
+    return null;
+  }
+
+  // Fire-and-forget lastUsedAt update — under the lookup scope, since the
+  // transport has not entered the org yet and a platform key has none.
+  void runAsCredentialLookup('mcp-key-touch', () =>
+    prisma.mcpApiKey.update({
       where: { id: key.id },
       data: { lastUsedAt: new Date() },
     })
-    .catch((err) => {
-      logger.error('MCP auth: failed to update lastUsedAt', {
-        keyId: key.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
+  ).catch((err) => {
+    logger.error('MCP auth: failed to update lastUsedAt', {
+      keyId: key.id,
+      error: err instanceof Error ? err.message : String(err),
     });
+  });
 
   // Re-validate the persisted scope carrier before trusting it — the JSON
   // column is never used raw. A malformed value is dropped (key treated as
@@ -126,6 +152,7 @@ export async function authenticateMcpRequest(
     clientIp,
     userAgent,
     scopedAgentId: key.scopedAgentId,
+    orgId: entry.orgId,
     ...(scope ? { scope } : {}),
   };
 }

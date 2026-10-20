@@ -18,6 +18,9 @@
  * `AiAgentCapability` rows should call `clearCache()` afterwards.
  *
  * Platform-agnostic: no Next.js imports.
+ *
+ * Tenancy posture: row-keyed — agent bindings by agent id; the rest is
+ * global config (lib/tenancy/process-state.ts).
  */
 
 import { prisma } from '@/lib/db/client';
@@ -57,6 +60,12 @@ import {
   setSpanAttributes,
   withSpan,
 } from '@/lib/orchestration/tracing';
+import { getTenantContext } from '@/lib/tenancy/context';
+import {
+  canChangeSharedSettings,
+  SHARED_SETTINGS_CAPABILITY_REFUSAL,
+  SHARED_SETTINGS_REFUSAL_CODE,
+} from '@/lib/tenancy/shared-settings';
 
 /**
  * Prefix marking a `CapabilityContext.agentId` that is a LABEL, not an
@@ -488,6 +497,26 @@ class CapabilityDispatcher {
           keys: folded.unpinned,
         });
       }
+    }
+
+    // 4c. Shared settings (§107 t-751). A capability that changes one changes
+    //     it for every org, so at `multi` it runs only from the install org
+    //     (or a system scope) — refused here, before the rate limit and
+    //     approval, for every caller: a chat agent, a workflow step, an MCP
+    //     tool. After the registry, quarantine and binding checks, so a call
+    //     those would refuse keeps their answer. No `skipFollowup`: the
+    //     `agent_call` executor reads that flag as the step's final answer,
+    //     and a refused write must fail the step, not complete it.
+    if (handler.writesSharedSettings && !canChangeSharedSettings()) {
+      logger.warn('Capability dispatch: shared-settings write refused outside the install org', {
+        slug,
+        agentId: context.agentId,
+        orgId: getTenantContext()?.orgId,
+      });
+      return {
+        success: false,
+        error: { code: SHARED_SETTINGS_REFUSAL_CODE, message: SHARED_SETTINGS_CAPABILITY_REFUSAL },
+      };
     }
 
     // 5. Rate limit. Effective limit is the binding override, else the

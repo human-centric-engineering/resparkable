@@ -100,6 +100,20 @@ function makeOpenAiConfigRow(): never {
   } as never;
 }
 
+/**
+ * Each slug resolves to its own row, as the real lookup does. The breaker is
+ * checked after the fetch, on the BUILT row's key (§120 t-744), so a mock that
+ * answers every slug with one row would test that row's breaker instead.
+ */
+function rowPerSlug(): void {
+  vi.mocked(prisma.aiProviderConfig.findFirst).mockImplementation((async (args: {
+    where: { slug?: string };
+  }) =>
+    args.where.slug
+      ? { ...(makeOpenAiConfigRow() as object), slug: args.where.slug }
+      : null) as never);
+}
+
 function makeAudioModelRow(overrides: Record<string, unknown> = {}): never {
   return {
     id: 'm-whisper',
@@ -173,7 +187,7 @@ describe('getAudioProvider', () => {
       makeAudioModelRow({ providerSlug: 'broken-provider', modelId: 'whisper-x' }),
       makeAudioModelRow({ providerSlug: 'openai', modelId: 'whisper-1' }),
     ]);
-    vi.mocked(prisma.aiProviderConfig.findFirst).mockResolvedValue(makeOpenAiConfigRow());
+    rowPerSlug();
 
     // Force the first slug's breaker open by recording enough failures.
     const breaker = getBreaker('broken-provider');
@@ -191,6 +205,7 @@ describe('getAudioProvider', () => {
       makeAudioModelRow({ providerSlug: 'a' }),
       makeAudioModelRow({ providerSlug: 'b' }),
     ]);
+    rowPerSlug();
 
     const ba = getBreaker('a');
     const bb = getBreaker('b');
@@ -209,8 +224,10 @@ describe('getAudioProvider', () => {
       makeAudioModelRow({ providerSlug: 'missing' }),
       makeAudioModelRow({ providerSlug: 'openai' }),
     ]);
-    // First lookup returns nothing → ProviderError; second returns the openai config.
+    // The first slug matches no row by slug or by name → ProviderError; the
+    // next lookup returns the openai config.
     vi.mocked(prisma.aiProviderConfig.findFirst)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(makeOpenAiConfigRow());
 
@@ -300,6 +317,7 @@ describe('getAudioProvider', () => {
         },
       } as never);
 
+      rowPerSlug();
       const breaker = getBreaker('broken');
       for (let i = 0; i < 10; i++) breaker.recordFailure();
 
@@ -469,11 +487,10 @@ describe('getAudioProvider — provider eligibility', () => {
     expect(result?.providerSlug).toBe('openai');
   });
 
-  it('does NOT filter an operator-pinned audio default', async () => {
-    // The boundary, pinned rather than assumed. A pin in Settings → Default
-    // models is an operator's recorded choice, the same category as an explicit
-    // `agent.provider`. The rule below denies EVERYTHING, so this resolving is
-    // the whole proof that the `operator_default` arm never consults it.
+  it("asks the rule about an operator's pinned default as 'explicit', and keeps it when permitted", async () => {
+    // A pin in Settings → Default models is an operator's recorded choice, the
+    // same category as an explicit `agent.provider`. This rule refuses only
+    // what Sunrise picks; the pin, asked as 'explicit', survives it.
     vi.mocked(getOrchestrationSettings).mockResolvedValue({
       defaultModels: {
         routing: '',
@@ -485,11 +502,43 @@ describe('getAudioProvider — provider eligibility', () => {
     } as never);
     vi.mocked(prisma.aiProviderModel.findMany).mockResolvedValue([makeAudioModelRow()]);
     vi.mocked(prisma.aiProviderConfig.findFirst).mockResolvedValue(makeOpenAiConfigRow());
-    registerProviderEligibility(() => []);
+    const rule = vi.fn((candidates: readonly string[], ctx: { source: string }) =>
+      ctx.source === 'explicit' ? candidates : []
+    );
+    registerProviderEligibility(rule);
 
     const result = await getAudioProvider();
 
     expect(result?.providerSlug).toBe('openai');
     expect(result?.modelId).toBe('whisper-1');
+    expect(rule).toHaveBeenCalledWith(['openai'], {
+      task: 'audio',
+      source: 'explicit',
+      primarySlug: 'openai',
+    });
+  });
+
+  it('falls through from a REFUSED pin to a permitted matrix row, as it does from any unusable pin (§120 t-741)', async () => {
+    // Left to the call-time gate, the refused pin was returned as resolved,
+    // transcribe() was refused, and the permitted row below was never tried.
+    vi.mocked(getOrchestrationSettings).mockResolvedValue({
+      defaultModels: {
+        routing: '',
+        chat: '',
+        reasoning: '',
+        embeddings: '',
+        audio: 'barred::whisper-1',
+      },
+    } as never);
+    vi.mocked(prisma.aiProviderModel.findMany).mockResolvedValue([
+      makeAudioModelRow({ providerSlug: 'barred' }),
+      makeAudioModelRow({ providerSlug: 'openai' }),
+    ]);
+    vi.mocked(prisma.aiProviderConfig.findFirst).mockResolvedValue(makeOpenAiConfigRow());
+    registerProviderEligibility((candidates) => candidates.filter((c) => c !== 'barred'));
+
+    const result = await getAudioProvider();
+
+    expect(result?.providerSlug).toBe('openai');
   });
 });

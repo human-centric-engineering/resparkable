@@ -14,6 +14,7 @@ import {
   mockAuthenticatedUser,
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
+import { parseCsvRecords } from '@/tests/helpers/csv';
 
 // ─── Mock dependencies ────────────────────────────────────────────────────────
 
@@ -228,6 +229,40 @@ describe('GET /api/v1/admin/orchestration/approvals/history', () => {
     expect(text).toContain("'=HYPERLINK");
     expect(text).not.toMatch(/,=cmd/);
     expect(text).not.toMatch(/,=HYPERLINK/);
+  });
+
+  it('keeps notes and reason containing a lone CR inside their own CSV record (#768)', async () => {
+    // A bare CR is a record break to a spreadsheet. Approver notes and
+    // the rejection reason are free text, so a CR in either must not
+    // start a new record whose first cell the writer controls.
+    const notes = "ok\r=cmd|' /C calc'!A0";
+    const reason = "no\r=cmd|' /C calc'!A1";
+    vi.mocked(prisma.aiWorkflowExecution.findMany).mockResolvedValueOnce([
+      makeExecution([
+        approvalEntry({ output: { approved: true, notes, actor: `admin:${APPROVER_ID}` } }),
+        approvalEntry({
+          stepId: 'reject-step',
+          status: 'rejected',
+          output: { rejected: true, reason, actor: `admin:${APPROVER_ID}` },
+        }),
+      ]),
+    ] as never);
+    vi.mocked(prisma.user.findMany).mockResolvedValueOnce([
+      { id: APPROVER_ID, name: 'Alice', email: 'a@x.com' },
+    ] as never);
+
+    const res = await GET(makeRequest('?format=csv'));
+    const records = parseCsvRecords(await res.text());
+
+    // Header + one row per decision, each as wide as the header.
+    expect(records).toHaveLength(3);
+    const [header, ...rows] = records;
+    for (const row of rows) expect(row).toHaveLength(header.length);
+    const col = (name: string) => header.indexOf(name);
+    const approved = rows.find((r) => r[col('decision')] === 'approved');
+    const rejected = rows.find((r) => r[col('decision')] === 'rejected');
+    expect(approved?.[col('notes')]).toBe(notes);
+    expect(rejected?.[col('reason')]).toBe(reason);
   });
 
   // ─── Auth / rate-limit guards ─────────────────────────────────────────────

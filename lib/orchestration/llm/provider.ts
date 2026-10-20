@@ -13,6 +13,8 @@
 import { logger } from '@/lib/logging';
 import { describeFetchFailure } from '@/lib/errors/fetch-error';
 import type {
+  EmbedManyOptions,
+  EmbedManyResult,
   EmbedOptions,
   LlmMessage,
   LlmOptions,
@@ -52,6 +54,33 @@ export const DEFAULT_TIMEOUT_MS = 120_000;
  * and broke every realistic local deployment.
  */
 export const LOCAL_TIMEOUT_MS = 60_000;
+
+/**
+ * Floor on an `embedMany` BATCH request's timeout (t-740).
+ *
+ * A knowledge batch is up to 100 chunks, and a local model on CPU (Ollama's
+ * nomic-embed-text, with a cold model load) can take well over the 60s chat
+ * timeout for one. The knowledge embedder set no timeout at all before it
+ * moved behind the provider manager, so a chat-sized timeout would fail
+ * uploads that used to work.
+ *
+ * Not for a search query (`inputType: 'query'`, embedded inside a chat turn):
+ * that keeps the row's own timeout, so a stalled host cannot hold a turn for
+ * five minutes per attempt. Keyed on purpose, not on text count: a one-chunk
+ * document is still ingestion. See {@link embeddingTimeoutMs}.
+ */
+export const EMBEDDING_BATCH_TIMEOUT_MS = 300_000;
+
+/**
+ * The timeout for one `embedMany` request: the row's own for a search query,
+ * and at least {@link EMBEDDING_BATCH_TIMEOUT_MS} for anything else.
+ */
+export function embeddingTimeoutMs(
+  rowTimeoutMs: number,
+  inputType: 'document' | 'query' | undefined
+): number {
+  return inputType === 'query' ? rowTimeoutMs : Math.max(rowTimeoutMs, EMBEDDING_BATCH_TIMEOUT_MS);
+}
 
 /**
  * Default maximum retries on transient failures (after the initial
@@ -100,8 +129,31 @@ export interface LlmProvider {
   /** Stream a chat completion as `StreamChunk`s. */
   chatStream(messages: LlmMessage[], options: LlmOptions): AsyncIterable<StreamChunk>;
 
-  /** Generate an embedding vector for a single text. */
+  /**
+   * Generate an embedding vector for a single text.
+   *
+   * @deprecated Use {@link embedMany}. This cannot say which model or
+   * dimension to use, or report usage, so knowledge ingestion never called
+   * it. Kept for fork provider classes and the admin test-model route;
+   * removed at the next MAJOR.
+   */
   embed(text: string, options?: EmbedOptions): Promise<number[]>;
+
+  /**
+   * Embed a batch of texts with a caller-chosen model and dimension.
+   *
+   * This is how knowledge ingestion and search reach an embedding vendor
+   * (t-740). They go through the provider manager like every other vendor
+   * call, so the in-flight Proxy counts them and a call-time gate can see
+   * them. Optional so a provider class written against the older contract
+   * still compiles; a provider without it cannot be used for knowledge
+   * embedding, and the embedder says so rather than falling back to
+   * {@link embed}, which could return vectors of the wrong width.
+   *
+   * Must return plain `number[]` vectors in input order, send `dimensions`
+   * only when `options.dimensions` is set, and refuse redirects.
+   */
+  embedMany?(texts: string[], options: EmbedManyOptions): Promise<EmbedManyResult>;
 
   /**
    * Discover the models this provider can serve.
@@ -193,6 +245,15 @@ export class ProviderError extends Error {
 }
 
 /**
+ * The code every provider-policy refusal carries: the call-time gate's
+ * `ProviderCallRefusedError`, a workflow step's pre-check, and the
+ * `ExecutorError` that wraps either (§120 t-741). One constant, because the
+ * engine recognises a refusal by this code alone — a second spelling would
+ * quietly make a refusal retriable again.
+ */
+export const PROVIDER_NOT_PERMITTED = 'provider_not_permitted';
+
+/**
  * `ProviderError` codes describing a fault in the REQUEST rather than in the
  * provider — the same cap, the same schema, the same rejection at any vendor.
  *
@@ -214,14 +275,30 @@ export class ProviderError extends Error {
  * `invalid_schema` is the obvious next member; it is held back to #592 with
  * the rest of the failover-policy work rather than shipped untested here.
  */
-const REQUEST_FAULT_CODES = new Set(['truncated_no_output']);
+//
+// `provider_not_permitted` is the call-time gate's refusal (§120 t-741,
+// `ProviderCallRefusedError`). Deterministic in the sense that matters: the
+// policy gives the same answer on every retry, and failing over to another
+// provider is the reroute the gate exists to rule out. It is also not evidence
+// about the provider's health, so it must never reach a circuit breaker — at
+// `multi`, one org's refusal would otherwise open the circuit for every org.
+const REQUEST_FAULT_CODES = new Set(['truncated_no_output', PROVIDER_NOT_PERMITTED]);
 
 /**
  * Whether `err` is a {@link REQUEST_FAULT_CODES} `ProviderError` — i.e. a
  * failure that re-running, re-routing or failing over cannot fix.
  */
 export function isRequestFault(err: unknown): err is ProviderError {
-  return err instanceof ProviderError && REQUEST_FAULT_CODES.has(err.code);
+  return err instanceof ProviderError && isRequestFaultCode(err.code);
+}
+
+/**
+ * {@link isRequestFault} for a caller that has only the code: one that read
+ * the failure off a chat stream's `error` event, where the `ProviderError`
+ * itself does not survive (the `judge_call` step, §77 t-747).
+ */
+export function isRequestFaultCode(code: string): boolean {
+  return REQUEST_FAULT_CODES.has(code);
 }
 
 /**
@@ -349,15 +426,15 @@ export async function fetchWithTimeout(
   try {
     // Refuse redirects (#635). Measured rather than taken from the issue, which
     // said "every LLM completion goes through here": it does not. Completions
-    // use the `openai` SDK client in `openai-compatible.ts`. The two production
-    // callers are `model-registry.ts` (OpenRouter's model list) and
-    // `voyage.ts` (embedding input), and BOTH pass a hardcoded host today — so
-    // nothing here is currently operator-controlled.
+    // use the `openai` SDK client in `openai-compatible.ts`. The production
+    // callers are `model-registry.ts` (OpenRouter's model list, a fixed host)
+    // and `voyage.ts`. Voyage's `embedMany` posts knowledge text to the row's
+    // configured `baseUrl` when one is set (t-740), so this IS
+    // operator-controlled now; the provider manager SSRF-checks that URL at
+    // build time, and this refusal covers every hop after the first.
     //
-    // It is set anyway because this is an exported, generic wrapper: it is the
-    // seam a fork or a future caller reuses with a configured host, and a
+    // It would be set anyway because this is an exported, generic wrapper: a
     // wrapper that silently follows is exactly the shape #534's sweep missed.
-    // Cheaper to fix the default than to re-audit each new caller.
     //
     // After the spread, not before: no caller passes `redirect` today, and one
     // that wants to follow should use `fetchRevalidatingRedirects` rather than
@@ -381,14 +458,14 @@ export async function fetchWithTimeout(
     // and `toProviderError` takes `err.message || fallback`, so the bare form
     // is what a caller ends up logging. Describe it first.
     //
-    // The substitution only happens when there IS a cause to add, which means a
-    // network-layer failure, which carries no `.status` — so nothing is lost
-    // from `extractStatus`, and an HTTP error passes through untouched.
+    // The description also reduces any URL the message quotes (#953), so it
+    // differs from `err.message` when there is a cause to add OR a URL to
+    // reduce. Either way this is a rejection from `fetch()` itself, which
+    // carries no `.status`, so nothing is lost from `extractStatus`. The
+    // original is not kept as `cause`: its message is the unreduced one.
     const described = describeFetchFailure(err);
     throw toProviderError(
-      err instanceof Error && described !== err.message
-        ? Object.assign(new Error(described), { cause: err })
-        : err,
+      err instanceof Error && described !== err.message ? new Error(described) : err,
       'fetch failed'
     );
   } finally {

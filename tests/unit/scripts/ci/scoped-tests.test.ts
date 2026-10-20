@@ -19,6 +19,7 @@
  * @see scripts/ci/scoped-tests.ts
  */
 
+import { parseCLI } from 'vitest/node';
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -107,6 +108,24 @@ describe('ALWAYS_RUN_TESTS', () => {
     // stops a scoped run enforcing what a data subject receives, and CLAUDE.md
     // calls that manifest out as the thing never to quietly shorten.
     expect(alwaysRunPaths()).toContain('tests/unit/lib/privacy/export-sources.test.ts');
+  });
+
+  it.each([
+    // The org-subject twin of the manifest above: dropping it ships an org
+    // export and erasure silently short.
+    'tests/unit/lib/privacy/org-sources.test.ts',
+    // Walks lib/ for module-level state; an undeclared holder is a cross-org
+    // cache at multi, and the change that adds one never imports this test.
+    'tests/unit/lib/tenancy/process-state.test.ts',
+    // The only check that ORG_ROLES / ORG_STATUSES match the Prisma enums.
+    'tests/unit/lib/tenancy/roles.test.ts',
+    // Walks lib/ for dispatch sites that thread a scope; a miss lets a
+    // request-body scope decide what a tool acts on.
+    'tests/unit/lib/orchestration/scope-authority.test.ts',
+  ])('includes %s, which no module graph reaches', (path) => {
+    // Named for the same reason: the release notes tell forks the tenancy
+    // guards catch them, so their presence is a claim, not a count.
+    expect(alwaysRunPaths()).toContain(path);
   });
 });
 
@@ -271,11 +290,27 @@ describe('buildVitestArgv', () => {
     expect(argv).toContain('--coverage.include=lib/a.ts');
     expect(argv).toContain('--coverage.include=lib/b.ts');
     // Without perFile the floor is an average over the included set, which one
-    // well-covered file carries for a bare one.
-    expect(argv).toContain('--coverage.thresholds.perFile=true');
-    for (const metric of ['lines', 'functions', 'branches', 'statements']) {
-      expect(argv).toContain(`--coverage.thresholds.${metric}=80`);
-    }
+    // well-covered file carries for a bare one. Asked of vitest's own parser:
+    // the `=true` spelling parses to the string "true", which is not on (t-749).
+    const { thresholds } = parseCLI(['vitest', ...argv]).options.coverage ?? {};
+    expect(thresholds).toEqual({
+      perFile: true,
+      lines: 80,
+      functions: 80,
+      branches: 80,
+      statements: 80,
+    });
+  });
+
+  it('never spells the per-file flag `=true`, which vitest reads as the string "true"', () => {
+    const argv = buildVitestArgv(plan({ coverage: ['lib/a.ts'], threshold: 80 }));
+    expect(argv).not.toContain('--coverage.thresholds.perFile=true');
+    // The premise, pinned against the installed vitest: if this stops holding,
+    // the spelling stops mattering, and this test should say so.
+    expect(
+      parseCLI(['vitest', 'run', '--coverage.thresholds.perFile=true']).options.coverage?.thresholds
+        ?.perFile
+    ).toBe('true');
   });
 
   it('glob-escapes a route group, which would otherwise gate nothing', () => {
@@ -402,17 +437,17 @@ describe('validateAlwaysRun', () => {
 
 describe('selfTestFailure', () => {
   it('passes on the module as shipped', () => {
-    expect(selfTestFailure()).toBeNull();
+    expect(selfTestFailure({ parse: parseCLI })).toBeNull();
   });
 
   it('reports a broken list before it reports anything else', () => {
-    expect(selfTestFailure({ entries: [] })).toContain('empty');
+    expect(selfTestFailure({ entries: [], parse: parseCLI })).toContain('empty');
   });
 
   it('catches a detector that has stopped matching', () => {
     // The failure mode the sentinel exists for: `[]` from a dead regex reads
     // as "nothing new to declare" at every call site.
-    expect(selfTestFailure({ detect: () => [] })).toContain('detector matched');
+    expect(selfTestFailure({ detect: () => [], parse: parseCLI })).toContain('detector matched');
   });
 
   it('catches a detector that stopped subtracting the declared list', () => {
@@ -420,15 +455,37 @@ describe('selfTestFailure', () => {
     // so the first check passes and only the second can see the fault.
     const detect = (files: readonly string[]): string[] =>
       files.filter((path) => path !== 'tests/c.test.ts');
-    expect(selfTestFailure({ detect })).toContain('still reported as undeclared');
+    expect(selfTestFailure({ detect, parse: parseCLI })).toContain('still reported as undeclared');
   });
 
   it('catches coverageTargets letting a test file through', () => {
-    expect(selfTestFailure({ targets: (changed) => [...changed] })).toContain('coverageTargets');
+    expect(selfTestFailure({ targets: (changed) => [...changed], parse: parseCLI })).toContain(
+      'coverageTargets'
+    );
   });
 
   it('catches buildVitestArgv dropping the per-file threshold', () => {
-    expect(selfTestFailure({ build: () => ['run'] })).toContain('per-file coverage');
+    expect(selfTestFailure({ build: () => ['run'], parse: parseCLI })).toContain(
+      'per-file coverage'
+    );
+  });
+
+  it('fails when the per-file flag is spelled the way vitest reads as a string (t-749)', () => {
+    const build: typeof buildVitestArgv = (plan) =>
+      buildVitestArgv(plan).map((a) =>
+        a === '--coverage.thresholds.perFile' ? '--coverage.thresholds.perFile=true' : a
+      );
+    expect(selfTestFailure({ build, parse: parseCLI })).toBe(
+      'buildVitestArgv\'s per-file coverage threshold parses as "true", not true: vitest would gate the average.'
+    );
+  });
+
+  it('fails when a metric floor is missing from the argv', () => {
+    const build: typeof buildVitestArgv = (plan) =>
+      buildVitestArgv(plan).filter((a) => !a.startsWith('--coverage.thresholds.branches'));
+    expect(selfTestFailure({ build, parse: parseCLI })).toBe(
+      "buildVitestArgv's branches threshold parses as undefined, not 80."
+    );
   });
 
   it('passes for a caller injecting its own valid entries list', () => {
@@ -438,6 +495,6 @@ describe('selfTestFailure', () => {
     // list — however correct — was reported as broken. A self-test that fails
     // on good input is the same defect as one that passes on bad input.
     const fork = [{ path: 'tests/unit/fork-thing.test.ts', reason: 'x'.repeat(30) }];
-    expect(selfTestFailure({ entries: fork })).toBeNull();
+    expect(selfTestFailure({ entries: fork, parse: parseCLI })).toBeNull();
   });
 });

@@ -27,6 +27,10 @@ import { z } from 'zod';
 import { AlertCircle, Check, Loader2, Save, Sparkles } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Label } from '@/components/ui/label';
@@ -231,6 +235,7 @@ export function DefaultModelsForm({
   audioModels = [],
   wizardMode,
 }: DefaultModelsFormProps) {
+  const readOnly = useSharedSettingsReadOnly();
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [savedAt, setSavedAt] = React.useState<Date | null>(null);
@@ -525,8 +530,9 @@ export function DefaultModelsForm({
             {/* Wizard mode owns its own Save & Continue button in the
                 card footer, so the header version would be duplicative
                 and confusing about which one advances the flow. */}
+            {!wizardMode && <SharedSettingsSaveHint />}
             {!wizardMode && (
-              <Button type="submit" size="sm" disabled={submitting || !isDirty}>
+              <Button type="submit" size="sm" disabled={readOnly || submitting || !isDirty}>
                 {submitting ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />

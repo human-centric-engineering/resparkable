@@ -27,6 +27,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 import { ProviderModelsMatrix } from '@/components/admin/orchestration/provider-models-matrix';
 import type { ModelRow } from '@/components/admin/orchestration/provider-models-matrix';
 
@@ -98,6 +99,20 @@ function makeModel(overrides: Partial<ModelRow> = {}): ModelRow {
 describe('ProviderModelsMatrix', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  // ── Model audit (install org only, §116 t-725) ────────────────────────────
+
+  it('hides "Audit Models" by default: only the install org has the audit workflow', () => {
+    render(<ProviderModelsMatrix initialModels={[makeModel()]} />);
+
+    expect(screen.queryByRole('button', { name: /audit models/i })).toBeNull();
+  });
+
+  it('shows "Audit Models" when the page says this is the install org', () => {
+    render(<ProviderModelsMatrix initialModels={[makeModel()]} canAuditModels />);
+
+    expect(screen.getByRole('button', { name: /audit models/i })).toBeInTheDocument();
   });
 
   // ── Basic rendering ────────────────────────────────────────────────────────
@@ -1010,5 +1025,200 @@ describe('ProviderModelsMatrix', () => {
       const deleteBtn = screen.getByRole('button', { name: /^delete$/i });
       expect(deleteBtn).toBeDisabled();
     });
+
+    it('counts other orgs’ users beside the caller’s, and keeps Delete disabled (t-731)', async () => {
+      const { apiClient, APIClientError } = await import('@/lib/api/client');
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError(
+          'Cannot delete model "GPT-5" — 3 active agents still reference it (2 of them in other organisations).',
+          'MODEL_IN_USE',
+          409,
+          {
+            agents: [{ id: 'agent-3', name: 'Late Bound', slug: 'late-bound' }],
+            workflows: [],
+            otherOrgAgentCount: 2,
+            otherOrgWorkflowCount: 0,
+          }
+        )
+      );
+
+      const user = userEvent.setup();
+      render(<ProviderModelsMatrix initialModels={[makeModel({ name: 'GPT-5', agents: [] })]} />);
+
+      await user.click(screen.getByRole('button', { name: /^delete GPT-5$/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      expect(await screen.findByText('Late Bound')).toBeInTheDocument();
+      expect(
+        screen.getByText(/2 agents or workflows in other organisations also use this model/)
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeDisabled();
+    });
+
+    it('blocks the delete when only other orgs use the model', async () => {
+      const { apiClient, APIClientError } = await import('@/lib/api/client');
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('in use elsewhere', 'MODEL_IN_USE', 409, {
+          agents: [],
+          workflows: [],
+          otherOrgAgentCount: 0,
+          otherOrgWorkflowCount: 1,
+        })
+      );
+
+      const user = userEvent.setup();
+      render(<ProviderModelsMatrix initialModels={[makeModel({ name: 'GPT-5', agents: [] })]} />);
+
+      await user.click(screen.getByRole('button', { name: /^delete GPT-5$/i }));
+      await user.click(screen.getByRole('button', { name: /^delete$/i }));
+
+      expect(
+        await screen.findByText(/1 agent or workflow in other organisations also uses this model/)
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^delete$/i })).toBeDisabled();
+    });
+  });
+});
+
+describe('ProviderModelsMatrix — agents in other organisations (§107 t-752)', () => {
+  it('counts them into the cell and says so in the popover, never naming them', async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderModelsMatrix
+        initialModels={[
+          makeModel({
+            name: 'GPT-5',
+            agents: [{ id: 'agent-1', name: 'Triage Bot', slug: 'triage-bot' }],
+            otherOrgAgentCount: 2,
+          }),
+        ]}
+      />
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: /show 3 agents directly assigned to GPT-5/i })
+    );
+
+    expect(await screen.findByRole('link', { name: /Triage Bot/ })).toBeInTheDocument();
+    expect(screen.getByText(/…and 2 agents in other organisations/)).toBeInTheDocument();
+  });
+
+  it('treats a model only other orgs use as in use: listed, filtered in, and delete-blocked', async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderModelsMatrix
+        initialModels={[
+          makeModel({ id: 'm1', name: 'Unused Model', agents: [] }),
+          makeModel({ id: 'm2', name: 'Elsewhere Model', agents: [], otherOrgAgentCount: 1 }),
+        ]}
+      />
+    );
+
+    expect(
+      screen.getByRole('button', { name: /show 1 agent directly assigned to Elsewhere Model/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Delete Elsewhere Model disabled — model is in use/i })
+    ).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Delete Unused Model/i })).toBeEnabled();
+
+    await user.click(
+      screen.getByRole('button', { name: /show only models with at least one bound agent/i })
+    );
+    expect(screen.getByText('Elsewhere Model')).toBeInTheDocument();
+    expect(screen.queryByText('Unused Model')).not.toBeInTheDocument();
+  });
+
+  it('does not tell the admin to edit agents it cannot list when only other orgs use it', async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderModelsMatrix
+        initialModels={[makeModel({ name: 'GPT-5', agents: [], otherOrgAgentCount: 2 })]}
+      />
+    );
+
+    await user.click(
+      screen.getByRole('button', { name: /show 2 agents directly assigned to GPT-5/i })
+    );
+
+    expect(await screen.findByText(/2 agents in other organisations use it/)).toBeInTheDocument();
+    expect(screen.queryByText(/Editing the agent re-points it/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('list')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProviderModelsMatrix — read-only outside the install org (§107 t-753)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function renderReadOnly(models: ModelRow[]) {
+    return render(
+      <SharedSettingsAccessProvider readOnly canSwitch>
+        <ProviderModelsMatrix initialModels={models} />
+      </SharedSettingsAccessProvider>
+    );
+  }
+
+  it('hides "Discover models" but keeps the row and its link', () => {
+    // Contrast: the same fixture without the provider shows the button
+    // (see 'renders a "Discover models" button').
+    const { unmount } = render(<ProviderModelsMatrix initialModels={[makeModel()]} />);
+    expect(screen.getByRole('button', { name: /discover models/i })).toBeInTheDocument();
+    unmount();
+
+    renderReadOnly([makeModel()]);
+
+    expect(screen.queryByRole('button', { name: /discover models/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'GPT-5' })).toHaveAttribute(
+      'href',
+      '/admin/orchestration/provider-models/model-1'
+    );
+  });
+
+  it('hides the row delete button for a deletable model (no agents bound)', () => {
+    const model = makeModel({ name: 'GPT-5', agents: [] });
+    const { unmount } = render(<ProviderModelsMatrix initialModels={[model]} />);
+    expect(screen.getByRole('button', { name: /^delete GPT-5$/i })).toBeEnabled();
+    unmount();
+
+    renderReadOnly([model]);
+
+    expect(screen.getByRole('row', { name: /gpt-5/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^delete GPT-5/i })).not.toBeInTheDocument();
+  });
+
+  it('drops the Actions column, which only ever held delete', () => {
+    const model = makeModel({ name: 'GPT-5', agents: [] });
+    const { unmount } = render(<ProviderModelsMatrix initialModels={[model]} />);
+    expect(screen.getByRole('columnheader', { name: 'Actions' })).toBeInTheDocument();
+    const editableCells = screen.getAllByRole('cell').length;
+    unmount();
+
+    renderReadOnly([model]);
+
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /model/i })).toBeInTheDocument();
+    // The row loses that one cell too, so headers and cells still line up.
+    expect(screen.getAllByRole('cell')).toHaveLength(editableCells - 1);
+  });
+
+  it('also hides the disabled "model is in use" delete button', () => {
+    const model = makeModel({
+      name: 'GPT-5',
+      agents: [{ id: 'agent-1', name: 'Triage', slug: 'triage' }],
+    });
+    const { unmount } = render(<ProviderModelsMatrix initialModels={[model]} />);
+    expect(
+      screen.getByRole('button', { name: /delete GPT-5 disabled — model is in use/i })
+    ).toBeDisabled();
+    unmount();
+
+    renderReadOnly([model]);
+
+    expect(screen.getByRole('row', { name: /gpt-5/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /delete GPT-5/i })).not.toBeInTheDocument();
+    // The agent count (read-only information) survives.
+    expect(screen.getByRole('button', { name: /1 agent/i })).toBeInTheDocument();
   });
 });

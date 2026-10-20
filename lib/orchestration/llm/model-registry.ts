@@ -19,6 +19,9 @@
  * `getAvailableModels(providerName?)` to query the merged view.
  *
  * Platform-agnostic: no Next.js imports, no Node-only APIs.
+ *
+ * Tenancy posture: global-config — AiProviderModel has no org
+ * (lib/tenancy/process-state.ts).
  */
 
 import { z } from 'zod';
@@ -53,6 +56,18 @@ interface RegistryState {
 }
 
 let state: RegistryState = { models: buildFallbackMap(), fetchedAt: 0, failedAt: 0 };
+
+/** The numeric fields a registry entry can take from an `AiProviderModel` row. */
+type DbSourcedField = 'input' | 'output' | 'context';
+
+/**
+ * Per model id, the fields whose current value was written by
+ * `registerModels` — i.e. it is the matrix row's own figure, not a registry
+ * one. Lets a later edit to that row take effect on the next hydrate while a
+ * registry figure (static map / OpenRouter) is never overwritten by a row.
+ * Cleared whenever the map is rebuilt from the fallback + OpenRouter.
+ */
+const dbSourced = new Map<string, Set<DbSourcedField>>();
 let inflightRefresh: Promise<void> | null = null;
 
 /**
@@ -112,6 +127,10 @@ export async function refreshFromOpenRouter(options: { force?: boolean } = {}): 
       // Successful refresh — clear the failure timestamp so the next
       // expiry of the success TTL gets a clean retry, not a backoff.
       state = { models: merged, fetchedAt: Date.now(), failedAt: 0 };
+      // The rebuild dropped the matrix's entries; put them back over the new
+      // catalogue, where OpenRouter's figures are now the registry's.
+      dbSourced.clear();
+      registerModels(lastRegistered);
       logger.info('Model registry refreshed from OpenRouter', { modelCount: added });
     } catch (err) {
       logger.warn('Model registry refresh failed; using fallback map', {
@@ -158,6 +177,59 @@ export async function refreshFromProvider(provider: LlmProvider): Promise<ModelI
   }
 }
 
+/** Record which fields of `id` now hold a matrix-row figure, whatever its value. */
+function markDbSourced(id: string, fields: Record<DbSourcedField, boolean>): void {
+  const names = (Object.keys(fields) as DbSourcedField[]).filter((f) => fields[f]);
+  if (names.length === 0) return;
+  const set = dbSourced.get(id) ?? new Set<DbSourcedField>();
+  for (const name of names) set.add(name);
+  dbSourced.set(id, set);
+}
+
+/**
+ * Set or clear `pricingUnknown` on a merged entry. It survives only while
+ * both rates are still 0 and `unpriced` says no source has priced the model —
+ * a registry entry at 0/0 is a free model, not an unpriced one.
+ */
+function settlePricingFlag(entry: ModelInfo, unpriced: boolean): ModelInfo {
+  const settled: ModelInfo = { ...entry };
+  delete settled.pricingUnknown;
+  if (unpriced && settled.inputCostPerMillion === 0 && settled.outputCostPerMillion === 0) {
+    settled.pricingUnknown = true;
+  }
+  return settled;
+}
+
+/**
+ * Resolve one numeric field for a same-provider collision. `fromDb` says the
+ * row owns the field from here on.
+ *
+ * - A figure an earlier hydrate wrote is the row's own, so the row's current
+ *   value replaces it — including 0, so an operator can clear a price (null)
+ *   or a context bucket (`n_a`) as well as change it.
+ * - A positive registry figure (static map / OpenRouter) is kept.
+ * - A registry zero is filled by a positive row value, and otherwise stands.
+ */
+function pickNumber(
+  field: DbSourcedField,
+  existing: number,
+  incoming: number,
+  sourced: Set<DbSourcedField> | undefined
+): { value: number; fromDb: boolean } {
+  if (sourced?.has(field)) return { value: incoming, fromDb: true };
+  if (existing > 0) return { value: existing, fromDb: false };
+  if (incoming > 0) return { value: incoming, fromDb: true };
+  return { value: existing, fromDb: false };
+}
+
+/**
+ * The rows the last `registerModels` call applied. `refreshFromOpenRouter`
+ * rebuilds the map from scratch and re-applies them, so a rebuild cannot drop
+ * the matrix's models while the hydrate throttle still says they are loaded.
+ * Every caller passes the complete active set (`hydrateFromDb`).
+ */
+let lastRegistered: ModelInfo[] = [];
+
 /**
  * Sync merge of externally-sourced models into the registry state.
  *
@@ -170,13 +242,18 @@ export async function refreshFromProvider(provider: LlmProvider): Promise<ModelI
  *
  * Last-write-wins on key conflict — EXCEPT:
  *
- *   - **Pricing + context length** fall back to the existing entry when
- *     the incoming row carries zero. `AiProviderModel.costPerMillionTokens`
- *     is nullable (and unfilled rows coerce to 0 via `dbModelToModelInfo`);
- *     clobbering a known OpenRouter price with 0 would silently zero
- *     out every downstream cost estimate. Operators who genuinely want
- *     to override pricing for a local / custom model can still do so by
- *     setting a non-zero value in the matrix.
+ *   - **Pricing + context length** keep the existing entry's value
+ *     whenever it is positive; the incoming row only fills a field the
+ *     registry has at zero. `AiProviderModel.costPerMillionTokens` is a
+ *     single blended rate (nullable; unfilled rows coerce to 0 via
+ *     `dbModelToModelInfo`, marked `pricingUnknown` until something
+ *     prices them — see `settlePricingFlag`) and `contextLength` is a coarse bucket, so
+ *     letting either beat the registry's exact input/output split and
+ *     real window mis-prices turns and mis-sizes the history budget. A
+ *     custom / local model the registry has never seen is unaffected —
+ *     its row is the only source and is registered as-is, and a figure
+ *     an earlier hydrate wrote stays replaceable by the row's current
+ *     value — zero included — so operator edits take effect.
  *
  *   - **Cross-provider id collisions are dropped.** The bare-id key
  *     drives runtime provider resolution (`getModel(id).provider →
@@ -190,45 +267,97 @@ export async function refreshFromProvider(provider: LlmProvider): Promise<ModelI
  *     via an explicit `provider/model` selection rather than bare id.
  */
 export function registerModels(infos: ModelInfo[]): void {
+  lastRegistered = infos;
   if (infos.length === 0) return;
   const merged = new Map(state.models);
+  // Cross-provider rows go last, so each fills the entry its own provider's
+  // row has already settled this pass — whatever order the rows arrived in.
+  const crossProvider: ModelInfo[] = [];
   for (const info of infos) {
     const existing = merged.get(info.id);
     if (!existing) {
       merged.set(info.id, info);
+      markDbSourced(info.id, { input: true, output: true, context: true });
       continue;
     }
     if (existing.provider !== info.provider) {
-      // Different-provider id collision — keep the existing entry's
-      // provider as the bare-id canonical so runtime resolution stays
-      // stable. Still let pricing / context fall through when the
-      // existing entry was missing those signals and the incoming row
-      // has them, since that's a useful enrichment regardless of which
-      // provider's id we picked.
-      merged.set(info.id, {
-        ...existing,
-        inputCostPerMillion:
-          existing.inputCostPerMillion > 0
-            ? existing.inputCostPerMillion
-            : info.inputCostPerMillion,
-        outputCostPerMillion:
-          existing.outputCostPerMillion > 0
-            ? existing.outputCostPerMillion
-            : info.outputCostPerMillion,
-        maxContext: existing.maxContext > 0 ? existing.maxContext : info.maxContext,
-      });
+      crossProvider.push(info);
       continue;
     }
-    merged.set(info.id, {
-      ...info,
-      inputCostPerMillion:
-        info.inputCostPerMillion > 0 ? info.inputCostPerMillion : existing.inputCostPerMillion,
-      outputCostPerMillion:
-        info.outputCostPerMillion > 0 ? info.outputCostPerMillion : existing.outputCostPerMillion,
-      maxContext: info.maxContext > 0 ? info.maxContext : existing.maxContext,
-    });
+    // Same provider: the incoming row wins on descriptive fields. On price
+    // and context a positive REGISTRY figure wins — a matrix row carries one
+    // blended rate and a coarse context bucket, the registry's input/output
+    // split and real window are the exact ones. See `pickNumber`.
+    const sourced = dbSourced.get(info.id);
+    const input = pickNumber(
+      'input',
+      existing.inputCostPerMillion,
+      info.inputCostPerMillion,
+      sourced
+    );
+    const output = pickNumber(
+      'output',
+      existing.outputCostPerMillion,
+      info.outputCostPerMillion,
+      sourced
+    );
+    const context = pickNumber('context', existing.maxContext, info.maxContext, sourced);
+    // Unpriced only when the row is and it owns both rates; a registry entry
+    // at 0/0 is a free model, never an unpriced one.
+    merged.set(
+      info.id,
+      settlePricingFlag(
+        {
+          ...info,
+          inputCostPerMillion: input.value,
+          outputCostPerMillion: output.value,
+          maxContext: context.value,
+        },
+        info.pricingUnknown === true && input.fromDb && output.fromDb
+      )
+    );
+    markDbSourced(info.id, { input: input.fromDb, output: output.fromDb, context: context.fromDb });
+  }
+  for (const info of crossProvider) {
+    // Pushed only once an entry existed, and the map only grows.
+    const existing = merged.get(info.id)!;
+    // Different-provider id collision — keep the existing entry's
+    // provider as the bare-id canonical so runtime resolution stays
+    // stable. Still let pricing / context fall through when the
+    // existing entry was missing those signals and the incoming row
+    // has them, since that's a useful enrichment regardless of which
+    // provider's id we picked. A filled figure is the matrix's, so it is
+    // marked as such and stays replaceable on the next hydrate.
+    const fillInput = existing.inputCostPerMillion === 0 && info.inputCostPerMillion > 0;
+    const fillOutput = existing.outputCostPerMillion === 0 && info.outputCostPerMillion > 0;
+    const fillContext = existing.maxContext === 0 && info.maxContext > 0;
+    merged.set(
+      info.id,
+      settlePricingFlag(
+        {
+          ...existing,
+          inputCostPerMillion: fillInput ? info.inputCostPerMillion : existing.inputCostPerMillion,
+          outputCostPerMillion: fillOutput
+            ? info.outputCostPerMillion
+            : existing.outputCostPerMillion,
+          maxContext: fillContext ? info.maxContext : existing.maxContext,
+        },
+        existing.pricingUnknown === true
+      )
+    );
+    markDbSourced(info.id, { input: fillInput, output: fillOutput, context: fillContext });
   }
   state = { ...state, models: merged };
+}
+
+/**
+ * Whether `field` of model `id` holds a figure a hydrate wrote from its matrix
+ * row (and so follows that row) rather than a registry one (static map /
+ * OpenRouter, which a row never replaces). For a caller merging matrix rows
+ * itself, so it applies the same rule `registerModels` does.
+ */
+export function isMatrixOwnedFigure(id: string, field: 'input' | 'output' | 'context'): boolean {
+  return dbSourced.get(id)?.has(field) ?? false;
 }
 
 /** Return all models, optionally filtered to a single provider. */
@@ -268,6 +397,8 @@ export function getRegistryFetchedAt(): number {
  */
 export function __resetForTests(): void {
   state = { models: buildFallbackMap(), fetchedAt: 0, failedAt: 0 };
+  dbSourced.clear();
+  lastRegistered = [];
   inflightRefresh = null;
 }
 

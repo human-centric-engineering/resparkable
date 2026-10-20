@@ -4,24 +4,38 @@
  * Two things carry real risk here: the cadence gate (a job that ignores its
  * interval hammers the DB every 60s, which is what #442 is about) and
  * containment (a fork's job must not break the maintenance tick).
+ *
+ * Since §108 (t-711) a job also declares whose rows it acts on (`scope`). The
+ * tenancy primitives are real here, with the env and the `Org` read mocked,
+ * so the scope tests assert the context a job actually ran in — and that a
+ * registration written before the field existed behaves exactly as before.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const initAppJobs = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/app/jobs', () => ({ initAppJobs }));
+
+const mockEnv = vi.hoisted(() => ({ TENANCY_MODE: 'single' }));
+vi.mock('@/lib/env', () => ({ env: mockEnv }));
+
+const mockOrgFindMany = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/db/client', () => ({ prisma: { org: { findMany: mockOrgFindMany } } }));
 
 vi.mock('@/lib/logging', () => ({
   logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 import { logger } from '@/lib/logging';
+import { getTenantContext, runAsOrg } from '@/lib/tenancy/context';
 
 import {
   registerAppJob,
   runDueAppJobs,
   getAppJobs,
   getAppJobsMinIntervalMs,
+  DEFAULT_APP_JOB_SCOPE,
   __resetAppJobsForTests,
 } from '@/lib/orchestration/maintenance/app-jobs';
 
@@ -30,6 +44,8 @@ const HOUR = 60 * 60 * 1000;
 beforeEach(() => {
   __resetAppJobsForTests();
   initAppJobs.mockReset().mockImplementation(() => {});
+  mockEnv.TENANCY_MODE = 'single';
+  mockOrgFindMany.mockReset().mockResolvedValue([{ id: INSTALL_ORG_ID }]);
 });
 
 afterEach(() => {
@@ -90,6 +106,11 @@ describe('runDueAppJobs', () => {
 
     const t0 = 1_000_000;
     const first = runDueAppJobs(t0);
+    // Wait for the job to actually be in flight: entering its tenant scope
+    // reads the active orgs first (§108), so the run starts a tick or two
+    // after the call. The latch is set before that read, so the assertion
+    // below is about the guard, not about the ordering.
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
     // Next tick arrives while the job is still pending, and IS past the interval.
     const second = await runDueAppJobs(t0 + 10);
 
@@ -242,5 +263,125 @@ describe('registerAppJob', () => {
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledTimes(1);
     expect(getAppJobs()).toHaveLength(1);
+  });
+});
+
+describe('scope (§108)', () => {
+  const ORG_A = 'org_a';
+  const ORG_B = 'org_b';
+
+  /** A job body that records the tenant context it ran in. */
+  function recordingRun() {
+    const seen: Array<string | null | undefined> = [];
+    const run = vi.fn(async () => {
+      const ctx = getTenantContext();
+      seen.push(ctx === null ? undefined : ctx.orgId);
+      return { ran: 1 };
+    });
+    return { run, seen };
+  }
+
+  it('defaults to per-org', () => {
+    expect(DEFAULT_APP_JOB_SCOPE).toBe('per-org');
+  });
+
+  it('runs a scopeless registration inside the install org at single, with its result untouched', async () => {
+    // The registration shape every fork already has — no `scope` field. At
+    // single the one org is the install org, so this is today's behaviour with
+    // the org now explicit.
+    const { run, seen } = recordingRun();
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({ name: 'app:legacy', intervalMs: HOUR, run })
+    );
+
+    const summary = await runDueAppJobs(1_000_000);
+
+    expect(seen).toEqual([INSTALL_ORG_ID]);
+    expect(summary).toEqual({ 'app:legacy': { ran: 1 } });
+  });
+
+  it('at multi runs a per-org job once per active org and folds the summary', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    mockOrgFindMany.mockResolvedValue([{ id: ORG_A }, { id: ORG_B }]);
+    const { run, seen } = recordingRun();
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({ name: 'app:sweep', intervalMs: HOUR, scope: 'per-org', run })
+    );
+
+    const summary = await runDueAppJobs(1_000_000);
+
+    expect(seen).toEqual([ORG_A, ORG_B]);
+    expect(summary).toEqual({ 'app:sweep': { orgs: 2, ran: 2 } });
+  });
+
+  it('runs a system job once, under the audited scope, with the fork’s reason logged', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    mockOrgFindMany.mockResolvedValue([{ id: ORG_A }, { id: ORG_B }]);
+    const { run, seen } = recordingRun();
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({
+        name: 'app:global-sync',
+        intervalMs: HOUR,
+        scope: { system: 'app:global-sync reconciles a table with no orgId' },
+        run,
+      })
+    );
+
+    await runDueAppJobs(1_000_000);
+
+    // `null` = the system scope was entered (not `undefined` = no scope).
+    expect(seen).toEqual([null]);
+    expect(mockOrgFindMany).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith('Entering system tenant scope', {
+      reason: 'app:global-sync reconciles a table with no orgId',
+    });
+  });
+
+  it('at multi contains one org’s failure and still runs the job for the next org', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    mockOrgFindMany.mockResolvedValue([{ id: ORG_A }, { id: ORG_B }]);
+    const run = vi.fn(async () => {
+      if (getTenantContext()?.orgId === ORG_A) throw new Error('A down');
+      return { ran: 1 };
+    });
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({ name: 'app:sweep', intervalMs: HOUR, run })
+    );
+
+    const summary = await runDueAppJobs(1_000_000);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(summary).toEqual({
+      'app:sweep': { orgs: 2, ran: 1, orgErrors: [{ orgId: ORG_A, error: 'A down' }] },
+    });
+  });
+
+  it('calls run() through the job, so a method-shorthand run reading `this` still works', async () => {
+    // `AppJob.run` may legally be written as a method shorthand; handing the
+    // function to the scope runner detached would break the receiver.
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({
+        name: 'app:self',
+        intervalMs: HOUR,
+        run() {
+          return Promise.resolve({ ranAs: this.name });
+        },
+      })
+    );
+
+    const summary = await runDueAppJobs(1_000_000);
+
+    expect(summary).toEqual({ 'app:self': { ranAs: 'app:self' } });
+  });
+
+  it('does not inherit the org the caller entered', async () => {
+    const { run, seen } = recordingRun();
+    initAppJobs.mockImplementation(() =>
+      registerAppJob({ name: 'app:sweep', intervalMs: HOUR, run })
+    );
+
+    await runAsOrg(ORG_B, () => runDueAppJobs(1_000_000));
+
+    expect(seen).toEqual([INSTALL_ORG_ID]);
   });
 });

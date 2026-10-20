@@ -19,10 +19,12 @@ import { getRouteLogger } from '@/lib/api/context';
 import { getClientIP } from '@/lib/security/ip';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { createInitialVersion } from '@/lib/orchestration/workflows/version-service';
+import { findFreeWorkflowSlug } from '@/lib/orchestration/workflows/slug-availability';
 import { workflowDefinitionSchema } from '@/lib/validations/orchestration';
 import { cuidSchema } from '@/lib/validations/common';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { assertWorkflowProvidersApproved } from '@/lib/orchestration/workflows/semantic-validator';
 
 const saveAsTemplateSchema = z.object({
   name: z.string().min(1).max(200).trim().optional(),
@@ -70,13 +72,15 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
 
   const body = await validateRequestBody(request, saveAsTemplateSchema);
 
-  // Generate a unique slug for the template
-  const baseSlug = `${workflow.slug}-template`;
-  let slug = baseSlug;
-  let suffix = 1;
-  while (await prisma.aiWorkflow.findUnique({ where: { slug }, select: { id: true } })) {
-    slug = `${baseSlug}-${suffix++}`;
-  }
+  // The template is a new, runnable workflow whose v1 is published here
+  // without semantic validation — as create's is, so it is checked as create's
+  // is (§120 t-743): every override's provider must be one the org is
+  // approved for, whatever the source workflow was allowed to keep.
+  await assertWorkflowProvidersApproved(sourceDefinition);
+
+  // A slug no org holds: the column is unique across the install, and at
+  // `multi` a plain read cannot see another org's workflows (t-728).
+  const slug = await findFreeWorkflowSlug(`${workflow.slug}-template`);
 
   // Clone workflow + initial version atomically so the new template is
   // immediately runnable and has a clean version chain (no inherited history).
@@ -105,7 +109,8 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
       return tx.aiWorkflow.findUniqueOrThrow({ where: { id: created.id } });
     });
   } catch (err: unknown) {
-    // P2002: unique constraint violation — slug race between findUnique and create
+    // P2002: unique constraint violation — another workflow took the slug
+    // between findFreeWorkflowSlug's probe and this create.
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
       throw new ValidationError('Template slug already exists — please try again', {
         slug: ['A template with this slug was just created'],

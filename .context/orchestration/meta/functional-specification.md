@@ -256,27 +256,27 @@ Every step carries an optional `description` (≤500 chars, trimmed) that is cap
 
 The canonical list lives in `KNOWN_STEP_TYPES` (`types/orchestration.ts`); registered executors are in `lib/orchestration/engine/executors/`. Nineteen step types ship:
 
-| Step Type           | Purpose                                                                                                     |
-| ------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `llm_call`          | Single model call against a prompt                                                                          |
-| `tool_call`         | Invoke a registered capability                                                                              |
-| `chain`             | Sequential LLM calls with validation between steps                                                          |
-| `route`             | Classify input and branch to one of several targets                                                         |
-| `parallel`          | Execute multiple branches concurrently with a straggler strategy                                            |
-| `reflect`           | Draft → critique → revise loop bounded by `maxIterations`                                                   |
-| `plan`              | Agent generates its own DAG of sub-steps                                                                    |
-| `human_approval`    | Pause for human review; resumed by approval-queue action                                                    |
-| `rag_retrieve`      | Search the knowledge base; returns top-k chunks                                                             |
-| `guard`             | Safety gate in `llm`, `regex`, or **`schema`** mode (deterministic Zod validation)                          |
-| `evaluate`          | Score one step's output against a rubric                                                                    |
-| `judge_call`        | Drive a configured judge agent inline; gates on `passed: boolean` (`score >= threshold`) — added PR #250    |
-| `external_call`     | HTTP request with optional Bearer / API-key / Basic / HMAC auth and idempotency keys                        |
-| `agent_call`        | Invoke a configured agent with its full tool loop                                                           |
-| `chat_turn`         | Append a turn to a persisted conversation (multi-turn memory in workflows) — added PR #250                  |
-| `send_notification` | Email / webhook delivery                                                                                    |
-| `orchestrator`      | Planner LLM dynamically delegates to other agents over N rounds                                             |
-| `supervisor`        | Independent post-hoc audit by a judge model — emits an evidence-cited verdict over the full execution trace |
-| `report`            | Deterministic Markdown render of the execution trace — no LLM, no opinion                                   |
+| Step Type           | Purpose                                                                                                                                                                                                                          |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_call`          | Single model call against a prompt                                                                                                                                                                                               |
+| `tool_call`         | Invoke a registered capability                                                                                                                                                                                                   |
+| `chain`             | Sequential LLM calls with validation between steps                                                                                                                                                                               |
+| `route`             | Classify input and branch to one of several targets                                                                                                                                                                              |
+| `parallel`          | Execute multiple branches concurrently with a straggler strategy                                                                                                                                                                 |
+| `reflect`           | Draft → critique → revise loop bounded by `maxIterations`                                                                                                                                                                        |
+| `plan`              | Agent generates its own DAG of sub-steps                                                                                                                                                                                         |
+| `human_approval`    | Pause for human review; resumed by approval-queue action                                                                                                                                                                         |
+| `rag_retrieve`      | Search the knowledge base; returns top-k chunks                                                                                                                                                                                  |
+| `guard`             | Safety gate in `llm`, `regex`, or **`schema`** mode (deterministic Zod validation)                                                                                                                                               |
+| `evaluate`          | Score one step's output against a rubric                                                                                                                                                                                         |
+| `judge_call`        | Drive a configured judge agent inline; gates on `passed: boolean` (`score >= threshold`); with a threshold, a judge that returns no score fails the step, with its `errorCode` or `judge_not_applicable` (t-747) — added PR #250 |
+| `external_call`     | HTTP request with optional Bearer / API-key / Basic / HMAC auth and idempotency keys                                                                                                                                             |
+| `agent_call`        | Invoke a configured agent with its full tool loop                                                                                                                                                                                |
+| `chat_turn`         | Append a turn to a persisted conversation (multi-turn memory in workflows) — added PR #250                                                                                                                                       |
+| `send_notification` | Email / webhook delivery                                                                                                                                                                                                         |
+| `orchestrator`      | Planner LLM dynamically delegates to other agents over N rounds                                                                                                                                                                  |
+| `supervisor`        | Independent post-hoc audit by a judge model — emits an evidence-cited verdict over the full execution trace                                                                                                                      |
+| `report`            | Deterministic Markdown render of the execution trace — no LLM, no opinion                                                                                                                                                        |
 
 ### 5.3 Error Strategies
 
@@ -308,7 +308,7 @@ Each step can define its own error handling:
 - **Notification dispatcher**: When an execution pauses, a `workflow.paused_for_approval` hook event and `approval_required` webhook event are emitted with pre-signed approve/reject URLs and channel metadata. External consumers (Slack bots, email services) build approval UIs from these payloads.
 - **Approver scoping**: Optional `approverUserIds` in `humanApprovalConfigSchema` enables delegation to specific admins beyond the execution owner.
 - **Step retry**: Individual failed steps can be retried without re-running the workflow
-- **Execution rerun**: Any terminal execution can be re-run via `POST /admin/orchestration/executions/:id/rerun`. The new row is created against a chosen workflow version with `AiWorkflowExecution.parentExecutionId` pointing at the source; `inputData` is Zod-parsed from the source row (clean validation error on corruption rather than runtime crash). The execution detail page renders a Re-run dialog with version chooser and SSE handoff. There is no per-step rerun — the granule is the whole execution.
+- **Execution rerun**: Any terminal execution can be re-run via `POST /admin/orchestration/executions/:id/rerun`. The new row is created against a chosen workflow version with `AiWorkflowExecution.parentExecutionId` pointing at the source and its `replyConversationId` copied only when the admin ticks "Send the reply to the person again" (`resendReply`) on a finished run, so a re-run never texts a real person on its own (t-770); `inputData` is Zod-parsed from the source row (clean validation error on corruption rather than runtime crash). The execution detail page renders a Re-run dialog with version chooser and SSE handoff. There is no per-step rerun — the granule is the whole execution.
 - **Running-step side table**: Per-step in-flight state lives in a dedicated side table rather than columns on `AiWorkflowExecution`. The engine writes a row when a step starts and clears it when the step finishes; the reaper sweeps orphan rows from crashed hosts; parallel branches each stamp their own `completedAt` so the execution timeline can render per-branch wait segments instead of guessing from aggregate timestamps. API routes return live in-flight rows so the client renders every running branch concurrently.
 - **Cancellation**: In-flight executions can be cancelled
 
@@ -508,24 +508,25 @@ Resparkable implements a **full MCP server** — exposing its capabilities to ex
 ### 8.1 Transport
 
 - **Protocol**: Streamable HTTP (JSON-RPC 2.0)
-- **Methods**: POST (requests), GET (SSE notification stream), DELETE (session termination)
+- **Methods**: POST (requests). GET and DELETE answer `405 Allow: POST` — MCP revision 2026-07-28 removes the GET stream and session termination, and Sunrise holds no session (§39 t-718)
 - **Batch support**: Up to 20 JSON-RPC requests per batch
 - **Size limit**: 1 MB max request body
 
 ### 8.2 Features
 
-| Feature                | Implementation                                                               |
-| ---------------------- | ---------------------------------------------------------------------------- |
-| **Tools**              | Dynamic exposure from registered capabilities, scoped to agent config        |
-| **Resources**          | Agent details, capabilities, system information                              |
-| **Authentication**     | Bearer token (MCP API keys), not session cookies                             |
-| **Session management** | In-memory sessions with `maxSessionsPerKey` limit                            |
-| **Rate limiting**      | IP-level + per-key enforcement                                               |
-| **Audit logging**      | Every request logged: method, response code, duration, client IP, user agent |
+| Feature            | Implementation                                                               |
+| ------------------ | ---------------------------------------------------------------------------- |
+| **Tools**          | Dynamic exposure from registered capabilities, scoped to agent config        |
+| **Resources**      | Agent details, capabilities, system information                              |
+| **Authentication** | Bearer token (MCP API keys), not session cookies                             |
+| **Sessions**       | None — every request stands alone; no `Mcp-Session-Id` is issued or read     |
+| **Rate limiting**  | IP-level + per-key enforcement                                               |
+| **Audit logging**  | Every request logged: method, response code, duration, client IP, user agent |
 
 ### 8.3 Admin Interface (7 pages)
 
-Settings, tools browser, resources browser, sessions, audit log, API key management, and connection testing.
+Dashboard, settings, tools browser, resources browser, prompts, audit log and API
+key management. (A Sessions page was the eighth until §39 t-718.)
 
 ---
 
@@ -807,7 +808,7 @@ Covers approximately 6/10 OWASP Agentic Application Top 10 categories natively:
 | **Executions**      | List, Detail (trace)          | Browse runs, filter by status/workflow, timeline strip, aggregates, latency attribution, per-call cost |
 | **Approvals**       | Queue page                    | Browse, approve/reject pending executions                                                              |
 | **Audit Log**       | Filterable list               | Config change history                                                                                  |
-| **MCP**             | 7 sub-pages                   | Tools, resources, sessions, audit, keys                                                                |
+| **MCP**             | 7 sub-pages                   | Tools, resources, prompts, audit, keys, settings                                                       |
 | **Learning**        | Pattern explorer, Quiz        | 21 patterns, advisor chatbot                                                                           |
 | **Settings**        | Global config                 | Defaults, guards, search tuning                                                                        |
 | **Setup Wizard**    | 5-step flow                   | Guided initial configuration                                                                           |

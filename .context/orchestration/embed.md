@@ -44,10 +44,25 @@ Token shape:
   label?:         string | null;   // e.g. "Marketing site"
   allowedOrigins: string[];        // empty = wildcard (any origin)
   isActive:       boolean;
+  orgId:          string | null;   // org minted in (§106)
   createdAt:      string;
   creator:        { id: string; name: string };
 }
 ```
+
+### Org binding (§106)
+
+A token is bound at mint to the org the admin's request was acting in, and
+the widget it powers acts only there: `resolveEmbedToken` answers the
+token's org, and every embed route runs its handler inside it
+(`runAsOrg(orgId, …, { source: 'embed-token' })`) — the conversation rows,
+the cost rows and the log context all carry that org. There is no user
+behind an embed token, so instead of a membership the org's own status is
+checked, on the same read as the token: **a suspended org's widgets stop
+answering** (`401 INVALID_TOKEN`, preflights included) and resume when it is
+reinstated. A token whose `orgId` is `null` (minted before 0.13.0's backfill
+re-run) reads as the install org at `single` and is refused at `multi`. See
+[`tenancy/context.md`](../tenancy/context.md).
 
 ## Widget loader
 
@@ -186,19 +201,20 @@ Rate limit: embedChatLimiter
 ### Authentication flow
 
 1. `X-Embed-Token` header extracted
-2. `resolveEmbedToken(token, clientIp)` looks up `AiAgentEmbedToken` — checks `isActive` and `agent.isActive`
+2. `resolveEmbedToken(token, clientIp)` looks up `AiAgentEmbedToken` — checks `isActive`, `agent.isActive`, and that the token can enter its org (`resolveCredentialOrg`: the org is `ACTIVE`, or the install org at `single`)
 3. Deterministic anonymous user ID computed: `embed_` + first 16 hex chars of `sha256("embed:{tokenId}:{clientIp}")`
 4. `isOriginAllowed(requestOrigin, allowedOrigins)` — empty `allowedOrigins` = wildcard bypass
+5. The rest of the handler runs inside the token's org (`runAsOrg`)
 
 ### Error responses
 
-| Scenario                     | Status | Code                  |
-| ---------------------------- | ------ | --------------------- |
-| Missing `X-Embed-Token`      | 401    | `MISSING_TOKEN`       |
-| Invalid/inactive token       | 401    | `INVALID_TOKEN`       |
-| Rate limited                 | 429    | `RATE_LIMIT_EXCEEDED` |
-| Origin not in allowedOrigins | 403    | `ORIGIN_DENIED`       |
-| Invalid message body         | 400    | `VALIDATION_ERROR`    |
+| Scenario                                     | Status | Code                  |
+| -------------------------------------------- | ------ | --------------------- |
+| Missing `X-Embed-Token`                      | 401    | `MISSING_TOKEN`       |
+| Invalid/inactive token, or its org suspended | 401    | `INVALID_TOKEN`       |
+| Rate limited                                 | 429    | `RATE_LIMIT_EXCEEDED` |
+| Origin not in allowedOrigins                 | 403    | `ORIGIN_DENIED`       |
+| Invalid message body                         | 400    | `VALIDATION_ERROR`    |
 
 ### CORS headers
 
@@ -209,9 +225,31 @@ CORS is applied dynamically based on the token's `allowedOrigins`:
 
 OPTIONS preflight requests return 204 with appropriate CORS headers.
 
+The proxy's CSRF origin check (`validateOrigin` in `proxy.ts`) refuses a POST whose `Origin` differs from the host. The embed routes and the embed approval routes are exempt (`CROSS_ORIGIN_TOKEN_ROUTES`, #705 t-765), because the widget calls them from a partner's domain by design, and they authenticate with a token rather than a cookie. Before that exemption the widget worked only when served from the app's own domain. See [`.context/auth/security.md`](../auth/security.md#additional-origin-validation).
+
 ### SSE response
 
 On success, reuses `streamChat()` from the orchestration chat handler and returns an SSE stream identical to the admin chat endpoint. Conversation ID is created or continued via the `conversationId` field in the request body.
+
+### A visitor is not a user
+
+The `embed_<hash>` visitor id has no `User` row behind it, and that is deliberate: visitors stay out of the admin user lists, user counts, and every user's data export and erasure (owner ruling, 2026-10-06; #705, t-765). Everything that would write a person's id into a foreign key to `user` makes its own call for a visitor:
+
+| What                                                                                                                                  | For an embed visitor                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The conversation                                                                                                                      | Stored with no `userId`; `AiConversation.embedVisitorId` holds the visitor id and owns it. Continuing a conversation matches on it, so a visitor reaches only their own conversations. The per-user conversation cap (`maxConversationsPerUser`) does not apply to a visitor, who cannot archive conversations and shares an identity behind a NAT; the per-token-and-IP rate limit and the agent's budget bound the widget instead. |
+| Cost logs, embedding attribution                                                                                                      | Recorded with no user (`isEmbedUserId`).                                                                                                                                                                                                                                                                                                                                                                                             |
+| `read_user_memory` / `write_user_memory`                                                                                              | Refused with `anonymous_visitor`. The visitor id is a hash of the token and the client IP, so everyone behind one office or mobile-network address is the same visitor; a stored memory would be read back to the others.                                                                                                                                                                                                            |
+| `run_workflow`                                                                                                                        | The sub-workflow runs unowned (`userId` null), as a scheduled or inbound run does. Steps that need a user, such as `judge_call`, refuse it by their own rule.                                                                                                                                                                                                                                                                        |
+| `add_provider_models`, `send_message_to_channel`                                                                                      | Refused with `anonymous_visitor`. Changing the provider catalogue is an operator's act, and `send_message_to_channel` takes its conversation from the tool's arguments, so a visitor could otherwise message a third party on someone else's inbound thread.                                                                                                                                                                         |
+| Document-cleanup tools                                                                                                                | Refuse an embed conversation before writing anything: it is not a knowledge-document session.                                                                                                                                                                                                                                                                                                                                        |
+| Hook events (`conversation.started`, `message.created`, `capability.refused_not_advertised`) and the `conversation_escalated` webhook | `userId` is `null` and the visitor id arrives as `embedVisitorId`, so a subscriber that reads `userId` as a `User` never gets a visitor id.                                                                                                                                                                                                                                                                                          |
+| The `budget_exceeded` webhook                                                                                                         | No `actorUserId`; the visitor arrives as `embedVisitorId`.                                                                                                                                                                                                                                                                                                                                                                           |
+| The guard-events seam (`GuardEventContext`)                                                                                           | `userId` is the visitor id and `embedVisitorId` is set: a contributor must check it before writing `userId` into a foreign key to `user`.                                                                                                                                                                                                                                                                                            |
+
+A visitor's conversations belong to the token's org: they are in that org's export and erasure, and in no user's. Like any conversation they are purged by the agent's retention window when it sets one (`retentionDays`); an agent without one keeps them. Engagement analytics count each visitor as their own participant. In the admin conversations list they are ownerless rows, like inbound SMS and email threads, so an admin sees them when the authorization policy grants unattributed reads (`conversationVisibilityWhere`). Because the visitor id includes the client IP, a visitor whose address changes no longer owns their conversation: continuing it returns `conversation_not_found`, and the widget then starts afresh as New chat does, handing back the message and attachments they just sent.
+
+A new feature that remembers or runs something for a person has to make the same call: check `isEmbedUserId` before writing a caller's id into a `user` foreign key.
 
 ## Admin UI — EmbedConfigPanel
 

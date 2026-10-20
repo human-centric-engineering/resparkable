@@ -907,26 +907,375 @@ describe('registerModels', () => {
     expect(after?.maxContext).toBe(before?.maxContext);
   });
 
-  it('does override pricing when the incoming entry has a non-zero cost', () => {
-    // Operators who genuinely want to override pricing for a local /
-    // custom model can still do so — only zero is treated as "unfilled".
+  it('keeps an existing split rate and context window over a same-provider DB row (#813)', () => {
+    // A matrix row carries ONE blended rate (`(input + output) / 2`, see
+    // prisma/seeds/009-provider-models.ts) and a coarse context bucket
+    // (`high` → 200k). The registry's figures for the same id are exact,
+    // so a hydrate must not replace them — doing so priced gpt-4o-mini at
+    // its blend on both sides and budgeted a 128k model's history at 200k.
+    const before = registry.getModel('gpt-4o-mini');
+    expect(before?.inputCostPerMillion).toBeGreaterThan(0);
+    expect(before?.outputCostPerMillion).not.toBe(before?.inputCostPerMillion);
+
     registry.registerModels([
       {
         id: 'gpt-4o-mini',
         name: 'GPT-4o Mini',
         provider: 'openai',
         tier: 'budget',
-        inputCostPerMillion: 1.23,
-        outputCostPerMillion: 4.56,
-        maxContext: 64_000,
+        inputCostPerMillion: 0.375,
+        outputCostPerMillion: 0.375,
+        maxContext: 200_000,
         supportsTools: true,
       },
     ]);
 
     const after = registry.getModel('gpt-4o-mini');
-    expect(after?.inputCostPerMillion).toBe(1.23);
-    expect(after?.outputCostPerMillion).toBe(4.56);
+    expect(after?.inputCostPerMillion).toBe(before?.inputCostPerMillion);
+    expect(after?.outputCostPerMillion).toBe(before?.outputCostPerMillion);
+    expect(after?.maxContext).toBe(before?.maxContext);
+  });
+
+  it('lets an operator edit a DB-only model on the next hydrate, but still shields registry figures', () => {
+    // A model the registry never knew gets its figures from the matrix row.
+    // Those figures are the matrix's own, so a later edit to the row must
+    // take effect on the next hydrate — the "existing wins" rule is about
+    // registry-sourced figures, not about whatever the previous hydrate wrote.
+    const row = (cost: number, maxContext: number) => ({
+      id: 'acme-db-only',
+      name: 'Acme DB Only',
+      provider: 'acme',
+      tier: 'mid' as const,
+      inputCostPerMillion: cost,
+      outputCostPerMillion: cost,
+      maxContext,
+      supportsTools: true,
+    });
+
+    registry.registerModels([row(5, 32_000)]);
+    registry.registerModels([row(2, 200_000)]);
+
+    const edited = registry.getModel('acme-db-only');
+    expect(edited?.inputCostPerMillion).toBe(2);
+    expect(edited?.outputCostPerMillion).toBe(2);
+    expect(edited?.maxContext).toBe(200_000);
+
+    // A registry model hydrated twice is still never overridden.
+    const before = registry.getModel('gpt-4o-mini');
+    const blended = {
+      ...row(0.375, 200_000),
+      id: 'gpt-4o-mini',
+      provider: 'openai',
+      tier: 'budget' as const,
+    };
+    registry.registerModels([blended]);
+    registry.registerModels([blended]);
+
+    const after = registry.getModel('gpt-4o-mini');
+    expect(after?.inputCostPerMillion).toBe(before?.inputCostPerMillion);
+    expect(after?.outputCostPerMillion).toBe(before?.outputCostPerMillion);
+    expect(after?.maxContext).toBe(before?.maxContext);
+  });
+
+  it('fills a same-provider field from the DB row only where the registry value is zero', async () => {
+    // A registry (OpenRouter) entry that publishes a prompt price but no
+    // completion price and no context window.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data: [{ id: 'acme/partial', name: 'Acme Partial', pricing: { prompt: '0.000002' } }],
+      }),
+    });
+    await registry.refreshFromOpenRouter({ force: true });
+    expect(registry.getModel('partial')?.inputCostPerMillion).toBeCloseTo(2);
+    expect(registry.getModel('partial')?.outputCostPerMillion).toBe(0);
+
+    registry.registerModels([
+      {
+        id: 'partial',
+        name: 'Acme Partial',
+        provider: 'acme',
+        tier: 'mid',
+        inputCostPerMillion: 9,
+        outputCostPerMillion: 6,
+        maxContext: 64_000,
+        supportsTools: true,
+      },
+    ]);
+
+    const after = registry.getModel('partial');
+    expect(after?.inputCostPerMillion).toBeCloseTo(2);
+    expect(after?.outputCostPerMillion).toBe(6);
     expect(after?.maxContext).toBe(64_000);
+  });
+
+  it('forgets which figures a hydrate wrote once the registry is rebuilt from OpenRouter', async () => {
+    const row = {
+      id: 'partial',
+      name: 'Acme Partial',
+      provider: 'acme',
+      tier: 'mid' as const,
+      inputCostPerMillion: 9,
+      outputCostPerMillion: 9,
+      maxContext: 64_000,
+      supportsTools: true,
+    };
+    registry.registerModels([row]);
+
+    // The rebuild replaces the DB-only entry with OpenRouter's, which is a
+    // registry figure from here on and must not be beaten by the next hydrate.
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: vi.fn().mockResolvedValue({
+        data: [
+          {
+            id: 'acme/partial',
+            name: 'Acme Partial',
+            context_length: 16_000,
+            pricing: { prompt: '0.000002', completion: '0.000004' },
+          },
+        ],
+      }),
+    });
+    await registry.refreshFromOpenRouter({ force: true });
+    registry.registerModels([row]);
+
+    const after = registry.getModel('partial');
+    expect(after?.inputCostPerMillion).toBeCloseTo(2);
+    expect(after?.outputCostPerMillion).toBeCloseTo(4);
+    expect(after?.maxContext).toBe(16_000);
+  });
+
+  // #813: a null-cost matrix row registers at 0/0. `pricingUnknown` is what
+  // keeps that apart from a free model, so it must hold exactly while nothing
+  // has priced the model, and never be set over a registry entry.
+  describe('pricingUnknown', () => {
+    const nullCostRow = {
+      id: 'acme-unpriced',
+      name: 'Acme Unpriced',
+      provider: 'acme',
+      tier: 'mid' as const,
+      inputCostPerMillion: 0,
+      outputCostPerMillion: 0,
+      maxContext: 32_000,
+      supportsTools: true,
+      pricingUnknown: true as const,
+    };
+
+    it('keeps the flag for a model only a null-cost row knows, across hydrates', () => {
+      registry.registerModels([nullCostRow]);
+      registry.registerModels([nullCostRow]);
+      expect(registry.getModel('acme-unpriced')?.pricingUnknown).toBe(true);
+    });
+
+    it('clears the flag once the row is given a price', () => {
+      registry.registerModels([nullCostRow]);
+      const { pricingUnknown: _flag, ...priced } = nullCostRow;
+      registry.registerModels([{ ...priced, inputCostPerMillion: 2, outputCostPerMillion: 2 }]);
+
+      const after = registry.getModel('acme-unpriced');
+      expect(after?.inputCostPerMillion).toBe(2);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+
+    it('never sets the flag over a registry entry that has a price', () => {
+      registry.registerModels([{ ...nullCostRow, id: 'gpt-4o-mini', provider: 'openai' }]);
+
+      const after = registry.getModel('gpt-4o-mini');
+      expect(after?.inputCostPerMillion).toBeGreaterThan(0);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+
+    it('never sets the flag over a free registry entry (OpenRouter at 0/0)', async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 'acme/acme-unpriced',
+              name: 'Acme Free',
+              context_length: 32_000,
+              pricing: { prompt: '0', completion: '0' },
+            },
+          ],
+        }),
+      });
+      await registry.refreshFromOpenRouter({ force: true });
+      expect(registry.getModel('acme-unpriced')?.provider).toBe('acme');
+
+      registry.registerModels([nullCostRow]);
+
+      const after = registry.getModel('acme-unpriced');
+      expect(after?.inputCostPerMillion).toBe(0);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+
+    it('keeps the flag across a cross-provider collision until a rate fills it', () => {
+      registry.registerModels([nullCostRow]);
+      registry.registerModels([{ ...nullCostRow, provider: 'other' }]);
+      expect(registry.getModel('acme-unpriced')?.pricingUnknown).toBe(true);
+
+      const { pricingUnknown: _flag, ...priced } = nullCostRow;
+      registry.registerModels([
+        { ...priced, provider: 'other', inputCostPerMillion: 3, outputCostPerMillion: 3 },
+      ]);
+      const after = registry.getModel('acme-unpriced');
+      expect(after?.provider).toBe('acme');
+      expect(after?.inputCostPerMillion).toBe(3);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+  });
+
+  // Review of #813: a figure the matrix owns must follow the row both ways —
+  // cleared as well as changed — and survive an OpenRouter rebuild.
+  describe('matrix-owned figures', () => {
+    const owned = {
+      id: 'acme-owned',
+      name: 'Acme Owned',
+      provider: 'acme',
+      tier: 'mid' as const,
+      inputCostPerMillion: 5,
+      outputCostPerMillion: 5,
+      maxContext: 200_000,
+      supportsTools: true,
+    };
+
+    it('lets the row clear a price it supplied, and then marks the model unpriced', () => {
+      registry.registerModels([owned]);
+      registry.registerModels([
+        {
+          ...owned,
+          inputCostPerMillion: 0,
+          outputCostPerMillion: 0,
+          maxContext: 0,
+          pricingUnknown: true,
+        },
+      ]);
+
+      const after = registry.getModel('acme-owned');
+      expect(after?.inputCostPerMillion).toBe(0);
+      expect(after?.outputCostPerMillion).toBe(0);
+      expect(after?.maxContext).toBe(0);
+      expect(after?.pricingUnknown).toBe(true);
+    });
+
+    it('lets the row set a supplied price to an explicit 0 (free), unflagged', () => {
+      registry.registerModels([owned]);
+      registry.registerModels([{ ...owned, inputCostPerMillion: 0, outputCostPerMillion: 0 }]);
+
+      const after = registry.getModel('acme-owned');
+      expect(after?.inputCostPerMillion).toBe(0);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+
+    it('still never lets a zero row clear a registry figure', () => {
+      registry.registerModels([
+        {
+          ...owned,
+          id: 'gpt-4o-mini',
+          provider: 'openai',
+          inputCostPerMillion: 0,
+          outputCostPerMillion: 0,
+          maxContext: 0,
+          pricingUnknown: true,
+        },
+      ]);
+
+      const after = registry.getModel('gpt-4o-mini');
+      expect(after?.inputCostPerMillion).toBeGreaterThan(0);
+      expect(after?.maxContext).toBe(128_000);
+      expect(after).not.toHaveProperty('pricingUnknown');
+    });
+
+    it('keeps a cross-provider fill of a free registry entry replaceable by its own row', async () => {
+      // OpenRouter knows the model at 0/0 (free); another provider's row fills
+      // a price into it. That fill is the matrix's, so when the entry's own row
+      // is priced later, the own row's figure must win.
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({
+          data: [
+            {
+              id: 'acme/acme-owned',
+              name: 'Acme Owned',
+              context_length: 32_000,
+              pricing: { prompt: '0', completion: '0' },
+            },
+          ],
+        }),
+      });
+      await registry.refreshFromOpenRouter({ force: true });
+
+      const own = { ...owned, inputCostPerMillion: 0, outputCostPerMillion: 0 };
+      const other = {
+        ...owned,
+        provider: 'other',
+        inputCostPerMillion: 0.6,
+        outputCostPerMillion: 0.6,
+      };
+      registry.registerModels([own, other]);
+      expect(registry.getModel('acme-owned')?.inputCostPerMillion).toBe(0.6);
+
+      registry.registerModels([
+        { ...own, inputCostPerMillion: 0.9, outputCostPerMillion: 0.9 },
+        other,
+      ]);
+      expect(registry.getModel('acme-owned')?.inputCostPerMillion).toBe(0.9);
+    });
+
+    it('re-applies the hydrated rows after an OpenRouter rebuild', async () => {
+      registry.registerModels([owned]);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: vi.fn().mockResolvedValue({ data: [] }),
+      });
+
+      await registry.refreshFromOpenRouter({ force: true });
+
+      // Without the re-apply the matrix-only model vanished until the next
+      // hydrate, which the 60 s throttle could hold off.
+      expect(registry.getModel('acme-owned')).toMatchObject({
+        provider: 'acme',
+        inputCostPerMillion: 5,
+        maxContext: 200_000,
+      });
+    });
+
+    it("fills from another provider's row the same way whichever row comes first", () => {
+      const own = {
+        ...owned,
+        inputCostPerMillion: 0,
+        outputCostPerMillion: 0,
+        pricingUnknown: true as const,
+      };
+      const other = {
+        ...owned,
+        provider: 'other',
+        inputCostPerMillion: 0.6,
+        outputCostPerMillion: 0.6,
+      };
+
+      registry.registerModels([own, other]);
+      registry.registerModels([other, own]);
+      const afterBoth = registry.getModel('acme-owned');
+      expect(afterBoth?.provider).toBe('acme');
+      expect(afterBoth?.inputCostPerMillion).toBe(0.6);
+      expect(afterBoth).not.toHaveProperty('pricingUnknown');
+
+      // The fill is the matrix's, not the registry's: pricing the entry's own
+      // row later replaces it.
+      const { pricingUnknown: _flag, ...ownPriced } = own;
+      registry.registerModels([
+        { ...ownPriced, inputCostPerMillion: 0.9, outputCostPerMillion: 0.9 },
+        other,
+      ]);
+      expect(registry.getModel('acme-owned')?.inputCostPerMillion).toBe(0.9);
+    });
   });
 
   it('no-op when called with an empty array', () => {

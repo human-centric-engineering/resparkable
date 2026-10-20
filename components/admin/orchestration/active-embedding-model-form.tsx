@@ -23,6 +23,10 @@ import * as React from 'react';
 import { AlertCircle, Check, Loader2, Save } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Label } from '@/components/ui/label';
@@ -66,6 +70,7 @@ export function ActiveEmbeddingModelForm({
   initialActiveEmbeddingModelId,
   options,
 }: Props): React.ReactElement {
+  const readOnly = useSharedSettingsReadOnly();
   const [selected, setSelected] = React.useState<string>(
     initialActiveEmbeddingModelId ?? UNSET_VALUE
   );
@@ -181,7 +186,12 @@ export function ActiveEmbeddingModelForm({
         )}
 
         <div className="flex items-center gap-2">
-          <Button type="button" onClick={() => void handleSave()} disabled={!dirty || submitting}>
+          <SharedSettingsSaveHint />
+          <Button
+            type="button"
+            onClick={() => void handleSave()}
+            disabled={readOnly || !dirty || submitting}
+          >
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

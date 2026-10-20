@@ -14,6 +14,9 @@
  *   names, and resets;
  * - `mergeDriftProbes` concatenates platform + app and refuses an app probe that
  *   shadows a platform (A-series) name;
+ * - `tenancyDriftProbes` derives the T-series from a roster: a policy probe per
+ *   table always, an enabled-and-forced probe per table only at `multi`, with
+ *   names that neither collide with each other nor with the A-series;
  * - the shipped `lib/app/db-drift.ts` scaffold registers exactly what the
  *   framework tier registers and nothing of its own (vanilla Resparkable ships it
  *   empty; this fork fills it — see the FORK NOTE on that test).
@@ -54,6 +57,7 @@ import {
   rlsEnabled,
   registerAppDriftProbe,
   resetAppDriftProbes,
+  tenancyDriftProbes,
   type DriftObject,
 } from '@/lib/db/drift-probes';
 
@@ -80,8 +84,11 @@ beforeEach(() => {
 });
 
 describe('indexExists', () => {
+  const HNSW =
+    'CREATE INDEX idx_knowledge_embedding ON public.ai_knowledge_chunk USING hnsw (embedding)';
+
   it('queries pg_indexes by name and reports ok when exactly one row exists', async () => {
-    queryRaw.mockResolvedValue([{ count: 1n }]);
+    queryRaw.mockResolvedValue([{ def: HNSW }]);
 
     const result = await indexExists('idx_knowledge_embedding')();
 
@@ -90,14 +97,26 @@ describe('indexExists', () => {
     expect(lastValues()).toEqual(['idx_knowledge_embedding']);
   });
 
-  it('reports not-ok when the index is absent (count 0)', async () => {
-    queryRaw.mockResolvedValue([{ count: 0n }]);
-    expect(await indexExists('missing')()).toEqual({ ok: false });
-  });
-
   it('treats an empty result set as absent rather than crashing', async () => {
     queryRaw.mockResolvedValue([]);
     expect(await indexExists('missing')()).toEqual({ ok: false });
+  });
+
+  it('asserts the definition when asked — an index re-created under the same name with the old columns is drift', async () => {
+    const perOrg =
+      'CREATE UNIQUE INDEX idx_knowledge_doc_file_hash_ready ON public.ai_knowledge_document USING btree ("orgId", "fileHash") WHERE (status = \'ready\'::text)';
+    queryRaw.mockResolvedValue([{ def: perOrg }]);
+    expect(await indexExists('idx_knowledge_doc_file_hash_ready', '"orgId"')()).toEqual({
+      ok: true,
+    });
+
+    const global =
+      'CREATE UNIQUE INDEX idx_knowledge_doc_file_hash_ready ON public.ai_knowledge_document USING btree ("fileHash") WHERE (status = \'ready\'::text)';
+    queryRaw.mockResolvedValue([{ def: global }]);
+    const result = await indexExists('idx_knowledge_doc_file_hash_ready', '"orgId"')();
+    expect(result.ok).toBe(false);
+    expect(result.note).toContain('definition missing');
+    expect(result.note).toContain(global);
   });
 });
 
@@ -353,6 +372,63 @@ describe('mergeDriftProbes', () => {
   it('allows an empty app set', () => {
     const merged = mergeDriftProbes([probe('A1')], []);
     expect(merged.map((p) => p.name)).toEqual(['A1']);
+  });
+});
+
+describe('tenancyDriftProbes', () => {
+  const roster = new Map([
+    ['AiAgent', 'ai_agent'],
+    ['AiAgentEmbedToken', 'ai_agent_embed_token'],
+    ['AppWidget', 'app_widget'],
+  ]);
+
+  it('derives one policy probe per roster entry at single, in roster order', () => {
+    const probes = tenancyDriftProbes(roster, { multi: false });
+    expect(probes.map((p) => p.name)).toEqual([
+      'T1 org_isolation on ai_agent (AiAgent)',
+      'T2 org_isolation on ai_agent_embed_token (AiAgentEmbedToken)',
+      'T3 org_isolation on app_widget (AppWidget)',
+    ]);
+    expect(probes.map((p) => p.table)).toEqual(['ai_agent', 'ai_agent_embed_token', 'app_widget']);
+    expect(new Set(probes.map((p) => p.kind))).toEqual(new Set(['RLS policy']));
+  });
+
+  it('adds an enabled-and-forced probe per table at multi, interleaved after its policy probe', () => {
+    const probes = tenancyDriftProbes(roster, { multi: true });
+    expect(probes).toHaveLength(6);
+    expect(probes.map((p) => p.name.split(' ')[0])).toEqual([
+      'T1',
+      'T1f',
+      'T2',
+      'T2f',
+      'T3',
+      'T3f',
+    ]);
+    expect(probes[1]).toMatchObject({ kind: 'RLS flags', table: 'ai_agent' });
+  });
+
+  it('asks pg_policies for org_isolation, and pg_class for both flags', async () => {
+    const [policy, flags] = tenancyDriftProbes(roster, { multi: true });
+    queryRaw.mockResolvedValueOnce([{ count: 1n }]);
+    expect(await policy.probe()).toEqual({ ok: true });
+    expect(lastSql()).toContain('pg_policies');
+    expect(lastValues()).toEqual(['ai_agent', 'org_isolation']);
+
+    queryRaw.mockResolvedValueOnce([{ enabled: true, forced: false }]);
+    const result = await flags.probe();
+    expect(result.ok).toBe(false);
+    expect(result.note).toMatch(/not FORCED/);
+    expect(lastSql()).toContain('relforcerowsecurity');
+  });
+
+  it('produces names that merge beside the A-series and a fork probe without collision', () => {
+    const platform = [probe('A1 something'), ...tenancyDriftProbes(roster, { multi: true })];
+    const merged = mergeDriftProbes(platform, [probe('B1 fork thing')]);
+    expect(new Set(merged.map((p) => p.name)).size).toBe(merged.length);
+  });
+
+  it('derives nothing from an empty roster', () => {
+    expect(tenancyDriftProbes(new Map(), { multi: true })).toEqual([]);
   });
 });
 

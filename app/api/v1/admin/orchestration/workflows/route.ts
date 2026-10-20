@@ -22,7 +22,7 @@ import { getClientIP } from '@/lib/security/ip';
 import { createWorkflowSchema, listWorkflowsQuerySchema } from '@/lib/validations/orchestration';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { createInitialVersion } from '@/lib/orchestration/workflows/version-service';
-import { notifyMcpWorkflowsChanged } from '@/lib/orchestration/mcp/resource-update-hooks';
+import { assertWorkflowProvidersApproved } from '@/lib/orchestration/workflows/semantic-validator';
 
 export const GET = withAdminAuth(async (request, _session) => {
   const log = await getRouteLogger(request);
@@ -73,6 +73,11 @@ export const POST = withAdminAuth(async (request, session) => {
   const log = await getRouteLogger(request);
   const body = await validateRequestBody(request, createWorkflowSchema);
 
+  // v1 is published as it is created, without the semantic validation a later
+  // publish runs. At multi, a step overriding to a provider the org is not
+  // approved for would fail every run, so it is refused here (§120 t-743).
+  await assertWorkflowProvidersApproved(body.workflowDefinition);
+
   try {
     // Create the workflow row + its v1 version atomically. The workflow is
     // immediately runnable: the publish/draft model does not require an
@@ -117,8 +122,6 @@ export const POST = withAdminAuth(async (request, session) => {
       entityName: workflow.name,
       clientIp: clientIP,
     });
-
-    notifyMcpWorkflowsChanged();
 
     return successResponse(workflow, undefined, { status: 201 });
   } catch (err) {

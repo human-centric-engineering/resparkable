@@ -11,10 +11,21 @@
  * project's `lib/db/client` singleton). Exits 0 if every probe succeeds,
  * non-zero on the first failure.
  *
- * Two probe sets run together: Resparkable's own A-series (`DRIFT_OBJECTS` below)
- * and any fork-registered probes (`lib/app/db-drift.ts`). Forks register their
- * own unmodelled objects there — they never edit this platform script. The
- * probe primitives and registry live in `@/lib/db/drift-probes`.
+ * Three probe sets run together: Resparkable's own A-series (`DRIFT_OBJECTS`
+ * below), the T-series derived from the tenant-owned roster (one
+ * `org_isolation` policy probe per table, plus an enabled-and-forced probe at
+ * `TENANCY_MODE=multi` — never a hand-written row; see
+ * `tenancyDriftProbes`), and any fork-registered probes
+ * (`lib/app/db-drift.ts`). Forks register their own unmodelled objects there
+ * — they never edit this platform script. The probe primitives and registry
+ * live in `@/lib/db/drift-probes`.
+ *
+ * Runs under `runAsSystem`: the probes are raw catalog reads (`pg_indexes`,
+ * `pg_class`, `pg_policies`, `information_schema` — none of them
+ * RLS-governed), and at `multi` the chokepoint refuses a raw op with no
+ * context. It connects through the app client (`DATABASE_URL`), so the
+ * bypass GUC changes nothing about what it can see; it is the scope that
+ * lets the probes run at all.
  *
  * Usage:
  *   npm run db:drift-check
@@ -25,7 +36,7 @@
  *     This script doesn't shell out to atlas itself; it only nudges.
  *
  * FORK NOTE — this script runs your seam rather than asserting on it. Probes
- * registered in `lib/app/db-drift.ts` execute alongside Sunrise's A-series and
+ * registered in `lib/app/db-drift.ts` execute alongside Resparkable's A-series and
  * are reported in the same pass, so a failing probe of yours fails this script.
  * `mergeDriftProbes` throws if one of your names shadows an A-series name, so
  * name yours for your own objects. Nothing in this file needs editing.
@@ -41,10 +52,13 @@ import {
   getAppDriftProbes,
   indexExists,
   mergeDriftProbes,
+  tenancyDriftProbes,
   type DriftObject,
   type Probe,
 } from '@/lib/db/drift-probes';
 import { logger } from '@/lib/logging';
+import { tenantOwnedModels } from '@/lib/tenancy/classification';
+import { isMultiTenant, runAsSystem } from '@/lib/tenancy/context';
 
 /**
  * Probe that the 'english' tsearch configuration exists. A custom or
@@ -95,10 +109,10 @@ const DRIFT_OBJECTS: DriftObject[] = [
     probe: indexExists('idx_message_embedding'),
   },
   {
-    name: 'A5 idx_knowledge_doc_file_hash_ready',
+    name: 'A5 idx_knowledge_doc_file_hash_ready (per org)',
     kind: 'partial unique index',
     table: 'ai_knowledge_document',
-    probe: indexExists('idx_knowledge_doc_file_hash_ready'),
+    probe: indexExists('idx_knowledge_doc_file_hash_ready', '"orgId"'),
   },
   {
     name: 'A6 ai_workflow_execution_lease_pair_coherent (tightened)',
@@ -107,16 +121,22 @@ const DRIFT_OBJECTS: DriftObject[] = [
     probe: constraintExists('ai_workflow_execution_lease_pair_coherent', 'length'),
   },
   {
-    name: 'A7 idx_ai_knowledge_base_single_default',
+    name: 'A7 idx_ai_knowledge_base_single_default (per org)',
     kind: 'partial unique index',
     table: 'ai_knowledge_base',
-    probe: indexExists('idx_ai_knowledge_base_single_default'),
+    probe: indexExists('idx_ai_knowledge_base_single_default', '"orgId"'),
   },
   {
     name: 'A8 ai_knowledge_document_status_lowercase',
     kind: 'CHECK constraint',
     table: 'ai_knowledge_document',
     probe: constraintExists('ai_knowledge_document_status_lowercase'),
+  },
+  {
+    name: 'A9 ai_conversation_owner_exclusive',
+    kind: 'CHECK constraint',
+    table: 'ai_conversation',
+    probe: constraintExists('ai_conversation_owner_exclusive'),
   },
   {
     name: "Postgres 'english' tsearch configuration",
@@ -128,15 +148,19 @@ const DRIFT_OBJECTS: DriftObject[] = [
 
 async function main(): Promise<void> {
   // Pull in any fork-registered probes (lib/app/db-drift.ts), then run the
-  // A-series and app probes together. mergeDriftProbes throws if a fork reused
-  // an A-series name.
+  // A-series, the derived T-series and app probes together. mergeDriftProbes
+  // throws if a fork reused a platform name.
   registerAppDriftProbes();
   const appProbes = getAppDriftProbes();
-  const probes = mergeDriftProbes(DRIFT_OBJECTS, appProbes);
+  const multi = isMultiTenant();
+  const tenancyProbes = tenancyDriftProbes(tenantOwnedModels(prisma), { multi });
+  const probes = mergeDriftProbes([...DRIFT_OBJECTS, ...tenancyProbes], appProbes);
 
-  const appSuffix =
-    appProbes.length > 0 ? ` (${DRIFT_OBJECTS.length} platform + ${appProbes.length} app)` : '';
-  logger.info(`Running ${probes.length} drift probes against the deployed DB${appSuffix}...`);
+  const appSuffix = appProbes.length > 0 ? ` + ${appProbes.length} app` : '';
+  logger.info(
+    `Running ${probes.length} drift probes against the deployed DB (${DRIFT_OBJECTS.length} platform + ` +
+      `${tenancyProbes.length} tenancy at ${multi ? 'multi' : 'single'}${appSuffix})...`
+  );
 
   let failed = 0;
 
@@ -168,7 +192,7 @@ async function main(): Promise<void> {
   process.exit(1);
 }
 
-main()
+runAsSystem('db:drift-check', main)
   .catch((err) => {
     logger.error('Drift check crashed', {
       error: err instanceof Error ? err.message : String(err),

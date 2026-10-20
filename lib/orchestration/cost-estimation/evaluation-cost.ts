@@ -21,7 +21,8 @@
  *     not counted. Range is wide (±50% / ×2) to signal uncertainty.
  *
  * Pricing comes from the model registry (`getModel`) — operator-curated
- * `AiProviderModel.costPerMillionTokens` overrides the static fallback.
+ * `AiProviderModel.costPerMillionTokens` prices models the static fallback
+ * and OpenRouter do not know, and fills a rate they carry at zero.
  * A model with no pricing surfaces as `pricingKnown: false` on the
  * relevant `modelMix` entry so the UI can call out the unknown rather
  * than silently reading $0 as "free".
@@ -43,6 +44,7 @@ import {
   loadWorkflowShape,
   type WorkflowShape,
 } from '@/lib/orchestration/cost-estimation/workflow-cost';
+import { platformSlugsWhere } from '@/lib/orchestration/agents/platform-agent-guard';
 
 /** Heuristic per-case token shape — calibrated against Phase 1 judge prompts. */
 const HEURISTIC = {
@@ -398,7 +400,8 @@ async function loadJudgeShapes(slugs: string[], chatDefault: string): Promise<Ju
   if (slugs.length === 0) return [];
   try {
     const rows = await prisma.aiAgent.findMany({
-      where: { slug: { in: slugs } },
+      // Price the judges that will run: a platform slug is its system row.
+      where: { slug: { in: slugs }, ...platformSlugsWhere(slugs) },
       select: { slug: true, model: true },
     });
     const bySlug = new Map(rows.map((r) => [r.slug, r.model] as const));

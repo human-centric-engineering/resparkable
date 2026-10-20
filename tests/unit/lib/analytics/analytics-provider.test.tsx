@@ -14,7 +14,7 @@
  * - useAnalytics() hook returns correct values
  * - useAnalytics() throws when used outside provider
  *
- * @see /Users/simonholmes/Documents/Dev/studio/resparkable/lib/analytics/analytics-provider.tsx
+ * @see lib/analytics/analytics-provider.tsx
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
