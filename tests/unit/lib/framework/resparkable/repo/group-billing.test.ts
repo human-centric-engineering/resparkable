@@ -270,6 +270,8 @@ describe('debitMemberBalance', () => {
         memberUserId: 'user_payer',
         kind: 'agent_spend',
         creditsDelta: -2,
+        // Nobody started it: the admin who pays paid a running cost.
+        booksCategory: 'runningCostsOwn',
       },
     });
   });
@@ -513,6 +515,7 @@ describe('applyAutoTopUp', () => {
       kind: 'auto_top_up',
       creditsDelta: -20,
       note: 'Automatic top-up to a group',
+      booksCategory: 'none',
     });
     expect(ledgerCreate.mock.calls[1]?.[0].data).toEqual({
       spaceId: 'spc_group',
@@ -520,6 +523,7 @@ describe('applyAutoTopUp', () => {
       memberUserId: 'user_m',
       kind: 'auto_top_up',
       creditsDelta: 20,
+      booksCategory: 'topUps',
     });
     expect(accountUpsert).not.toHaveBeenCalled();
   });

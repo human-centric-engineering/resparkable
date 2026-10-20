@@ -3,9 +3,10 @@
  *
  * Four properties matter most:
  *
- * **Only an admin sees per-person spend.** A member's `admin` is `null`, and
- * the two admin-only reads (`summariseLedgerByMemberSince`, `listGroupMembers`)
- * are never called on their path, not merely that the result hides the field.
+ * **Only an admin gets the admin controls.** A member's `admin` is `null`, and
+ * the admin-only read (`listGroupMembers`) is never called on their path, not
+ * merely hidden from the result. Per-person spend is in the books (phase 62),
+ * which every member reads.
  *
  * **A pending member never appears in the admin's table.** The admin view
  * filters `joinedAt !== null` before mapping.
@@ -24,7 +25,6 @@ import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const findCreditAccount = vi.fn();
-const summariseLedgerByMemberSince = vi.fn();
 const sumMemberSpendSince = vi.fn();
 const transferCreditsToGroup = vi.fn();
 const ensureCreditAccount = vi.fn();
@@ -43,7 +43,6 @@ const sendEmail = vi.fn();
 
 vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   findCreditAccount: (...args: unknown[]) => findCreditAccount(...args),
-  summariseLedgerByMemberSince: (...args: unknown[]) => summariseLedgerByMemberSince(...args),
   sumMemberSpendSince: (...args: unknown[]) => sumMemberSpendSince(...args),
   transferCreditsToGroup: (...args: unknown[]) => transferCreditsToGroup(...args),
   ensureCreditAccount: (...args: unknown[]) => ensureCreditAccount(...args),
@@ -185,7 +184,6 @@ describe('getGroupBudget', () => {
     expect(result.value.admin).toBeNull();
     // Not merely hidden from the payload: never fetched at all, so a member's
     // browser cannot receive it even by a serialisation slip further up.
-    expect(summariseLedgerByMemberSince).not.toHaveBeenCalled();
     expect(listGroupMembers).not.toHaveBeenCalled();
   });
 
@@ -238,7 +236,6 @@ describe('getGroupBudget', () => {
         allowanceCredits: null,
       },
     ]);
-    expect(summariseLedgerByMemberSince).not.toHaveBeenCalled();
   });
 
   it('excludes a pending member from the admin table', async () => {

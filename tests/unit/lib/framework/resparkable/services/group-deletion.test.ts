@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   deleteGroupSpaceSettled: vi.fn(),
+  listGroupMembers: vi.fn(),
   listMemberContacts: vi.fn(),
 }));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({
@@ -129,6 +130,7 @@ beforeEach(() => {
     { userId: 'user_c', email: 'c@example.com', name: null },
   ]);
   vi.mocked(sendEmail).mockResolvedValue({ success: true, status: 'sent' as const });
+  vi.mocked(repo.listGroupMembers).mockResolvedValue([]);
   vi.mocked(repo.deleteGroupSpaceSettled).mockResolvedValue({
     deleted: true,
     returned: 0,
@@ -237,13 +239,18 @@ describe('deleteGroupConfirmed', () => {
 });
 
 describe('deleteGroupConfirmed and money (phase 62)', () => {
-  it('makes sure every member has their own space before settling, so a credit back has somewhere to land', async () => {
+  it('makes sure a member with money in the group has their own space for it to go back to, and nobody else', async () => {
+    vi.mocked(repo.listGroupMembers).mockResolvedValue([
+      { userId: 'user_a', joinedAt: NOW, balanceCredits: 0 },
+      { userId: 'user_b', joinedAt: NOW, balanceCredits: 6 },
+      { userId: 'user_c', joinedAt: NOW, balanceCredits: -2 },
+      { userId: 'user_d', joinedAt: null, balanceCredits: 9 },
+    ] as never);
+
     await deleteGroupConfirmed('user_a', 'grp_1', 'Study Group B');
 
     expect(vi.mocked(ensureResparkableSpace).mock.calls.map(([userId]) => userId)).toEqual([
-      'user_a',
       'user_b',
-      'user_c',
     ]);
   });
 

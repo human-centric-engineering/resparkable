@@ -37,6 +37,9 @@ vi.mock('@/lib/framework/resparkable/repo/group-billing-departure', () => ({
   closeGroupPool: vi.fn().mockResolvedValue({ owes: 0, returned: 0, unreturned: 0 }),
   settleMemberDeparture: vi.fn().mockResolvedValue({ creditedBack: 0, debtAbsorbed: 0 }),
 }));
+vi.mock('@/lib/framework/resparkable/repo/group-billing-settings', () => ({
+  releaseOperationalPayer: vi.fn().mockResolvedValue(false),
+}));
 vi.mock('@/lib/framework/resparkable/services/space', () => ({
   ensureResparkableSpace: vi.fn(),
 }));
@@ -71,6 +74,7 @@ vi.mock('@/lib/framework/resparkable/repo/group-audit', () => ({
 
 import * as repo from '@/lib/framework/resparkable/repo/groups';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
+import { releaseOperationalPayer } from '@/lib/framework/resparkable/repo/group-billing-settings';
 import {
   closeGroupPool,
   settleMemberDeparture,
@@ -1217,6 +1221,42 @@ describe('money on the way out (phase 62)', () => {
       toOwnBalance: false,
     });
     expect(settleMemberDeparture).toHaveBeenCalledTimes(1);
+    // In every group, through the erasure's own transaction: a payer named in
+    // a waiting change would otherwise fail every attempt to apply it.
+    expect(releaseOperationalPayer).toHaveBeenCalledWith('grp_delete', 'user_erased', tx);
+    expect(releaseOperationalPayer).toHaveBeenCalledWith('grp_fine', 'user_erased', tx);
+  });
+
+  it('records the payer released, in the erasure transaction, only when they were the payer', async () => {
+    vi.mocked(releaseOperationalPayer).mockResolvedValueOnce(true);
+    vi.mocked(repo.listJoinedGroupsForErasure).mockResolvedValue([
+      { groupId: 'grp_fine', spaceId: 'spc_fine', viewersCanInheritAdmin: true },
+      { groupId: 'grp_other', spaceId: 'spc_other', viewersCanInheritAdmin: true },
+    ]);
+    vi.mocked(repo.listGroupMembers).mockImplementation(
+      async (groupId) =>
+        [
+          membership({ groupId, userId: 'user_erased' }),
+          membership({ groupId, userId: 'user_a', role: 'admin' }),
+        ] as never
+    );
+
+    await settleGroupsAfterErasure('user_erased', tx);
+
+    const released = vi
+      .mocked(insertGroupAuditEntry)
+      .mock.calls.filter(([entry]) => entry.action === 'payer_released');
+    expect(released).toEqual([
+      [
+        {
+          groupId: 'grp_fine',
+          actorUserId: null,
+          subjectUserId: 'user_erased',
+          action: 'payer_released',
+        },
+        tx,
+      ],
+    ]);
   });
 
   it('still deletes a group erasure empties when it owes credits, because erasure cannot be refused', async () => {

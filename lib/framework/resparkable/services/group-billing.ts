@@ -178,6 +178,29 @@ export function nextMonthStartFor(
   return addZonedMonths(monthStartFor(group, timeZone, now), 1, timeZone);
 }
 
+/**
+ * The settings with a `one_admin` payer who is no longer a joined admin turned
+ * back into the pool. Applied whenever settings are written into the group's
+ * columns, because `operationalPayerUserId` carries a foreign key: a payer who
+ * was erased while named in a waiting change would otherwise fail every write
+ * of it, for ever (erasure releases them too; this is the backstop for a path
+ * where the erasure hook did not run).
+ */
+export async function withLivePayer(
+  groupId: string,
+  settings: GroupBillingSettings
+): Promise<GroupBillingSettings> {
+  if (settings.operationalCostsPaidBy !== 'one_admin') {
+    return { ...settings, operationalPayerUserId: null };
+  }
+  const payer = settings.operationalPayerUserId
+    ? await findJoinedMembership(groupId, settings.operationalPayerUserId)
+    : null;
+  return payer?.role === 'admin'
+    ? settings
+    : { ...settings, operationalCostsPaidBy: 'pool', operationalPayerUserId: null };
+}
+
 // ─── The month turning over ──────────────────────────────────────────────────
 
 /** A job that is years late settles at most this many months at once. */
@@ -210,28 +233,41 @@ export function cycleDue(group: GroupWithClock, now: Date = new Date()): boolean
  */
 export async function settleGroupCycle(
   group: GroupWithClock,
-  now: Date = new Date()
+  now: Date = new Date(),
+  attempt = 1
 ): Promise<{ settled: boolean; seatsCharged: number; months: number }> {
   const through = monthStartFor(group, group.timezone, now);
   const from = settledThrough(group);
   if (through <= from) return { settled: false, seatsCharged: 0, months: 0 };
 
-  let months = 0;
-  for (let cursor = from; cursor < through && months < MAX_MONTHS_AT_ONCE; months++) {
+  // Every month start since the last one settled, up to and including this
+  // month's. Each member is charged only for the starts after they joined.
+  const monthStarts: Date[] = [];
+  for (let cursor = from; cursor < through && monthStarts.length < MAX_MONTHS_AT_ONCE;) {
     cursor = addZonedMonths(cursor, 1, group.timezone);
+    monthStarts.push(cursor);
   }
+  const months = monthStarts.length;
 
   // The settings in force in the new month: a change scheduled for it applies
   // to its seats, which is the whole point of scheduling it.
   const settings = effectiveBillingSettings(group, through);
-  const promote = group.pendingBillingFrom && group.pendingBillingFrom <= through ? settings : null;
+  const promote =
+    group.pendingBillingFrom && group.pendingBillingFrom <= through
+      ? await withLivePayer(group.id, settings)
+      : null;
+
+  // The waiting change exactly as stored, validated, for the claim to compare
+  // against (jsonb equality ignores key order).
+  const parsedWaiting = groupBillingSettingsSchema.safeParse(group.pendingBilling);
+  const waiting = parsedWaiting.success ? parsedWaiting.data : null;
 
   const result = await settleGroupMonths({
     groupId: group.id,
     spaceId: group.spaceId,
     expectedThrough: group.cycleSettledThrough,
     through,
-    months,
+    monthStarts,
     seatPrices: {
       admin: settings.seatPriceAdminCredits,
       member: settings.seatPriceMemberCredits,
@@ -240,8 +276,8 @@ export async function settleGroupCycle(
     creditCarvedAllowances:
       settings.activityCostsPaidBy === 'allowance' && settings.allowanceSource === 'carved',
     promote:
-      promote && group.pendingBillingFrom
-        ? { from: group.pendingBillingFrom, columns: promote }
+      promote && group.pendingBillingFrom && waiting
+        ? { from: group.pendingBillingFrom, columns: promote, expectedPending: waiting }
         : null,
   });
 
@@ -257,6 +293,14 @@ export async function settleGroupCycle(
       const membership = await findJoinedMembership(group.id, userId);
       if (membership) await topUpAutomatically(scope, group, membership, 'member', now);
     }
+  } else if (attempt < 2) {
+    // The claim missed. Either somebody else settled the month (the re-read
+    // shows it settled, and this returns), or an admin replaced the waiting
+    // change between this read and the claim. Then the month is still due, and
+    // one retry against the fresh row settles it now rather than leaving seats
+    // until the next run or tomorrow's job.
+    const fresh = await findGroupWithClockBySpaceId(group.spaceId);
+    if (fresh && cycleDue(fresh, now)) return settleGroupCycle(fresh, now, attempt + 1);
   }
   return { settled: result.settled, seatsCharged: result.seatsCharged, months };
 }
@@ -312,6 +356,8 @@ export class GroupMonthlyLimitError extends APIError {
 const POOL_EMPTY = "This group's credit balance is empty. A group admin can top it up.";
 const OWN_BALANCE_EMPTY =
   'Your balance in this group is empty. Top it up to carry on, or ask an admin how the group pays.';
+const SPLIT_UNBACKED =
+  "Someone in the group has nothing left to pay their share, and the group's shared balance cannot cover it. Adding credits to the shared balance, or to their own, will let this run.";
 const CANNOT_LEND =
   "Your balance in this group is empty, and the group's pool cannot cover any more. Top up your balance in the group to carry on.";
 
@@ -338,17 +384,17 @@ const SPACE: ChargePlan = { source: 'space' };
 async function operationalPlan(
   group: GroupWithClock,
   settings: GroupBillingSettings
-): Promise<ChargePlan> {
+): Promise<{ plan: ChargePlan; payer: ResparkableGroupMember | null }> {
   if (settings.operationalCostsPaidBy === 'admins_split') {
-    return { source: 'split', groupId: group.id, roles: ['admin'] };
+    return { plan: { source: 'split', groupId: group.id, roles: ['admin'] }, payer: null };
   }
   if (settings.operationalCostsPaidBy === 'one_admin' && settings.operationalPayerUserId) {
     const payer = await findJoinedMembership(group.id, settings.operationalPayerUserId);
     if (payer?.role === 'admin') {
-      return { source: 'member', groupId: group.id, memberUserId: payer.userId };
+      return { plan: { source: 'member', groupId: group.id, memberUserId: payer.userId }, payer };
     }
   }
-  return SPACE;
+  return { plan: SPACE, payer: null };
 }
 
 /** The activity plan for a member, with no checks. */
@@ -386,7 +432,7 @@ export async function planForRun(
   const group = await findGroupWithClockBySpaceId(scope.spaceId);
   if (!group) return SPACE;
   const settings = effectiveBillingSettings(group, now);
-  if (!authorUserId) return operationalPlan(group, settings);
+  if (!authorUserId) return (await operationalPlan(group, settings)).plan;
   const membership = await findJoinedMembership(group.id, authorUserId);
   if (!membership) return SPACE;
   return activityPlan(group, settings, authorUserId);
@@ -441,6 +487,14 @@ export async function topUpAutomatically(
     });
     return unchanged;
   }
+}
+
+/** What is left of a member's agreed automatic top-up in the month starting `monthStart`. */
+function autoTopUpLeft(member: ResparkableGroupMember, monthStart: Date): number {
+  if (member.autoTopUpMonthlyCredits === null) return 0;
+  const used =
+    member.autoTopUpMonth?.getTime() === monthStart.getTime() ? member.autoTopUpUsedCredits : 0;
+  return member.autoTopUpMonthlyCredits - used;
 }
 
 /**
@@ -518,19 +572,63 @@ export async function resolveCharge(
   const membership = await findJoinedMembership(group.id, scope.actorUserId);
   if (!membership) throw new ForbiddenError('You are not a member of this group');
 
+  const plan = activityPlan(group, settings, scope.actorUserId);
+  const monthStart = monthStartFor(group, group.timezone, now);
+
+  // ── First, every refusal that moves no money. ─────────────────────────────
+  //
+  // Below, checking a balance can run the person's agreed automatic top-up.
+  // Their own credits must never move for a run that is refused for some OTHER
+  // reason, so every such reason is checked here, before any top-up can run.
+  if (plan.source === 'member' && membership.allowanceCredits !== null) {
+    const spent = await sumMemberOwnSpendSince(scope, scope.actorUserId, monthStart);
+    if (spent >= membership.allowanceCredits) throw new GroupMonthlyLimitError();
+  }
+  if (plan.source === 'split') {
+    // A split charges every admin and member, not only the person starting it.
+    // Anybody else already at zero or below, with no agreed top-up left this
+    // month to cover them, would go further into a debt the pool is promised to
+    // cover, so the pool must be able to back it. (The person starting the run
+    // is checked below, where their own top-up may run.)
+    const payers = await listJoinedMembersByRole(group.id, plan.roles);
+    let uncovered = false;
+    for (const payer of payers) {
+      if (payer.userId === scope.actorUserId || payer.balanceCredits > 0) continue;
+      // An agreed top-up covers them only if their own balance can fund it.
+      const covered =
+        autoTopUpLeft(payer, monthStart) > 0 &&
+        ((await findCreditAccount(spaceScope(payer.userId)))?.balanceCredits ?? 0) > 0;
+      if (!covered) {
+        uncovered = true;
+        break;
+      }
+    }
+    if (uncovered && (await poolAvailableCredits(scope, group.id)) <= 0) {
+      throw new InsufficientCreditsError(SPLIT_UNBACKED);
+    }
+  }
+  if (
+    (plan.source === 'space' || plan.source === 'allowance') &&
+    (await poolAvailableCredits(scope, group.id)) <= 0
+  ) {
+    // The pool pays, and it cannot. Refused before any top-up: in a carved
+    // group a top-up would go into a pool that other members' debts already
+    // hold, and pay for nothing this person asked for.
+    throw new InsufficientCreditsError(POOL_EMPTY);
+  }
+
+  // ── Then the checks that may run the person's own agreed top-up. ──────────
+
   // Suspended means suspended whoever pays: a member cut off for a debt cannot
-  // start a run even in a group whose pool pays for runs.
+  // start a run even in a group whose pool pays for runs. Their top-up paying
+  // down their own debt is what they agreed it for, so it may run here.
   if (settings.shortfallPolicy === 'suspend' && membership.balanceCredits < 0) {
     const after = await topUpAutomatically(scope, group, membership, 'member', now);
     if (after.balanceCredits < 0) throw new GroupSuspendedError(-after.balanceCredits);
   }
 
-  const plan = activityPlan(group, settings, scope.actorUserId);
   switch (plan.source) {
     case 'space':
-      if ((await poolAvailableCredits(scope, group.id)) <= 0) {
-        throw new InsufficientCreditsError(POOL_EMPTY);
-      }
       break;
     case 'allowance': {
       let remaining = membership.allowanceRemainingCredits;
@@ -539,20 +637,9 @@ export async function resolveCharge(
           .allowanceRemainingCredits;
       }
       if (remaining <= 0) throw new GroupAllowanceUsedError();
-      if ((await poolAvailableCredits(scope, group.id)) <= 0) {
-        throw new InsufficientCreditsError(POOL_EMPTY);
-      }
       break;
     }
-    case 'member': {
-      await assertMemberCanPay(scope, group, settings, membership, now);
-      if (membership.allowanceCredits !== null) {
-        const since = monthStartFor(group, group.timezone, now);
-        const spent = await sumMemberOwnSpendSince(scope, scope.actorUserId, since);
-        if (spent >= membership.allowanceCredits) throw new GroupMonthlyLimitError();
-      }
-      break;
-    }
+    case 'member':
     case 'split':
       await assertMemberCanPay(scope, group, settings, membership, now);
       break;
@@ -574,12 +661,11 @@ export async function canAffordOperational(
   const group = await findGroupWithClockBySpaceId(scope.spaceId);
   if (!group) return ownBalance();
   const settings = effectiveBillingSettings(group, now);
-  const plan = await operationalPlan(group, settings);
+  const { plan, payer } = await operationalPlan(group, settings);
   const poolCanLend = async () =>
     settings.shortfallPolicy === 'debt' && (await poolAvailableCredits(scope, group.id)) > 0;
 
   if (plan.source === 'member') {
-    const payer = await findJoinedMembership(group.id, plan.memberUserId);
     if (!payer) return false;
     const after =
       payer.balanceCredits > 0

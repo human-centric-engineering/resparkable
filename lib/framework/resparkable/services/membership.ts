@@ -85,6 +85,7 @@ import {
   closeGroupPool,
   settleMemberDeparture,
 } from '@/lib/framework/resparkable/repo/group-billing-departure';
+import { releaseOperationalPayer } from '@/lib/framework/resparkable/repo/group-billing-settings';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
 import { recordGroupAudit } from '@/lib/framework/resparkable/services/group-audit-record';
 import { findSpaceByUserId } from '@/lib/framework/resparkable/repo/space';
@@ -623,6 +624,19 @@ export async function settleGroupsAfterErasure(
     erasedUserId,
     tx
   )) {
+    // Phase 62: if they paid the group's running costs, the pool pays now, in
+    // the stored setting and in any change waiting for next month. Both carry a
+    // foreign key to the account being erased, and a waiting change that still
+    // named them would fail every attempt to apply it.
+    if (await releaseOperationalPayer(groupId, erasedUserId, tx)) {
+      // The same record a leave or a demotion writes (`releasePayerAndTell`),
+      // without its email: no email can go from inside the erasure.
+      await insertGroupAuditEntry(
+        { groupId, actorUserId: null, subjectUserId: erasedUserId, action: 'payer_released' },
+        tx
+      );
+    }
+
     const plan = planErasureSuccession(await listGroupMembers(groupId, tx), erasedUserId, {
       viewersCanInheritAdmin,
     });

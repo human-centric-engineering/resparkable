@@ -35,7 +35,7 @@ import {
 import { findResparkableBillingSettings } from '@/lib/framework/resparkable/repo/billing-settings';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { resolveBillingSettings } from '@/lib/framework/resparkable/settings';
-import { APIError } from '@/lib/api/errors';
+import { APIError, ForbiddenError } from '@/lib/api/errors';
 import { logger } from '@/lib/logging';
 
 /**
@@ -67,14 +67,16 @@ export class DailyCreditCapError extends APIError {
  *      capability bound, and every billed action in the tier is a write or
  *      produces one. This also covers a grantee's viewer scope on somebody
  *      else's personal space, which must never debit its owner.
- *   2. **Whoever the group's settings name, and only them** (phase 62,
+ *   2. **A group member's daily cap**, when an admin has set one. The blast
+ *      radius for "any member can spend everyone's credits", enforced here so a
+ *      looping workflow is refused before its next provider call, not debited
+ *      after it. Checked before step 3 because step 3 can run the member's
+ *      agreed automatic top-up, and their own credits must not move for a run
+ *      the cap is about to refuse (phase 62).
+ *   3. **Whoever the group's settings name, and only them** (phase 62,
  *      `services/group-billing.ts`). Exactly one source is chosen, before the
  *      run, and an empty one is a refusal: **never** a redirect to the member's
  *      personal balance, and never a switch to a different group account.
- *   3. **A group member's daily cap**, when an admin has set one. The blast
- *      radius for "any member can spend everyone's credits", enforced here so a
- *      looping workflow is refused before its next provider call, not debited
- *      after it.
  *
  * Returns the {@link ChargePlan} the debit afterwards must be given, so a run is
  * billed to the source it was cleared against.
@@ -84,8 +86,14 @@ export class DailyCreditCapError extends APIError {
  * users, minted in `ensureResparkableSpace`'s create branch).
  */
 export async function assertCanSpend(scope: SpaceScope): Promise<ChargePlan> {
-  const plan = await resolveCharge(scope);
+  if (scope.role === 'viewer') {
+    throw new ForbiddenError('Viewers cannot use features that spend credits');
+  }
 
+  // The daily cap comes BEFORE the charge is resolved, because resolving it can
+  // run a member's automatic top-up (phase 62): their own credits must never
+  // move for a run the cap is about to refuse.
+  //
   // `admin | member` are the group roles that reach here; `owner` is a personal
   // space, where the balance is the only cap there is.
   if (scope.role !== 'owner' && scope.actorUserId) {
@@ -97,7 +105,7 @@ export async function assertCanSpend(scope: SpaceScope): Promise<ChargePlan> {
       if (spent >= cap) throw new DailyCreditCapError();
     }
   }
-  return plan;
+  return resolveCharge(scope);
 }
 
 /**
@@ -236,6 +244,13 @@ export async function recordAgentSpend(
       creditsDelta: -credits,
       ...detail,
       ...(input.authorUserId !== undefined ? { authorUserId: input.authorUserId } : {}),
+      // A group's pool paid: a running cost if nobody started it.
+      ...(scope.role !== 'owner'
+        ? {
+            booksCategory:
+              author === null ? ('runningCosts' as const) : ('sharedActivity' as const),
+          }
+        : {}),
     };
     ({ balanceAfter } = await applyLedgerEntryWithBalance(scope, entry));
   }

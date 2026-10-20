@@ -365,12 +365,14 @@ export const GROUP_CONTRIBUTION_SOURCES: Record<
     // theirs, and operational rows are attributed to nobody. Phase 62 adds the
     // rows that moved their own group balance, which somebody else may have
     // started (their share of an equal split, a seat charged by the monthly
-    // cycle): money taken from them is about them whoever caused it.
+    // cycle): money taken from them is about them whoever caused it. The
+    // reverse is NOT theirs: a split they started writes one row per member,
+    // and the rows that moved other members' balances are about those members.
     fetch: (userId) =>
       prisma.resparkableCreditLedgerEntry.findMany({
         where: {
           space: { kind: 'group' },
-          OR: [{ createdByUserId: userId }, { memberUserId: userId }],
+          OR: [{ memberUserId: userId }, { createdByUserId: userId, memberUserId: null }],
         },
         orderBy: OLDEST_FIRST,
       }),

@@ -20,6 +20,7 @@
  * See `.context/framework/resparkable/phase-62-plan.md`.
  */
 
+import { books } from '@/lib/framework/resparkable/repo/billing';
 import type { GroupDb } from '@/lib/framework/resparkable/repo/groups';
 
 /** Smaller than any credit amount that matters, larger than float noise. */
@@ -65,6 +66,7 @@ export async function settleMemberDeparture(
         memberUserId: userId,
         kind: 'credit_back',
         creditsDelta: -balance,
+        booksCategory: books('creditedBack'),
       },
     });
     if (
@@ -96,9 +98,16 @@ export async function settleMemberDeparture(
           memberUserId: userId,
           kind: 'debt_absorbed',
           creditsDelta: debt,
+          booksCategory: books('none'),
         },
         // ...and the pool carries it.
-        { spaceId, createdByUserId: userId, kind: 'debt_absorbed', creditsDelta: -debt },
+        {
+          spaceId,
+          createdByUserId: userId,
+          kind: 'debt_absorbed',
+          creditsDelta: -debt,
+          booksCategory: books('debtsTakenOn'),
+        },
       ],
     });
     return { creditedBack: 0, debtAbsorbed: debt };

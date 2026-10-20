@@ -62,6 +62,7 @@ function row(overrides: Partial<BooksLedgerRow>): BooksLedgerRow {
     creditsDelta: -1,
     createdByUserId: null,
     memberUserId: null,
+    booksCategory: null,
     createdAt: new Date('2026-10-20T09:00:00Z'),
     ...overrides,
   };
@@ -111,120 +112,119 @@ beforeEach(() => {
 });
 
 describe('classifyLedgerRow', () => {
-  it('reads a seat from the member’s side only', () => {
-    expect(
-      classifyLedgerRow(
-        row({ kind: 'seat', creditsDelta: -4, memberUserId: 'user_a', createdByUserId: 'user_a' })
-      )
-    ).toEqual({ category: 'seats', userId: 'user_a', credits: 4 });
-    // The pool's side of the same seat is the same credits arriving.
-    expect(
-      classifyLedgerRow(row({ kind: 'seat', creditsDelta: 4, createdByUserId: 'user_a' }))
-    ).toBeNull();
-  });
-
-  it('calls a run nobody started a running cost, and attributes it to whoever paid', () => {
-    expect(classifyLedgerRow(row({ creditsDelta: -2.5 }))).toEqual({
-      category: 'runningCosts',
-      userId: null,
-      credits: 2.5,
-    });
-    expect(classifyLedgerRow(row({ creditsDelta: -2.5, memberUserId: 'user_p' }))).toEqual({
-      category: 'runningCosts',
-      userId: 'user_p',
-      credits: 2.5,
-    });
-  });
-
-  it('calls a run a member started and the pool paid shared activity, attributed to the starter', () => {
-    expect(classifyLedgerRow(row({ createdByUserId: 'user_a', creditsDelta: -3 }))).toEqual({
-      category: 'sharedActivity',
-      userId: 'user_a',
-      credits: 3,
-    });
-  });
-
-  it('calls a run paid from a member’s own balance own activity, attributed to the payer', () => {
-    // A share of an equal split is paid by somebody other than the starter.
-    expect(
-      classifyLedgerRow(
-        row({ createdByUserId: 'user_a', memberUserId: 'user_b', creditsDelta: -3 })
-      )
-    ).toEqual({ category: 'ownActivity', userId: 'user_b', credits: 3 });
-  });
-
-  it.each(['transfer_in', 'auto_top_up'])(
-    'counts a positive %s as added, by whoever added it',
-    (kind) => {
-      expect(classifyLedgerRow(row({ kind, creditsDelta: 20, createdByUserId: 'user_a' }))).toEqual(
-        {
-          category: 'topUps',
-          userId: 'user_a',
-          credits: 20,
-        }
-      );
-    }
-  );
-
-  it.each(['transfer_in', 'auto_top_up'])(
-    'ignores a negative %s, the giver’s half of the same move',
-    (kind) => {
-      expect(
-        classifyLedgerRow(row({ kind, creditsDelta: -20, createdByUserId: 'user_a' }))
-      ).toBeNull();
-    }
-  );
-
-  it('counts an operator’s grant as added by nobody in the group', () => {
-    expect(
-      classifyLedgerRow(row({ kind: 'admin_grant', creditsDelta: 50, createdByUserId: 'op_1' }))
-    ).toEqual({
-      category: 'topUps',
-      userId: null,
-      credits: 50,
-    });
-  });
-
-  it('counts credit given back to the person it went to', () => {
-    expect(
-      classifyLedgerRow(row({ kind: 'credit_back', creditsDelta: -7, memberUserId: 'user_a' }))
-    ).toEqual({ category: 'creditedBack', userId: 'user_a', credits: 7 });
-    // When a group closes the payout is one row with nobody named.
-    expect(classifyLedgerRow(row({ kind: 'credit_back', creditsDelta: -30 }))).toEqual({
-      category: 'creditedBack',
-      userId: null,
-      credits: 30,
-    });
-  });
-
-  it('reads a debt the pool took on from the pool’s side, attributed to whose debt it was', () => {
-    expect(
-      classifyLedgerRow(
-        row({ kind: 'debt_absorbed', creditsDelta: -5, createdByUserId: 'user_gone' })
-      )
-    ).toEqual({ category: 'debtsTakenOn', userId: 'user_gone', credits: 5 });
-    // The member's side of the same debt being cleared.
-    expect(
-      classifyLedgerRow(
+  describe('a phase 62 row reads its stored category', () => {
+    it.each([
+      ['seats', 'member'],
+      ['ownActivity', 'member'],
+      ['creditedBack', 'member'],
+      ['sharedActivity', 'author'],
+      ['topUps', 'author'],
+      ['debtsTakenOn', 'author'],
+    ] as const)('%s is about the %s column’s person', (category, column) => {
+      const meaning = classifyLedgerRow(
         row({
-          kind: 'debt_absorbed',
-          creditsDelta: 5,
-          createdByUserId: 'user_gone',
-          memberUserId: 'user_gone',
+          kind: 'anything',
+          creditsDelta: -3,
+          createdByUserId: 'user_author',
+          memberUserId: 'user_member',
+          booksCategory: category,
         })
-      )
-    ).toBeNull();
+      );
+
+      expect(meaning).toEqual({
+        category,
+        userId: column === 'member' ? 'user_member' : 'user_author',
+        aboutPerson: true,
+        credits: 3,
+      });
+    });
+
+    it('skips the side of a two-sided move marked none', () => {
+      expect(
+        classifyLedgerRow(row({ kind: 'seat', creditsDelta: 4, booksCategory: 'none' }))
+      ).toBeNull();
+    });
+
+    it('skips a category it does not know rather than guessing', () => {
+      expect(classifyLedgerRow(row({ booksCategory: 'mystery' }))).toBeNull();
+    });
+
+    it('keeps an erased member’s seat as about a person, so it lands on Former members', () => {
+      // Both person columns are SetNull: after erasure the member side of a seat
+      // has neither, and only the stored category still says what it was.
+      expect(
+        classifyLedgerRow(row({ kind: 'seat', creditsDelta: -2, booksCategory: 'seats' }))
+      ).toEqual({ category: 'seats', userId: null, aboutPerson: true, credits: 2 });
+    });
+
+    it('counts an erased member’s debt once, not once per side', () => {
+      const memberSide = row({ kind: 'debt_absorbed', creditsDelta: 10, booksCategory: 'none' });
+      const poolSide = row({
+        kind: 'debt_absorbed',
+        creditsDelta: -10,
+        booksCategory: 'debtsTakenOn',
+      });
+
+      expect(classifyLedgerRow(memberSide)).toBeNull();
+      expect(classifyLedgerRow(poolSide)).toMatchObject({ category: 'debtsTakenOn', credits: 10 });
+    });
+
+    it('makes a running cost the pool paid nobody’s, and one an admin paid theirs', () => {
+      expect(classifyLedgerRow(row({ booksCategory: 'runningCosts' }))).toMatchObject({
+        aboutPerson: false,
+      });
+      expect(
+        classifyLedgerRow(row({ booksCategory: 'runningCostsOwn', memberUserId: 'user_admin' }))
+      ).toEqual({ category: 'runningCosts', userId: 'user_admin', aboutPerson: true, credits: 1 });
+    });
+
+    it('keeps a running cost an erased admin paid on the Former members line', () => {
+      // The admin's id is nulled by erasure; the stored category still says a
+      // person paid it, so it does not turn into the pool's.
+      expect(classifyLedgerRow(row({ booksCategory: 'runningCostsOwn' }))).toEqual({
+        category: 'runningCosts',
+        userId: null,
+        aboutPerson: true,
+        credits: 1,
+      });
+    });
   });
 
-  it('ignores zero-credit rows and kinds the books do not show', () => {
-    expect(classifyLedgerRow(row({ creditsDelta: 0 }))).toBeNull();
-    expect(classifyLedgerRow(row({ kind: 'transfer_out', creditsDelta: -5 }))).toBeNull();
-    expect(classifyLedgerRow(row({ kind: 'something_new', creditsDelta: -5 }))).toBeNull();
-  });
+  describe('a row from before phase 62 is read from its kind', () => {
+    it('calls a run nobody started a running cost that is nobody’s', () => {
+      expect(classifyLedgerRow(row({ creditsDelta: -2 }))).toEqual({
+        category: 'runningCosts',
+        userId: null,
+        aboutPerson: false,
+        credits: 2,
+      });
+    });
 
-  it('always reports a positive amount, whichever way the ledger signed it', () => {
-    expect(classifyLedgerRow(row({ creditsDelta: -4 }))?.credits).toBe(4);
-    expect(classifyLedgerRow(row({ creditsDelta: 4 }))?.credits).toBe(4);
+    it('calls a run a member started shared activity, theirs', () => {
+      expect(classifyLedgerRow(row({ createdByUserId: 'user_a', creditsDelta: -2 }))).toEqual({
+        category: 'sharedActivity',
+        userId: 'user_a',
+        aboutPerson: true,
+        credits: 2,
+      });
+    });
+
+    it('calls a pool top-up added by its giver', () => {
+      expect(
+        classifyLedgerRow(row({ kind: 'transfer_in', creditsDelta: 5, createdByUserId: 'user_a' }))
+      ).toMatchObject({ category: 'topUps', userId: 'user_a' });
+    });
+
+    it('counts an operator’s grant as added by nobody in the group', () => {
+      expect(
+        classifyLedgerRow(row({ kind: 'admin_grant', creditsDelta: 50, createdByUserId: null }))
+      ).toEqual({ category: 'topUps', userId: null, aboutPerson: false, credits: 50 });
+    });
+
+    it('ignores zero-credit rows and kinds the books do not show', () => {
+      expect(classifyLedgerRow(row({ creditsDelta: 0 }))).toBeNull();
+      expect(classifyLedgerRow(row({ kind: 'refund', creditsDelta: 3 }))).toBeNull();
+    });
   });
 });
 
@@ -319,7 +319,12 @@ describe('getGroupBooks', () => {
       rows: [
         row({ createdByUserId: 'user_gone1', creditsDelta: -3 }),
         row({ createdByUserId: 'user_gone2', creditsDelta: -4 }),
-        row({ kind: 'credit_back', creditsDelta: -6, memberUserId: 'user_gone1' }),
+        row({
+          kind: 'credit_back',
+          creditsDelta: -6,
+          memberUserId: 'user_gone1',
+          booksCategory: 'creditedBack',
+        }),
       ],
     });
 
@@ -362,11 +367,28 @@ describe('getGroupBooks', () => {
       rows: [
         row({ createdByUserId: 'user_a', creditsDelta: -2 }),
         row({ createdByUserId: 'user_a', creditsDelta: -3 }),
-        row({ kind: 'transfer_in', creditsDelta: 10, createdByUserId: 'user_a' }),
+        row({
+          kind: 'transfer_in',
+          creditsDelta: 10,
+          createdByUserId: 'user_a',
+          booksCategory: 'topUps',
+        }),
         // The giver's half of the same top-up must not count again.
-        row({ kind: 'transfer_in', creditsDelta: -10, createdByUserId: 'user_a' }),
-        row({ kind: 'seat', creditsDelta: -4, memberUserId: 'user_a', createdByUserId: 'user_a' }),
-        row({ kind: 'seat', creditsDelta: 4, createdByUserId: 'user_a' }),
+        row({
+          kind: 'transfer_in',
+          creditsDelta: -10,
+          createdByUserId: 'user_a',
+          booksCategory: 'none',
+        }),
+        row({
+          kind: 'seat',
+          creditsDelta: -4,
+          memberUserId: 'user_a',
+          createdByUserId: 'user_a',
+          booksCategory: 'seats',
+        }),
+        // The pool's half of the same seat.
+        row({ kind: 'seat', creditsDelta: 4, createdByUserId: 'user_a', booksCategory: 'none' }),
       ],
     });
 

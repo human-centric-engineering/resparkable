@@ -53,6 +53,7 @@ import {
   GroupSuspendedError,
   canAffordOperational,
   cycleDue,
+  withLivePayer,
   effectiveBillingSettings,
   monthStartFor,
   nextMonthStartFor,
@@ -118,6 +119,7 @@ function setup(
 beforeEach(() => {
   vi.resetAllMocks();
   settleGroupMonths.mockResolvedValue({ settled: false, seatsCharged: 0, shortUserIds: [] });
+  listJoinedMembersByRole.mockResolvedValue([]);
 });
 
 describe('storedBillingSettings', () => {
@@ -420,6 +422,28 @@ describe('resolveCharge: filled allowance (member plan)', () => {
     expect(sumMemberOwnSpendSince).not.toHaveBeenCalled();
   });
 
+  it('refuses at the monthly cap before even a suspended member’s top-up runs', async () => {
+    setup(
+      filled({ shortfallPolicy: 'suspend' }),
+      makeMember({ balanceCredits: -2, allowanceCredits: 50, autoTopUpMonthlyCredits: 10 })
+    );
+    sumMemberOwnSpendSince.mockResolvedValue(50);
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toBeInstanceOf(GroupMonthlyLimitError);
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
+  });
+
+  it('refuses at the monthly cap BEFORE any automatic top-up, so no personal credits move', async () => {
+    setup(
+      filled(),
+      makeMember({ balanceCredits: 0, allowanceCredits: 10, autoTopUpMonthlyCredits: 50 })
+    );
+    sumMemberOwnSpendSince.mockResolvedValue(10);
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toBeInstanceOf(GroupMonthlyLimitError);
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
+  });
+
   it("refuses at or above the monthly cap, measuring spend since the group's month start", async () => {
     setup(filled(), makeMember({ balanceCredits: 4, allowanceCredits: 10 }));
     sumMemberOwnSpendSince.mockResolvedValue(10);
@@ -490,12 +514,103 @@ describe('resolveCharge: equal_split', () => {
 
   it('returns a split plan over admins and members (not viewers)', async () => {
     setup(split(), makeMember({ balanceCredits: 3 }));
+    listJoinedMembersByRole.mockResolvedValue([makeMember({ balanceCredits: 3 })]);
 
     expect(await resolveCharge(memberScope, NOW)).toEqual({
       source: 'split',
       groupId: 'g1',
       roles: ['admin', 'member'],
     });
+  });
+
+  it('refuses when another payer is already empty and the pool cannot back their share', async () => {
+    setup(split(), makeMember({ balanceCredits: 3 }), 0);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 3 }),
+      makeMember({ userId: 'u2', balanceCredits: 0 }),
+    ]);
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toThrow(
+      /nothing left to pay their share/
+    );
+    expect(listJoinedMembersByRole).toHaveBeenCalledWith('g1', ['admin', 'member']);
+  });
+
+  it('lets the split run when the pool can back an empty payer', async () => {
+    setup(split(), makeMember({ balanceCredits: 3 }), 10);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 3 }),
+      makeMember({ userId: 'u2', balanceCredits: -1 }),
+    ]);
+
+    await expect(resolveCharge(memberScope, NOW)).resolves.toMatchObject({ source: 'split' });
+  });
+
+  it('refuses an unbacked split BEFORE the starter’s own top-up can move their credits', async () => {
+    setup(split(), makeMember({ balanceCredits: 0, autoTopUpMonthlyCredits: 20 }), 0);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 0, autoTopUpMonthlyCredits: 20 }),
+      makeMember({ userId: 'u2', balanceCredits: -3 }),
+    ]);
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toThrow(
+      /nothing left to pay their share/
+    );
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
+  });
+
+  it('counts another payer’s unused agreed top-up as covering their share', async () => {
+    setup(split(), makeMember({ balanceCredits: 3 }), 0);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 3 }),
+      makeMember({ userId: 'u2', balanceCredits: 0, autoTopUpMonthlyCredits: 100 }),
+    ]);
+    findCreditAccount.mockResolvedValue({ balanceCredits: 40 });
+
+    await expect(resolveCharge(memberScope, NOW)).resolves.toMatchObject({ source: 'split' });
+    expect(findCreditAccount).toHaveBeenCalledWith(expect.objectContaining({ spaceId: 'u2' }));
+  });
+
+  it('does not count an agreed top-up that their own balance cannot fund', async () => {
+    setup(split(), makeMember({ balanceCredits: 3 }), 0);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 3 }),
+      makeMember({ userId: 'u2', balanceCredits: -3, autoTopUpMonthlyCredits: 20 }),
+    ]);
+    findCreditAccount.mockResolvedValue({ balanceCredits: 0 });
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toThrow(
+      /nothing left to pay their share/
+    );
+  });
+
+  it('refuses a carved allowance on an empty pool BEFORE topping the member up into it', async () => {
+    setup(
+      makeGroup({ activityCostsPaidBy: 'allowance', allowanceSource: 'carved' }),
+      makeMember({ allowanceRemainingCredits: 0, autoTopUpMonthlyCredits: 20 }),
+      0
+    );
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toBeInstanceOf(InsufficientCreditsError);
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
+  });
+
+  it('does not count a top-up already used up this month', async () => {
+    setup(split(), makeMember({ balanceCredits: 3 }), 0);
+    listJoinedMembersByRole.mockResolvedValue([
+      makeMember({ balanceCredits: 3 }),
+      makeMember({
+        userId: 'u2',
+        balanceCredits: 0,
+        autoTopUpMonthlyCredits: 100,
+        autoTopUpUsedCredits: 100,
+        autoTopUpMonth: new Date('2026-10-10T00:00:00Z'),
+      }),
+    ]);
+
+    await expect(resolveCharge(memberScope, NOW)).rejects.toThrow(
+      /nothing left to pay their share/
+    );
   });
 
   it('checks only the starter: an empty starter under suspend is refused', async () => {
@@ -851,7 +966,8 @@ describe('the month turning over (decision 6)', () => {
         spaceId: 'spc_group',
         expectedThrough: through,
         through: SETTLED_OCT,
-        months: 2,
+        // One entry per month start missed, each member counted only after they joined.
+        monthStarts: [new Date('2026-09-10T00:00:00Z'), SETTLED_OCT],
         seatPrices: { admin: 1, member: 3, viewer: 0 },
         creditCarvedAllowances: false,
         promote: null,
@@ -876,7 +992,11 @@ describe('the month turning over (decision 6)', () => {
     const input = settleGroupMonths.mock.calls[0]?.[0];
     expect(input.seatPrices.member).toBe(9);
     expect(input.creditCarvedAllowances).toBe(true);
-    expect(input.promote).toEqual({ from: SETTLED_OCT, columns: pending });
+    expect(input.promote).toEqual({
+      from: SETTLED_OCT,
+      columns: pending,
+      expectedPending: pending,
+    });
   });
 
   it('runs the agreed top-up for a member a seat left below zero', async () => {
@@ -896,6 +1016,50 @@ describe('the month turning over (decision 6)', () => {
     );
   });
 
+  it('retries once against a fresh read when an admin’s change made the claim miss', async () => {
+    const stale = makeGroup({
+      cycleSettledThrough: new Date('2026-09-10T00:00:00Z'),
+      pendingBilling: DEFAULT_GROUP_BILLING,
+      pendingBillingFrom: SETTLED_OCT,
+    });
+    const fresh = makeGroup({
+      cycleSettledThrough: new Date('2026-09-10T00:00:00Z'),
+      pendingBilling: DEFAULT_GROUP_BILLING,
+      pendingBillingFrom: new Date('2026-11-10T00:00:00Z'),
+    });
+    settleGroupMonths
+      .mockResolvedValueOnce({ settled: false, seatsCharged: 0, shortUserIds: [] })
+      .mockResolvedValueOnce({ settled: true, seatsCharged: 3, shortUserIds: [] });
+    findGroupWithClockBySpaceId.mockResolvedValue(fresh);
+
+    const result = await settleGroupCycle(stale, NOW);
+
+    expect(result).toMatchObject({ settled: true, seatsCharged: 3 });
+    expect(settleGroupMonths).toHaveBeenCalledTimes(2);
+    // The retry promotes nothing: the change now waiting starts next month.
+    expect(settleGroupMonths.mock.calls[1]?.[0].promote).toBeNull();
+  });
+
+  it('does not retry when the fresh read shows somebody else settled the month', async () => {
+    findGroupWithClockBySpaceId.mockResolvedValue(makeGroup({ cycleSettledThrough: SETTLED_OCT }));
+
+    await settleGroupCycle(
+      makeGroup({ cycleSettledThrough: new Date('2026-09-10T00:00:00Z') }),
+      NOW
+    );
+
+    expect(settleGroupMonths).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries at most once', async () => {
+    const due = makeGroup({ cycleSettledThrough: new Date('2026-09-10T00:00:00Z') });
+    findGroupWithClockBySpaceId.mockResolvedValue(due);
+
+    await settleGroupCycle(due, NOW);
+
+    expect(settleGroupMonths).toHaveBeenCalledTimes(2);
+  });
+
   it('settles by space for the job, and does nothing for a space with no group', async () => {
     findGroupWithClockBySpaceId.mockResolvedValue(null);
     await expect(settleGroupCycleForSpace('user_a', NOW)).resolves.toEqual({
@@ -912,5 +1076,62 @@ describe('the month turning over (decision 6)', () => {
 
     await expect(resolveCharge(memberScope, NOW)).resolves.toEqual({ source: 'space' });
     expect(settleGroupMonths).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('withLivePayer', () => {
+  it('keeps a payer who is still a joined admin', async () => {
+    findJoinedMembership.mockResolvedValue(makeMember({ userId: 'u_admin', role: 'admin' }));
+    const settings = {
+      ...DEFAULT_GROUP_BILLING,
+      operationalCostsPaidBy: 'one_admin' as const,
+      operationalPayerUserId: 'u_admin',
+    };
+
+    await expect(withLivePayer('g1', settings)).resolves.toEqual(settings);
+  });
+
+  it('turns a payer who is gone (erased, left or demoted) back into the pool', async () => {
+    findJoinedMembership.mockResolvedValue(null);
+
+    await expect(
+      withLivePayer('g1', {
+        ...DEFAULT_GROUP_BILLING,
+        operationalCostsPaidBy: 'one_admin',
+        operationalPayerUserId: 'u_gone',
+      })
+    ).resolves.toMatchObject({ operationalCostsPaidBy: 'pool', operationalPayerUserId: null });
+  });
+
+  it('never writes a payer id when nobody single pays', async () => {
+    await expect(
+      withLivePayer('g1', {
+        ...DEFAULT_GROUP_BILLING,
+        operationalCostsPaidBy: 'admins_split',
+        operationalPayerUserId: 'u_stale',
+      })
+    ).resolves.toMatchObject({ operationalPayerUserId: null });
+    expect(findJoinedMembership).not.toHaveBeenCalled();
+  });
+
+  it('is applied to a change before the month settles it, so a gone payer cannot fail the settle', async () => {
+    findJoinedMembership.mockResolvedValue(null);
+    const pending = {
+      ...DEFAULT_GROUP_BILLING,
+      operationalCostsPaidBy: 'one_admin' as const,
+      operationalPayerUserId: 'u_gone',
+    };
+    const group = makeGroup({
+      cycleSettledThrough: new Date('2026-09-10T00:00:00Z'),
+      pendingBilling: pending,
+      pendingBillingFrom: new Date('2026-10-10T00:00:00Z'),
+    });
+
+    await settleGroupCycle(group, NOW);
+
+    expect(settleGroupMonths.mock.calls[0]?.[0].promote.columns).toMatchObject({
+      operationalCostsPaidBy: 'pool',
+      operationalPayerUserId: null,
+    });
   });
 });

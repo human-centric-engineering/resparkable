@@ -140,6 +140,7 @@ function ledgerEntry(
     note: null,
     createdByAdminId: 'admin_1',
     memberUserId: null,
+    booksCategory: null,
     createdAt: new Date('2026-07-01T00:00:00Z'),
     ...overrides,
   };

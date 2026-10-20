@@ -34,6 +34,7 @@
 import { GroupDeletedEmail } from '@/components/resparkable/emails/group-deleted';
 import {
   deleteGroupSpaceSettled,
+  listGroupMembers,
   listMemberContacts,
 } from '@/lib/framework/resparkable/repo/groups';
 import { ensureResparkableSpace } from '@/lib/framework/resparkable/services/space';
@@ -109,7 +110,15 @@ export async function deleteGroupConfirmed(
   // Phase 62: everybody's money settles in the deleting transaction. Members'
   // own balances, and their share of the pool, go back to their own balances,
   // which need their own spaces to exist.
-  for (const member of members) await ensureResparkableSpace(member.userId);
+  // Only members with money of their own in the group need one: anybody who
+  // put credits into the pool did so from a personal balance, so already has a
+  // space, and creating one for everybody else would mint a brain (and its
+  // new-user grant) for people who never opened one.
+  const withMoney = (await listGroupMembers(groupId)).filter(
+    // The same threshold `settleMemberDeparture` uses: float noise is not money.
+    (member) => member.joinedAt !== null && member.balanceCredits > 1e-6
+  );
+  for (const member of withMoney) await ensureResparkableSpace(member.userId);
   const deleted = await deleteGroupSpaceSettled(groupId, group.spaceId);
   if (!deleted.deleted) return { ok: false, reason: 'group_owes', owes: deleted.owes };
   logger.info('Resparkable group deleted', {

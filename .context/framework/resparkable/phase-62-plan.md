@@ -73,7 +73,16 @@ member's balance. Hand-written FK to `"user"("id")` `ON DELETE SetNull`, covered
 probe B16 together with `operationalPayerUserId` (B11 is the `createdByUserId`
 inventory, and these are not authorship). New index
 `[spaceId, memberUserId, createdAt]`. The Art. 15 export of the ledger includes
-rows where `memberUserId` is the subject as well as rows they authored.
+rows where `memberUserId` is the subject, and pool-side rows they authored. It
+leaves out rows they started that moved somebody else's balance (each other
+member's share of a split they started): those are about the other member.
+
+The ledger also gains `booksCategory` (added after the code review,
+2026-10-20): what the row is in the group's books, or `none` for the side of a
+two-sided move the books do not count, written with the row. Both person columns
+are SetNull, so once a member is erased the two sides of their moves look alike
+and the books could not be read off them. Rows from before phase 62 have none
+and are classified from their kind.
 
 ## Decision 2: the settings, and how few of them there are
 
@@ -134,8 +143,12 @@ a refusal. The plan is never re-chosen because a source ran dry.
   member may spend in the group in a month (a monthly cap like `dailyCreditCap`,
   read off the ledger since the month began). Unused money rolls over because it
   is a balance. Refused when the balance is empty.
-- **`equal_split`.** The pre-flight checks only the person starting the run: not
-  suspended (decision 5), balance above zero. Afterwards the cost is divided into
+- **`equal_split`.** The pre-flight checks the person starting the run (not
+  suspended, balance above zero, or allowed to borrow under decision 5), and,
+  because a split charges everybody, refuses when any admin or member is
+  already at zero or below and the pool cannot back their share (added after
+  the code review: otherwise one person's run could push others into a debt the
+  pool is promised to cover with nothing behind it). Afterwards the cost is divided into
   equal shares over every joined **admin and member** (not viewers, who cannot
   start a billed run), and each share is debited from that person's
   `balanceCredits`. One `UPDATE … WHERE groupId = $1 AND joinedAt IS NOT NULL AND
@@ -219,7 +232,8 @@ settles a month. A daily `group_cycle` job (not demand-gated: the calendar
 decides, as for retention) calls it, and so does the pre-flight when it finds an
 unsettled month, so a late job can never clear a run against last month's
 allowance. A job that is months late settles every missed month at once, capped
-at 24.
+at 24, and each member is charged a seat (and credited an allowance) only for the
+month starts after they joined.
 
 **The month a member joins in is free** (departure from the first draft, decided
 2026-10-20). The first draft charged a pro-rata seat on joining, as an explicit
@@ -335,8 +349,10 @@ that member.
   owes the group is asked "Pay and leave" or "Leave without paying" before the
   leave is sent, and paying is a top-up to their own balance with `to: 'me'`.)
 - **The payer-gone email is not sent on erasure**, because erasure runs inside
-  `eraseUser`'s transaction. The setting still falls back: the FK nulls the
-  payer, and a payer who is not a joined admin reads as the pool.
+  `eraseUser`'s transaction. The setting still falls back there: erasure
+  releases the payer from the stored setting and from any waiting change, and a
+  payer who is not a joined admin is never written into the columns
+  (`withLivePayer`), which also covers an erasure whose hook did not run.
 
 ## Known edges, accepted
 
@@ -344,6 +360,11 @@ that member.
   finds no membership to charge, and bills the pool. That is a switch of account,
   but not on an empty balance, and the alternative is a run nobody pays for.
   Short-lived, like phase 50's erasure gap.
+- **A split can take a member with a small positive balance below zero.** The
+  split check refuses only when somebody already at zero or below, with no
+  agreed top-up left, has nothing behind them. A member holding less than one
+  share goes negative by at most that run's share: the same one-run overshoot
+  every pre-flight here accepts, since a run's cost is not known until it ends.
 - **Floating-point credits.** The ledger keeps exact figures and the screens
   round, as today. A split's last share absorbing the remainder is what keeps the
   sum exact.

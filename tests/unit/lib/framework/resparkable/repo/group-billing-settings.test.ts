@@ -254,6 +254,7 @@ describe('transferCreditsToMemberBalance', () => {
         memberUserId: 'user_a',
         kind: 'transfer_in',
         creditsDelta: 10,
+        booksCategory: 'topUps',
       },
     });
   });

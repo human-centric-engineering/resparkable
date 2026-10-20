@@ -99,49 +99,73 @@ function rounded(figures: BooksFigures): BooksFigures {
   return out;
 }
 
+/** What one ledger row means in the books. */
+export interface BooksMeaning {
+  category: BooksCategory;
+  /** The person it is about, when their id is still on the row. */
+  userId: string | null;
+  /**
+   * Whether the row is about a person at all. A seat, a top-up or a debt
+   * always is, so one whose person has been erased (the id nulled) belongs on
+   * the "Former members" line. A running cost the pool paid is nobody's.
+   */
+  aboutPerson: boolean;
+  credits: number;
+}
+
+/** Which person column a category is about. */
+const PERSON_OF: Record<BooksCategory, 'member' | 'author'> = {
+  seats: 'member',
+  ownActivity: 'member',
+  creditedBack: 'member',
+  runningCosts: 'member',
+  sharedActivity: 'author',
+  topUps: 'author',
+  debtsTakenOn: 'author',
+};
+
+function isBooksCategory(value: string): value is BooksCategory {
+  return (BOOKS_CATEGORIES as readonly string[]).includes(value);
+}
+
 /**
- * What one ledger row means in the books: a category, the person it is about
- * (`null` when it is nobody's), and a positive amount. `null` for the half of a
- * two-sided move that would count the same credits twice, and for kinds the
- * books do not show.
+ * What one ledger row means in the books, or `null` for a row they do not
+ * count (the other side of a two-sided move, or a kind they do not show).
  *
- * Every money move between two accounts in a group writes a row on each side
- * (`repo/group-billing*.ts`), so each kind is read from exactly one side.
+ * **Phase 62 rows carry their category** (`booksCategory`), written with the
+ * row. The person columns cannot be relied on to tell the books afterwards:
+ * both are SetNull, so once a member is erased the two sides of their moves
+ * look alike. Rows from before phase 62 carry none and are classified from
+ * their kind, which was unambiguous before members had balances of their own.
  */
-export function classifyLedgerRow(
-  row: BooksLedgerRow
-): { category: BooksCategory; userId: string | null; credits: number } | null {
-  const amount = Math.abs(row.creditsDelta);
-  if (amount === 0) return null;
+export function classifyLedgerRow(row: BooksLedgerRow): BooksMeaning | null {
+  const credits = Math.abs(row.creditsDelta);
+  if (credits === 0) return null;
+
+  if (row.booksCategory !== null) {
+    // A running cost an admin's own balance paid is theirs, even once they are
+    // erased and the id is gone; one the pool paid is nobody's. Stored apart so
+    // the books never have to infer which from a column that may be nulled.
+    if (row.booksCategory === 'runningCostsOwn') {
+      return { category: 'runningCosts', userId: row.memberUserId, aboutPerson: true, credits };
+    }
+    if (!isBooksCategory(row.booksCategory)) return null;
+    const category = row.booksCategory;
+    const userId = PERSON_OF[category] === 'member' ? row.memberUserId : row.createdByUserId;
+    return { category, userId, aboutPerson: category !== 'runningCosts', credits };
+  }
+
+  // Before phase 62: the pool was the only account, so the kind says it all.
   switch (row.kind) {
-    case 'seat':
-      // The member's side; the pool's side is the same credits arriving.
-      return row.memberUserId
-        ? { category: 'seats', userId: row.memberUserId, credits: amount }
-        : null;
     case 'agent_spend':
-      if (row.createdByUserId === null) {
-        // Nobody started it. Paid by the pool, or by the admin who pays.
-        return { category: 'runningCosts', userId: row.memberUserId, credits: amount };
-      }
-      return row.memberUserId
-        ? { category: 'ownActivity', userId: row.memberUserId, credits: amount }
-        : { category: 'sharedActivity', userId: row.createdByUserId, credits: amount };
+      return row.createdByUserId === null
+        ? { category: 'runningCosts', userId: null, aboutPerson: false, credits }
+        : { category: 'sharedActivity', userId: row.createdByUserId, aboutPerson: true, credits };
     case 'transfer_in':
-    case 'auto_top_up':
-      return row.creditsDelta > 0
-        ? { category: 'topUps', userId: row.createdByUserId, credits: amount }
-        : null;
+      return { category: 'topUps', userId: row.createdByUserId, aboutPerson: true, credits };
     case 'admin_grant':
       // Credits an operator gave the group: nobody in it added them.
-      return { category: 'topUps', userId: null, credits: amount };
-    case 'credit_back':
-      return { category: 'creditedBack', userId: row.memberUserId, credits: amount };
-    case 'debt_absorbed':
-      // The pool's side, attributed to whose debt it was.
-      return row.memberUserId
-        ? null
-        : { category: 'debtsTakenOn', userId: row.createdByUserId, credits: amount };
+      return { category: 'topUps', userId: null, aboutPerson: false, credits };
     default:
       return null;
   }
@@ -209,8 +233,10 @@ export async function getGroupBooks(
     totals[meaning.category] += meaning.credits;
     const week = weekTotals[index];
     if (week) week[meaning.category] += meaning.credits;
-    if (meaning.userId === null) continue;
-    const entry = line(currentIds.has(meaning.userId) ? meaning.userId : FORMER);
+    if (!meaning.aboutPerson) continue;
+    const entry = line(
+      meaning.userId !== null && currentIds.has(meaning.userId) ? meaning.userId : FORMER
+    );
     entry.totals[meaning.category] += meaning.credits;
     const personWeek = entry.byWeek[index];
     if (personWeek) personWeek[meaning.category] += meaning.credits;

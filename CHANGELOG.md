@@ -31,7 +31,8 @@ release process.
   member sets (`autoTopUpMonthlyCredits`, `autoTopUpUsedCredits`,
   `autoTopUpMonth`). `ResparkableCreditLedgerEntry` gains `memberUserId`
   (hand-written FK to `user`, SetNull, probe B16 with the payer key) and the
-  kinds `seat`, `auto_top_up`, `credit_back`, `debt_absorbed`. `assertCanSpend`
+  kinds `seat`, `auto_top_up`, `credit_back`, `debt_absorbed`, plus
+  `booksCategory` (what each row is in a group's books, written with the row). `assertCanSpend`
   now returns a charge plan that `recordAgentSpend` accepts as `plan`, and
   `recordAgentSpend` returns `{ credits, source }` rather than the ledger row.
   A change to who pays waits for the start of the group's next month. A new
@@ -114,7 +115,8 @@ release process.
   `largeRunAlertedAt DateTime?` (the large-run alert goes out at most once in
   24 hours, and not once the balance is already at or below the low mark). New routes
   under `/api/v1/resparkable/groups/[id]/budget`: `GET` (balance for every
-  member, per-person spend and contributions for admins only), `PATCH` (funding
+  member; per-person spend, admins only here, moved to the books every member
+  reads in phase 62), `PATCH` (funding
   mode and alerts, admin), `POST .../top-up` (move credits from your own balance
   into the group's), `PATCH .../members/[userId]` (a member's
   `dailyCreditCap`, admin). The ledger gains two `kind` values, `transfer_out`

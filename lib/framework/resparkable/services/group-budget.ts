@@ -73,6 +73,7 @@ import {
   monthStartFor,
   nextMonthStartFor,
   storedBillingSettings,
+  withLivePayer,
   type GroupBillingSettings,
 } from '@/lib/framework/resparkable/services/group-billing';
 import { logger } from '@/lib/logging';
@@ -409,7 +410,7 @@ export async function updateGroupBilling(
     await promotePendingBilling(
       groupId,
       group.pendingBillingFrom,
-      effectiveBillingSettings(group, now),
+      await withLivePayer(groupId, effectiveBillingSettings(group, now)),
       now
     );
     group = (await findGroupBySpaceId(group.spaceId)) ?? group;
@@ -549,8 +550,8 @@ export async function topUpOwnGroupBalance(
  *
  * Never throws: the departure it follows has already happened. Erasure does not
  * call it, because it runs inside `eraseUser`'s transaction where no email can
- * go; the payer column's `SetNull` and `planForRun`'s "a payer who is not a
- * joined admin reads as the pool" cover that path.
+ * go: `settleGroupsAfterErasure` releases the payer itself, through that
+ * transaction, and records the same `payer_released` entry.
  */
 export async function releasePayerAndTell(groupId: string, userId: string): Promise<boolean> {
   try {

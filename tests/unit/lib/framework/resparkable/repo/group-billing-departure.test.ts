@@ -107,6 +107,7 @@ describe('settleMemberDeparture', () => {
         memberUserId: 'u1',
         kind: 'credit_back',
         creditsDelta: -40,
+        booksCategory: 'creditedBack',
       },
     });
     // Personal side: upsert incrementing their own account, plus a positive row.
@@ -180,8 +181,15 @@ describe('settleMemberDeparture', () => {
         memberUserId: 'u1',
         kind: 'debt_absorbed',
         creditsDelta: 12,
+        booksCategory: 'none',
       },
-      { spaceId: 'spc_group', createdByUserId: 'u1', kind: 'debt_absorbed', creditsDelta: -12 },
+      {
+        spaceId: 'spc_group',
+        createdByUserId: 'u1',
+        kind: 'debt_absorbed',
+        creditsDelta: -12,
+        booksCategory: 'debtsTakenOn',
+      },
     ]);
     expect(rows[1]).not.toHaveProperty('memberUserId');
     // A debt never touches the person's own account.

@@ -11,6 +11,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { books } from '@/lib/framework/resparkable/repo/billing';
 import type { GroupDb } from '@/lib/framework/resparkable/repo/groups';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { Prisma } from '@prisma/client';
@@ -148,6 +149,7 @@ export async function transferCreditsToMemberBalance(
         memberUserId: member,
         kind: 'transfer_in',
         creditsDelta: credits,
+        booksCategory: books('topUps'),
       },
     });
 

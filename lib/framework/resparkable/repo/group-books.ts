@@ -15,6 +15,7 @@ export interface BooksLedgerRow {
   creditsDelta: number;
   createdByUserId: string | null;
   memberUserId: string | null;
+  booksCategory: string | null;
   createdAt: Date;
 }
 
@@ -30,6 +31,7 @@ export async function listGroupLedgerSince(
       creditsDelta: true,
       createdByUserId: true,
       memberUserId: true,
+      booksCategory: true,
       createdAt: true,
     },
     orderBy: { createdAt: 'asc' },

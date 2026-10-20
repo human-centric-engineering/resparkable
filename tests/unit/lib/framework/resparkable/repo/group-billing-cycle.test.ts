@@ -35,7 +35,7 @@ const baseInput = {
   spaceId: 'spc_group',
   expectedThrough,
   through,
-  months: 1,
+  monthStarts: [new Date('2026-10-05T00:00:00Z')],
   seatPrices: { admin: 5, member: 3, viewer: 1 },
   creditCarvedAllowances: false,
   promote: null,
@@ -88,11 +88,19 @@ describe('settleGroupMonths', () => {
 
     await settleGroupMonths({
       ...baseInput,
-      promote: { from: new Date('2026-10-01T00:00:00Z'), columns },
+      promote: { from: new Date('2026-10-01T00:00:00Z'), columns, expectedPending: columns },
     });
 
     expect(groupUpdateMany).toHaveBeenCalledWith({
-      where: { id: 'grp', cycleSettledThrough: expectedThrough },
+      // The change being promoted must still be the one waiting: an admin who
+      // replaced it since keeps theirs.
+      where: {
+        id: 'grp',
+        cycleSettledThrough: expectedThrough,
+        pendingBillingFrom: new Date('2026-10-01T00:00:00Z'),
+        // The payload too: a change replaced within the month keeps its date.
+        pendingBilling: { equals: { billingMode: 'seats' } },
+      },
       data: {
         cycleSettledThrough: through,
         billingMode: 'seats',
@@ -102,13 +110,19 @@ describe('settleGroupMonths', () => {
     });
   });
 
-  it('adds carved allowances with a raw update scaled by months only when asked', async () => {
-    await settleGroupMonths({ ...baseInput, creditCarvedAllowances: true, months: 3 });
+  it('adds carved allowances only when asked, counting each member’s month starts after they joined', async () => {
+    await settleGroupMonths({
+      ...baseInput,
+      creditCarvedAllowances: true,
+      monthStarts: [new Date('2026-09-05T00:00:00Z'), new Date('2026-10-05T00:00:00Z')],
+    });
 
     expect(executeRaw).toHaveBeenCalledTimes(1);
     const call = executeRaw.mock.calls[0];
     expect(sqlOf(call)).toContain('"allowanceRemainingCredits" + "allowanceCredits"');
-    expect(call.slice(1)).toEqual([3, 'grp']);
+    expect(sqlOf(call)).toContain('WHERE s > "joinedAt"');
+    // Naive UTC strings, compared with the zone-less joinedAt column.
+    expect(call.slice(1)).toEqual([['2026-09-05T00:00:00.000', '2026-10-05T00:00:00.000'], 'grp']);
   });
 
   it('does not touch allowances when creditCarvedAllowances is false', async () => {
@@ -117,14 +131,25 @@ describe('settleGroupMonths', () => {
     expect(executeRaw).not.toHaveBeenCalled();
   });
 
-  it('charges seats with an UPDATE RETURNING passing prices, months and the group', async () => {
-    await settleGroupMonths({ ...baseInput, months: 2 });
+  it('charges each member a seat per month start after they joined, never for a month before', async () => {
+    await settleGroupMonths({
+      ...baseInput,
+      monthStarts: [new Date('2026-09-05T00:00:00Z'), new Date('2026-10-05T00:00:00Z')],
+    });
 
     expect(queryRaw).toHaveBeenCalledTimes(1);
     const call = queryRaw.mock.calls[0];
     expect(sqlOf(call)).toContain('RETURNING');
-    // admin, viewer, member (the CASE order), months, then the group in both WHEREs.
-    expect(call.slice(1)).toEqual([5, 1, 3, 2, 'grp', 'grp']);
+    expect(sqlOf(call)).toContain('WHERE s > "joinedAt"');
+    // admin, viewer, member (the CASE order), the month starts, then the group in both WHEREs.
+    expect(call.slice(1)).toEqual([
+      5,
+      1,
+      3,
+      ['2026-09-05T00:00:00.000', '2026-10-05T00:00:00.000'],
+      'grp',
+      'grp',
+    ]);
   });
 
   it('upserts nothing when no seat was charged', async () => {
@@ -158,16 +183,30 @@ describe('settleGroupMonths', () => {
         memberUserId: 'u1',
         kind: 'seat',
         creditsDelta: -5,
+        booksCategory: 'seats',
       },
-      { spaceId: 'spc_group', createdByUserId: 'u1', kind: 'seat', creditsDelta: 5 },
+      {
+        spaceId: 'spc_group',
+        createdByUserId: 'u1',
+        kind: 'seat',
+        creditsDelta: 5,
+        booksCategory: 'none',
+      },
       {
         spaceId: 'spc_group',
         createdByUserId: 'u2',
         memberUserId: 'u2',
         kind: 'seat',
         creditsDelta: -3,
+        booksCategory: 'seats',
       },
-      { spaceId: 'spc_group', createdByUserId: 'u2', kind: 'seat', creditsDelta: 3 },
+      {
+        spaceId: 'spc_group',
+        createdByUserId: 'u2',
+        kind: 'seat',
+        creditsDelta: 3,
+        booksCategory: 'none',
+      },
     ]);
     expect(rows[1]).not.toHaveProperty('memberUserId');
     expect(result).toEqual({ settled: true, seatsCharged: 2, shortUserIds: [] });

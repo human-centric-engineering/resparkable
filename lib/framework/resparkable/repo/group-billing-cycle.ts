@@ -7,6 +7,7 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { books } from '@/lib/framework/resparkable/repo/billing';
 import type { BillingColumns } from '@/lib/framework/resparkable/repo/group-billing-settings';
 import { Prisma } from '@prisma/client';
 
@@ -17,13 +18,23 @@ export interface SettleMonthsInput {
   expectedThrough: Date | null;
   /** The start of the month being settled up to. */
   through: Date;
-  /** How many month starts are being settled at once (1 unless the job was late). */
-  months: number;
+  /**
+   * Every month start being settled, oldest first (one, unless the job was
+   * late). Each member is charged a seat, and credited an allowance, only for
+   * the starts after they joined: the month somebody joins in is free, however
+   * late the settlement that covers it runs.
+   */
+  monthStarts: Date[];
   seatPrices: { admin: number; member: number; viewer: number };
   /** Add each member's allowance to what they have left of the pool. */
   creditCarvedAllowances: boolean;
   /** A pending change that starts at or before `through`, to copy into the columns. */
-  promote: { from: Date; columns: BillingColumns } | null;
+  promote: {
+    from: Date;
+    columns: BillingColumns;
+    /** The waiting change as read; the claim only succeeds if it is still the one stored. */
+    expectedPending: BillingColumns;
+  } | null;
 }
 
 export interface SettleMonthsResult {
@@ -51,11 +62,29 @@ export interface SettleMonthsResult {
  * zero; what that means is the shortfall policy's business, not this write's.
  */
 export async function settleGroupMonths(input: SettleMonthsInput): Promise<SettleMonthsResult> {
-  const { groupId, spaceId, expectedThrough, through, months, seatPrices } = input;
+  const { groupId, spaceId, expectedThrough, through, seatPrices } = input;
+  // Naive UTC strings: `joinedAt` is a timestamp without a zone holding UTC,
+  // and Postgres ignores a zone suffix when casting to one, so these compare
+  // like for like.
+  const starts = input.monthStarts.map((start) => start.toISOString().replace('Z', ''));
 
   return prisma.$transaction(async (tx) => {
     const claimed = await tx.resparkableGroup.updateMany({
-      where: { id: groupId, cycleSettledThrough: expectedThrough },
+      // With a change to promote, the claim also requires it to be the change
+      // read: an admin who replaced it in the meantime keeps their new one, and
+      // this caller settles nothing (the next one re-reads and settles).
+      where: {
+        id: groupId,
+        cycleSettledThrough: expectedThrough,
+        // The date AND the payload: a change replaced within the same month
+        // keeps its start date, and only the payload says it is a new one.
+        ...(input.promote
+          ? {
+              pendingBillingFrom: input.promote.from,
+              pendingBilling: { equals: { ...input.promote.expectedPending } },
+            }
+          : {}),
+      },
       data: {
         cycleSettledThrough: through,
         ...(input.promote
@@ -68,7 +97,9 @@ export async function settleGroupMonths(input: SettleMonthsInput): Promise<Settl
     if (input.creditCarvedAllowances) {
       await tx.$executeRaw`
         UPDATE "framework_resparkable_group_member"
-           SET "allowanceRemainingCredits" = "allowanceRemainingCredits" + "allowanceCredits" * ${months},
+           SET "allowanceRemainingCredits" = "allowanceRemainingCredits" + "allowanceCredits" * (
+                 SELECT count(*) FROM unnest(${starts}::timestamp(3)[]) AS s WHERE s > "joinedAt"
+               ),
                "updatedAt" = now()
          WHERE "groupId" = ${groupId} AND "joinedAt" IS NOT NULL AND "allowanceCredits" IS NOT NULL
       `;
@@ -83,7 +114,9 @@ export async function settleGroupMonths(input: SettleMonthsInput): Promise<Settl
           SELECT "userId",
                  (CASE "role" WHEN 'admin' THEN ${seatPrices.admin}::float8
                               WHEN 'viewer' THEN ${seatPrices.viewer}::float8
-                              ELSE ${seatPrices.member}::float8 END) * ${months} AS seat
+                              ELSE ${seatPrices.member}::float8 END) * (
+                   SELECT count(*) FROM unnest(${starts}::timestamp(3)[]) AS s WHERE s > "joinedAt"
+                 ) AS seat
             FROM "framework_resparkable_group_member"
            WHERE "groupId" = ${groupId} AND "joinedAt" IS NOT NULL
         ) p
@@ -107,9 +140,16 @@ export async function settleGroupMonths(input: SettleMonthsInput): Promise<Settl
           memberUserId: row.userId,
           kind: 'seat',
           creditsDelta: -row.seat,
+          booksCategory: books('seats'),
         },
         // ...and into the pool.
-        { spaceId, createdByUserId: row.userId, kind: 'seat', creditsDelta: row.seat },
+        {
+          spaceId,
+          createdByUserId: row.userId,
+          kind: 'seat',
+          creditsDelta: row.seat,
+          booksCategory: books('none'),
+        },
       ]),
     });
 

@@ -363,9 +363,27 @@ async function main(): Promise<void> {
       seatPriceViewerCredits: 0,
     });
     for (const user of [admin, ana, ben]) {
-      await setMember(user.id, { balanceCredits: 10, allowanceRemainingCredits: 1 });
+      // Joined before every month start being settled.
+      await setMember(user.id, {
+        balanceCredits: 10,
+        allowanceRemainingCredits: 1,
+        joinedAt: createdAt,
+      });
     }
     await setMember(ana.id, { allowanceCredits: 4 });
+    // Joined today: every month start being settled is before she arrived.
+    const fay = await makeUser('fay', 10);
+    users.push(fay.id);
+    await prisma.resparkableGroupMember.create({
+      data: {
+        groupId,
+        userId: fay.id,
+        role: 'member',
+        joinedAt: new Date(),
+        balanceCredits: 10,
+        allowanceCredits: 4,
+      },
+    });
     const poolBeforeSeats = await balanceOf(SPACE);
     const first = await settleGroupCycleForSpace(SPACE);
     check(first.settled && first.months >= 1, `settled ${first.months} month(s)`);
@@ -390,6 +408,11 @@ async function main(): Promise<void> {
     check(
       near((await memberRow(groupId, ben.id)).allowanceRemainingCredits, 1),
       'nobody without an allowance gained one'
+    );
+    check(
+      near((await memberRow(groupId, fay.id)).balanceCredits, 10) &&
+        near((await memberRow(groupId, fay.id)).allowanceRemainingCredits, 0),
+      'a member who joined after those month starts paid no seat and gained no allowance for them'
     );
     const second = await settleGroupCycleForSpace(SPACE);
     check(!second.settled, 'settling the same month again does nothing');

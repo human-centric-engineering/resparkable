@@ -15,6 +15,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { LedgerEntryInput } from '@/lib/framework/resparkable/repo/billing';
+import { books } from '@/lib/framework/resparkable/repo/billing';
 import { spaceWhere, type SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { Prisma } from '@prisma/client';
 import type { ResparkableGroup, ResparkableGroupMember } from '@prisma/client';
@@ -127,6 +128,7 @@ export async function debitPoolWithinAllowance(
         createdByUserId: memberUserId,
         kind: 'agent_spend',
         creditsDelta: -credits,
+        booksCategory: books('sharedActivity'),
       },
     });
     return { poolBalanceAfter: account.balanceCredits };
@@ -167,6 +169,8 @@ export async function debitMemberBalance(
         memberUserId,
         kind: 'agent_spend',
         creditsDelta: -credits,
+        // Nobody started it (the payer pays a running cost) or a member did.
+        booksCategory: books(authorUserId === null ? 'runningCostsOwn' : 'ownActivity'),
       },
     });
     return { balanceAfter: row.balanceCredits };
@@ -230,6 +234,7 @@ export async function debitEqualSplit(
         memberUserId: userId,
         kind: 'agent_spend',
         creditsDelta: -share,
+        booksCategory: books(authorUserId === null ? 'runningCostsOwn' : 'ownActivity'),
         ...(index === 0 && relatedWorkflowExecutionId
           ? { relatedWorkflowExecutionId, note: note ?? null }
           : { note: pointer }),
@@ -332,6 +337,7 @@ export async function applyAutoTopUp(input: {
         kind: 'auto_top_up',
         creditsDelta: -amount,
         note: 'Automatic top-up to a group',
+        booksCategory: books('none'),
       },
     });
     await tx.resparkableCreditLedgerEntry.create({
@@ -342,6 +348,7 @@ export async function applyAutoTopUp(input: {
         memberUserId: target === 'member' ? memberUserId : null,
         kind: 'auto_top_up',
         creditsDelta: amount,
+        booksCategory: books('topUps'),
       },
     });
 

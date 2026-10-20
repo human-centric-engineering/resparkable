@@ -1439,7 +1439,7 @@ model ResparkableCreditLedgerEntry {
   createdByUserId String?
 
   /// admin_grant | agent_spend | refund | transfer_out | transfer_in | seat |
-  /// auto_top_up | credit_back | debt_absorbed | pool_closed
+  /// auto_top_up | credit_back | debt_absorbed
   ///
   /// The two transfer kinds are a group top-up (§23.12): `transfer_out` on the
   /// giver's personal account and `transfer_in` on the group's, written in one
@@ -1448,8 +1448,9 @@ model ResparkableCreditLedgerEntry {
   /// balance to the pool), `auto_top_up` (a person's own balance into the group,
   /// up to the monthly amount they agreed), `credit_back` (what is left in a
   /// member's group balance, or their share of a closing pool, back to their own
-  /// balance), `debt_absorbed` (an unpaid debt moved onto the pool), and
-  /// `pool_closed` (what a deleted group's pool could not give back to anybody).
+  /// balance), and `debt_absorbed` (an unpaid debt moved onto the pool). What a
+  /// deleted group's pool cannot give back to anybody is logged, not written:
+  /// the group's ledger goes with its space.
   /// See phase-62-plan.md.
   kind         String @db.VarChar(16)
   creditsDelta Float
@@ -1478,7 +1479,17 @@ model ResparkableCreditLedgerEntry {
   /// erased member's rows stay in the group's books, unattributed, like
   /// `createdByUserId`.
   memberUserId String?
-  createdAt    DateTime @default(now())
+
+  /// What this row is in the group's books (phase 62): `seats`,
+  /// `runningCosts` (the pool paid), `runningCostsOwn` (an admin's own balance
+  /// paid), `sharedActivity`, `ownActivity`, `topUps`, `creditedBack`,
+  /// `debtsTakenOn`, or `none` for the side of a two-sided move the books do
+  /// not count. Written when the row is written, because the person columns
+  /// cannot tell the books afterwards: both are SetNull, so once a member is
+  /// erased the two sides of their moves look alike. Null on rows from before
+  /// phase 62, which `services/group-books.ts` classifies from their kind.
+  booksCategory String?  @db.VarChar(16)
+  createdAt     DateTime @default(now())
 
   /// D1: the cascade path. Erasing a user removes the space row, which
   /// removes every row here. Verified by scripts/smoke/resparkable-isolation.ts.

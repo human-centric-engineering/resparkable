@@ -41,16 +41,25 @@ vi.mock('@/lib/framework/resparkable/repo/billing', () => ({
   findCreditAccount: (...args: unknown[]) => findCreditAccount(...args),
   sumMemberSpendSince: (...args: unknown[]) => sumMemberSpendSince(...args),
 }));
+const applyAutoTopUp = vi.fn();
+const debitEqualSplit = vi.fn();
+const debitMemberBalance = vi.fn();
+const debitPoolWithinAllowance = vi.fn();
 vi.mock('@/lib/framework/resparkable/repo/group-billing', () => ({
   findGroupWithClockBySpaceId: (...args: unknown[]) => findGroupWithClockBySpaceId(...args),
   findJoinedMembership: (...args: unknown[]) => findJoinedMembership(...args),
   poolAvailableCredits: (...args: unknown[]) => poolAvailableCredits(...args),
   listJoinedMembersByRole: vi.fn(),
   sumMemberOwnSpendSince: vi.fn(),
-  applyAutoTopUp: vi.fn(),
-  debitEqualSplit: vi.fn(),
-  debitMemberBalance: vi.fn(),
-  debitPoolWithinAllowance: vi.fn(),
+  applyAutoTopUp: (...args: unknown[]) => applyAutoTopUp(...args),
+  debitEqualSplit: (...args: unknown[]) => debitEqualSplit(...args),
+  debitMemberBalance: (...args: unknown[]) => debitMemberBalance(...args),
+  debitPoolWithinAllowance: (...args: unknown[]) => debitPoolWithinAllowance(...args),
+}));
+vi.mock('@/lib/framework/resparkable/repo/group-billing-cycle', () => ({
+  settleGroupMonths: vi
+    .fn()
+    .mockResolvedValue({ settled: false, seatsCharged: 0, shortUserIds: [] }),
 }));
 vi.mock('@/lib/framework/resparkable/repo/groups', () => ({
   findMembershipBySpace: (...args: unknown[]) => findMembershipBySpace(...args),
@@ -452,5 +461,192 @@ describe('recordAgentSpend', () => {
         source: 'space',
       });
     });
+  });
+});
+
+/**
+ * Phase 62: the debit goes to the source the plan names, and only that one.
+ * Each case asserts the account that moved AND the ones that did not, because
+ * "charged the member" and "charged the member and the pool" look the same from
+ * the member's side.
+ */
+describe('recordAgentSpend with a charge plan (phase 62)', () => {
+  const groupScope = spaceScopeFor({ spaceId: 'spc_group', actorUserId: 'user_m', role: 'member' });
+  const memberPlan = { source: 'member', groupId: 'grp_1', memberUserId: 'user_m' } as const;
+  const splitPlan = { source: 'split', groupId: 'grp_1', roles: ['admin', 'member'] } as const;
+
+  it('debits the member’s own group balance and nothing else', async () => {
+    debitMemberBalance.mockResolvedValue({ balanceAfter: 3 });
+
+    const result = await recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: memberPlan });
+
+    expect(result).toEqual({ credits: 2, source: 'member' });
+    expect(debitMemberBalance).toHaveBeenCalledWith(
+      groupScope,
+      'grp_1',
+      'user_m',
+      2,
+      expect.objectContaining({ tokenCostUsd: 2, totalUsd: 2 }),
+      'user_m'
+    );
+    expect(applyLedgerEntryWithBalance).not.toHaveBeenCalled();
+    expect(notifyGroupBudgetThresholds).not.toHaveBeenCalled();
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
+  });
+
+  it('runs the member’s agreed top-up when the debit leaves them below zero', async () => {
+    debitMemberBalance.mockResolvedValue({ balanceAfter: -1 });
+    findJoinedMembership.mockResolvedValue({
+      userId: 'user_m',
+      balanceCredits: -1,
+      allowanceRemainingCredits: 0,
+      autoTopUpMonthlyCredits: 5,
+    });
+    applyAutoTopUp.mockResolvedValue({ moved: 5, balanceAfter: 4, allowanceRemainingAfter: 0 });
+
+    await recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: memberPlan });
+
+    expect(applyAutoTopUp).toHaveBeenCalledWith(
+      expect.objectContaining({ memberUserId: 'user_m', monthlyCredits: 5, target: 'member' })
+    );
+  });
+
+  it('never fails the debit because the top-up after it failed', async () => {
+    debitMemberBalance.mockResolvedValue({ balanceAfter: -1 });
+    findGroupWithClockBySpaceId.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(
+      recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: memberPlan })
+    ).resolves.toEqual({ credits: 2, source: 'member' });
+  });
+
+  it('bills the pool when the member left between the pre-flight and the debit', async () => {
+    debitMemberBalance.mockResolvedValue(null);
+
+    const result = await recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: memberPlan });
+
+    expect(result).toEqual({ credits: 2, source: 'space' });
+    expect(applyLedgerEntryWithBalance).toHaveBeenCalledWith(
+      groupScope,
+      expect.objectContaining({ kind: 'agent_spend', creditsDelta: -2 })
+    );
+  });
+
+  it('splits across the payers and tops up only those it left short', async () => {
+    debitEqualSplit.mockResolvedValue([
+      { userId: 'user_a', balanceAfter: 4 },
+      { userId: 'user_m', balanceAfter: -0.5 },
+    ]);
+    findJoinedMembership.mockResolvedValue({
+      userId: 'user_m',
+      balanceCredits: -0.5,
+      allowanceRemainingCredits: 0,
+      autoTopUpMonthlyCredits: 3,
+    });
+    applyAutoTopUp.mockResolvedValue({ moved: 3, balanceAfter: 2.5, allowanceRemainingAfter: 0 });
+
+    const result = await recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: splitPlan });
+
+    expect(result).toEqual({ credits: 2, source: 'split' });
+    expect(debitEqualSplit).toHaveBeenCalledWith(
+      groupScope,
+      'grp_1',
+      ['admin', 'member'],
+      2,
+      expect.any(Object),
+      'user_m'
+    );
+    expect(findJoinedMembership).toHaveBeenCalledTimes(1);
+    expect(findJoinedMembership).toHaveBeenCalledWith('grp_1', 'user_m');
+    expect(applyLedgerEntryWithBalance).not.toHaveBeenCalled();
+  });
+
+  it('bills the pool when nobody holds the roles a split names', async () => {
+    debitEqualSplit.mockResolvedValue([]);
+
+    const result = await recordAgentSpend(groupScope, { tokenCostUsd: 2, plan: splitPlan });
+
+    expect(result).toEqual({ credits: 2, source: 'space' });
+    expect(applyLedgerEntryWithBalance).toHaveBeenCalled();
+  });
+
+  it('debits the pool within the author’s carved allowance, and still alerts on the pool', async () => {
+    debitPoolWithinAllowance.mockResolvedValue({ poolBalanceAfter: 8 });
+
+    const result = await recordAgentSpend(groupScope, {
+      tokenCostUsd: 2,
+      plan: { source: 'allowance', groupId: 'grp_1', memberUserId: 'user_m' },
+    });
+    await Promise.resolve();
+
+    expect(result).toEqual({ credits: 2, source: 'allowance' });
+    expect(debitPoolWithinAllowance).toHaveBeenCalledWith(
+      groupScope,
+      'grp_1',
+      'user_m',
+      2,
+      expect.any(Object)
+    );
+    expect(applyLedgerEntryWithBalance).not.toHaveBeenCalled();
+    expect(notifyGroupBudgetThresholds).toHaveBeenCalledWith(groupScope, { before: 10, after: 8 });
+  });
+
+  it('derives the plan from the run’s author when the caller gives none (the billing pass)', async () => {
+    findGroupWithClockBySpaceId.mockResolvedValue({
+      id: 'grp_1',
+      spaceId: 'spc_group',
+      createdAt: new Date('2026-09-01T00:00:00Z'),
+      timezone: 'UTC',
+      operationalCostsPaidBy: 'pool',
+      operationalPayerUserId: null,
+      activityCostsPaidBy: 'equal_split',
+      allowanceSource: 'carved',
+      shortfallPolicy: 'debt',
+      seatPriceAdminCredits: 0,
+      seatPriceMemberCredits: 0,
+      seatPriceViewerCredits: 0,
+      pendingBilling: null,
+      pendingBillingFrom: null,
+    });
+    debitEqualSplit.mockResolvedValue([{ userId: 'user_b', balanceAfter: 1 }]);
+    const background = spaceScopeFor({ spaceId: 'spc_group', actorUserId: null, role: 'member' });
+
+    await recordAgentSpend(background, {
+      tokenCostUsd: 2,
+      authorUserId: 'user_b',
+      relatedWorkflowExecutionId: 'exec_1',
+      awaitAlerts: true,
+    });
+
+    expect(debitEqualSplit).toHaveBeenCalledWith(
+      background,
+      'grp_1',
+      ['admin', 'member'],
+      2,
+      expect.objectContaining({ relatedWorkflowExecutionId: 'exec_1' }),
+      'user_b'
+    );
+  });
+});
+
+describe('the daily cap is checked before anything can move money (phase 62)', () => {
+  it('refuses a capped member before resolving the charge, so no automatic top-up runs', async () => {
+    const groupScope = spaceScopeFor({
+      spaceId: 'spc_group',
+      actorUserId: 'user_m',
+      role: 'member',
+    });
+    findMembershipBySpace.mockResolvedValue({ dailyCreditCap: 5 });
+    sumMemberSpendSince.mockResolvedValue(5);
+    findJoinedMembership.mockResolvedValue({
+      userId: 'user_m',
+      balanceCredits: 0,
+      allowanceRemainingCredits: 0,
+      autoTopUpMonthlyCredits: 50,
+    });
+
+    await expect(assertCanSpend(groupScope)).rejects.toBeInstanceOf(DailyCreditCapError);
+    expect(findGroupWithClockBySpaceId).not.toHaveBeenCalled();
+    expect(applyAutoTopUp).not.toHaveBeenCalled();
   });
 });

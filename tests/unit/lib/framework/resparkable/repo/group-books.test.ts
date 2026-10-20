@@ -38,6 +38,7 @@ describe('listGroupLedgerSince', () => {
         creditsDelta: true,
         createdByUserId: true,
         memberUserId: true,
+        booksCategory: true,
         createdAt: true,
       },
       orderBy: { createdAt: 'asc' },
@@ -49,6 +50,7 @@ describe('listGroupLedgerSince', () => {
 
     const call = vi.mocked(prisma.resparkableCreditLedgerEntry.findMany).mock.calls[0]?.[0];
     expect(Object.keys(call?.select ?? {}).sort()).toEqual([
+      'booksCategory',
       'createdAt',
       'createdByUserId',
       'creditsDelta',
