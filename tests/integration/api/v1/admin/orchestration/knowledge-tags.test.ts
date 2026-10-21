@@ -58,8 +58,23 @@ vi.mock('@/lib/orchestration/knowledge/resolveAgentDocumentAccess', () => ({
   invalidateAllAgentAccess: vi.fn(),
 }));
 
+vi.mock('@/lib/orchestration/admin/global-config-usage', () => ({
+  knowledgeTagUsage: vi.fn(async () => ({
+    agentGrants: 0,
+    documentLinks: 0,
+    agents: [],
+    otherOrgAgentGrants: 0,
+    otherOrgDocumentLinks: 0,
+  })),
+  knowledgeTagCounts: vi.fn(async () => new Map()),
+}));
+
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
+import {
+  knowledgeTagCounts,
+  knowledgeTagUsage,
+} from '@/lib/orchestration/admin/global-config-usage';
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
@@ -152,10 +167,12 @@ describe('GET /api/v1/admin/orchestration/knowledge/tags', () => {
 
   it('returns paginated tags with document/agent counts', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.knowledgeTag.findMany).mockResolvedValue([
-      makeTag({}, { documents: 3, agents: 2 }),
-    ] as never);
+    vi.mocked(prisma.knowledgeTag.findMany).mockResolvedValue([makeTag()] as never);
     vi.mocked(prisma.knowledgeTag.count).mockResolvedValue(1);
+    // Every org's counts (t-731), from knowledgeTagCounts, not a _count include.
+    vi.mocked(knowledgeTagCounts).mockResolvedValue(
+      new Map([[TAG_ID, { agents: 2, documents: 3 }]])
+    );
 
     const response = await listGet(makeListRequest());
 
@@ -170,6 +187,21 @@ describe('GET /api/v1/admin/orchestration/knowledge/tags', () => {
     expect(data.data[0].documentCount).toBe(3);
     expect(data.data[0].agentCount).toBe(2);
     expect(data.meta).toBeDefined();
+    expect(knowledgeTagCounts).toHaveBeenCalledWith([TAG_ID]);
+  });
+
+  it('reports zero for a tag no org has granted or applied', async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.knowledgeTag.findMany).mockResolvedValue([makeTag()] as never);
+    vi.mocked(prisma.knowledgeTag.count).mockResolvedValue(1);
+    vi.mocked(knowledgeTagCounts).mockResolvedValue(new Map());
+
+    const response = await listGet(makeListRequest());
+
+    const data = await parseJson<{ data: Array<{ documentCount: number; agentCount: number }> }>(
+      response
+    );
+    expect(data.data[0]).toMatchObject({ documentCount: 0, agentCount: 0 });
   });
 
   it('passes search query to prisma when q is set', async () => {
@@ -249,9 +281,8 @@ describe('GET /api/v1/admin/orchestration/knowledge/tags/:id', () => {
 
   it('returns the tag with link counts', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    vi.mocked(prisma.knowledgeTag.findUnique).mockResolvedValue(
-      makeTag({}, { documents: 5, agents: 1 })
-    );
+    vi.mocked(prisma.knowledgeTag.findUnique).mockResolvedValue(makeTag());
+    tagUsage(1, 5);
 
     const response = await getById(makeByIdRequest('GET'), makeParams(TAG_ID));
 
@@ -318,6 +349,23 @@ describe('PATCH /api/v1/admin/orchestration/knowledge/tags/:id', () => {
   });
 });
 
+/** Usage of the tag across every org, as `knowledgeTagUsage` reports it. */
+function tagUsage(
+  agentGrants: number,
+  documentLinks: number,
+  agents: Array<{ id: string; name: string; slug: string }> = [],
+  otherOrgAgentGrants = 0,
+  otherOrgDocumentLinks = 0
+) {
+  vi.mocked(knowledgeTagUsage).mockResolvedValue({
+    agentGrants,
+    documentLinks,
+    agents,
+    otherOrgAgentGrants,
+    otherOrgDocumentLinks,
+  });
+}
+
 describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -328,6 +376,7 @@ describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
     vi.mocked(prisma.knowledgeTag.findUnique).mockResolvedValue(
       makeTag({}, { documents: 0, agents: 0 })
     );
+    tagUsage(0, 0);
     vi.mocked(prisma.knowledgeTag.delete).mockResolvedValue(makeTag());
 
     const response = await DELETE(makeByIdRequest('DELETE'), makeParams(TAG_ID));
@@ -349,6 +398,10 @@ describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
         { documents: 0, agents: 2 }
       )
     );
+    tagUsage(2, 0, [
+      { id: 'agent-1', name: 'Support Bot', slug: 'support-bot' },
+      { id: 'agent-2', name: 'Sales Bot', slug: 'sales-bot' },
+    ]);
 
     const response = await DELETE(makeByIdRequest('DELETE'), makeParams(TAG_ID));
 
@@ -372,6 +425,7 @@ describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
         { documents: 0, agents: 1 }
       )
     );
+    tagUsage(1, 0, [{ id: 'agent-1', name: 'Support Bot', slug: 'support-bot' }]);
 
     const response = await DELETE(
       makeByIdRequest('DELETE', undefined, '?force=true'),
@@ -387,6 +441,7 @@ describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
     vi.mocked(prisma.knowledgeTag.findUnique).mockResolvedValue(
       makeTag({}, { documents: 4, agents: 0 })
     );
+    tagUsage(0, 4);
 
     const response = await DELETE(makeByIdRequest('DELETE'), makeParams(TAG_ID));
 
@@ -399,6 +454,7 @@ describe('DELETE /api/v1/admin/orchestration/knowledge/tags/:id', () => {
     vi.mocked(prisma.knowledgeTag.findUnique).mockResolvedValue(
       makeTag({}, { documents: 4, agents: 0 })
     );
+    tagUsage(0, 4);
     vi.mocked(prisma.knowledgeTag.delete).mockResolvedValue(makeTag());
 
     const response = await DELETE(

@@ -6,10 +6,15 @@
  * capability pipeline.
  *
  * Platform-agnostic: no Next.js imports.
+ *
+ * Tenancy posture: org-keyed for `mcpSystemAgentIdByOrg` (slugs are per-org,
+ * so the system scope is refused rather than keyed); global-config for the
+ * tool cache (lib/tenancy/process-state.ts).
  */
 
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
+import { requireTenantContext } from '@/lib/tenancy/context';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import { registerBuiltInCapabilities } from '@/lib/orchestration/capabilities/registry';
 import { capabilityFunctionDefinitionSchema } from '@/lib/validations/orchestration';
@@ -29,7 +34,13 @@ const MCP_SYSTEM_AGENT_SLUG = 'mcp-system';
 
 let cachedTools: McpToolDefinition[] | null = null;
 let cachedAt = 0;
-let mcpSystemAgentId: string | null = null;
+/**
+ * The `mcp-system` agent's id, per org. Slugs are unique per org (§107
+ * t-708), so each org can hold its own `mcp-system` and a process-wide
+ * single value would hand org B the first org's agent — its disabled
+ * capabilities invisible under B's scope, its cost rows misattributed.
+ */
+const mcpSystemAgentIdByOrg = new Map<string, string>();
 
 /**
  * List MCP-exposed tools that are both enabled in McpExposedTool and active
@@ -122,17 +133,39 @@ async function getDisabledCapabilitySlugs(agentId: string): Promise<Set<string>>
  * Returns null if the agent doesn't exist yet.
  */
 async function getMcpSystemAgentId(): Promise<string | null> {
-  if (mcpSystemAgentId) return mcpSystemAgentId;
+  // The org the lookup runs in — the read below is scoped to it at `multi`,
+  // so the cache has to be too.
+  //
+  // The system scope is REFUSED rather than given a `'system'` partition
+  // (§108 t-712). The read filters on a SLUG, which §107 t-708 made unique
+  // per org and therefore shared across them: under `runAsSystem` the bypass
+  // makes this `findFirst` return whichever org's `mcp-system` agent the
+  // planner reaches first, and caching that under one key would hand every
+  // later system-scoped call an arbitrary org's agent — its disabled
+  // capabilities invisible under that scope, its cost rows misattributed,
+  // which is the exact harm the per-org keying was added to prevent. The
+  // event-hook cache refuses the identical shape for the identical reason.
+  const { orgId } = requireTenantContext();
+  if (orgId === null) {
+    throw new Error(
+      'MCP tool call has no org: this call stack runs as the system scope, where the mcp-system ' +
+        'agent lookup matches every org. Call it inside runAsOrg — see lib/tenancy/process-state.ts.'
+    );
+  }
+  const cached = mcpSystemAgentIdByOrg.get(orgId);
+  if (cached) return cached;
 
-  const agent = await prisma.aiAgent.findUnique({
-    where: { slug: MCP_SYSTEM_AGENT_SLUG },
+  // `isSystem`: an org's own agent holding the slug from before it was
+  // reserved (§116 t-725) is not the MCP identity.
+  const agent = await prisma.aiAgent.findFirst({
+    where: { slug: MCP_SYSTEM_AGENT_SLUG, isSystem: true },
     select: { id: true },
   });
 
   if (agent) {
-    mcpSystemAgentId = agent.id;
+    mcpSystemAgentIdByOrg.set(orgId, agent.id);
   }
-  return mcpSystemAgentId;
+  return agent?.id ?? null;
 }
 
 /**
@@ -252,7 +285,7 @@ export async function callMcpTool(
 export function clearMcpToolCache(): void {
   cachedTools = null;
   cachedAt = 0;
-  mcpSystemAgentId = null;
+  mcpSystemAgentIdByOrg.clear();
 }
 
 // ---------------------------------------------------------------------------

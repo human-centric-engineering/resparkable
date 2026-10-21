@@ -44,6 +44,7 @@ import { cn } from '@/lib/utils';
 import { FieldHelp } from '@/components/ui/field-help';
 import { AuditModelsDialog } from '@/components/admin/orchestration/audit-models-dialog';
 import { DiscoverModelsDialog } from '@/components/admin/orchestration/discover-models-dialog';
+import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-access';
 import { apiClient, APIClientError } from '@/lib/api/client';
 import { API } from '@/lib/api/endpoints';
 import { Input } from '@/components/ui/input';
@@ -55,6 +56,11 @@ import {
   type TaskType,
   type TierRole,
 } from '@/types/orchestration';
+import {
+  agentCount,
+  agentsInEveryOrg,
+  OtherOrgUsage,
+} from '@/components/admin/orchestration/other-org-usage';
 
 // Short human labels for the four `TaskType` slots resolved via
 // `OrchestrationSettings.defaultModels`. Surfaced as per-row badges
@@ -166,6 +172,9 @@ export interface ModelRow {
   // currently references the row. Source: GET /provider-models LEFT
   // JOIN against AiAgent on the (provider, model) string pair.
   agents?: ModelRowAgentRef[];
+  // Active agents in OTHER orgs bound to it: counted, never named (§107
+  // t-752). In use, filtered and delete-blocked on the sum with `agents`.
+  otherOrgAgentCount?: number;
   // TaskType slots this model fills as the effective system default
   // (routing/chat/reasoning/embeddings). Distinct from `agents` —
   // tracks inheritance via the default-models settings rather than
@@ -181,6 +190,13 @@ export interface ModelRow {
 
 interface ProviderModelsMatrixProps {
   initialModels: ModelRow[];
+  /**
+   * Show "Audit Models". Only the install org has the audit workflow and its
+   * two agents (they write the provider catalogue every org reads, §116), so
+   * anywhere else the button would open a dialog that cannot run. Defaults to
+   * hidden.
+   */
+  canAuditModels?: boolean;
 }
 
 type SortKey =
@@ -297,8 +313,12 @@ function SortableHead({
 
 export function ProviderModelsMatrix({
   initialModels,
+  canAuditModels = false,
 }: ProviderModelsMatrixProps): React.ReactElement {
   const router = useRouter();
+  const readOnly = useSharedSettingsReadOnly();
+  // The action column is dropped when read-only; spanning rows follow it.
+  const columnCount = 11 + (readOnly ? 0 : 1);
   const [providerFilter, setProviderFilter] = useState<string>('all');
   // Master "narrow to configured providers" toggle. When true, every
   // row from a provider with no AiProviderConfig (or one that's
@@ -328,6 +348,9 @@ export function ProviderModelsMatrix({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteBlockedAgents, setDeleteBlockedAgents] = useState<ModelRowAgentRef[]>([]);
   const [deleteBlockedWorkflows, setDeleteBlockedWorkflows] = useState<ModelRowWorkflowRef[]>([]);
+  // Agents and workflows in other orgs still using the model: counted by the
+  // server, never named (a model is global config; t-731).
+  const [deleteBlockedElsewhere, setDeleteBlockedElsewhere] = useState(0);
 
   const handleConfirmDelete = useCallback(async () => {
     if (!deleteTarget) return;
@@ -338,6 +361,7 @@ export function ProviderModelsMatrix({
       setDeleteTarget(null);
       setDeleteBlockedAgents([]);
       setDeleteBlockedWorkflows([]);
+      setDeleteBlockedElsewhere(0);
       router.refresh();
     } catch (err) {
       // 409 → in-use guard tripped. Pull the blocking-ref lists out of
@@ -351,6 +375,13 @@ export function ProviderModelsMatrix({
           if (Array.isArray(err.details?.workflows)) {
             setDeleteBlockedWorkflows(err.details.workflows as ModelRowWorkflowRef[]);
           }
+          const elsewhere = (key: string) => {
+            const n = err.details?.[key];
+            return typeof n === 'number' ? n : 0;
+          };
+          setDeleteBlockedElsewhere(
+            elsewhere('otherOrgAgentCount') + elsewhere('otherOrgWorkflowCount')
+          );
         }
         setDeleteError(err.message);
       } else {
@@ -366,9 +397,11 @@ export function ProviderModelsMatrix({
     setDeleteError(null);
     setDeleteBlockedAgents([]);
     setDeleteBlockedWorkflows([]);
+    setDeleteBlockedElsewhere(0);
   }, []);
 
-  const deleteBlocked = deleteBlockedAgents.length + deleteBlockedWorkflows.length > 0;
+  const deleteBlocked =
+    deleteBlockedAgents.length + deleteBlockedWorkflows.length + deleteBlockedElsewhere > 0;
 
   // Aggregate per-provider state for the strip above the filter bar.
   // `configured` and `configuredActive` come from the row's enrichment
@@ -435,7 +468,7 @@ export function ProviderModelsMatrix({
       );
     }
     if (inUseOnly) {
-      rows = rows.filter((m) => (m.agents?.length ?? 0) > 0);
+      rows = rows.filter((m) => agentsInEveryOrg(m) > 0);
     }
     const term = search.trim().toLowerCase();
     if (term.length > 0) {
@@ -665,21 +698,27 @@ export function ProviderModelsMatrix({
           <p className="text-muted-foreground text-sm">
             {filtered.length} model{filtered.length !== 1 ? 's' : ''}
           </p>
-          <Button variant="outline" onClick={() => setAuditOpen(true)}>
-            <ClipboardCheck className="mr-2 h-4 w-4" />
-            Audit Models
-          </Button>
-          <FieldHelp title="AI-Powered Model Audit">
-            Triggers the Provider Model Audit workflow — a real orchestration workflow execution via{' '}
-            <code>POST /workflows/:id/execute</code>. The audit evaluates your model entries for
-            accuracy, proposes changes, and pauses for your approval before applying them. This also
-            serves as a framework reference implementation, exercising 10 of 15 step types
-            end-to-end.
-          </FieldHelp>
-          <Button onClick={() => setDiscoverOpen(true)}>
-            <Sparkles className="mr-2 h-4 w-4" />
-            Discover models
-          </Button>
+          {canAuditModels && (
+            <>
+              <Button variant="outline" onClick={() => setAuditOpen(true)}>
+                <ClipboardCheck className="mr-2 h-4 w-4" />
+                Audit Models
+              </Button>
+              <FieldHelp title="AI-Powered Model Audit">
+                Triggers the Provider Model Audit workflow — a real orchestration workflow execution
+                via <code>POST /workflows/:id/execute</code>. The audit evaluates your model entries
+                for accuracy, proposes changes, and pauses for your approval before applying them.
+                This also serves as a framework reference implementation, exercising 10 of 15 step
+                types end-to-end.
+              </FieldHelp>
+            </>
+          )}
+          {!readOnly && (
+            <Button onClick={() => setDiscoverOpen(true)}>
+              <Sparkles className="mr-2 h-4 w-4" />
+              Discover models
+            </Button>
+          )}
         </div>
       </div>
 
@@ -763,13 +802,13 @@ export function ProviderModelsMatrix({
                   </FieldHelp>
                 </span>
               </TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              {!readOnly && <TableHead className="text-right">Actions</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={12} className="text-muted-foreground py-8 text-center">
+                <TableCell colSpan={columnCount} className="text-muted-foreground py-8 text-center">
                   No models match the current filters
                 </TableCell>
               </TableRow>
@@ -843,57 +882,63 @@ export function ProviderModelsMatrix({
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {(() => {
-                      const agentCount = model.agents?.length ?? 0;
+                      const inUse = agentsInEveryOrg(model);
                       const defaultRoles = model.defaultFor ?? [];
                       // Empty state — render an explicit "Not in use"
                       // so the operator gets a clear signal rather
                       // than guessing what a bare "0" means.
-                      if (agentCount === 0 && defaultRoles.length === 0) {
+                      if (inUse === 0 && defaultRoles.length === 0) {
                         return (
                           <span className="text-muted-foreground text-xs italic">Not in use</span>
                         );
                       }
                       return (
                         <div className="flex flex-col items-end gap-1">
-                          {agentCount > 0 ? (
+                          {inUse > 0 ? (
                             <Popover>
                               <PopoverTrigger asChild>
                                 <button
                                   className="cursor-pointer text-xs tabular-nums hover:underline"
-                                  aria-label={`Show ${agentCount} agent${
-                                    agentCount === 1 ? '' : 's'
-                                  } directly assigned to ${model.name}`}
+                                  aria-label={`Show ${agentCount(inUse)} directly assigned to ${model.name}`}
                                 >
-                                  {agentCount} agent{agentCount === 1 ? '' : 's'} →
+                                  {agentCount(inUse)} →
                                 </button>
                               </PopoverTrigger>
                               <PopoverContent className="w-72 p-0" align="end">
                                 <div className="border-b px-3 py-2">
                                   <p className="text-sm font-medium">
-                                    {agentCount} agent
-                                    {agentCount === 1 ? '' : 's'} directly assigned to{' '}
+                                    {agentCount(inUse)} directly assigned to{' '}
                                     <span className="font-semibold">{model.name}</span>
                                   </p>
-                                  <p className="text-muted-foreground mt-0.5 text-xs">
-                                    These agents pinned this model in their Provider/Model fields.
-                                    Editing the agent re-points it.
-                                  </p>
+                                  {(model.agents?.length ?? 0) > 0 && (
+                                    <p className="text-muted-foreground mt-0.5 text-xs">
+                                      These agents pinned this model in their Provider/Model fields.
+                                      Editing the agent re-points it.
+                                    </p>
+                                  )}
                                 </div>
-                                <ul className="max-h-48 overflow-y-auto py-1">
-                                  {model.agents?.map((agent) => (
-                                    <li key={agent.id}>
-                                      <Link
-                                        href={`/admin/orchestration/agents/${agent.id}`}
-                                        className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
-                                      >
-                                        <span className="truncate">{agent.name}</span>
-                                        <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
-                                          {agent.slug}
-                                        </span>
-                                      </Link>
-                                    </li>
-                                  ))}
-                                </ul>
+                                {(model.agents?.length ?? 0) > 0 && (
+                                  <ul className="max-h-48 overflow-y-auto py-1">
+                                    {model.agents?.map((agent) => (
+                                      <li key={agent.id}>
+                                        <Link
+                                          href={`/admin/orchestration/agents/${agent.id}`}
+                                          className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
+                                        >
+                                          <span className="truncate">{agent.name}</span>
+                                          <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
+                                            {agent.slug}
+                                          </span>
+                                        </Link>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                                <OtherOrgUsage
+                                  count={model.otherOrgAgentCount ?? 0}
+                                  afterList={(model.agents?.length ?? 0) > 0}
+                                  className="px-3 py-2"
+                                />
                               </PopoverContent>
                             </Popover>
                           ) : (
@@ -922,40 +967,46 @@ export function ProviderModelsMatrix({
                       );
                     })()}
                   </TableCell>
-                  <TableCell className="text-right">
-                    {(model.agents?.length ?? 0) > 0 ? (
-                      <Tip
-                        label={`Cannot delete — ${model.agents?.length} agent${
-                          model.agents?.length === 1 ? '' : 's'
-                        } still ${model.agents?.length === 1 ? 'uses' : 'use'} this model.`}
-                      >
-                        <span className="inline-flex">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0 opacity-50"
-                            disabled
-                            aria-label={`Delete ${model.name} disabled — model is in use`}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </span>
-                      </Tip>
-                    ) : (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
-                        onClick={() => setDeleteTarget(model)}
-                        aria-label={`Delete ${model.name}`}
-                        title={`Delete ${model.name}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
-                  </TableCell>
+                  {!readOnly && (
+                    <TableCell className="text-right">
+                      {agentsInEveryOrg(model) > 0 ? (
+                        <Tip
+                          label={`Cannot delete — ${agentCount(agentsInEveryOrg(model))} still ${
+                            agentsInEveryOrg(model) === 1 ? 'uses' : 'use'
+                          } this model${
+                            (model.otherOrgAgentCount ?? 0) > 0
+                              ? ', counting every organisation'
+                              : ''
+                          }.`}
+                        >
+                          <span className="inline-flex">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 w-7 p-0 opacity-50"
+                              disabled
+                              aria-label={`Delete ${model.name} disabled — model is in use`}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </span>
+                        </Tip>
+                      ) : (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
+                          onClick={() => setDeleteTarget(model)}
+                          aria-label={`Delete ${model.name}`}
+                          title={`Delete ${model.name}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))
             )}
@@ -964,7 +1015,9 @@ export function ProviderModelsMatrix({
       </div>
 
       {/* Audit dialog */}
-      <AuditModelsDialog open={auditOpen} onOpenChange={setAuditOpen} models={initialModels} />
+      {canAuditModels && (
+        <AuditModelsDialog open={auditOpen} onOpenChange={setAuditOpen} models={initialModels} />
+      )}
 
       {/* Discover dialog — replaces the legacy free-text "New Provider Model" form
           as the primary entry point. The legacy form stays mounted on
@@ -1042,6 +1095,15 @@ export function ProviderModelsMatrix({
                 )}
               </ul>
             </div>
+          )}
+
+          {deleteBlockedElsewhere > 0 && (
+            <p className="text-sm text-amber-700 dark:text-amber-400">
+              {deleteBlockedElsewhere} agent{deleteBlockedElsewhere === 1 ? '' : 's'} or workflow
+              {deleteBlockedElsewhere === 1 ? '' : 's'} in other organisations also{' '}
+              {deleteBlockedElsewhere === 1 ? 'uses' : 'use'} this model. They are not listed here:
+              re-point them from inside each organisation.
+            </p>
           )}
 
           {deleteError && !deleteBlocked && (

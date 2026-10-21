@@ -7,7 +7,7 @@
  * SDK-backed provider objects:
  *
  *   AiProviderConfig row
- *     → resolve apiKey via process.env[apiKeyEnvVar]
+ *     → resolve the credential (provider-credentials.ts; default process.env[apiKeyEnvVar])
  *     → instantiate AnthropicProvider or OpenAiCompatibleProvider
  *     → cache by slug
  *
@@ -17,6 +17,11 @@
  *
  * Platform-agnostic: no Next.js imports. The cache is a plain `Map`
  * in module state — no `React cache()`, no request-scoped lifecycles.
+ *
+ * Tenancy posture: shared-by-decision — rows are global config; the clients
+ * built from them are keyed per credential identity, so one org's key never
+ * serves another, and the install's shared credential is shared by decision
+ * (§120 t-744) (lib/tenancy/process-state.ts).
  */
 
 import type { AiProviderConfig } from '@/types/prisma';
@@ -24,10 +29,27 @@ import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { checkSafeProviderUrl } from '@/lib/security/safe-url';
 import { AnthropicProvider } from '@/lib/orchestration/llm/anthropic';
-import { getBreaker } from '@/lib/orchestration/llm/circuit-breaker';
-import { isProviderEligible } from '@/lib/orchestration/llm/provider-eligibility';
+import { getBreaker, peekBreaker } from '@/lib/orchestration/llm/circuit-breaker';
+import { credentialKey } from '@/lib/orchestration/llm/credential-key';
+import {
+  hasProviderCredentialResolver,
+  hasProviderKey,
+  readEnvKey,
+  resolveProviderCredential,
+} from '@/lib/orchestration/llm/provider-credentials';
+import {
+  assertProviderCallPermitted,
+  fallbackCallContext,
+  isProviderEligible,
+  primaryCallContext,
+  type BindingProvenance,
+  type CallOrigin,
+  type ProviderEligibilityContext,
+} from '@/lib/orchestration/llm/provider-eligibility';
 import { track, trackStream } from '@/lib/orchestration/llm/in-flight-counter';
 import { OpenAiCompatibleProvider } from '@/lib/orchestration/llm/openai-compatible';
+import { forgetProviderRow } from '@/lib/orchestration/llm/org-provider-policy';
+import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import {
   ProviderError,
   type LlmProvider,
@@ -37,6 +59,7 @@ import type { ProviderConfig } from '@/lib/orchestration/llm/types';
 import { VoyageProvider } from '@/lib/orchestration/llm/voyage';
 import { getOrchestrationSettings } from '@/lib/orchestration/settings';
 import { parseAudioDefault } from '@/lib/orchestration/llm/audio-default';
+import type { TaskType } from '@/types/orchestration';
 
 /** Status returned by `listProviders` for each configured row. */
 export interface ProviderStatus {
@@ -50,8 +73,9 @@ export interface ProviderStatus {
  * Row shape returned by `listProvidersWithStatus`. Hydrates an
  * `AiProviderConfig` with runtime metadata the admin API needs:
  *
- *   - `apiKeyPresent` — whether `process.env[row.apiKeyEnvVar]` is set to
- *     a non-empty string. The env var *value* is never returned.
+ *   - `apiKeyPresent` — whether the credential seam gives the row a key in
+ *     this context (`hasProviderKey`; by default, whether
+ *     `process.env[row.apiKeyEnvVar]` is set). The value is never returned.
  *   - `status` — last-known health; always `'unknown'` unless the caller
  *     has already invoked `testProvider` for this slug in-process.
  *
@@ -67,61 +91,210 @@ export interface ProviderConfigWithStatus {
 /** How long (ms) a cached provider instance is considered fresh. */
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-interface CachedProvider {
-  provider: LlmProvider;
-  cachedAt: number;
+/** One constructed client: a row (or registrar name) used with one credential. */
+interface BuiltProvider {
+  /** The built instance, unwrapped. Never handed out: every read goes through {@link viewOf}. */
+  instance: LlmProvider;
+  /**
+   * The slug the call-time gate evaluates: the BUILT row's `config.slug`, or a
+   * registrar's name — never the string a caller asked `getProvider` for.
+   */
+  slug: string;
+  /**
+   * The credential's identity (`provider-credentials.ts`); `''` for the shared
+   * one. With `slug` it makes the key the in-flight counter and the circuit
+   * breaker use, so one org's key never shares state with another's.
+   */
+  identity: string;
+  /**
+   * One Proxy per call origin. The gate needs to know where the provider came
+   * from and the instance is shared by every caller with this credential, so
+   * the origin lives on the view each caller is handed rather than on the
+   * instance. Kept so that repeat reads with the same origin return the same
+   * object. Bounded by tasks × sources × primary slugs, dropped with the row.
+   */
+  views: Map<string, LlmProvider>;
 }
 
-const instanceCache = new Map<string, CachedProvider>();
+/**
+ * A cached provider row and the clients built from it, one per credential
+ * identity (§120 t-744). Keyed by slug, and by a registrar's name.
+ *
+ * The client is keyed on the credential, not the row: a credential resolver
+ * may give two orgs different keys for one row, and a client built with org
+ * A's key must never serve org B. Rows are cached so the database is not read
+ * per call; the resolver is asked per call, because which credential applies
+ * depends on the org in context.
+ */
+interface CachedRow {
+  /** The row, or `null` for a registrar entry, which carries its own key and bypasses the resolver. */
+  config: AiProviderConfig | null;
+  slug: string;
+  cachedAt: number;
+  byIdentity: Map<string, BuiltProvider>;
+}
+
+const instanceCache = new Map<string, CachedRow>();
+
+/** Which credential key each view counts and breaks under. See {@link breakerKeyOf}. */
+const viewKeys = new WeakMap<LlmProvider, string>();
+
+function isFresh(row: CachedRow | undefined): row is CachedRow {
+  return row !== undefined && Date.now() - row.cachedAt < CACHE_TTL_MS;
+}
+
+function newBuilt(instance: LlmProvider, slug: string, identity: string): BuiltProvider {
+  const built: BuiltProvider = { instance, slug, identity, views: new Map() };
+  // Build the unprovenanced view now, so an unwrappable instance (an empty
+  // slug) throws when it is built rather than on its first read.
+  viewOf(built, undefined);
+  return built;
+}
+
+/** A registrar's entry: no row, its own key, the shared identity. */
+function registrarRow(instance: LlmProvider, name: string): CachedRow {
+  const built = newBuilt(instance, name, '');
+  return { config: null, slug: name, cachedAt: Date.now(), byIdentity: new Map([['', built]]) };
+}
+
+/** The gated, in-flight-tracked view of `built` for one call origin. */
+function viewOf(built: BuiltProvider, origin: CallOrigin): LlmProvider {
+  const key = !origin
+    ? ''
+    : 'source' in origin
+      ? `${origin.task}|${origin.source}|${origin.primarySlug ?? ''}`
+      : `unrecorded-fallback|${origin.unrecordedFallbackOf}`;
+  let view = built.views.get(key);
+  if (!view) {
+    const stateKey = credentialKey(built.slug, built.identity);
+    view = withInFlightTracking(built.instance, built.slug, origin, stateKey);
+    viewKeys.set(view, stateKey);
+    built.views.set(key, view);
+  }
+  return view;
+}
+
+/**
+ * The circuit-breaker key for a provider `getProvider` returned: its slug
+ * joined with its credential's identity (`credential-key.ts`). Pass it to
+ * `getBreaker`, so a failure is recorded against the credential that failed
+ * and not against every org using the row. `undefined` for an object that did
+ * not come from the manager (a test double); fall back to the slug then.
+ */
+export function breakerKeyOf(provider: LlmProvider): string | undefined {
+  return viewKeys.get(provider);
+}
 
 /**
  * Resolve a provider instance by slug (or name).
  *
- * Loads the `AiProviderConfig` row, validates it, resolves the API
- * key from the process environment, constructs the concrete provider,
- * and caches the instance under its slug.
+ * Loads the `AiProviderConfig` row, validates it, resolves the API key
+ * through the credential seam (`provider-credentials.ts`; by default the
+ * row's env var), constructs the concrete provider, and caches it under the
+ * row's slug and the credential's identity.
  *
- * Cached instances are evicted after `CACHE_TTL_MS` (5 minutes) so
- * that config changes in the database take effect without a restart.
+ * Cached rows and clients are evicted after `CACHE_TTL_MS` (5 minutes) so
+ * that config changes in the database take effect without a restart. The
+ * credential is resolved on every call, because which one applies depends on
+ * the org in context; a rotated key under an unchanged identity takes effect
+ * when the TTL expires, as an edited env var always has.
+ *
+ * `context` is where the caller got this provider from — see
+ * `assertProviderCallPermitted`, which every vendor call on the returned
+ * object passes through. Pass it wherever it is known: without it a call is
+ * permitted only if the eligibility rule permits it both as an auto-picked and
+ * as an operator-chosen primary.
+ *
+ * A slug match wins over a name match. The two used to be one
+ * `findFirst({ OR: [...] })` with no ordering, so a caller holding row A's slug
+ * could be handed row B, whose NAME equals A's slug. The gate evaluates the
+ * built row's own slug either way, so that was never a policy bypass, but a
+ * caller that checked A should get A.
  */
-export async function getProvider(slugOrName: string): Promise<LlmProvider> {
-  const cached = instanceCache.get(slugOrName);
-  if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) return cached.provider;
+export async function getProvider(
+  slugOrName: string,
+  context?: ProviderEligibilityContext
+): Promise<LlmProvider> {
+  return acquireProvider(slugOrName, context);
+}
 
-  const config = await prisma.aiProviderConfig.findFirst({
-    where: {
-      OR: [{ slug: slugOrName }, { name: slugOrName }],
-    },
-  });
+/** `getProvider` for any call origin, including an unrecorded fallback. */
+async function acquireProvider(slugOrName: string, context: CallOrigin): Promise<LlmProvider> {
+  // Every LLM call resolves its provider here before its cost is computed, so
+  // the registry must hold the matrix's models by now — otherwise a model only
+  // the matrix knows is costed at $0 in a module graph that never hydrated
+  // (#813). Throttled and soft-failing: one SELECT a minute at most once it has
+  // landed, one per 10 s while it then fails.
+  await hydrateModelRegistryFromDb();
+  let row = instanceCache.get(slugOrName);
+  if (!isFresh(row)) {
+    const config =
+      (await prisma.aiProviderConfig.findFirst({ where: { slug: slugOrName } })) ??
+      (await prisma.aiProviderConfig.findFirst({ where: { name: slugOrName } }));
 
-  if (!config) {
-    throw new ProviderError(`Provider "${slugOrName}" not found`, {
-      code: 'provider_not_found',
-      retriable: false,
-    });
+    if (!config) {
+      throw new ProviderError(`Provider "${slugOrName}" not found`, {
+        code: 'provider_not_found',
+        retriable: false,
+      });
+    }
+
+    if (!config.isActive) {
+      throw new ProviderError(`Provider "${config.slug}" is disabled`, {
+        code: 'provider_disabled',
+        retriable: false,
+      });
+    }
+
+    // A name lookup lands here on every call (it is not cached under the
+    // name), so reuse the slug's live row rather than replacing it and the
+    // clients every slug caller shares. Cached under the row's slug only: a
+    // name alias outlived the "slug wins" rule, shadowing a row created later
+    // with that string as its SLUG until the TTL ran out.
+    const live = instanceCache.get(config.slug);
+    if (isFresh(live)) {
+      row = live;
+    } else {
+      row = { config, slug: config.slug, cachedAt: Date.now(), byIdentity: new Map() };
+      instanceCache.set(config.slug, row);
+    }
   }
 
-  if (!config.isActive) {
-    throw new ProviderError(`Provider "${config.slug}" is disabled`, {
-      code: 'provider_disabled',
-      retriable: false,
-    });
+  if (!row.config) {
+    // A registrar entry: built with its own key, outside the credential seam.
+    const built = row.byIdentity.get('');
+    if (!built) throw new Error(`Registered provider "${row.slug}" has no instance`);
+    return viewOf(built, context);
   }
 
-  const instance = withInFlightTracking(buildProviderFromConfig(config), config.slug);
-  const entry: CachedProvider = { provider: instance, cachedAt: Date.now() };
-  instanceCache.set(config.slug, entry);
-  // Also key by name so callers that already looked up via name are consistent.
-  if (slugOrName !== config.slug) instanceCache.set(slugOrName, entry);
-  return instance;
+  const credential = await resolveProviderCredential(row.config);
+  let built = row.byIdentity.get(credential.identity);
+  if (!built) {
+    // Once per client build, as before the seam — not on every reachability
+    // check, which now runs the same credential read every turn.
+    if (!credential.apiKey && row.config.apiKeyEnvVar && !hasProviderCredentialResolver()) {
+      logger.warn('Provider apiKeyEnvVar is set but process.env value is empty', {
+        provider: row.config.slug,
+        envVar: row.config.apiKeyEnvVar,
+      });
+    }
+    built = newBuilt(
+      buildProviderFromConfig(row.config, credential.apiKey),
+      row.config.slug,
+      credential.identity
+    );
+    row.byIdentity.set(credential.identity, built);
+  }
+  return viewOf(built, context);
 }
 
 /**
  * How the in-flight Proxy treats one method on the provider surface.
  *
- *  - `'track'` — a single-shot vendor call; wrapped in `track(slug, …)`.
+ *  - `'track'` — a single-shot vendor call; wrapped in `track(key, …)`, where
+ *    `key` is `credentialKey(slug, identity)` (§120 t-744).
  *  - `'trackStream'` — a vendor call returning an `AsyncIterable`; wrapped in
- *    `trackStream(slug, …)`, which holds the count until the stream settles.
+ *    `trackStream(key, …)`, which holds the count until the stream settles.
  *  - `'passthrough'` — reaches the vendor but is deliberately NOT counted:
  *    short admin-metadata calls that are not part of the runtime workload the
  *    dashboard measures. Listing them is not a formality — it is the
@@ -161,8 +334,11 @@ type ProviderMethodName = {
  * guarantee this supports, and its limits.
  */
 const METHOD_DISPOSITION: Record<ProviderMethodName, MethodDisposition> = {
+  // Every `track` / `trackStream` method is also gated by
+  // `assertProviderCallPermitted`; `passthrough` is not. See TASK_OF_METHOD.
   chat: 'track',
   embed: 'track',
+  embedMany: 'track',
   transcribe: 'track',
   chatStream: 'trackStream',
   transcribeStream: 'trackStream',
@@ -209,6 +385,25 @@ const HOST_MACHINERY: ReadonlySet<string> = new Set([
   '__lookupSetter__',
 ]);
 
+/**
+ * The task the gate assumes for a call whose caller recorded no provenance.
+ * Only the gated methods need one. A recorded context carries its own task,
+ * which wins: a summariser `chat` call made for a chat binding is still `chat`,
+ * and a routing call is `routing`, which no method name can tell apart.
+ */
+function taskOfMethod(prop: ProviderMethodName): TaskType {
+  switch (prop) {
+    case 'embed':
+    case 'embedMany':
+      return 'embeddings';
+    case 'transcribe':
+    case 'transcribeStream':
+      return 'audio';
+    default:
+      return 'chat';
+  }
+}
+
 function dispositionOf(prop: string): MethodDisposition | undefined {
   return Object.prototype.hasOwnProperty.call(METHOD_DISPOSITION, prop)
     ? METHOD_DISPOSITION[prop as ProviderMethodName]
@@ -216,9 +411,10 @@ function dispositionOf(prop: string): MethodDisposition | undefined {
 }
 
 /**
- * Wrap a freshly-built provider so its vendor calls are accounted in the
- * in-flight counter under `slug`, and so no unclassified method on the
- * instance can reach a vendor unnoticed.
+ * Wrap a freshly-built provider so its vendor calls are refused when the
+ * eligibility rule says so, accounted in the in-flight counter under
+ * `stateKey` (the slug, or slug + credential identity),
+ * and so no unclassified method on the instance can reach a vendor unnoticed.
  *
  * Uses a `Proxy` so the returned value preserves the original prototype —
  * existing call sites (and tests) doing `instanceof AnthropicProvider` keep
@@ -226,8 +422,15 @@ function dispositionOf(prop: string): MethodDisposition | undefined {
  * `this` inside the SDK call is the real provider instance, which also means a
  * provider's own internal `this.foo()` calls never re-enter the trap.
  *
- * Wrapping happens once per cache entry, not per call, so the proxy cost is
- * negligible; the closures it returns run per call. Throws on an empty `slug`,
+ * Wrapping happens once per cache entry and call provenance (see
+ * {@link viewOf}), not per call, so the proxy cost is negligible; the closures
+ * it returns run per call.
+ *
+ * **Every `track` / `trackStream` call is gated** by
+ * `assertProviderCallPermitted` against `slug` and `context` (§120 t-741), so
+ * the provider eligibility rule applies to every vendor call core makes through
+ * the manager, whichever site chose the provider. `passthrough` methods are not
+ * gated; that function says why. Throws on an empty `slug`,
  * because the alternative — returning the instance unwrapped — is the one way
  * the cache's invariant could quietly fail.
  *
@@ -240,7 +443,12 @@ function dispositionOf(prop: string): MethodDisposition | undefined {
  * detection (`if (provider.newThing)`) is exactly how such a method gets
  * called, and it should fail there too.
  */
-function withInFlightTracking(provider: LlmProvider, slug: string): LlmProvider {
+function withInFlightTracking(
+  provider: LlmProvider,
+  slug: string,
+  context: CallOrigin,
+  stateKey: string = slug
+): LlmProvider {
   // Refuse rather than return the bare instance. This used to be
   // `if (!slug) return provider;`, described as defensive — but the callers are
   // the three ways into `instanceCache`, so "everything `getProvider` returns
@@ -264,13 +472,25 @@ function withInFlightTracking(provider: LlmProvider, slug: string): LlmProvider 
       if (typeof prop !== 'string' || typeof value !== 'function') return value;
       const fn = value as (this: LlmProvider, ...args: unknown[]) => unknown;
 
+      // The call-time gate (§120 t-741) runs inside each returned closure, so
+      // the rule is asked on every CALL. Asking once here, on access, or once
+      // per cached instance would let a rule's changed answer wait out the
+      // cache TTL. A refusal is thrown before `track` counts anything.
       switch (dispositionOf(prop)) {
-        case 'track':
-          return (...args: unknown[]): Promise<unknown> =>
-            track(slug, () => fn.apply(target, args) as Promise<unknown>);
-        case 'trackStream':
+        case 'track': {
+          const task = taskOfMethod(prop as ProviderMethodName);
+          return async (...args: unknown[]): Promise<unknown> => {
+            await assertProviderCallPermitted(slug, context, task);
+            return track(stateKey, () => fn.apply(target, args) as Promise<unknown>);
+          };
+        }
+        case 'trackStream': {
+          const task = taskOfMethod(prop as ProviderMethodName);
           return (...args: unknown[]): AsyncIterable<unknown> =>
-            trackStream(slug, () => fn.apply(target, args) as AsyncIterable<unknown>);
+            gatedStream(slug, context, task, () =>
+              trackStream(stateKey, () => fn.apply(target, args) as AsyncIterable<unknown>)
+            );
+        }
         case 'passthrough':
           // Forwarded bound to the original instance so `this` resolution
           // inside the SDK call stays intact.
@@ -308,6 +528,21 @@ function withInFlightTracking(provider: LlmProvider, slug: string): LlmProvider 
 }
 
 /**
+ * A stream that asks the gate before the first chunk. The vendor stream is not
+ * even created until the gate permits it, so a refused call opens no
+ * connection and the in-flight counter never sees it.
+ */
+async function* gatedStream(
+  slug: string,
+  context: CallOrigin,
+  task: TaskType,
+  open: () => AsyncIterable<unknown>
+): AsyncGenerator<unknown> {
+  await assertProviderCallPermitted(slug, context, task);
+  yield* open();
+}
+
+/**
  * Register a provider instance programmatically (tests, scripts, or
  * callers that want to bypass the database). The instance is cached
  * under `config.name` so `getProvider(name)` returns it.
@@ -317,9 +552,9 @@ function withInFlightTracking(provider: LlmProvider, slug: string): LlmProvider 
  * {@link registerProviderInstance} for why.
  */
 export function registerProvider(config: ProviderConfig): LlmProvider {
-  const instance = withInFlightTracking(buildProviderFromInMemoryConfig(config), config.name);
-  instanceCache.set(config.name, { provider: instance, cachedAt: Date.now() });
-  return instance;
+  const row = registrarRow(buildProviderFromInMemoryConfig(config), config.name);
+  instanceCache.set(config.name, row);
+  return viewOf(row.byIdentity.get('')!, undefined);
 }
 
 /**
@@ -345,7 +580,7 @@ export function registerProvider(config: ProviderConfig): LlmProvider {
  * call, spy and `instanceof` still works. Assert on behaviour instead.
  */
 export function registerProviderInstance(name: string, instance: LlmProvider): void {
-  instanceCache.set(name, { provider: withInFlightTracking(instance, name), cachedAt: Date.now() });
+  instanceCache.set(name, registrarRow(instance, name));
 }
 
 /**
@@ -363,9 +598,9 @@ export async function listProviders(): Promise<ProviderStatus[]> {
 }
 
 /**
- * Same as `listProviders` but also reports whether the configured
- * `apiKeyEnvVar` is set in `process.env`. Only inspects `typeof value`
- * and `length > 0` — never returns or logs the value itself.
+ * Same as `listProviders` but also reports whether each row has an API key,
+ * asked through the credential seam (`hasProviderKey`; by default whether its
+ * `apiKeyEnvVar` is set in `process.env`). Never returns or logs the key.
  */
 export async function listProvidersWithStatus(
   where: Parameters<typeof prisma.aiProviderConfig.findMany>[0] = {}
@@ -374,22 +609,27 @@ export async function listProvidersWithStatus(
     ...where,
     orderBy: where?.orderBy ?? { createdAt: 'asc' },
   });
-  return rows.map((config) => ({
-    config,
-    apiKeyPresent: isApiKeyEnvVarSet(config.apiKeyEnvVar),
-    status: 'unknown' as const,
-  }));
+  // Through the credential seam (§120 t-744): with a resolver registered the
+  // env var may be deliberately empty, and "API key missing" would be wrong.
+  return Promise.all(
+    rows.map(async (config) => ({
+      config,
+      apiKeyPresent: await hasProviderKey(config),
+      status: 'unknown' as const,
+    }))
+  );
 }
 
 /**
- * Report whether a single row's `apiKeyEnvVar` is set in the current
- * process. Exposed so the single-item GET route can hydrate its
- * response the same way `listProvidersWithStatus` does.
+ * Report whether a named env var is set in the current process. This is the
+ * ENV VAR question only, not "does this provider have a key" — that is
+ * `hasProviderKey` / `hasProviderCredential` in `provider-credentials.ts`,
+ * which a fork's credential resolver answers. Use those for anything about a
+ * provider row; this is for a check that is genuinely about the variable
+ * (the embedder's hint about a retired bare-`OPENAI_API_KEY` setup).
  */
 export function isApiKeyEnvVarSet(apiKeyEnvVar: string | null): boolean {
-  if (!apiKeyEnvVar) return false;
-  const value = process.env[apiKeyEnvVar];
-  return typeof value === 'string' && value.length > 0;
+  return readEnvKey(apiKeyEnvVar) !== undefined;
 }
 
 /**
@@ -406,29 +646,52 @@ export async function testProvider(slugOrName: string): Promise<ProviderTestResu
  *
  * Returns the resolved provider and the slug that was actually used,
  * so the caller can record success/failure on the correct breaker.
+ *
+ * `provenance` is the resolved binding's (`ResolvedAgentBinding.provenance`):
+ * the primary is fetched with its primary context and each fallback with its
+ * fallback context, so the call-time gate tells the rule which one it is.
+ * Without it each call is evaluated as unrecorded for its position: the
+ * primary as both kinds of primary, a fallback as both kinds of fallback.
  */
 export async function getProviderWithFallbacks(
   primarySlug: string,
-  fallbackSlugs: string[]
-): Promise<{ provider: LlmProvider; usedSlug: string }> {
+  fallbackSlugs: string[],
+  provenance?: BindingProvenance
+): Promise<{
+  provider: LlmProvider;
+  usedSlug: string;
+  /**
+   * The circuit-breaker key for the credential that was used (§120 t-744):
+   * pass it to `getBreaker` rather than `usedSlug`. Always set here; optional
+   * so a test double that returns `{ provider, usedSlug }` still fits, and a
+   * caller falls back to `usedSlug` for one.
+   */
+  breakerKey?: string;
+}> {
   const candidates = [primarySlug, ...fallbackSlugs];
 
-  for (const slug of candidates) {
-    const breaker = getBreaker(slug);
-    if (!breaker.canAttempt()) {
-      logger.info('Skipping provider — circuit breaker open', { provider: slug });
-      continue;
-    }
-
+  for (const [index, slug] of candidates.entries()) {
     try {
-      const provider = await getProvider(slug);
+      // Without a binding provenance a fallback is still asked AS a fallback
+      // (`'explicit'` and `'system'`, with the real primary), so a rule that
+      // refuses a provider only as the silent fill is not skipped.
+      const origin: CallOrigin =
+        index === 0
+          ? primaryCallContext(provenance)
+          : (fallbackCallContext(provenance, primarySlug) ?? { unrecordedFallbackOf: primarySlug });
+      const acquired = await acquireIfBreakerClosed(slug, origin);
+      if (!acquired) {
+        logger.info('Skipping provider — circuit breaker open', { provider: slug });
+        continue;
+      }
+      const { provider, breakerKey } = acquired;
       if (slug !== primarySlug) {
         logger.info('Using fallback provider', {
           primary: primarySlug,
           fallback: slug,
         });
       }
-      return { provider, usedSlug: slug };
+      return { provider, usedSlug: slug, breakerKey };
     } catch (err) {
       // Provider not found or disabled — skip to next candidate
       logger.warn('Provider resolution failed, trying next', {
@@ -443,6 +706,47 @@ export async function getProviderWithFallbacks(
     code: 'all_providers_exhausted',
     retriable: true,
   });
+}
+
+/**
+ * Fetch `slug` for one call if its CREDENTIAL's circuit breaker is closed;
+ * `null` when it is open (§120 t-744). Every path that picks a provider by
+ * trying candidates in turn goes through this — `getProviderWithFallbacks`,
+ * the audio matrix walk and chat's mid-stream failover — so none of them sends
+ * a call to a credential known to be down, and none of them lets the shared
+ * credential's breaker block an org whose resolver gives it its own key.
+ *
+ * The breaker is the credential's, so in general it can only be checked once
+ * the provider is fetched: that is what says which credential this org gets.
+ * With no resolver registered every credential is the shared one and its key
+ * is the slug, so the breaker is checked first and an open one skips the
+ * fetch entirely, as it always did.
+ *
+ * `origin` is the call's provenance, as `getProvider`'s `context`, or
+ * `{ unrecordedFallbackOf: primarySlug }` for a fallback with none recorded —
+ * which `getProviderWithFallbacks` passes too, so a fallback is gated as one
+ * whichever path picked it.
+ *
+ * @throws whatever `getProvider` throws (not found, disabled, no credential).
+ */
+export async function getProviderIfBreakerClosed(
+  slug: string,
+  origin?: CallOrigin
+): Promise<{ provider: LlmProvider; breakerKey: string } | null> {
+  return acquireIfBreakerClosed(slug, origin);
+}
+
+async function acquireIfBreakerClosed(
+  slug: string,
+  origin: CallOrigin
+): Promise<{ provider: LlmProvider; breakerKey: string } | null> {
+  // Peek, never create: `slug` may be a row NAME, and getBreaker would leave a
+  // breaker under a key that is no credential's.
+  if (!hasProviderCredentialResolver() && peekBreaker(slug)?.canAttempt() === false) return null;
+  const provider = await acquireProvider(slug, origin);
+  const breakerKey = breakerKeyOf(provider) ?? slug;
+  if (!getBreaker(breakerKey).canAttempt()) return null;
+  return { provider, breakerKey };
 }
 
 /**
@@ -469,12 +773,19 @@ async function tryAudioRow(
   row: { providerSlug: string; modelId: string },
   source: 'operator_default' | 'matrix_fallback'
 ): Promise<AudioProviderResolution | null> {
-  // Provider eligibility, on the fallback arm only. `'matrix_fallback'` is
-  // Sunrise choosing — no operator pinned this row, we are walking the matrix
-  // in order — so an org's policy applies to it exactly as it applies to the
-  // agent resolver's automatic fill. `'operator_default'` is the pin an
-  // operator set in Settings → Default models, the same category as an
-  // explicit `agent.provider`, and is left alone.
+  // Provider eligibility, on both arms. `'matrix_fallback'` is Sunrise
+  // choosing — no operator pinned this row, we are walking the matrix in order —
+  // so it is asked as `'primary'`, exactly as the agent resolver's automatic
+  // pick is. `'operator_default'` is the pin an operator set in Settings →
+  // Default models, the same category as an explicit `agent.provider`, so it is
+  // asked as `'explicit'`.
+  //
+  // The pin is asked HERE, and not left to the call-time gate, because of what
+  // this function promises about a pin: an unusable one falls through to the
+  // matrix (an open breaker, a missing `transcribe()`). Left to the gate, a
+  // refused pin was returned as resolved, `transcribe()` was refused, and a
+  // permitted row further down was never tried, so voice input was dead (§120
+  // t-741 review). A refused pin is unusable in the same sense.
   //
   // Denial returns `null` rather than throwing, because that is what every
   // other guard in this function already does and what the loop above is
@@ -483,25 +794,13 @@ async function tryAudioRow(
   // three callers already treat as "speech-to-text is unavailable" — a
   // fail-closed outcome with an existing, tested user-facing path, and one
   // that still lets a permitted row further down the matrix serve the request.
-  if (source === 'matrix_fallback') {
-    const permitted = await isProviderEligible(row.providerSlug, {
-      task: 'audio',
-      source: 'primary',
-      primarySlug: null,
-    });
-    if (!permitted) {
-      logger.info('Skipping audio provider — not permitted by the app eligibility rule', {
-        providerSlug: row.providerSlug,
-        modelId: row.modelId,
-        source,
-      });
-      return null;
-    }
-  }
-
-  const breaker = getBreaker(row.providerSlug);
-  if (!breaker.canAttempt()) {
-    logger.info('Skipping audio provider — circuit breaker open', {
+  const asked = {
+    task: 'audio',
+    source: source === 'operator_default' ? 'explicit' : 'primary',
+    primarySlug: source === 'operator_default' ? row.providerSlug : null,
+  } as const satisfies ProviderEligibilityContext;
+  if (!(await isProviderEligible(row.providerSlug, asked))) {
+    logger.info('Skipping audio provider — not permitted by the app eligibility rule', {
       providerSlug: row.providerSlug,
       modelId: row.modelId,
       source,
@@ -509,9 +808,10 @@ async function tryAudioRow(
     return null;
   }
 
-  let provider: LlmProvider;
+  let acquired: { provider: LlmProvider; breakerKey: string } | null;
   try {
-    provider = await getProvider(row.providerSlug);
+    // The call-time gate is told the same thing the check above was.
+    acquired = await acquireIfBreakerClosed(row.providerSlug, asked);
   } catch (err) {
     logger.warn('Audio provider resolution failed, trying next', {
       providerSlug: row.providerSlug,
@@ -520,6 +820,17 @@ async function tryAudioRow(
     });
     return null;
   }
+
+  // The CREDENTIAL's breaker (§120 t-744) — see acquireIfBreakerClosed.
+  if (!acquired) {
+    logger.info('Skipping audio provider — circuit breaker open', {
+      providerSlug: row.providerSlug,
+      modelId: row.modelId,
+      source,
+    });
+    return null;
+  }
+  const { provider } = acquired;
 
   if (typeof provider.transcribe !== 'function') {
     logger.warn(
@@ -717,12 +1028,18 @@ export async function hasModelWithCapability(capability: string): Promise<boolea
   return count > 0;
 }
 
-/** Evict one (or all) cached provider instances. */
+/**
+ * Evict one (or all) cached provider instances, and what the provider policy
+ * has cached of the same row (§120 t-742) — every provider-row write already
+ * calls this, so a changed jurisdiction applies at once in this process.
+ */
 export function clearCache(slugOrName?: string): void {
   if (slugOrName) {
     instanceCache.delete(slugOrName);
+    forgetProviderRow(slugOrName);
   } else {
     instanceCache.clear();
+    forgetProviderRow();
   }
 }
 
@@ -730,15 +1047,32 @@ export function clearCache(slugOrName?: string): void {
 // Construction
 // ---------------------------------------------------------------------------
 
-function buildProviderFromConfig(config: AiProviderConfig): LlmProvider {
-  const apiKey = resolveApiKey(config);
+/**
+ * Why a row has no key. The env var by default; with a credential resolver
+ * registered the env var may be deliberately empty, so saying only "set the env
+ * var" would send an operator to the wrong place.
+ */
+function missingKeyMessage(config: AiProviderConfig): string {
+  return hasProviderCredentialResolver()
+    ? `Provider "${config.slug}" has no API key: the registered credential resolver returned none`
+    : `Provider "${config.slug}" requires env var "${config.apiKeyEnvVar ?? '<unset>'}" to be set`;
+}
 
+/**
+ * Build a client from a row and the key the credential seam resolved for it.
+ * The key is passed in, never read here: `provider-credentials.ts` is the one
+ * place a provider credential is resolved.
+ */
+function buildProviderFromConfig(
+  config: AiProviderConfig,
+  apiKey: string | undefined
+): LlmProvider {
   if (config.providerType === 'anthropic') {
     if (!apiKey) {
-      throw new ProviderError(
-        `Provider "${config.slug}" requires env var "${config.apiKeyEnvVar ?? '<unset>'}" to be set`,
-        { code: 'missing_api_key', retriable: false }
-      );
+      throw new ProviderError(missingKeyMessage(config), {
+        code: 'missing_api_key',
+        retriable: false,
+      });
     }
     return new AnthropicProvider({
       name: config.name,
@@ -752,10 +1086,32 @@ function buildProviderFromConfig(config: AiProviderConfig): LlmProvider {
 
   if (config.providerType === 'voyage') {
     if (!apiKey) {
-      throw new ProviderError(
-        `Provider "${config.slug}" requires env var "${config.apiKeyEnvVar ?? '<unset>'}" to be set`,
-        { code: 'missing_api_key', retriable: false }
-      );
+      throw new ProviderError(missingKeyMessage(config), {
+        code: 'missing_api_key',
+        retriable: false,
+      });
+    }
+    // A configured `baseUrl` is where knowledge text is posted
+    // (`VoyageProvider.embedMany`) and where chat would go, so it gets the
+    // same point-of-use check as the openai-compatible branch below. The
+    // knowledge embedder ran this check itself before it moved behind the
+    // manager (t-740); without it here, that check would have been lost in the
+    // move. Absent `baseUrl` means Voyage's own fixed host, and nothing to check.
+    if (config.baseUrl) {
+      // `isLocal` decides loopback, the same rule as the openai-compatible
+      // branch and what the embedder's own check used: a Voyage row marked
+      // local (a caching proxy on this host) is the operator's stated intent.
+      const urlCheck = checkSafeProviderUrl(config.baseUrl, { allowLoopback: config.isLocal });
+      if (!urlCheck.ok) {
+        logger.error('Provider baseUrl rejected by SSRF guard at build time', {
+          provider: config.slug,
+          reason: urlCheck.reason,
+        });
+        throw new ProviderError(
+          `Provider "${config.slug}" has an unsafe baseUrl (${urlCheck.reason ?? 'blocked'})`,
+          { code: 'unsafe_base_url', retriable: false }
+        );
+      }
     }
     return new VoyageProvider({
       name: config.name,
@@ -802,10 +1158,10 @@ function buildProviderFromConfig(config: AiProviderConfig): LlmProvider {
       );
     }
     if (!config.isLocal && !apiKey) {
-      throw new ProviderError(
-        `Provider "${config.slug}" requires env var "${config.apiKeyEnvVar ?? '<unset>'}" to be set`,
-        { code: 'missing_api_key', retriable: false }
-      );
+      throw new ProviderError(missingKeyMessage(config), {
+        code: 'missing_api_key',
+        retriable: false,
+      });
     }
     return new OpenAiCompatibleProvider({
       name: config.name,
@@ -848,17 +1204,4 @@ function buildProviderFromInMemoryConfig(config: ProviderConfig): LlmProvider {
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
     ...(config.maxRetries !== undefined ? { maxRetries: config.maxRetries } : {}),
   });
-}
-
-function resolveApiKey(config: AiProviderConfig): string | undefined {
-  if (!config.apiKeyEnvVar) return undefined;
-  const value = process.env[config.apiKeyEnvVar];
-  if (!value) {
-    logger.warn('Provider apiKeyEnvVar is set but process.env value is empty', {
-      provider: config.slug,
-      envVar: config.apiKeyEnvVar,
-    });
-    return undefined;
-  }
-  return value;
 }

@@ -13,7 +13,7 @@
  * is listed in the export manifest. Nothing imports the schema, so no module
  * graph connects them, so `--changed` will never select that test no matter
  * which model you add. Same for the reserved-namespace rule, the fork-init
- * seam roster, and the outbound-redirect roster. Those are exactly the checks
+ * seam roster, the outbound-redirect roster, and the tenancy guards. Those are exactly the checks
  * this repo leans on hardest, and a scoped run that silently stopped running
  * them would be the "skipped gate reads as green" shape
  * `.context/architecture/ci.md` spends a section on.
@@ -67,6 +67,13 @@
 // argument. Nothing here needs pinning when you fill the seam.
 import { appAlwaysRunTests } from '@/lib/app/ci';
 
+/**
+ * Vitest's own CLI parser. A type only: `vitest/node` cannot be imported
+ * statically under `tsx` (a nested dependency has no CommonJS entry), so the
+ * CLI loads it with a dynamic `import()` and hands it to {@link selfTestFailure}.
+ */
+export type ParseCli = typeof import('vitest/node').parseCLI;
+
 /** One test that must run regardless of what the module graph says. */
 export interface AlwaysRunEntry {
   /** Repo-relative path, forward slashes. */
@@ -103,6 +110,80 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'parses `prisma/schema/*.prisma` and fails until every model with a ' +
       'user FK appears in `SUBJECT_DATA_SOURCES`. Adding a model is exactly ' +
       'the change no import chain connects to this test.',
+  },
+  {
+    path: 'tests/unit/lib/privacy/org-sources.test.ts',
+    reason:
+      'parses `prisma/schema/*.prisma` and fails until every model carrying ' +
+      '`orgId` appears in the org export manifest (`ORG_DATA_SOURCES` / ' +
+      '`ORG_EXCLUDED_SOURCES`) — the org-subject twin of export-sources. Adding ' +
+      'a tenant-owned model is exactly the change no import chain connects to ' +
+      'this test, and a miss ships an org export and erasure silently short.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/model-classification.test.ts',
+    reason:
+      'parses `prisma/schema/*.prisma` and fails naming any model that neither ' +
+      'carries `orgId` nor sits on a tenancy allowlist. Adding a model is exactly ' +
+      'the change no import chain connects to this test.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/org-scoped-slugs.test.ts',
+    reason:
+      'parses `prisma/schema/*.prisma` and fails naming any tenant-owned model whose ' +
+      '`slug` is a global `@unique` or lacks `@@unique([orgId, slug])`, and reads the ' +
+      'migrations for the two per-org partial uniques. A new tenant-owned model with a ' +
+      'slug reaches no test through the module graph.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/process-state.test.ts',
+    reason:
+      'scans every module under `lib/` for module-level mutable state and fails ' +
+      'on any holder not declared, with its tenancy posture, in ' +
+      '`lib/tenancy/process-state.ts`. The change it exists to catch — a new ' +
+      '`Map` cache in some far-off module — is one whose import graph never ' +
+      'reaches this test, and an undeclared holder is a cross-org cache at multi.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/roles.test.ts',
+    reason:
+      'holds `ORG_ROLES` / `ORG_STATUSES` equal to the generated Prisma ' +
+      '`OrgRole` / `OrgStatus` enums. Adding an enum value edits only ' +
+      '`prisma/schema/tenancy.prisma`, and the generated client is gitignored, ' +
+      'so no changed module reaches this test. It compares against the client, ' +
+      'so it catches the drift once `prisma generate` has run.',
+  },
+  {
+    path: 'tests/unit/lib/orchestration/scope-authority.test.ts',
+    reason:
+      'walks `lib/` for every capability-dispatch site that threads a scope and ' +
+      'checks which ones may treat it as authoritative. A new dispatch site in ' +
+      'some far-off module is exactly the change no import chain connects to ' +
+      'this test, and a miss lets a request-body scope decide what a tool acts on.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/policy-coverage.test.ts',
+    reason:
+      'reads every `prisma/migrations/*/migration.sql` off disk (policies created ' +
+      'minus dropped) and compares them with the tenant-owned roster the generated client derives, ' +
+      'failing naming any tenant-owned table without its `org_isolation` policy. A ' +
+      'new model with `orgId`, or a migration, reaches no test through the module graph.',
+  },
+  {
+    path: 'tests/unit/lib/tenancy/cross-org-count-sites.test.ts',
+    reason:
+      'scans every non-test source file in the checkout, root files included, with the ' +
+      'TypeScript scanner for code that names `runAsCrossOrgCount` (the debug-logged system ' +
+      'bypass) or star-re-exports its module, and fails naming any but the global-config ' +
+      'usage module. A new caller is a file no import chain connects to this test (§107 t-752).',
+  },
+  {
+    path: 'tests/unit/scripts/ci/shared-settings-writes.test.ts',
+    reason:
+      'parses every route and module under app/ and lib/ and fails naming any route ' +
+      'handler or capability class that changes a shared setting (a GLOBAL_CONFIG_MODELS ' +
+      'row) without declaring `writesSharedSettings`. A new route or capability writing ' +
+      'one is exactly the change no import chain connects to this test (§107 t-751).',
   },
   {
     path: 'tests/unit/scripts/ci/ownerless-surfaces.test.ts',
@@ -183,6 +264,12 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
     reason: 'reads the LLM source files to assert none of them persists a structured completion.',
   },
   {
+    path: 'tests/unit/prisma/seeds/system-workflow-slugs.test.ts',
+    reason:
+      'reads `prisma/seeds/` off disk to pin which units write `isSystem` workflows against ' +
+      '`SYSTEM_WORKFLOW_SLUGS`. Nothing imports a seed file, so a new seed never selects it.',
+  },
+  {
     path: 'tests/unit/prisma/seeds/provider-models.capabilities.test.ts',
     reason: 'reads `prisma/seeds/009-provider-models.ts` as text to check every row declares caps.',
   },
@@ -206,6 +293,13 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'runs ESLint over the tree, so its input is every source file. It ' +
       'imports no filesystem module — no static detector proposed this ' +
       'entry, which is why the list is written rather than derived.',
+  },
+  {
+    path: 'tests/unit/test-see-paths.test.ts',
+    reason:
+      'reads the header of every file under tests/ and fails on a `@see` that ' +
+      'is an absolute path (`/Users/…`, `/home/…`, `C:\\…`) rather than ' +
+      'repo-relative. The input is the whole test tree, which nothing imports.',
   },
   {
     path: 'tests/unit/vitest-environment-directives.test.ts',
@@ -254,6 +348,13 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'lint into a workflow of its own — should delete this entry and keep its ' +
       'own version of the guard, rather than carry a red suite about a file it ' +
       'no longer shares.',
+  },
+  {
+    path: 'tests/unit/app/app-icons.test.ts',
+    reason:
+      'checks `app/favicon.ico` / `app/icon.svg` exist and that `public/` holds no ' +
+      'favicon (#640). Dropping an icon back into `public/` changes no TypeScript, ' +
+      'so no import chain reaches this test — and it is a dev-server 500.',
   },
   // The fork-owned tail. Sunrise ships it empty; everything above is core's.
   //
@@ -448,6 +549,13 @@ export interface ScopedRunPlan {
  * changed file individually. Without `perFile` the floor is an average across
  * the included set, which one well-covered file can carry for a bare one — the
  * opposite of what a per-PR gate is for.
+ *
+ * **The bare flag, never `--coverage.thresholds.perFile=true`.** Vitest's CLI
+ * parses `=true` as the STRING `"true"`, and per-file mode only switches on for
+ * the boolean, so that spelling silently gated the average (t-749, measured on
+ * vitest 5.0.2: a changed file at 75% branches passed beside one at 100%).
+ * {@link selfTestFailure} parses this argv with vitest's own `parseCLI` and
+ * checks the value, not the spelling (the CLI always hands it the parser).
  */
 export function buildVitestArgv(plan: ScopedRunPlan): string[] {
   const files = [...new Set([...plan.selected, ...plan.alwaysRun])].sort();
@@ -456,7 +564,7 @@ export function buildVitestArgv(plan: ScopedRunPlan): string[] {
   if (plan.coverage.length > 0) {
     argv.push('--coverage');
     for (const path of plan.coverage) argv.push(`--coverage.include=${escapeGlob(path)}`);
-    argv.push('--coverage.thresholds.perFile=true');
+    argv.push('--coverage.thresholds.perFile');
     for (const metric of ['lines', 'functions', 'branches', 'statements']) {
       argv.push(`--coverage.thresholds.${metric}=${plan.threshold}`);
     }
@@ -542,6 +650,12 @@ export interface SelfTestDeps {
   detect: typeof undeclaredRepoRootedTests;
   targets: typeof coverageTargets;
   build: typeof buildVitestArgv;
+  /**
+   * Vitest's `parseCLI`, to ask what the coverage flags MEAN. Required: a
+   * check of the spelling is what silently failed (t-749). The CLI loads it
+   * (`cliMain` in run-scoped-tests.ts).
+   */
+  parse: ParseCli;
 }
 
 /**
@@ -559,12 +673,15 @@ export interface SelfTestDeps {
  *
  * Returns a sentence naming what is broken, or `null`.
  */
-export function selfTestFailure(deps: Partial<SelfTestDeps> = {}): string | null {
+export function selfTestFailure(
+  deps: Partial<Omit<SelfTestDeps, 'parse'>> & Pick<SelfTestDeps, 'parse'>
+): string | null {
   const {
     entries = ALWAYS_RUN_TESTS,
     detect = undeclaredRepoRootedTests,
     targets = coverageTargets,
     build = buildVitestArgv,
+    parse,
   } = deps;
 
   const shape = validateAlwaysRun(entries);
@@ -604,9 +721,21 @@ export function selfTestFailure(deps: Partial<SelfTestDeps> = {}): string | null
     return 'coverageTargets no longer filters tests, declarations and non-TypeScript paths.';
   }
 
+  // Ask vitest's own parser what the argv means, not whether a spelling is
+  // present: `--coverage.thresholds.perFile=true` was present for months and
+  // parsed to the string "true", which vitest does not treat as on (t-749).
   const argv = build({ selected: [], alwaysRun: [], coverage: ['lib/a.ts'], threshold: 80 });
-  if (!argv.includes('--coverage.thresholds.perFile=true')) {
+  const { thresholds } = parse(['vitest', ...argv]).options.coverage ?? {};
+  if (thresholds?.perFile === undefined) {
     return 'buildVitestArgv stopped asking for per-file coverage thresholds.';
+  }
+  if (thresholds.perFile !== true) {
+    return `buildVitestArgv's per-file coverage threshold parses as ${JSON.stringify(thresholds.perFile)}, not true: vitest would gate the average.`;
+  }
+  for (const metric of ['lines', 'functions', 'branches', 'statements'] as const) {
+    if (thresholds[metric] !== 80) {
+      return `buildVitestArgv's ${metric} threshold parses as ${JSON.stringify(thresholds[metric])}, not 80.`;
+    }
   }
 
   return null;

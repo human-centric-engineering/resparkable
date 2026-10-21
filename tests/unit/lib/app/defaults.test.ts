@@ -81,7 +81,14 @@ import { buildContext } from '@/lib/orchestration/chat/context-builder';
 import { RESPARKABLE_CAPABILITIES } from '@/lib/framework/resparkable/capabilities/catalogue';
 import { RESPARKABLE_MCP_RESOURCES } from '@/lib/framework/resparkable/mcp/exposure';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
+import { registerAppTenantResolver } from '@/lib/app/tenant-resolver';
+import { hasTenantResolver } from '@/lib/tenancy/resolver';
 import { initAppCapabilities } from '@/lib/app/capabilities';
+import {
+  hasProviderCredentialResolver,
+  resetProviderCredentialResolver,
+  resolveProviderCredential,
+} from '@/lib/orchestration/llm/provider-credentials';
 import { initAppContextContributors } from '@/lib/app/context-contributors';
 import { initAppNav } from '@/lib/app/admin-nav';
 import { publicNavItems, footerNavItems, footerLegalItems } from '@/lib/app/public-nav';
@@ -135,6 +142,11 @@ import {
   listGraders,
   __resetGraderRegistryForTests,
 } from '@/lib/orchestration/evaluations/graders/registry';
+import {
+  CORE_PLATFORM_AGENTS,
+  listPlatformAgents,
+  __resetPlatformAgentsForTests,
+} from '@/lib/orchestration/agents/platform-agents';
 import {
   ACCOUNT_SURFACES,
   getRegisteredAccountSections,
@@ -306,6 +318,15 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       // The catch-all must stay last — app rules are spliced in just ahead of
       // it, and a rule after it would never match.
       expect(effective[effective.length - 1]).toBe(RATE_LIMIT_POLICY[RATE_LIMIT_POLICY.length - 1]);
+    },
+  },
+  {
+    seam: 'lib/app/tenant-resolver.ts',
+    risk: 'a stray resolver would pick an org for every request on every install',
+    assert: () => {
+      registerAppTenantResolver();
+      // No resolver → the proxy strips the org header on every request.
+      expect(hasTenantResolver()).toBe(false);
     },
   },
   {
@@ -625,6 +646,41 @@ const SEAM_DEFAULTS: SeamDefault[] = [
         RESPARKABLE_MCP_RESOURCES.map((r) => r.resourceType).sort()
       );
       expect(listAllowedMcpResourceUriSchemes()).toEqual(['resparkable']);
+    },
+  },
+  {
+    seam: 'lib/app/platform-agents.ts',
+    risk: 'a stray definition would be materialised as an agent in every org on every install \u2014 and, on a slug core already uses, would replace the prompt of an agent every org runs',
+    assert: () => {
+      __resetPlatformAgentsForTests();
+      // The read triggers the lazy init, so this exercises the REAL file:
+      // exactly core's definitions, the same objects, in the same order.
+      expect(listPlatformAgents()).toEqual(CORE_PLATFORM_AGENTS);
+      listPlatformAgents().forEach((definition, i) =>
+        expect(definition).toBe(CORE_PLATFORM_AGENTS[i])
+      );
+    },
+  },
+  {
+    seam: 'lib/app/provider-credentials.ts',
+    risk: 'a stray credential resolver would send every install\u2019s provider calls out on a key that is not the one its rows name',
+    assert: async () => {
+      resetProviderCredentialResolver();
+      // The read triggers the lazy init, so this exercises the REAL file.
+      expect(hasProviderCredentialResolver()).toBe(false);
+      // And the default is exactly the env var, on the shared identity.
+      process.env.SHIPS_EMPTY_TEST_KEY = 'from-env';
+      await expect(
+        resolveProviderCredential({
+          id: 'p1',
+          slug: 'p1',
+          name: 'P1',
+          providerType: 'anthropic',
+          apiKeyEnvVar: 'SHIPS_EMPTY_TEST_KEY',
+          isLocal: false,
+        })
+      ).resolves.toEqual({ apiKey: 'from-env', identity: '' });
+      delete process.env.SHIPS_EMPTY_TEST_KEY;
     },
   },
   {

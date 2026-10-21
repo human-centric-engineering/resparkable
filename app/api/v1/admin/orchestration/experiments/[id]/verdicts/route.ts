@@ -39,6 +39,7 @@ import { runPairwiseVerdictSchema } from '@/lib/validations/orchestration-evalua
 import { pairwiseVerdictLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
 import { pairwiseJudgeAgentGrader } from '@/lib/orchestration/evaluations/graders/pairwise/judge-agent';
 import type { PairwiseVerdictCase, PairwiseVerdictSummary } from '@/types/orchestration';
+import { platformSlugWhere } from '@/lib/orchestration/agents/platform-agent-guard';
 
 type Params = { id: string };
 
@@ -144,8 +145,9 @@ export const POST = withAdminAuth<Params>(
       );
     }
 
-    const judgeAgent = await prisma.aiAgent.findUnique({
-      where: { slug: body.judgeAgentSlug },
+    const judgeAgent = await prisma.aiAgent.findFirst({
+      // As the grader will load it: a platform slug is its system row (§116).
+      where: { slug: body.judgeAgentSlug, ...platformSlugWhere(body.judgeAgentSlug) },
       select: { id: true, kind: true, isActive: true },
     });
     if (!judgeAgent) {

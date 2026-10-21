@@ -74,6 +74,7 @@ function setEnv(vars: Record<string, string | undefined>) {
     'EMAIL_FROM',
     'TENANCY_MODE',
     'DATABASE_POOL_MAX',
+    'MIGRATE_DATABASE_URL',
   ];
   for (const key of keysToManage) {
     delete process.env[key];
@@ -344,6 +345,52 @@ describe('server path (typeof window === undefined)', () => {
     });
   });
 
+  describe('MIGRATE_DATABASE_URL', () => {
+    it('should stay undefined when absent — prisma.config.ts then falls back to DATABASE_URL', async () => {
+      // Arrange — the single-tenant shape: one DSN does everything
+      setEnv(validServerEnv);
+
+      // Act
+      const env = await importEnv();
+
+      // Assert
+      expect(env.MIGRATE_DATABASE_URL).toBeUndefined();
+    });
+
+    it('should accept a Postgres connection string (the owner role at multi)', async () => {
+      // Arrange
+      setEnv({
+        ...validServerEnv,
+        MIGRATE_DATABASE_URL: 'postgresql://owner:secret@localhost:5432/sunrise',
+      });
+
+      // Act
+      const env = await importEnv();
+
+      // Assert
+      expect(env.MIGRATE_DATABASE_URL).toBe('postgresql://owner:secret@localhost:5432/sunrise');
+    });
+
+    it('should treat a blank value as unset — the templated-but-empty container shape', async () => {
+      // Arrange
+      setEnv({ ...validServerEnv, MIGRATE_DATABASE_URL: '' });
+
+      // Act
+      const env = await importEnv();
+
+      // Assert — the same rule prisma.config.ts and ownerDsn() apply
+      expect(env.MIGRATE_DATABASE_URL).toBeUndefined();
+    });
+
+    it('should throw when set to something that is not a URL', async () => {
+      // Arrange
+      setEnv({ ...validServerEnv, MIGRATE_DATABASE_URL: 'the owner dsn' });
+
+      // Act & Assert
+      await expect(importEnv()).rejects.toThrow();
+    });
+  });
+
   describe('TENANCY_MODE', () => {
     it("should default to 'single' when the variable is absent", async () => {
       // Arrange — validServerEnv does not set TENANCY_MODE
@@ -356,8 +403,8 @@ describe('server path (typeof window === undefined)', () => {
       expect(env.TENANCY_MODE).toBe('single');
     });
 
-    it("should accept 'multi' at the env layer (the client.ts guard enforces it, not Zod)", async () => {
-      // Arrange — 'multi' is a valid enum value; rejecting it is the client's job
+    it("should accept 'multi' at the env layer (the data layer acts on it, not Zod)", async () => {
+      // Arrange — 'multi' is a valid enum value; what it does is the chokepoint's job
       setEnv({ ...validServerEnv, TENANCY_MODE: 'multi' });
 
       // Act

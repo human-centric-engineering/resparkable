@@ -119,6 +119,66 @@ describe('hydrateFromDb', () => {
     );
   });
 
+  it('reads rows oldest first, so a shared model id settles on the same entry', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await hydrate.hydrateFromDb();
+    expect(mockFindMany).toHaveBeenCalledWith({
+      where: { isActive: true },
+      orderBy: { createdAt: 'asc' },
+    });
+  });
+
+  it('awaits a due refresh, so a model just added to the matrix resolves (#302)', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await hydrate.hydrateFromDb();
+    expect(registry.getModel(CUSTOM_MODEL_ID)).toBeUndefined();
+
+    // The operator adds a model; past the TTL the next caller must see it
+    // when its await returns — the query takes real time, so a caller that
+    // did not wait would read the registry before the row lands.
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 60_001);
+    mockFindMany.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([makeRow()]), 20))
+    );
+    await hydrate.hydrateFromDb();
+    expect(registry.getModel(CUSTOM_MODEL_ID)).toBeDefined();
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('retries on the next call while no hydrate has landed yet', async () => {
+    mockFindMany.mockRejectedValueOnce(new Error('connection refused'));
+    await hydrate.hydrateFromDb();
+
+    mockFindMany.mockResolvedValue([makeRow()]);
+    await hydrate.hydrateFromDb();
+
+    expect(mockFindMany).toHaveBeenCalledTimes(2);
+    expect(registry.getModel(CUSTOM_MODEL_ID)).toBeDefined();
+  });
+
+  it('backs off after a failed refresh rather than retrying on every call', async () => {
+    vi.useFakeTimers();
+    try {
+      mockFindMany.mockResolvedValueOnce([]);
+      await hydrate.hydrateFromDb();
+      vi.advanceTimersByTime(60_001);
+
+      mockFindMany.mockRejectedValueOnce(new Error('connection refused'));
+      await hydrate.hydrateFromDb();
+      await hydrate.hydrateFromDb();
+      expect(mockFindMany).toHaveBeenCalledTimes(2);
+
+      mockFindMany.mockResolvedValue([makeRow()]);
+      vi.advanceTimersByTime(10_001);
+      await hydrate.hydrateFromDb();
+      expect(mockFindMany).toHaveBeenCalledTimes(3);
+      expect(registry.getModel(CUSTOM_MODEL_ID)).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('DB row overrides a same-id fallback entry — admin matrix beats hardcoded list', async () => {
     mockFindMany.mockResolvedValue([
       makeRow({

@@ -23,6 +23,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Module mocks — declared before any imports that trigger the modules
 // ---------------------------------------------------------------------------
 
+// The agent read's REPEATABLE READ wrapper is proved in agent-versioning's
+// own tests; here it runs the read against the client directly.
+vi.mock('@/lib/orchestration/agents/agent-versioning', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/orchestration/agents/agent-versioning')>();
+  return {
+    ...actual,
+    readAgentConsistently: vi.fn((db: unknown, read: (tx: unknown) => unknown) => read(db)),
+  };
+});
+
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiAgent: { findFirst: vi.fn() },
@@ -55,10 +66,18 @@ vi.mock('@/lib/env', () => ({
   },
 }));
 
-vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
-  getProviderWithFallbacks: vi.fn(),
-  getProvider: vi.fn(),
-}));
+vi.mock('@/lib/orchestration/llm/provider-manager', () => {
+  const getProvider = vi.fn();
+  return {
+    getProviderWithFallbacks: vi.fn(),
+    getProvider,
+    // Failover fetches through this; delegate, with a closed breaker.
+    getProviderIfBreakerClosed: vi.fn(async (slug: string, context?: unknown) => ({
+      provider: (await getProvider(slug, context)) as unknown,
+      breakerKey: slug,
+    })),
+  };
+});
 
 vi.mock('@/lib/orchestration/llm/cost-tracker', async () => {
   const actual = await vi.importActual<typeof import('@/lib/orchestration/llm/cost-tracker')>(
@@ -223,6 +242,7 @@ const makeAgent = (overrides: Record<string, unknown> = {}) => ({
   brandVoiceInstructions: null,
   maxHistoryTokens: null,
   metadata: null,
+  versions: [],
   ...overrides,
 });
 

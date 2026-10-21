@@ -53,6 +53,7 @@ import {
 } from '@/lib/framework/resparkable/evaluations/triage-cases';
 import { getGrader } from '@/lib/orchestration/evaluations/graders/registry';
 import { runAgentCase } from '@/lib/orchestration/evaluations/run-cases/agent-case';
+import { requireOrgId } from '@/lib/tenancy/context';
 
 const PREFIX = 'resparkable-eval-triage';
 const stamp = Date.now().toString(36);
@@ -97,7 +98,7 @@ async function createScratchUser(): Promise<string> {
 
 async function main(): Promise<void> {
   const agent = await prisma.aiAgent.findUnique({
-    where: { slug: RESPARKABLE_AGENT_SLUGS.triage },
+    where: { orgId_slug: { orgId: requireOrgId(), slug: RESPARKABLE_AGENT_SLUGS.triage } },
     select: { id: true, isActive: true, model: true, temperature: true },
   });
 

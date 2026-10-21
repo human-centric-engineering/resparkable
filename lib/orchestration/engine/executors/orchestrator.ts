@@ -35,6 +35,7 @@ import { ExecutorError } from '@/lib/orchestration/engine/errors';
 import { runLlmCall, interpolatePrompt } from '@/lib/orchestration/engine/llm-runner';
 import { registerStepType } from '@/lib/orchestration/engine/executor-registry';
 import { executeAgentCall } from '@/lib/orchestration/engine/executors/agent-call';
+import { platformSlugsWhere } from '@/lib/orchestration/agents/platform-agent-guard';
 
 const DEFAULT_MAX_ROUNDS = 3;
 const DEFAULT_MAX_DELEGATIONS_PER_ROUND = 5;
@@ -258,6 +259,8 @@ export async function executeOrchestrator(
     where: {
       slug: { in: config.availableAgentSlugs },
       isActive: true,
+      // A platform slug names the org's platform instance only (§116 t-725).
+      ...platformSlugsWhere(config.availableAgentSlugs),
     },
     select: { slug: true, name: true, description: true },
   });
@@ -437,7 +440,22 @@ export async function executeOrchestrator(
 
         const retryParsed: unknown = JSON.parse(retryResult.content);
         plannerResponse = orchestratorPlannerResponseSchema.parse(retryParsed);
-      } catch {
+      } catch (retryErr) {
+        // The retry CALL failed: re-wrap it with its own verdict and billing,
+        // the same way the first planner call's catch does, so a request fault
+        // or a provider-policy refusal (§120 t-741) is not re-issued and its
+        // spend is not lost. Only a second PARSE failure is a parse failure.
+        if (retryErr instanceof ExecutorError) {
+          throw new ExecutorError(
+            step.id,
+            'planner_call_failed',
+            `Planner LLM retry failed in round ${round + 1}: ${retryErr.message}`,
+            retryErr,
+            retryErr.retriable,
+            retryErr.tokensUsed,
+            retryErr.costUsd
+          );
+        }
         throw new ExecutorError(
           step.id,
           'planner_parse_failed',

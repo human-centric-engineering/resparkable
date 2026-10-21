@@ -20,6 +20,10 @@ vi.mock('@/lib/orchestration/llm/settings-resolver', () => ({
 vi.mock('@/lib/orchestration/llm/model-registry', () => ({
   getModel: vi.fn(),
 }));
+// The registry is hydrated from the Model Matrix before the model lookup (#813).
+vi.mock('@/lib/orchestration/llm/model-registry-db-hydrate', () => ({
+  hydrateFromDb: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
   getProvider: vi.fn(),
 }));
@@ -36,11 +40,13 @@ vi.mock('@/lib/logging', () => ({
 import { runLlmCall, interpolatePrompt } from '@/lib/orchestration/engine/llm-runner';
 import { getDefaultModelForTask } from '@/lib/orchestration/llm/settings-resolver';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
+import { hydrateFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
 import { ProviderError, toProviderError } from '@/lib/orchestration/llm/provider';
 import { calculateCost, logCost } from '@/lib/orchestration/llm/cost-tracker';
 import type { ExecutionContext } from '@/lib/orchestration/engine/context';
 import {
+  ProviderCallRefusedError,
   registerProviderEligibility,
   resetProviderEligibility,
 } from '@/lib/orchestration/llm/provider-eligibility';
@@ -108,6 +114,28 @@ describe('runLlmCall', () => {
       costUsd: 0.001,
       model: 'gpt-4',
     });
+  });
+
+  it('hydrates the model registry before looking the model up (#813)', async () => {
+    // Scheduled and triggered runs reach here without the admin route that
+    // hydrates, so a matrix-only model would otherwise read as unknown.
+    vi.mocked(getModel).mockReturnValue({ provider: 'openai' } as any);
+    vi.mocked(getProvider).mockResolvedValue({
+      chat: vi.fn().mockResolvedValue({ content: 'a', usage: { inputTokens: 1, outputTokens: 1 } }),
+    } as any);
+    vi.mocked(calculateCost).mockReturnValue({
+      totalCostUsd: 0,
+      isLocal: false,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+    });
+    vi.mocked(logCost).mockResolvedValue(null);
+
+    await runLlmCall(makeCtx(), { stepId: 's1', prompt: 'hi', modelOverride: 'gpt-4' });
+
+    const hydratedAt = vi.mocked(hydrateFromDb).mock.invocationCallOrder[0];
+    expect(hydratedAt).toBeDefined();
+    expect(hydratedAt).toBeLessThan(vi.mocked(getModel).mock.invocationCallOrder[0]);
   });
 
   it('falls back to default model when modelOverride is empty string', async () => {
@@ -218,6 +246,24 @@ describe('runLlmCall', () => {
     ).rejects.toMatchObject({
       name: 'ExecutorError',
       code: 'llm_call_failed',
+      retriable: false,
+    });
+  });
+
+  it('codes a call-time gate refusal provider_not_permitted, the same as the pre-check, and does not retry it', async () => {
+    // §120 t-741. An override is not pre-checked, so its refusal comes from the
+    // gate inside provider.chat. It must read the same as the task-default
+    // refusal, or a filter on provider_not_permitted misses it.
+    vi.mocked(getModel).mockReturnValue({ provider: 'openai' } as any);
+    vi.mocked(getProvider).mockResolvedValue({
+      chat: vi.fn().mockRejectedValue(new ProviderCallRefusedError('openai')),
+    } as any);
+
+    await expect(
+      runLlmCall(makeCtx(), { stepId: 's8', prompt: 'test', modelOverride: 'gpt-5' })
+    ).rejects.toMatchObject({
+      name: 'ExecutorError',
+      code: 'provider_not_permitted',
       retriable: false,
     });
   });

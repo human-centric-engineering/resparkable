@@ -31,6 +31,7 @@ import {
   type ImportPlan,
 } from '@/lib/portability/import-plan';
 import { SCHEMA_FINGERPRINT } from '@/lib/portability/model-graph.generated';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 import type { IncomingBundle } from '@/lib/portability/read-bundle';
 
 const TARGET = 'user-importing';
@@ -128,6 +129,47 @@ function modelPlan(plan: ImportPlan, model: string) {
 const SPACE = { id: 'space-old', spaceId: SOURCE };
 
 describe('buildImportPlan', () => {
+  describe('the org column', () => {
+    // A bundle row names the org it was exported from. Copied, it would name an
+    // org this installation may not have; nulled, the row would sit in no org,
+    // where an `orgId_slug` lookup never finds it. Outside any scope at single,
+    // the importing org is the install org.
+    const AGENT = {
+      id: 'agent-old',
+      orgId: 'org-elsewhere',
+      createdBy: SOURCE,
+      slug: 'helper',
+      name: 'Helper',
+    };
+
+    it('matches within the importing org, never the one in the bundle', async () => {
+      const lookup = new FakeLookup();
+
+      await buildImportPlan({
+        bundle: bundleOf({ AiAgent: [AGENT] }),
+        targetUserId: TARGET,
+        lookup,
+      });
+
+      const agentCall = lookup.calls.find((call) => call.model === 'AiAgent');
+      expect(agentCall?.columns).toEqual(['orgId', 'slug']);
+      expect(agentCall?.tuples).toEqual([[INSTALL_ORG_ID, 'helper']]);
+    });
+
+    it('writes the importing org and reports no lost reference to Org', async () => {
+      const plan = await buildImportPlan({
+        bundle: bundleOf({ AiAgent: [AGENT] }),
+        targetUserId: TARGET,
+        lookup: new FakeLookup(),
+      });
+
+      expect(plan.resolved.get('AiAgent')?.[0]?.values.orgId).toBe(INSTALL_ORG_ID);
+      expect(modelPlan(plan, 'AiAgent').unresolved.map((entry) => entry.target)).not.toContain(
+        'Org'
+      );
+    });
+  });
+
   describe('the owner column', () => {
     it('asks about the importing account, never the one in the bundle', () => {
       // The rule the whole subsystem rests on. A bundle naming somebody else's

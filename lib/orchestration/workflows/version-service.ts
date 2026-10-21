@@ -31,7 +31,10 @@ type Tx = Prisma.TransactionClient | PrismaClient;
  * field-keyed messages on the first failure, mirroring how the existing
  * route handlers report DAG / semantic errors.
  */
-async function validatePublishableDefinition(definition: unknown): Promise<WorkflowDefinition> {
+async function validatePublishableDefinition(
+  definition: unknown,
+  replacing: string | null
+): Promise<WorkflowDefinition> {
   const parsed = workflowDefinitionSchema.safeParse(definition);
   if (!parsed.success) {
     throw new ValidationError('Workflow definition is malformed', {
@@ -44,13 +47,31 @@ async function validatePublishableDefinition(definition: unknown): Promise<Workf
       definition: dag.errors.map((e) => e.message),
     });
   }
-  const semantic = await semanticValidateWorkflow(parsed.data);
+  // At multi, an override's provider must be one the org is approved for —
+  // unless the version being replaced already used it (§120 t-743).
+  const semantic = await semanticValidateWorkflow(parsed.data, {
+    approval: { held: () => publishedDefinition(replacing) },
+  });
   if (!semantic.ok) {
-    throw new ValidationError('Workflow definition references invalid agents or capabilities', {
-      definition: semantic.errors.map((e) => e.message),
-    });
+    throw new ValidationError(
+      'Workflow definition references invalid models, providers, agents or capabilities',
+      {
+        definition: semantic.errors.map((e) => e.message),
+      }
+    );
   }
   return parsed.data;
+}
+
+/** The definition a published version holds, or `null` when there is none. */
+async function publishedDefinition(versionId: string | null): Promise<WorkflowDefinition | null> {
+  if (!versionId) return null;
+  const version = await prisma.aiWorkflowVersion.findUnique({
+    where: { id: versionId },
+    select: { snapshot: true },
+  });
+  const parsed = workflowDefinitionSchema.safeParse(version?.snapshot);
+  return parsed.success ? parsed.data : null;
 }
 
 async function nextVersionNumber(client: Tx, workflowId: string): Promise<number> {
@@ -191,7 +212,10 @@ export async function publishDraft(args: PublishDraftArgs): Promise<PublishDraft
     });
   }
 
-  const definition = await validatePublishableDefinition(existing.draftDefinition);
+  const definition = await validatePublishableDefinition(
+    existing.draftDefinition,
+    existing.publishedVersionId
+  );
   const previousVersionInt = await getVersionInt(prisma, existing.publishedVersionId);
 
   const result = await prisma.$transaction(async (tx) => {
@@ -271,7 +295,10 @@ export async function rollback(args: RollbackArgs): Promise<RollbackResult> {
     });
   }
 
-  const definition = await validatePublishableDefinition(target.snapshot);
+  const definition = await validatePublishableDefinition(
+    target.snapshot,
+    workflow.publishedVersionId
+  );
   const previousVersionInt = await getVersionInt(prisma, workflow.publishedVersionId);
 
   const result = await prisma.$transaction(async (tx) => {

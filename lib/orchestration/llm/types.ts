@@ -201,6 +201,35 @@ export interface EmbedOptions {
   inputType?: 'document' | 'query';
 }
 
+/**
+ * Options for `LlmProvider.embedMany()` — the knowledge embedder's call.
+ *
+ * The caller chooses the model and whether to ask for a dimension, because it
+ * is the caller that knows the install's vector width and whether the chosen
+ * model accepts a `dimensions` parameter (`AiProviderModel.schemaCompatible`).
+ * A provider sends `dimensions` only when it is given one.
+ */
+export interface EmbedManyOptions {
+  /** The embedding model to call, e.g. `text-embedding-3-small`, `voyage-3`. */
+  model: string;
+  /** Output dimension to request. Omit for a model with a fixed native width. */
+  dimensions?: number;
+  /** Whether the texts are stored documents or search queries. */
+  inputType?: 'document' | 'query';
+}
+
+/** Result of `LlmProvider.embedMany()`. */
+export interface EmbedManyResult {
+  /** One vector per input text, in input order, as plain `number[]`. */
+  embeddings: number[][];
+  /**
+   * Input tokens the vendor reported, or `undefined` when it reported none
+   * (Ollama and some self-hosted servers). Zero is a real count; absent is
+   * "unknown", and the caller decides how to estimate it.
+   */
+  inputTokens?: number;
+}
+
 /** Audio input accepted by the transcription methods. */
 export type TranscribeAudio = Blob | Buffer | ArrayBuffer | Uint8Array;
 
@@ -343,4 +372,11 @@ export interface ModelInfo {
    * uses this to disable toggles pre-emptively.
    */
   capabilities?: string[];
+  /**
+   * Set when nothing has supplied a price: the entry came from a matrix row
+   * whose cost is null and no registry figure filled it. Distinguishes "rate
+   * unknown" from a genuinely free model, whose rates are also 0 — so
+   * `calculateCost` can mark the turn unpriced instead of recording it as free.
+   */
+  pricingUnknown?: true;
 }

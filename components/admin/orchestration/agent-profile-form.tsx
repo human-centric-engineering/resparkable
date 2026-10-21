@@ -25,6 +25,10 @@ import { z } from 'zod';
 import { AlertCircle, Check, Loader2, Save } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -44,6 +48,8 @@ export interface AgentProfileRow {
   guardrails: string | null;
   /** Optional summary returned by the list/detail endpoints. */
   agents?: { id: string; slug: string; name: string; isActive: boolean }[];
+  /** Agents in other orgs inheriting from the profile: counted, never listed (t-731). */
+  otherOrgAgentCount?: number;
   agentCount?: number;
 }
 
@@ -66,6 +72,7 @@ function deriveSlug(name: string): string {
 }
 
 export function AgentProfileForm({ mode, profile }: Props) {
+  const readOnly = useSharedSettingsReadOnly();
   const router = useRouter();
   const schedule = useTimeout();
   const isEdit = mode === 'edit';
@@ -164,7 +171,8 @@ export function AgentProfileForm({ mode, profile }: Props) {
           <Button type="button" variant="outline" asChild>
             <Link href="/admin/orchestration/agent-profiles">Cancel</Link>
           </Button>
-          <Button type="submit" disabled={submitting || saved}>
+          <SharedSettingsSaveHint />
+          <Button type="submit" disabled={readOnly || submitting || saved}>
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -329,27 +337,45 @@ export function AgentProfileForm({ mode, profile }: Props) {
         )}
       </div>
 
-      {isEdit && profile?.agents && profile.agents.length > 0 && (
+      {isEdit && ((profile?.agents?.length ?? 0) > 0 || (profile?.otherOrgAgentCount ?? 0) > 0) && (
         <div className="bg-card rounded-md border p-4">
-          <h2 className="text-sm font-medium">
-            Agents using this profile ({profile.agents.length})
-          </h2>
-          <p className="text-muted-foreground mt-1 text-xs">
-            Changes here affect any inheriting field on each of these agents.
-          </p>
-          <ul className="mt-3 space-y-1 text-sm">
-            {profile.agents.map((a) => (
-              <li key={a.id}>
-                <Link href={`/admin/orchestration/agents/${a.id}/edit`} className="hover:underline">
-                  {a.name}
-                </Link>{' '}
-                <span className="text-muted-foreground font-mono text-xs">({a.slug})</span>
-                {!a.isActive && (
-                  <span className="text-muted-foreground ml-2 text-xs">(inactive)</span>
-                )}
-              </li>
-            ))}
-          </ul>
+          {(profile?.agents?.length ?? 0) > 0 ? (
+            <>
+              <h2 className="text-sm font-medium">
+                Agents using this profile ({profile?.agents?.length ?? 0})
+              </h2>
+              <p className="text-muted-foreground mt-1 text-xs">
+                Changes here affect any inheriting field on each of these agents.
+              </p>
+              <ul className="mt-3 space-y-1 text-sm">
+                {(profile?.agents ?? []).map((a) => (
+                  <li key={a.id}>
+                    <Link
+                      href={`/admin/orchestration/agents/${a.id}/edit`}
+                      className="hover:underline"
+                    >
+                      {a.name}
+                    </Link>{' '}
+                    <span className="text-muted-foreground font-mono text-xs">({a.slug})</span>
+                    {!a.isActive && (
+                      <span className="text-muted-foreground ml-2 text-xs">(inactive)</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <h2 className="text-sm font-medium">Agents using this profile</h2>
+          )}
+          {(profile?.otherOrgAgentCount ?? 0) > 0 && (
+            <p className="mt-3 text-xs text-amber-700 dark:text-amber-400">
+              {(profile?.agents?.length ?? 0) > 0 ? 'Also, ' : ''}
+              {profile?.otherOrgAgentCount} agent
+              {profile?.otherOrgAgentCount === 1 ? '' : 's'} in other organisations inherit
+              {profile?.otherOrgAgentCount === 1 ? 's' : ''} from this profile. Changes here reach
+              them too; they are not listed here.
+            </p>
+          )}
         </div>
       )}
     </form>

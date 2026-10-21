@@ -18,6 +18,9 @@ import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { getRouteLogger } from '@/lib/api/context';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { runAsOrg } from '@/lib/tenancy/context';
+import { ProviderCallRefusedError } from '@/lib/orchestration/llm/provider-eligibility';
 import { generateSilentWav } from '@/lib/audio/silent-wav';
 import { deriveParamProfile } from '@/lib/orchestration/llm/model-heuristics';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
@@ -103,7 +106,22 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
   }
 
   try {
-    const provider = await getProvider(providerRow.slug);
+    // An admin testing a provider they named is an explicit choice, so the
+    // call-time gate (§120 t-741) evaluates it as one.
+    //
+    // The provider is fetched in the admin's own context, so a fork's
+    // credential resolver hands back the key of the org they are acting in —
+    // the key being tested. Each vendor CALL then runs as the install org
+    // (§120 t-742): the probe is a fixed prompt, a fixed word or a silent
+    // clip, so no org's data is sent, and at multi a platform admin must be
+    // able to test a provider before granting it to any org. Under the admin's
+    // active org, a customer org with no grants would refuse every test.
+    const provider = await getProvider(providerRow.slug, {
+      task: capability === 'embedding' ? 'embeddings' : capability === 'audio' ? 'audio' : 'chat',
+      source: 'explicit',
+      primarySlug: null,
+    });
+    const asPlatform = <T>(fn: () => Promise<T>): Promise<T> => runAsOrg(INSTALL_ORG_ID, fn);
 
     // Audio: providers opt-in via the optional transcribe() interface
     // member. Guard before timing — a missing method is "this provider
@@ -133,15 +151,31 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
 
     if (capability === 'embedding') {
       // Single-input embedding round-trip. Cheaper than chat and
-      // exercises the same auth + base URL surface.
-      await provider.embed('hello');
+      // exercises the same auth + base URL surface. Through `embedMany`
+      // with the model under test, which is what knowledge ingestion calls
+      // (t-740); the deprecated `embed` ignores the model and, on Voyage, the
+      // row's baseUrl, so it could pass while ingestion failed. A class
+      // without `embedMany` is refused, as ingestion refuses it — the audio
+      // branch's shape for a missing `transcribe`.
+      if (!provider.embedMany) {
+        return successResponse({
+          ok: false,
+          latencyMs: null,
+          model,
+          capability,
+          error: 'provider_no_embedding_support',
+          message:
+            'This provider class does not implement embedMany, so knowledge embedding cannot use it.',
+        });
+      }
+      await asPlatform(() => provider.embedMany!(['hello'], { model }));
     } else if (capability === 'audio') {
       // Tiny silent WAV — verifies API key, base URL and model id
       // without recording a real clip. Most providers return an
       // empty transcript; the Test button only cares about the
       // round-trip succeeding.
       const wav = generateSilentWav();
-      await provider.transcribe!(wav, { model, mimeType: 'audio/wav' });
+      await asPlatform(() => provider.transcribe!(wav, { model, mimeType: 'audio/wav' }));
     } else {
       // Reasoning models (gpt-5, o-series) bill `max_completion_tokens`
       // against reasoning tokens AND visible output combined. A tiny
@@ -156,14 +190,16 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
       const registryEntry = getModel(model);
       const profile = registryEntry?.paramProfile ?? deriveParamProfile(model, providerRow.slug);
       const isReasoning = profile === 'openai-reasoning';
-      await provider.chat([{ role: 'user', content: 'Say hello.' }], {
-        model,
-        maxTokens: isReasoning ? 256 : 10,
-        // gpt-5 / o-series reject non-default temperature. The provider
-        // already drops the field for reasoning profiles, but skipping
-        // here keeps the intent legible.
-        ...(isReasoning ? {} : { temperature: 0 }),
-      });
+      await asPlatform(() =>
+        provider.chat([{ role: 'user', content: 'Say hello.' }], {
+          model,
+          maxTokens: isReasoning ? 256 : 10,
+          // gpt-5 / o-series reject non-default temperature. The provider
+          // already drops the field for reasoning profiles, but skipping
+          // here keeps the intent legible.
+          ...(isReasoning ? {} : { temperature: 0 }),
+        })
+      );
     }
     const latencyMs = Date.now() - start;
 
@@ -178,6 +214,26 @@ export const POST = withAdminAuth<{ id: string }>(async (request, session, { par
 
     return successResponse({ ok: true, latencyMs, model, capability });
   } catch (err) {
+    // A policy refusal is not a connectivity failure, and reporting it as one
+    // would send the admin to check keys and URLs that are fine. The message is
+    // the error's own, which names no provider.
+    if (err instanceof ProviderCallRefusedError) {
+      log.info('Model test refused by the provider eligibility rule', {
+        providerId: id,
+        slug: providerRow.slug,
+        model,
+        capability,
+        adminId: session.user.id,
+      });
+      return successResponse({
+        ok: false,
+        latencyMs: null,
+        model,
+        capability,
+        error: 'provider_not_permitted',
+        message: err.message,
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
     log.warn('Model test failed', {
       providerId: id,

@@ -15,6 +15,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -193,6 +197,7 @@ interface ProviderModelFormProps {
 // ---------------------------------------------------------------------------
 
 export function ProviderModelForm({ model }: ProviderModelFormProps) {
+  const readOnly = useSharedSettingsReadOnly();
   const router = useRouter();
   const schedule = useTimeout();
   const isEdit = !!model;
@@ -371,7 +376,8 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
           <Button type="button" variant="outline" asChild>
             <Link href="/admin/orchestration/providers?tab=models">Cancel</Link>
           </Button>
-          <Button type="submit" disabled={submitting || saved}>
+          <SharedSettingsSaveHint />
+          <Button type="submit" disabled={readOnly || submitting || saved}>
             {submitting ? 'Saving...' : isEdit ? 'Save changes' : 'Create model'}
           </Button>
         </div>

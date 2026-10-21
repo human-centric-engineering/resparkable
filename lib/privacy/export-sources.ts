@@ -40,6 +40,8 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import { contactSubmissionsOf } from '@/lib/privacy/contact-submissions';
+import { ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
 
 /** How a `User`-linked model is represented in a subject export. */
 export type SourceDisposition = 'export' | 'attribution';
@@ -50,6 +52,8 @@ export interface SubjectQuery {
   userId: string;
   /** The subject's email — needed by sources that have no FK (see `ContactSubmission`). */
   email: string;
+  /** Whether the account has proven it owns `email` — a by-address source trusts it only then. */
+  emailVerified: boolean;
 }
 
 /** One row of "you created this", with none of the created thing's content. */
@@ -128,6 +132,22 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
       prisma.account.findMany({
         where: { userId },
         omit: { password: true, accessToken: true, refreshToken: true, idToken: true },
+        orderBy: byCreatedAt,
+      }),
+  },
+  {
+    model: 'OrgMembership',
+    section: 'orgMemberships',
+    disposition: 'export',
+    description:
+      'The organisations the subject belongs to, and their role in each. The org itself is not personal data; the membership is.',
+    // The org's name rides along so the row reads as "member of X" rather than
+    // an opaque id — one column of a row the subject is entitled to anyway,
+    // not the org's settings.
+    fetch: ({ userId }) =>
+      prisma.orgMembership.findMany({
+        where: { userId },
+        include: { org: { select: { id: true, slug: true, name: true } } },
         orderBy: byCreatedAt,
       }),
   },
@@ -243,7 +263,8 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
     model: 'ContactSubmission',
     section: 'contactSubmissions',
     disposition: 'export',
-    description: 'Messages sent through the public contact form from the subject’s email address.',
+    description:
+      'Messages sent through the public contact form from the subject’s email address. Included only once the account has verified that address: the form does not check who typed it.',
     // ⚠️ No FK to `User`, and no user id in any column — the public contact form
     // takes an address, not a session. So this table is invisible to the erasure
     // cascade AND to both of the guard's nets: the relation scan and the
@@ -251,11 +272,19 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
     // reason the manifest still needs a human deciding what a new table holds.
     // Any table keyed by email, phone number, or an external identifier needs
     // the same treatment; nothing mechanical will find it for you.
-    fetch: ({ email }) =>
-      prisma.contactSubmission.findMany({
-        where: { email: { equals: email, mode: 'insensitive' } },
-        orderBy: byCreatedAt,
-      }),
+    //
+    // ⚠️ If you copy this, match EXACTLY on a value normalised the way the
+    // writer normalises it — never `mode: 'insensitive'`, whose unescaped
+    // `ILIKE` matches a stranger's address. `contactSubmissionsOf()` says why,
+    // and erasure deletes through the same matcher.
+    //
+    // And only for a verified address: the form proves nothing about who
+    // typed it, so an unverified account gets none (see the matcher).
+    fetch: async (subject: SubjectQuery): Promise<unknown[]> => {
+      const where = contactSubmissionsOf(subject);
+      if (!where) return [];
+      return prisma.contactSubmission.findMany({ where, orderBy: byCreatedAt });
+    },
   },
   {
     model: 'AiCostLog',
@@ -285,6 +314,24 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
   // never its contents: the config belongs to the organisation, the fact of
   // authorship belongs to the subject.
   // ---------------------------------------------------------------------
+  {
+    // No `User` FK — ownership is a membership role, not a creator column —
+    // so the coverage guard does not demand this entry; the tenancy spec does
+    // (`multi-tenancy-design.md`, Identity: "export-manifest ... dispositions").
+    // What the subject receives is the fact of owning an org, not the org.
+    model: 'Org',
+    section: 'orgsOwned',
+    disposition: 'attribution',
+    description: 'Organisations the subject is an OWNER of.',
+    fetch: async ({ userId }) =>
+      toAttribution(
+        await prisma.org.findMany({
+          where: { memberships: { some: { userId, role: ORG_OWNER_ROLE } } },
+          select: namedSelect,
+          orderBy: byCreatedAt,
+        })
+      ),
+  },
   {
     model: 'AiAgent',
     section: 'agents',

@@ -11,10 +11,33 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// The org's provider policy (§120 t-743): approves everything unless a test
+// refuses a slug.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+// The workflow approval check, mocked at its boundary; the real one is tested
+// in semantic-validator.test.ts.
+const mockFindUnapprovedModelOverridesIn = vi.hoisted(() =>
+  vi.fn(
+    async (
+      _defs: ReadonlyMap<string, unknown>
+    ): Promise<Map<string, { code: string; message: string; stepId: string }[]>> => new Map()
+  )
+);
+vi.mock('@/lib/orchestration/workflows/semantic-validator', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/workflows/semantic-validator')>()),
+  findUnapprovedModelOverridesIn: mockFindUnapprovedModelOverridesIn,
+}));
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
+
 // ─── Mocks (declared before imports) ────────────────────────────────────────
 
 const mockTx = {
-  aiAgent: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+  aiAgent: { findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
   aiCapability: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
   aiWorkflow: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
   aiWorkflowVersion: { findFirst: vi.fn(), create: vi.fn() },
@@ -26,6 +49,19 @@ const mockTx = {
   aiKnowledgeDocument: { findMany: vi.fn() },
 };
 
+// The version helpers read the agent back and write `AiAgentVersion` rows;
+// their behaviour is proved in agent-versioning's own tests. Here they are
+// stubbed so the test can assert WHEN the import calls them.
+vi.mock('@/lib/orchestration/agents/agent-versioning', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/orchestration/agents/agent-versioning')>();
+  return {
+    ...actual,
+    ensureBaselineVersion: vi.fn(async () => undefined),
+    recordAgentVersion: vi.fn(async () => 2),
+  };
+});
+
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     $transaction: vi.fn((fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
@@ -36,12 +72,18 @@ vi.mock('@/lib/logging', () => ({
   logger: {
     info: vi.fn(),
     warn: vi.fn(),
+    error: vi.fn(),
   },
 }));
 
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
 import { importOrchestrationConfig } from '@/lib/orchestration/backup/importer';
+import {
+  INITIAL_VERSION_SUMMARY,
+  ensureBaselineVersion,
+  recordAgentVersion,
+} from '@/lib/orchestration/agents/agent-versioning';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -159,7 +201,7 @@ describe('importOrchestrationConfig', () => {
   beforeEach(() => {
     // Reset individual tx mock methods — do NOT use vi.resetAllMocks() here because
     // that would also clear the prisma.$transaction implementation set at module level.
-    mockTx.aiAgent.findUnique.mockReset();
+    mockTx.aiAgent.findFirst.mockReset();
     mockTx.aiAgent.create.mockReset();
     mockTx.aiAgent.update.mockReset();
     mockTx.aiCapability.findUnique.mockReset();
@@ -173,6 +215,9 @@ describe('importOrchestrationConfig', () => {
     mockTx.aiWebhookSubscription.findFirst.mockReset();
     mockTx.aiWebhookSubscription.create.mockReset();
     mockTx.aiOrchestrationSettings.upsert.mockReset();
+    mockTx.aiAgentKnowledgeDocument.deleteMany.mockClear();
+    vi.mocked(ensureBaselineVersion).mockClear();
+    vi.mocked(recordAgentVersion).mockClear();
   });
 
   it('throws ZodError when schema is invalid (wrong schemaVersion)', async () => {
@@ -193,7 +238,7 @@ describe('importOrchestrationConfig', () => {
   });
 
   it('creates a new agent when no existing record found → agents.created = 1', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValue(null);
+    mockTx.aiAgent.findFirst.mockResolvedValue(null);
     mockTx.aiAgent.create.mockResolvedValue({});
 
     const payload = { ...minPayload, data: { ...minPayload.data, agents: [makeAgent()] } };
@@ -211,7 +256,7 @@ describe('importOrchestrationConfig', () => {
     // the AiAgent model, so a real Prisma client rejects it as an unknown arg and
     // rolls back the whole import. This mock faithfully reproduces that rejection;
     // the default no-op create mock used elsewhere is exactly why CI missed the bug.
-    mockTx.aiAgent.findUnique.mockResolvedValue(null);
+    mockTx.aiAgent.findFirst.mockResolvedValue(null);
     mockTx.aiAgent.create.mockImplementation((args: { data?: Record<string, unknown> }) => {
       if (args?.data && 'knowledgeCategories' in args.data) {
         throw new Error('Unknown argument `knowledgeCategories`.');
@@ -230,8 +275,25 @@ describe('importOrchestrationConfig', () => {
     expect(createData).not.toHaveProperty('knowledgeCategories');
   });
 
+  it('imports an agent naming a non-approved provider and warns, rather than skipping it (§120 t-743)', async () => {
+    mockUnapprovedProviders.mockImplementationOnce(async (slugs) =>
+      slugs.filter((slug) => slug === 'openai')
+    );
+    mockTx.aiAgent.findFirst.mockResolvedValue(null);
+    mockTx.aiAgent.create.mockResolvedValue({});
+
+    const payload = { ...minPayload, data: { ...minPayload.data, agents: [makeAgent()] } };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(result.agents.created).toBe(1);
+    expect(mockTx.aiAgent.create).toHaveBeenCalledOnce();
+    expect(result.warnings).toContain(
+      'Agent \'support-bot\': imported, but this organisation is not approved to use "openai" — its calls are refused until a platform admin grants it'
+    );
+  });
+
   it('updates existing agent when record already exists → agents.updated = 1', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValue({ id: 'existing-id', slug: 'support-bot' });
+    mockTx.aiAgent.findFirst.mockResolvedValue({ id: 'existing-id', slug: 'support-bot' });
     mockTx.aiAgent.update.mockResolvedValue({});
 
     const payload = { ...minPayload, data: { ...minPayload.data, agents: [makeAgent()] } };
@@ -241,6 +303,44 @@ describe('importOrchestrationConfig', () => {
     expect(mockTx.aiAgent.create).not.toHaveBeenCalled();
     expect(result.agents.updated).toBe(1);
     expect(result.agents.created).toBe(0);
+  });
+
+  it("saves an overwritten agent's restored config as a new agent version, after its grants", async () => {
+    mockTx.aiAgent.findFirst.mockResolvedValue({ id: 'existing-id', slug: 'support-bot' });
+    mockTx.aiAgent.update.mockResolvedValue({});
+
+    const payload = { ...minPayload, data: { ...minPayload.data, agents: [makeAgent()] } };
+    await importOrchestrationConfig(payload, 'user-1');
+
+    expect(ensureBaselineVersion).toHaveBeenCalledWith(mockTx, 'existing-id', 'user-1');
+    expect(recordAgentVersion).toHaveBeenCalledWith(mockTx, 'existing-id', {
+      label: 'Overwritten by backup import',
+      createdBy: 'user-1',
+    });
+    // Baseline before the row changes; the version after the grant rebuild, or
+    // it would snapshot the agent's old grants.
+    expect(vi.mocked(ensureBaselineVersion).mock.invocationCallOrder[0]).toBeLessThan(
+      mockTx.aiAgent.update.mock.invocationCallOrder[0]
+    );
+    expect(vi.mocked(recordAgentVersion).mock.invocationCallOrder[0]).toBeGreaterThan(
+      mockTx.aiAgentKnowledgeDocument.deleteMany.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("saves a created agent's restored config as its v1", async () => {
+    mockTx.aiAgent.findFirst
+      .mockResolvedValueOnce(null) // no agent with this slug yet
+      .mockResolvedValueOnce({ id: 'new-id' }); // the grant step's lookup
+    mockTx.aiAgent.create.mockResolvedValue({ id: 'new-id' });
+
+    const payload = { ...minPayload, data: { ...minPayload.data, agents: [makeAgent()] } };
+    await importOrchestrationConfig(payload, 'user-1');
+
+    expect(recordAgentVersion).toHaveBeenCalledWith(mockTx, 'new-id', {
+      label: INITIAL_VERSION_SUMMARY,
+      createdBy: 'user-1',
+    });
+    expect(ensureBaselineVersion).not.toHaveBeenCalled();
   });
 
   it('creates a new capability → capabilities.created = 1', async () => {
@@ -269,6 +369,55 @@ describe('importOrchestrationConfig', () => {
     expect(mockTx.aiWorkflow.create).toHaveBeenCalledOnce();
     expect(mockTx.aiWorkflowVersion.create).toHaveBeenCalledOnce();
     expect(result.workflows.created).toBe(1);
+  });
+
+  it('imports a workflow whose steps use non-approved providers, and warns naming the steps (§120 t-743)', async () => {
+    mockFindUnapprovedModelOverridesIn.mockResolvedValueOnce(
+      new Map([
+        [
+          'onboarding-flow',
+          [{ code: 'PROVIDER_NOT_APPROVED', message: 'not approved', stepId: 'step-1' }],
+        ],
+      ])
+    );
+    mockTx.aiWorkflow.findUnique.mockResolvedValue(null);
+    mockTx.aiWorkflow.create.mockResolvedValue({ id: 'wf-1' });
+    mockTx.aiWorkflow.update.mockResolvedValue({ id: 'wf-1' });
+    mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-1', version: 1 });
+
+    const payload = { ...minPayload, data: { ...minPayload.data, workflows: [makeWorkflow()] } };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(result.workflows.created).toBe(1);
+    expect(result.warnings).toEqual([
+      expect.stringContaining(
+        'Workflow \'onboarding-flow\': imported, but steps "step-1" override to providers'
+      ),
+    ]);
+  });
+
+  it('imports anyway, with one general warning, when the policy cannot be read (§120 t-743)', async () => {
+    mockFindUnapprovedModelOverridesIn.mockRejectedValueOnce(new Error('connection reset'));
+    mockUnapprovedProviders.mockRejectedValueOnce(new Error('connection reset'));
+    mockTx.aiAgent.findFirst.mockResolvedValue(null);
+    mockTx.aiAgent.create.mockResolvedValue({});
+    mockTx.aiWorkflow.findUnique.mockResolvedValue(null);
+    mockTx.aiWorkflow.create.mockResolvedValue({ id: 'wf-1' });
+    mockTx.aiWorkflow.update.mockResolvedValue({ id: 'wf-1' });
+    mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-1', version: 1 });
+
+    const payload = {
+      ...minPayload,
+      data: { ...minPayload.data, agents: [makeAgent()], workflows: [makeWorkflow()] },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(result.agents.created).toBe(1);
+    expect(result.workflows.created).toBe(1);
+    expect(result.warnings).toEqual([
+      expect.stringContaining('Agents were imported without checking'),
+      expect.stringContaining('Workflows were imported without checking'),
+    ]);
   });
 
   it('creates a new webhook when no existing record found → webhooks.created = 1', async () => {
@@ -500,13 +649,150 @@ describe('importOrchestrationConfig', () => {
       ])
     );
   });
+
+  it('skips a built-in slug carried as a template: the seed-era row (§116 t-727)', async () => {
+    // The retired seed row still holds the slug on an upgraded install; a
+    // backup taken before the upgrade must not bring it back as a template.
+    mockTx.aiWorkflow.findUnique.mockResolvedValue({ id: 'wf-retired' });
+    mockTx.aiWorkflowVersion.findFirst.mockResolvedValue({ version: 1 });
+    mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-2', version: 2 });
+    mockTx.aiWorkflow.update.mockResolvedValue({ id: 'wf-retired' });
+
+    const payload = {
+      ...minPayload,
+      data: {
+        ...minPayload.data,
+        workflows: [
+          makeWorkflow({ slug: 'tpl-customer-support', isTemplate: true }),
+          makeWorkflow(),
+        ],
+      },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    // Only the ordinary workflow is looked up and written; the built-in never
+    // reaches the database.
+    expect(mockTx.aiWorkflow.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockTx.aiWorkflow.update).toHaveBeenCalledTimes(1);
+    expect(mockTx.aiWorkflowVersion.create).toHaveBeenCalledTimes(1);
+    expect(mockTx.aiWorkflow.create).not.toHaveBeenCalled();
+    expect(mockTx.aiWorkflow.findUnique).toHaveBeenCalledWith({
+      where: { slug: 'onboarding-flow' },
+    });
+    expect(result.workflows).toEqual({ created: 0, updated: 1 });
+    expect(result.warnings).toEqual([
+      "Workflow 'tpl-customer-support' skipped — built-in templates are served from code, not restored from a backup",
+    ]);
+  });
+
+  it('imports an ordinary workflow holding a built-in slug: a row the install switched back on', async () => {
+    // A retired row an install turned back on (or one an admin converted) is
+    // live config. Skipping it would silently drop a running workflow.
+    mockTx.aiWorkflow.findUnique.mockResolvedValue(null);
+    mockTx.aiWorkflow.create.mockResolvedValue({ id: 'wf-new' });
+    mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-1', version: 1 });
+
+    const payload = {
+      ...minPayload,
+      data: {
+        ...minPayload.data,
+        workflows: [makeWorkflow({ slug: 'tpl-scheduled-source-monitor', isTemplate: false })],
+      },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(mockTx.aiWorkflow.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ slug: 'tpl-scheduled-source-monitor', isTemplate: false }),
+    });
+    expect(result.workflows).toEqual({ created: 1, updated: 0 });
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('skips the system workflow by slug on a target with no row, even with a now-invalid definition (t-729)', async () => {
+    // A bundle exported before t-729 carries the provider-model audit. On a
+    // target where that row is absent — or another org's, at `multi` — the
+    // row flag cannot see it, so without the slug check the import would
+    // create an ordinary copy (single) or P2002 and roll back (multi). An old
+    // definition the schema now rejects must report THIS reason, not "failed
+    // validation", which reads as a corrupt backup.
+    mockTx.aiWorkflow.findUnique.mockResolvedValue(null);
+    mockTx.aiWorkflow.create.mockResolvedValue({ id: 'wf-new' });
+    mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-1', version: 1 });
+
+    const payload = {
+      ...minPayload,
+      data: {
+        ...minPayload.data,
+        workflows: [
+          makeWorkflow({
+            slug: 'tpl-provider-model-audit',
+            isActive: false,
+            workflowDefinition: { steps: [], entryStepId: 'missing', errorStrategy: 'fail' },
+          }),
+          makeWorkflow(),
+        ],
+      },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    // The system slug never reaches the database; the ordinary one restores.
+    expect(mockTx.aiWorkflow.findUnique).toHaveBeenCalledTimes(1);
+    expect(mockTx.aiWorkflow.findUnique).toHaveBeenCalledWith({
+      where: { slug: 'onboarding-flow' },
+    });
+    expect(mockTx.aiWorkflow.create).toHaveBeenCalledTimes(1);
+    expect(mockTx.aiWorkflow.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ slug: 'onboarding-flow' }),
+    });
+    expect(result.workflows).toEqual({ created: 1, updated: 0 });
+    expect(result.warnings).toEqual([
+      "System workflow 'tpl-provider-model-audit' skipped — system workflows cannot be overwritten by backup import",
+    ]);
+  });
+
+  it('skips an existing system workflow the slug list does not know, by its row flag, before parsing its definition (t-729)', async () => {
+    // A fork's own seeded system workflow: not in SYSTEM_WORKFLOW_SLUGS, but
+    // its row says isSystem. Versioning over it would republish the bundle's
+    // definition and could deactivate it, which PATCH refuses. Its old
+    // definition fails today's schema, and the reason must still be the
+    // system-workflow one, not "definition failed validation".
+    mockTx.aiWorkflow.findUnique.mockResolvedValue({
+      id: 'wf-sys',
+      slug: 'fork-system-flow',
+      isSystem: true,
+    });
+
+    const payload = {
+      ...minPayload,
+      data: {
+        ...minPayload.data,
+        workflows: [
+          makeWorkflow({
+            slug: 'fork-system-flow',
+            isActive: false,
+            workflowDefinition: { steps: [], entryStepId: 'missing', errorStrategy: 'fail' },
+          }),
+        ],
+      },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(mockTx.aiWorkflow.update).not.toHaveBeenCalled();
+    expect(mockTx.aiWorkflowVersion.findFirst).not.toHaveBeenCalled();
+    expect(mockTx.aiWorkflowVersion.create).not.toHaveBeenCalled();
+    expect(mockTx.aiWorkflow.create).not.toHaveBeenCalled();
+    expect(result.workflows).toEqual({ created: 0, updated: 0 });
+    expect(result.warnings).toEqual([
+      "System workflow 'fork-system-flow' skipped — system workflows cannot be overwritten by backup import",
+    ]);
+  });
 });
 
 // ─── Knowledge tag import ────────────────────────────────────────────────────
 
 describe('importOrchestrationConfig — knowledgeTags', () => {
   beforeEach(() => {
-    mockTx.aiAgent.findUnique.mockReset();
+    mockTx.aiAgent.findFirst.mockReset();
     mockTx.aiAgent.create.mockReset();
     mockTx.aiAgent.update.mockReset();
     mockTx.knowledgeTag.upsert.mockReset();
@@ -601,7 +887,7 @@ describe('importOrchestrationConfig — knowledgeTags', () => {
 
 describe('importOrchestrationConfig — system agent protection', () => {
   beforeEach(() => {
-    mockTx.aiAgent.findUnique.mockReset();
+    mockTx.aiAgent.findFirst.mockReset();
     mockTx.aiAgent.create.mockReset();
     mockTx.aiAgent.update.mockReset();
     mockTx.aiAgentKnowledgeTag.deleteMany.mockReset();
@@ -613,7 +899,7 @@ describe('importOrchestrationConfig — system agent protection', () => {
 
   it('skips a system agent and adds a warning instead of updating it', async () => {
     // Existing record has isSystem: true — the import must not overwrite it.
-    mockTx.aiAgent.findUnique.mockResolvedValue({
+    mockTx.aiAgent.findFirst.mockResolvedValue({
       id: 'sys-1',
       slug: 'system-bot',
       isSystem: true,
@@ -634,13 +920,48 @@ describe('importOrchestrationConfig — system agent protection', () => {
     );
     expect(result.warnings[0]).toMatch(/system agents cannot be overwritten/i);
   });
+
+  it('skips a platform slug the org has no agent under: the reconcile creates it (§116 t-725)', async () => {
+    mockTx.aiAgent.findFirst.mockResolvedValue(null);
+
+    const payload = {
+      ...minPayload,
+      data: { ...minPayload.data, agents: [makeAgent({ slug: 'eval-judge-relevance' })] },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(mockTx.aiAgent.create).not.toHaveBeenCalled();
+    expect(mockTx.aiAgentKnowledgeTag.createMany).not.toHaveBeenCalled();
+    expect(result.agents.created).toBe(0);
+    expect(result.warnings).toEqual([
+      'Agent \'eval-judge-relevance\' skipped — The slug "eval-judge-relevance" is reserved for a platform agent',
+    ]);
+  });
+
+  it("does not overwrite an org's own agent holding a platform slug", async () => {
+    mockTx.aiAgent.findFirst.mockResolvedValue({
+      id: 'own-1',
+      slug: 'quiz-master',
+      isSystem: false,
+    });
+
+    const payload = {
+      ...minPayload,
+      data: { ...minPayload.data, agents: [makeAgent({ slug: 'quiz-master' })] },
+    };
+    const result = await importOrchestrationConfig(payload, 'user-1');
+
+    expect(mockTx.aiAgent.update).not.toHaveBeenCalled();
+    expect(result.agents.updated).toBe(0);
+    expect(result.warnings[0]).toContain('reserved for a platform agent');
+  });
 });
 
 // ─── Grant resolution ─────────────────────────────────────────────────────────
 
 describe('importOrchestrationConfig — knowledge grants', () => {
   beforeEach(() => {
-    mockTx.aiAgent.findUnique.mockReset();
+    mockTx.aiAgent.findFirst.mockReset();
     mockTx.aiAgent.create.mockReset();
     mockTx.aiAgent.update.mockReset();
     mockTx.knowledgeTag.upsert.mockReset();
@@ -661,7 +982,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
       updatedAt: now,
     });
     // Agent does not exist yet → create path
-    mockTx.aiAgent.findUnique
+    mockTx.aiAgent.findFirst
       .mockResolvedValueOnce(null) // first call: slug lookup for upsert
       .mockResolvedValueOnce({ id: 'agent-1' }); // second call: select id for grants
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-1' });
@@ -688,7 +1009,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
 
   it('emits a warning when a grantedTagSlug does not map to a known tag', async () => {
     // No knowledgeTags in payload → tagIdBySlug is empty
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-2' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-2' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-2' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([]);
 
@@ -709,7 +1030,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('resolves document grants by fileHash and calls createMany', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-3' });
     // The DB has a doc with matching fileHash
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([
@@ -735,7 +1056,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('resolves document grants by slug (v3) and calls createMany', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3a' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3a' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-3a' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([
       { id: 'doc-9', slug: 'handbook-abc12345' },
@@ -763,7 +1084,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('prefers slug over fileHash when a v3 bundle carries both', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3b' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3b' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-3b' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([
       { id: 'doc-by-slug', slug: 'handbook-abc12345' },
@@ -798,7 +1119,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('emits a warning for a missing document slug and skips that grant (warn-skip, not fail)', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3c' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-3c' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-3c' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([]); // slug not present
 
@@ -821,7 +1142,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('emits a warning for missing document hashes and skips the missing doc grant', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-4' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-4' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-4' });
     // DB returns empty — hash not found
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([]);
@@ -842,7 +1163,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
   });
 
   it('does not call createMany for tags when there are no resolved tag ids', async () => {
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-5' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-5' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-5' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([]);
 
@@ -872,7 +1193,7 @@ describe('importOrchestrationConfig — knowledge grants', () => {
 
 describe('importOrchestrationConfig — v1 schemaVersion compatibility', () => {
   beforeEach(() => {
-    mockTx.aiAgent.findUnique.mockReset();
+    mockTx.aiAgent.findFirst.mockReset();
     mockTx.aiAgent.create.mockReset();
     mockTx.aiAgent.update.mockReset();
     mockTx.knowledgeTag.upsert.mockReset();
@@ -892,7 +1213,7 @@ describe('importOrchestrationConfig — v1 schemaVersion compatibility', () => {
       createdAt: now,
       updatedAt: now,
     });
-    mockTx.aiAgent.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-v1' });
+    mockTx.aiAgent.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'agent-v1' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-v1' });
     mockTx.aiKnowledgeDocument.findMany.mockResolvedValue([]);
 
@@ -925,7 +1246,7 @@ describe('importOrchestrationConfig — v1 schemaVersion compatibility', () => {
   });
 
   it('skips blank knowledgeCategories entries when inferring v1 tags', async () => {
-    mockTx.aiAgent.findUnique
+    mockTx.aiAgent.findFirst
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ id: 'agent-blank' });
     mockTx.aiAgent.create.mockResolvedValue({ id: 'agent-blank' });

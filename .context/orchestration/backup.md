@@ -49,6 +49,7 @@ What is **excluded** from exports:
 
 - System agents (`isSystem: true`)
 - System capabilities (`isSystem: true`)
+- System workflows (`isSystem: true`, or a slug in `SYSTEM_WORKFLOW_SLUGS`, e.g. `tpl-provider-model-audit`)
 - Webhook `secret` fields (skipped with a warning on import)
 - Message embeddings, conversations, user data
 - Cost logs, execution history
@@ -86,10 +87,15 @@ Response 200:
 - Validates body against `backupSchema` (Zod) — 400 `VALIDATION_ERROR` on mismatch
 - Runs in a **single Prisma transaction** — partial failure rolls back everything
 - Agents, capabilities, workflows: **upserted by slug** (create or update)
+- Each imported agent gets an `AiAgentVersion` for its restored config (row and grants), so its newest version equals what it runs: `v1` for a created agent; the next version for an updated one, unless the backup left it unchanged, which adds nothing (t-779)
+- System workflows are the seed's, as platform agents are, and are **skipped with a warning**, never created or versioned over. They are recognised two ways, both before the definition is parsed: by slug, from `SYSTEM_WORKFLOW_SLUGS` in `lib/orchestration/workflows/template-catalogue.ts` (which works on a target where the row is absent or another org's), and by an existing row's `isSystem` flag (which covers a fork's own seeded system workflow wherever the importing org can see the row; at `multi` a row in another org is invisible, and the import fails on the slug as any cross-org slug collision does until t-738). The export leaves out the same two, so a bundle never carries a row the import would refuse. A bundle exported before t-729 can still carry `tpl-provider-model-audit`; importing it reports the skip. Without it, the import would have published the bundle's older definition and could have deactivated the workflow or changed its template status, both of which PATCH refuses
+- The cost, stated plainly: an admin's own edits to a system workflow (a published definition, a renamed title) are **not in the backup**, and a restore to a fresh install brings back the seed's version. The seed does not re-apply its definition on every deploy (a unit re-runs only when its content hash changes), so on the live install those edits persist; it is only backup and restore that drops them. This is the same trade system agents make, taken for the same reason: a backup cannot tell an admin's deliberate edit from a stale definition in an old bundle
+- Built-in workflow templates are code, not configuration (§116 t-727): a template row holding a built-in slug (`tpl-customer-support` and the rest) is a seed-era copy of one, so the export leaves it out and the import skips it with a warning, and a backup taken before the upgrade cannot bring it back. The same slug on an ordinary workflow (a retired row an install switched back on) is backed up and restored like any other
 - Knowledge-tag grants reconnect by `KnowledgeTag.slug`; knowledge-document grants reconnect by `AiKnowledgeDocument.slug` (v3) or `fileHash` (v2 fallback). A reference missing in the target environment is **warn-skipped** (the grant is dropped, the rest of the agent imports) — the backup importer is deliberately lenient, unlike the agent bundle import which fails the whole import. See `.context/orchestration/knowledge.md` for the slug key.
 - Webhooks: **created only** if no identical URL already exists; otherwise skipped with a warning
 - Settings: **fully replaced** with backup values if present
 - Webhook secrets: always skipped (secret fields are never exported); import adds a warning
+- Agents naming a provider the org is not approved for (at `TENANCY_MODE=multi`): **imported, with a warning** naming the agent and the providers (§120 t-743). Not skipped: skipping would drop an agent other imported rows may reference, and the call-time gate refuses its calls until the org is granted the provider. `POST /agents/import` does the same. Workflows whose steps override to such a provider are imported with a warning naming the steps. The check runs once, before the import's transaction; if the org's provider policy cannot be read, the import goes ahead with one general warning saying the check did not run.
 
 ### `ImportResult` shape
 

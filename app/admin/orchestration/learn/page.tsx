@@ -44,13 +44,18 @@ async function getPatterns(): Promise<PatternSummary[]> {
  */
 async function getAgentBySlug(slug: string): Promise<LearningTabsAgent | null> {
   try {
-    const url = `${API.ADMIN.ORCHESTRATION.AGENTS}?q=${encodeURIComponent(slug)}&limit=10`;
+    // System rows only: the list sorts them last, so a page of an org's own
+    // similarly-named agents could otherwise push the platform instance off it.
+    const url = `${API.ADMIN.ORCHESTRATION.AGENTS}?q=${encodeURIComponent(slug)}&isSystem=true&limit=10`;
     const res = await serverFetch(url);
     if (!res.ok) return null;
     const body =
-      await parseApiResponse<Array<{ id: string; slug: string; enableVoiceInput?: boolean }>>(res);
+      await parseApiResponse<
+        Array<{ id: string; slug: string; isSystem: boolean; enableVoiceInput?: boolean }>
+      >(res);
     if (!body.success) return null;
-    const match = body.data.find((a) => a.slug === slug);
+    // The org's platform instance, never its own agent holding the slug.
+    const match = body.data.find((a) => a.slug === slug && a.isSystem);
     if (!match) return null;
     return {
       id: match.id,

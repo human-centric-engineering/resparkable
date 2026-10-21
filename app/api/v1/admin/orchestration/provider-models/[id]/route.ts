@@ -18,6 +18,10 @@ import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { validatePathParam, validateRequestBody } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
 import { invalidateModelCache } from '@/lib/orchestration/llm/provider-selector';
+import {
+  providerModelUsage,
+  type ProviderModelUsage,
+} from '@/lib/orchestration/admin/global-config-usage';
 import { updateProviderModelSchema } from '@/lib/validations/orchestration';
 import { cuidSchema } from '@/lib/validations/common';
 
@@ -43,200 +47,153 @@ export const GET = withAdminAuth<{ id: string }>(async (request, _session, { par
   });
 });
 
-export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const log = await getRouteLogger(request);
-  const { id: rawId } = await params;
-  const id = validatePathParam(rawId, cuidSchema, { label: 'provider model id' });
+export const PATCH = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const log = await getRouteLogger(request);
+    const { id: rawId } = await params;
+    const id = validatePathParam(rawId, cuidSchema, { label: 'provider model id' });
 
-  const current = await prisma.aiProviderModel.findUnique({ where: { id } });
-  if (!current) throw new NotFoundError(`Provider model ${id} not found`);
+    const current = await prisma.aiProviderModel.findUnique({ where: { id } });
+    if (!current) throw new NotFoundError(`Provider model ${id} not found`);
 
-  const body = await validateRequestBody(request, updateProviderModelSchema);
+    const body = await validateRequestBody(request, updateProviderModelSchema);
 
-  const data: Prisma.AiProviderModelUpdateInput = {};
-  if (body.name !== undefined) data.name = body.name;
-  if (body.slug !== undefined) data.slug = body.slug;
-  if (body.providerSlug !== undefined) data.providerSlug = body.providerSlug;
-  if (body.modelId !== undefined) data.modelId = body.modelId;
-  if (body.description !== undefined) data.description = body.description;
-  if (body.capabilities !== undefined) data.capabilities = body.capabilities;
-  if (body.tierRole !== undefined) data.tierRole = body.tierRole;
-  if (body.reasoningDepth !== undefined) data.reasoningDepth = body.reasoningDepth;
-  if (body.latency !== undefined) data.latency = body.latency;
-  if (body.costEfficiency !== undefined) data.costEfficiency = body.costEfficiency;
-  if (body.contextLength !== undefined) data.contextLength = body.contextLength;
-  if (body.toolUse !== undefined) data.toolUse = body.toolUse;
-  if (body.paramProfile !== undefined) data.paramProfile = body.paramProfile;
-  if (body.bestRole !== undefined) data.bestRole = body.bestRole;
-  if (body.dimensions !== undefined) data.dimensions = body.dimensions;
-  if (body.schemaCompatible !== undefined) data.schemaCompatible = body.schemaCompatible;
-  if (body.costPerMillionTokens !== undefined)
-    data.costPerMillionTokens = body.costPerMillionTokens;
-  if (body.hasFreeTier !== undefined) data.hasFreeTier = body.hasFreeTier;
-  if (body.local !== undefined) data.local = body.local;
-  if (body.quality !== undefined) data.quality = body.quality;
-  if (body.strengths !== undefined) data.strengths = body.strengths;
-  if (body.setup !== undefined) data.setup = body.setup;
-  if (body.isActive !== undefined) data.isActive = body.isActive;
-  if (body.metadata !== undefined) data.metadata = body.metadata;
+    const data: Prisma.AiProviderModelUpdateInput = {};
+    if (body.name !== undefined) data.name = body.name;
+    if (body.slug !== undefined) data.slug = body.slug;
+    if (body.providerSlug !== undefined) data.providerSlug = body.providerSlug;
+    if (body.modelId !== undefined) data.modelId = body.modelId;
+    if (body.description !== undefined) data.description = body.description;
+    if (body.capabilities !== undefined) data.capabilities = body.capabilities;
+    if (body.tierRole !== undefined) data.tierRole = body.tierRole;
+    if (body.reasoningDepth !== undefined) data.reasoningDepth = body.reasoningDepth;
+    if (body.latency !== undefined) data.latency = body.latency;
+    if (body.costEfficiency !== undefined) data.costEfficiency = body.costEfficiency;
+    if (body.contextLength !== undefined) data.contextLength = body.contextLength;
+    if (body.toolUse !== undefined) data.toolUse = body.toolUse;
+    if (body.paramProfile !== undefined) data.paramProfile = body.paramProfile;
+    if (body.bestRole !== undefined) data.bestRole = body.bestRole;
+    if (body.dimensions !== undefined) data.dimensions = body.dimensions;
+    if (body.schemaCompatible !== undefined) data.schemaCompatible = body.schemaCompatible;
+    if (body.costPerMillionTokens !== undefined)
+      data.costPerMillionTokens = body.costPerMillionTokens;
+    if (body.hasFreeTier !== undefined) data.hasFreeTier = body.hasFreeTier;
+    if (body.local !== undefined) data.local = body.local;
+    if (body.quality !== undefined) data.quality = body.quality;
+    if (body.strengths !== undefined) data.strengths = body.strengths;
+    if (body.setup !== undefined) data.setup = body.setup;
+    if (body.isActive !== undefined) data.isActive = body.isActive;
+    if (body.metadata !== undefined) data.metadata = body.metadata;
 
-  // Admin editing a seed-managed row opts it out of future seed updates
-  if (current.isDefault) {
-    data.isDefault = false;
-  }
+    // Admin editing a seed-managed row opts it out of future seed updates
+    if (current.isDefault) {
+      data.isDefault = false;
+    }
 
-  // Skip no-op update when only isDefault flip and no user-supplied fields
-  const userFields = Object.keys(data).filter((k) => k !== 'isDefault');
-  if (userFields.length === 0 && !current.isDefault) {
-    log.info('Provider model PATCH skipped (no fields changed)', { modelId: id });
-    return successResponse(current);
-  }
+    // Skip no-op update when only isDefault flip and no user-supplied fields
+    const userFields = Object.keys(data).filter((k) => k !== 'isDefault');
+    if (userFields.length === 0 && !current.isDefault) {
+      log.info('Provider model PATCH skipped (no fields changed)', { modelId: id });
+      return successResponse(current);
+    }
 
-  try {
-    const updated = await prisma.aiProviderModel.update({ where: { id }, data });
+    try {
+      const updated = await prisma.aiProviderModel.update({ where: { id }, data });
+
+      invalidateModelCache();
+
+      log.info('Provider model updated', {
+        modelId: id,
+        adminId: session.user.id,
+        fieldsChanged: Object.keys(data),
+      });
+
+      return successResponse(updated);
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ValidationError(`Provider model with slug '${body.slug}' already exists`, {
+          slug: ['Slug is already in use'],
+        });
+      }
+      throw err;
+    }
+  },
+  { writesSharedSettings: true }
+);
+
+export const DELETE = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const log = await getRouteLogger(request);
+    const { id: rawId } = await params;
+    const id = validatePathParam(rawId, cuidSchema, { label: 'provider model id' });
+
+    const current = await prisma.aiProviderModel.findUnique({ where: { id } });
+    if (!current) throw new NotFoundError(`Provider model ${id} not found`);
+
+    // In-use guard: refuse to delete when any active agent or active
+    // workflow (published version or in-progress draft) still references
+    // the (providerSlug, modelId) pair. AiAgent stores both as plain
+    // strings; workflows pin via `step.config.modelOverride` (just the
+    // bare modelId — provider context is resolved from the model registry
+    // at runtime).
+    //
+    // In every org (t-731): the model is global config, so another org's
+    // agents and workflows refuse the delete too. Only the caller's own are
+    // named; another org's are a count.
+    const usage = await providerModelUsage(current.providerSlug, current.modelId);
+    const agentCount = usage.agents.length + usage.otherOrgAgents;
+    const workflowCount = usage.workflows.length + usage.otherOrgWorkflows;
+
+    if (agentCount > 0 || workflowCount > 0) {
+      log.info('Provider model delete refused — model in use', {
+        modelId: id,
+        slug: current.slug,
+        agentCount,
+        workflowCount,
+        otherOrgAgentCount: usage.otherOrgAgents,
+        otherOrgWorkflowCount: usage.otherOrgWorkflows,
+      });
+      return errorResponse(buildInUseMessage(current.name, usage), {
+        code: 'MODEL_IN_USE',
+        status: 409,
+        details: {
+          agents: usage.agents,
+          workflows: usage.workflows,
+          otherOrgAgentCount: usage.otherOrgAgents,
+          otherOrgWorkflowCount: usage.otherOrgWorkflows,
+        },
+      });
+    }
+
+    await prisma.aiProviderModel.delete({ where: { id } });
 
     invalidateModelCache();
 
-    log.info('Provider model updated', {
-      modelId: id,
-      adminId: session.user.id,
-      fieldsChanged: Object.keys(data),
-    });
-
-    return successResponse(updated);
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      throw new ValidationError(`Provider model with slug '${body.slug}' already exists`, {
-        slug: ['Slug is already in use'],
-      });
-    }
-    throw err;
-  }
-});
-
-export const DELETE = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const log = await getRouteLogger(request);
-  const { id: rawId } = await params;
-  const id = validatePathParam(rawId, cuidSchema, { label: 'provider model id' });
-
-  const current = await prisma.aiProviderModel.findUnique({ where: { id } });
-  if (!current) throw new NotFoundError(`Provider model ${id} not found`);
-
-  // In-use guard: refuse to delete when any active agent or active
-  // workflow (published version or in-progress draft) still references
-  // the (providerSlug, modelId) pair. AiAgent stores both as plain
-  // strings; workflows pin via `step.config.modelOverride` (just the
-  // bare modelId — provider context is resolved from the model registry
-  // at runtime).
-  const [boundAgents, boundWorkflows] = await Promise.all([
-    prisma.aiAgent.findMany({
-      where: {
-        isActive: true,
-        provider: current.providerSlug,
-        model: current.modelId,
-      },
-      select: { id: true, name: true, slug: true },
-      orderBy: { name: 'asc' },
-    }),
-    findWorkflowsPinningModel(current.modelId),
-  ]);
-
-  if (boundAgents.length > 0 || boundWorkflows.length > 0) {
-    log.info('Provider model delete refused — model in use', {
+    log.info('Provider model deleted', {
       modelId: id,
       slug: current.slug,
-      agentCount: boundAgents.length,
-      workflowCount: boundWorkflows.length,
+      adminId: session.user.id,
     });
-    return errorResponse(buildInUseMessage(current.name, boundAgents, boundWorkflows), {
-      code: 'MODEL_IN_USE',
-      status: 409,
-      details: { agents: boundAgents, workflows: boundWorkflows },
-    });
-  }
 
-  await prisma.aiProviderModel.delete({ where: { id } });
+    return successResponse({ id, deleted: true });
+  },
+  { writesSharedSettings: true }
+);
 
-  invalidateModelCache();
-
-  log.info('Provider model deleted', {
-    modelId: id,
-    slug: current.slug,
-    adminId: session.user.id,
-  });
-
-  return successResponse({ id, deleted: true });
-});
-
-interface BoundRef {
-  id: string;
-  name: string;
-  slug: string;
-}
-
-// Step types whose `config.modelOverride` pins a specific model. Mirrors
-// the LLM_STEP_TYPES set in lib/orchestration/workflows/semantic-validator.ts;
-// kept in sync by hand because exporting from the validator would pull its
-// runtime deps (model registry) into this admin route for no benefit.
-const LLM_STEP_TYPES = new Set([
-  'llm_call',
-  'route',
-  'reflect',
-  'guard',
-  'evaluate',
-  'plan',
-  'orchestrator',
-]);
-
-function definitionPinsModel(definition: unknown, modelId: string): boolean {
-  if (!definition || typeof definition !== 'object') return false;
-  const steps = (definition as { steps?: unknown }).steps;
-  if (!Array.isArray(steps)) return false;
-  for (const step of steps) {
-    if (!step || typeof step !== 'object') continue;
-    const type = (step as { type?: unknown }).type;
-    if (typeof type !== 'string' || !LLM_STEP_TYPES.has(type)) continue;
-    const config = (step as { config?: unknown }).config;
-    if (!config || typeof config !== 'object') continue;
-    const override = (config as { modelOverride?: unknown }).modelOverride;
-    if (typeof override === 'string' && override === modelId) return true;
-  }
-  return false;
-}
-
-async function findWorkflowsPinningModel(modelId: string): Promise<BoundRef[]> {
-  const workflows = await prisma.aiWorkflow.findMany({
-    where: { isActive: true },
-    select: {
-      id: true,
-      name: true,
-      slug: true,
-      draftDefinition: true,
-      publishedVersion: { select: { snapshot: true } },
-    },
-    orderBy: { name: 'asc' },
-  });
-
-  const matches: BoundRef[] = [];
-  for (const w of workflows) {
-    const draftPins = definitionPinsModel(w.draftDefinition, modelId);
-    const publishedPins = definitionPinsModel(w.publishedVersion?.snapshot, modelId);
-    if (draftPins || publishedPins) {
-      matches.push({ id: w.id, name: w.name, slug: w.slug });
-    }
-  }
-  return matches;
-}
-
-function buildInUseMessage(modelName: string, agents: BoundRef[], workflows: BoundRef[]): string {
+function buildInUseMessage(modelName: string, usage: ProviderModelUsage): string {
+  const agents = usage.agents.length + usage.otherOrgAgents;
+  const workflows = usage.workflows.length + usage.otherOrgWorkflows;
   const parts: string[] = [];
-  if (agents.length > 0) {
-    parts.push(`${agents.length} active agent${agents.length === 1 ? '' : 's'}`);
+  if (agents > 0) {
+    parts.push(`${agents} active agent${agents === 1 ? '' : 's'}`);
   }
-  if (workflows.length > 0) {
-    parts.push(`${workflows.length} active workflow${workflows.length === 1 ? '' : 's'}`);
+  if (workflows > 0) {
+    parts.push(`${workflows} active workflow${workflows === 1 ? '' : 's'}`);
   }
+  const elsewhere = usage.otherOrgAgents + usage.otherOrgWorkflows;
   return `Cannot delete model "${modelName}" — ${parts.join(' and ')} still reference${
-    agents.length + workflows.length === 1 ? 's' : ''
-  } it. Re-point them to a different model first.`;
+    agents + workflows === 1 ? 's' : ''
+  } it${
+    elsewhere > 0 ? ` (${elsewhere} of them in other organisations)` : ''
+  }. Re-point them to a different model first.`;
 }

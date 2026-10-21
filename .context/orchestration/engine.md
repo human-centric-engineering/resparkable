@@ -220,23 +220,23 @@ Each executor self-registers at module import. The barrel at `executors/index.ts
 
 Fifteen executors:
 
-| Type                | File                | Reuses                                                                                                                |
-| ------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `llm_call`          | `llm-call.ts`       | `getProvider().chatStream()` + `logCost()`                                                                            |
-| `tool_call`         | `tool-call.ts`      | `capabilityDispatcher.dispatch()`                                                                                     |
-| `chain`             | `chain.ts`          | pass-through — real work is on child steps                                                                            |
-| `route`             | `route.ts`          | classifier LLM + DAG branch selection                                                                                 |
-| `parallel`          | `parallel.ts`       | fan-out marker — walker runs branches concurrently via Promise.allSettled                                             |
-| `reflect`           | `reflect.ts`        | inner step + critic loop up to N iterations                                                                           |
-| `plan`              | `plan.ts`           | LLM planner → stores plan on `ctx.variables`                                                                          |
-| `human_approval`    | `human-approval.ts` | runs `prompt` through `interpolatePrompt(prompt, ctx)` then throws `PausedForApproval` carrying the interpolated text |
-| `rag_retrieve`      | `rag-retrieve.ts`   | `searchKnowledge()` from the knowledge module                                                                         |
-| `guard`             | `guard.ts`          | LLM or regex safety check, routes pass/fail                                                                           |
-| `evaluate`          | `evaluate.ts`       | LLM rubric scorer, clamps to scale range                                                                              |
-| `external_call`     | `external-call.ts`  | HTTP fetch with SSRF allowlist, outbound rate limiting, auth helpers                                                  |
-| `agent_call`        | `agent-call.ts`     | loads agent config + runs ReAct tool loop via `executeAgentCall`                                                      |
-| `send_notification` | `notification.ts`   | email or webhook notification with templated content                                                                  |
-| `orchestrator`      | `orchestrator.ts`   | AI planner → multi-agent delegation loop via `executeAgentCall`                                                       |
+| Type                | File                | Reuses                                                                                                                                                               |
+| ------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm_call`          | `llm-call.ts`       | `getProvider().chatStream()` + `logCost()`                                                                                                                           |
+| `tool_call`         | `tool-call.ts`      | `capabilityDispatcher.dispatch()`, with every string in an authored `args` interpolated (t-770); `argsFrom` output and the `inputData` fallback pass through as data |
+| `chain`             | `chain.ts`          | pass-through — real work is on child steps                                                                                                                           |
+| `route`             | `route.ts`          | classifier LLM + DAG branch selection                                                                                                                                |
+| `parallel`          | `parallel.ts`       | fan-out marker — walker runs branches concurrently via Promise.allSettled                                                                                            |
+| `reflect`           | `reflect.ts`        | inner step + critic loop up to N iterations                                                                                                                          |
+| `plan`              | `plan.ts`           | LLM planner → stores plan on `ctx.variables`                                                                                                                         |
+| `human_approval`    | `human-approval.ts` | runs `prompt` through `interpolatePrompt(prompt, ctx)` then throws `PausedForApproval` carrying the interpolated text                                                |
+| `rag_retrieve`      | `rag-retrieve.ts`   | `searchKnowledge()` from the knowledge module                                                                                                                        |
+| `guard`             | `guard.ts`          | LLM or regex safety check, routes pass/fail                                                                                                                          |
+| `evaluate`          | `evaluate.ts`       | LLM rubric scorer, clamps to scale range                                                                                                                             |
+| `external_call`     | `external-call.ts`  | HTTP fetch with SSRF allowlist, outbound rate limiting, auth helpers                                                                                                 |
+| `agent_call`        | `agent-call.ts`     | loads agent config + runs ReAct tool loop via `executeAgentCall`                                                                                                     |
+| `send_notification` | `notification.ts`   | email or webhook notification with templated content                                                                                                                 |
+| `orchestrator`      | `orchestrator.ts`   | AI planner → multi-agent delegation loop via `executeAgentCall`                                                                                                      |
 
 ## Error strategies
 
@@ -290,6 +290,14 @@ Notable non-retriable error codes by executor:
 Retriable codes: `rate_limited`, `execution_error` (tool_call), `http_error_retriable` (429/502/503/504), `outbound_rate_limited` (external_call).
 
 See [`external-calls.md`](./external-calls.md) for the full external_call error code table.
+
+**`judge_call` with a `threshold` fails when the judge does not properly score** (§77 t-747). The step used to report `passed: true` when the judge returned no score, and to compare an out-of-range score as if it were valid, so a gate opened for anything the judge did not properly score. Now it throws with:
+
+- **the judge's own `errorCode`** when the judge could not score: `provider_error`, `malformed_judge_response`, `provider_not_permitted`, `output_blocked`, …. The message names the code; the chat error's own text stays out, since it can carry an agent's budget figure;
+- **`judge_not_applicable`** when the judge returned `score: null` on purpose because its criterion does not apply: for example the faithfulness and citation judges on an answer with no `[N]` markers, the correctness, recall and answer-similarity judges with no expected answer, the brand-voice judge with no voice. The judge's own reasoning stays out of the message, because the answer under review can steer it. **`eval-judge-context-precision` always lands here from a `judge_call`, which passes it no citations**;
+- **`judge_score_out_of_range`** for a score outside the judges' 0–1 contract.
+
+Retriable unless a retry cannot change the answer, by the rule the other LLM steps use: never for a provider request fault (`isRequestFaultCode`; the provider's own `retriable` flag is deliberately not consulted, because it is `false` for a connection reset), and never for the deterministic chat refusals (`agent_not_found`, `invalid_request`, the conversation caps, `budget_exceeded`, `input_blocked`). The output and citation guards and the tool-loop cap are retriable: each turns on one sample of the judge's reply. `skip` on a gate empties the output, so a downstream `route` sees no `passed`: choosing `skip` is choosing no gate. Without a threshold the step still returns `passed: true`, with any `errorCode` in its output.
 
 ### Per-step timeout
 

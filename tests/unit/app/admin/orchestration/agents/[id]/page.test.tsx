@@ -140,6 +140,7 @@ const mockProviders: AiProviderConfig[] = [
     metadata: null,
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
     createdBy: 'user-1',
     createdAt: new Date('2025-01-01'),
     updatedAt: new Date('2025-01-01'),
@@ -242,6 +243,31 @@ describe('EditAgentPage', () => {
       expect(form).toHaveAttribute('data-mode', 'edit');
       expect(form).toHaveAttribute('data-agent-id', 'agent-123');
       expect(form).toHaveAttribute('data-agent-name', 'Support Bot');
+    });
+
+    it('shows why an agent stranded by its org provider policy cannot respond (§120 t-745)', async () => {
+      const agent = {
+        ...createMockAgent({ provider: 'openai' }),
+        _unapprovedProviders: ['openai'],
+      };
+      vi.mocked(serverFetch).mockResolvedValue({ ok: true } as Response);
+      vi.mocked(parseApiResponse).mockResolvedValue({ success: true, data: agent } as never);
+
+      render(await EditAgentPage({ params: Promise.resolve({ id: 'agent-123' }) }));
+
+      expect(screen.getByRole('alert')).toHaveTextContent('This agent cannot respond');
+      expect(screen.getByRole('alert')).toHaveTextContent('“openai”');
+    });
+
+    it('shows no provider banner for an agent its org may run', async () => {
+      const agent = { ...createMockAgent(), _unapprovedProviders: [] };
+      vi.mocked(serverFetch).mockResolvedValue({ ok: true } as Response);
+      vi.mocked(parseApiResponse).mockResolvedValue({ success: true, data: agent } as never);
+
+      render(await EditAgentPage({ params: Promise.resolve({ id: 'agent-123' }) }));
+
+      expect(screen.queryByText(/not approved for this organisation/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/cannot respond/)).not.toBeInTheDocument();
     });
 
     it('passes providers from getProviders to AgentForm', async () => {

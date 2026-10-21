@@ -34,6 +34,10 @@ import { z } from 'zod';
 import { AlertCircle, Check, ChevronDown, ChevronRight, Loader2, Save, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -432,6 +436,7 @@ function toSlug(value: string): string {
 }
 
 export function ProviderForm({ mode, provider }: ProviderFormProps) {
+  const readOnly = useSharedSettingsReadOnly();
   const router = useRouter();
   const schedule = useTimeout();
   const isEdit = mode === 'edit';
@@ -595,7 +600,8 @@ export function ProviderForm({ mode, provider }: ProviderFormProps) {
           <Button type="button" variant="outline" asChild>
             <Link href="/admin/orchestration/providers">Cancel</Link>
           </Button>
-          <Button type="submit" disabled={submitting || saved}>
+          <SharedSettingsSaveHint />
+          <Button type="submit" disabled={readOnly || submitting || saved}>
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

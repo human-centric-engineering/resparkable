@@ -12,6 +12,23 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The org's provider policy (§120 t-743): approves everything unless a test
+// refuses a slug. Hoisted, so it applies however the route is imported.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
+
+/** Refuse exactly these slugs, as an org with no grant for them would. */
+function refuse(...barred: string[]) {
+  mockUnapprovedProviders.mockImplementation(async (slugs) =>
+    slugs.filter((slug) => barred.includes(slug))
+  );
+}
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/v1/admin/orchestration/agents/import/route';
 import {
@@ -35,10 +52,23 @@ vi.mock('next/headers', () => ({
  * with a transactional client (tx). The tx object mirrors the same models
  * we need in the import handler.
  */
+// The version helpers read the agent back and write `AiAgentVersion` rows;
+// their behaviour is proved in agent-versioning's own tests. Here they are
+// stubbed so the test can assert WHEN the import calls them.
+vi.mock('@/lib/orchestration/agents/agent-versioning', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/orchestration/agents/agent-versioning')>();
+  return {
+    ...actual,
+    ensureBaselineVersion: vi.fn(async () => undefined),
+    recordAgentVersion: vi.fn(async () => 2),
+  };
+});
+
 vi.mock('@/lib/db/client', () => {
   const txMock = {
     aiAgent: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
     },
@@ -79,9 +109,16 @@ vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
 
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
+import { Prisma } from '@prisma/client';
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities';
+import {
+  AGENT_BATCH_TRANSACTION_TIMEOUT_MS,
+  INITIAL_VERSION_SUMMARY,
+  ensureBaselineVersion,
+  recordAgentVersion,
+} from '@/lib/orchestration/agents/agent-versioning';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -143,7 +180,7 @@ function makeDbAgent(id: string, slug: string) {
 function getTxMock() {
   return (prisma as unknown as Record<string, unknown>)._txMock as {
     aiAgent: {
-      findUnique: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
       create: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
     };
@@ -185,7 +222,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
 
     // Default: no existing agents (clean import), no capabilities
     const tx = getTxMock();
-    tx.aiAgent.findUnique.mockResolvedValue(null);
+    tx.aiAgent.findFirst.mockResolvedValue(null);
     tx.aiAgent.create.mockResolvedValue({ id: AGENT_ID, slug: 'new-agent' });
     tx.aiAgent.update.mockResolvedValue({ id: AGENT_ID });
     tx.aiAgentCapability.deleteMany.mockResolvedValue({ count: 0 });
@@ -220,7 +257,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
     it('creates agents and returns imported count', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       const response = await POST(
         makeRequest({ bundle: makeBundle([makeBundledAgent('new-agent')]) })
@@ -238,13 +275,34 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       expect(data.data.overwritten).toBe(0);
     });
 
+    it("saves a new agent's imported config as its v1", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const tx = getTxMock();
+      tx.aiAgent.findFirst.mockResolvedValue(null);
+
+      const response = await POST(
+        makeRequest({ bundle: makeBundle([makeBundledAgent('new-agent')]) })
+      );
+
+      expect(response.status).toBe(200);
+      expect(recordAgentVersion).toHaveBeenCalledWith(tx, AGENT_ID, {
+        label: INITIAL_VERSION_SUMMARY,
+        createdBy: ADMIN_ID,
+      });
+      expect(vi.mocked(recordAgentVersion).mock.invocationCallOrder[0]).toBeGreaterThan(
+        tx.aiAgent.create.mock.invocationCallOrder[0]
+      );
+      // A new agent has no earlier config to keep.
+      expect(ensureBaselineVersion).not.toHaveBeenCalled();
+    });
+
     it('creates capability pivot rows when capabilities exist in db', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([
         { id: CAPABILITY_ID, slug: 'search-web' },
       ] as never);
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       await POST(
         makeRequest({
@@ -257,6 +315,18 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
           data: expect.arrayContaining([expect.objectContaining({ capabilityId: CAPABILITY_ID })]),
         })
       );
+    });
+
+    it('gives the import transaction a batch-sized timeout', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+
+      await POST(makeRequest({ bundle: makeBundle([makeBundledAgent('new-agent')]) }));
+
+      // Each agent now costs several version round trips; Prisma's 5s default
+      // would roll back a large import on a remote database.
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        timeout: AGENT_BATCH_TRANSACTION_TIMEOUT_MS,
+      });
     });
 
     it('runs all db operations inside a single $transaction', async () => {
@@ -272,7 +342,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
     it('leaves existing agent untouched and increments skipped count', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(makeDbAgent(AGENT_ID, 'existing-agent'));
+      tx.aiAgent.findFirst.mockResolvedValue(makeDbAgent(AGENT_ID, 'existing-agent'));
 
       const response = await POST(
         makeRequest({
@@ -297,7 +367,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
     it('skips existing and imports new in the same bundle', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const tx = getTxMock();
-      tx.aiAgent.findUnique
+      tx.aiAgent.findFirst
         .mockResolvedValueOnce(makeDbAgent(AGENT_ID, 'existing-agent')) // first agent exists
         .mockResolvedValueOnce(null); // second agent is new
 
@@ -321,7 +391,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const existingAgent = makeDbAgent(AGENT_ID, 'existing-agent');
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(existingAgent);
+      tx.aiAgent.findFirst.mockResolvedValue(existingAgent);
       vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([
         { id: CAPABILITY_ID, slug: 'search-web' },
       ] as never);
@@ -353,11 +423,93 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       expect(tx.aiAgentCapability.createMany).toHaveBeenCalled();
     });
 
+    it('saves the overwritten config as a new agent version, after every write', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const existingAgent = makeDbAgent(AGENT_ID, 'existing-agent');
+      const tx = getTxMock();
+      tx.aiAgent.findFirst.mockResolvedValue(existingAgent);
+
+      const response = await POST(
+        makeRequest({
+          bundle: makeBundle([makeBundledAgent('existing-agent')]),
+          conflictMode: 'overwrite',
+        })
+      );
+
+      expect(response.status).toBe(200);
+      // A pre-versioning agent keeps its current config as v1 before the write…
+      expect(ensureBaselineVersion).toHaveBeenCalledWith(tx, existingAgent.id, ADMIN_ID);
+      // …and the imported config becomes the newest version, inside the same tx.
+      expect(recordAgentVersion).toHaveBeenCalledWith(tx, existingAgent.id, {
+        label: 'Overwritten by agent import',
+        createdBy: ADMIN_ID,
+      });
+      const baselineAt = vi.mocked(ensureBaselineVersion).mock.invocationCallOrder[0];
+      const recordAt = vi.mocked(recordAgentVersion).mock.invocationCallOrder[0];
+      // Baseline before the row changes; the new version after the last grant
+      // write, or it would snapshot the agent's old grants.
+      expect(baselineAt).toBeLessThan(tx.aiAgent.update.mock.invocationCallOrder[0]);
+      expect(recordAt).toBeGreaterThan(
+        Math.max(
+          tx.aiAgent.update.mock.invocationCallOrder[0],
+          ...tx.aiAgentKnowledgeTag.deleteMany.mock.invocationCallOrder,
+          ...tx.aiAgentKnowledgeDocument.deleteMany.mock.invocationCallOrder
+        )
+      );
+    });
+
+    it('returns a retryable 409 when a concurrent edit takes the version number', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      getTxMock().aiAgent.findFirst.mockResolvedValue(makeDbAgent(AGENT_ID, 'existing-agent'));
+      vi.mocked(recordAgentVersion).mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { modelName: 'AiAgentVersion' },
+        })
+      );
+
+      const response = await POST(
+        makeRequest({
+          bundle: makeBundle([makeBundledAgent('existing-agent')]),
+          conflictMode: 'overwrite',
+        })
+      );
+
+      expect(response.status).toBe(409);
+    });
+
+    it('leaves a unique violation a retry cannot fix to the shared handler, not a 409', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      getTxMock().aiAgent.findFirst.mockResolvedValue(null);
+      // e.g. a bundle listing the same capability twice: it fails every time.
+      getTxMock().aiAgentCapability.createMany.mockRejectedValueOnce(
+        new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+          meta: { modelName: 'AiAgentCapability' },
+        })
+      );
+      vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([
+        { id: CAPABILITY_ID, slug: 'search-web' },
+      ] as never);
+
+      const response = await POST(
+        makeRequest({
+          bundle: makeBundle([makeBundledAgent('new-agent', [{ slug: 'search-web' }])]),
+        })
+      );
+
+      // The shared API error handler's answer for a unique violation (400),
+      // not "conflicted with a concurrent change, please retry".
+      expect(response.status).toBe(400);
+    });
+
     it('rebuilds knowledge-document grants by slug on overwrite (#338)', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const existingAgent = makeDbAgent(AGENT_ID, 'existing-agent');
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(existingAgent);
+      tx.aiAgent.findFirst.mockResolvedValue(existingAgent);
       // Target env resolves the document slug to a local id.
       vi.mocked(prisma.aiKnowledgeDocument.findMany).mockResolvedValue([
         { id: 'local-doc-1', slug: 'handbook-abc12345' },
@@ -386,7 +538,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const existingAgent = makeDbAgent(AGENT_ID, 'existing-agent');
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(existingAgent);
+      tx.aiAgent.findFirst.mockResolvedValue(existingAgent);
       vi.mocked(prisma.aiKnowledgeDocument.findMany).mockResolvedValue([] as never); // not found
 
       const bundled = {
@@ -408,7 +560,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const existingAgent = makeDbAgent(AGENT_ID, 'existing-agent');
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(existingAgent);
+      tx.aiAgent.findFirst.mockResolvedValue(existingAgent);
 
       const stored = { primaryColor: '#16a34a', headerTitle: 'Council' };
       const bundledWithWidget = {
@@ -433,7 +585,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const systemAgent = { ...makeDbAgent(AGENT_ID, 'system-agent'), isSystem: true };
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(systemAgent);
+      tx.aiAgent.findFirst.mockResolvedValue(systemAgent);
 
       const response = await POST(
         makeRequest({
@@ -457,13 +609,61 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
     });
   });
 
+  describe('Reserved slugs (§116 t-725)', () => {
+    type ImportData = {
+      data: { imported: number; overwritten: number; skipped: number; warnings: string[] };
+    };
+
+    it('skips a new agent with a platform slug, with a warning, and imports the rest', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const tx = getTxMock();
+      tx.aiAgent.findFirst.mockResolvedValue(null);
+
+      const response = await POST(
+        makeRequest({
+          bundle: makeBundle([makeBundledAgent('quiz-master'), makeBundledAgent('new-agent')]),
+        })
+      );
+
+      expect(response.status).toBe(200);
+      const data = await parseJson<ImportData>(response);
+      expect(data.data.imported).toBe(1);
+      expect(data.data.skipped).toBe(1);
+      expect(data.data.warnings).toEqual([
+        'Agent \'quiz-master\': skipped — The slug "quiz-master" is reserved for a platform agent',
+      ]);
+      expect(tx.aiAgent.create).toHaveBeenCalledOnce();
+      expect(tx.aiAgent.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ slug: 'new-agent' }) })
+      );
+    });
+
+    it("does not overwrite an org's own agent that took a platform slug before it was reserved", async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      const tx = getTxMock();
+      tx.aiAgent.findFirst.mockResolvedValue(makeDbAgent(AGENT_ID, 'quiz-master'));
+
+      const response = await POST(
+        makeRequest({
+          bundle: makeBundle([makeBundledAgent('quiz-master')]),
+          conflictMode: 'overwrite',
+        })
+      );
+
+      const data = await parseJson<ImportData>(response);
+      expect(data.data.overwritten).toBe(0);
+      expect(data.data.skipped).toBe(1);
+      expect(tx.aiAgent.update).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Unknown capability slugs → warnings, not failures', () => {
     it('adds warning message for unknown slug and still completes import', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       // No matching capabilities in DB
       vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([]);
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       const response = await POST(
         makeRequest({
@@ -484,7 +684,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([]);
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       const bundledAgentWithTwoUnknown = makeBundledAgent('new-agent', [
         { slug: 'unknown-cap-1' },
@@ -503,7 +703,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       vi.mocked(prisma.aiCapability.findMany).mockResolvedValue([]);
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       await POST(
         makeRequest({
@@ -520,7 +720,7 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
     it('calls clearCache exactly once after successful import', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       const tx = getTxMock();
-      tx.aiAgent.findUnique.mockResolvedValue(null);
+      tx.aiAgent.findFirst.mockResolvedValue(null);
 
       await POST(makeRequest({ bundle: makeBundle([makeBundledAgent('new-agent')]) }));
 
@@ -579,5 +779,43 @@ describe('POST /api/v1/admin/orchestration/agents/import', () => {
 
       expect(response.status).toBe(400);
     });
+  });
+});
+
+describe('POST /api/v1/admin/orchestration/agents/import — approved providers (§120 t-743)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUnapprovedProviders.mockImplementation(async () => []);
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  it('imports an agent naming a non-approved provider, and warns that its calls will be refused', async () => {
+    refuse('anthropic');
+    const tx = getTxMock();
+    tx.aiAgent.findFirst.mockResolvedValue(null);
+
+    const response = await POST(
+      makeRequest({ bundle: makeBundle([makeBundledAgent('stranded')]) })
+    );
+
+    expect(response.status).toBe(200);
+    const data = await parseJson<{ data: { imported: number; warnings: string[] } }>(response);
+    expect(data.data.imported).toBe(1);
+    expect(tx.aiAgent.create).toHaveBeenCalledTimes(1);
+    expect(data.data.warnings).toEqual([
+      expect.stringContaining(
+        'Agent \'stranded\': imported, but this organisation is not approved to use "anthropic"'
+      ),
+    ]);
+  });
+
+  it('warns about nothing when every provider is approved', async () => {
+    const tx = getTxMock();
+    tx.aiAgent.findFirst.mockResolvedValue(null);
+
+    const response = await POST(makeRequest({ bundle: makeBundle([makeBundledAgent('fine')]) }));
+
+    const data = await parseJson<{ data: { warnings: string[] } }>(response);
+    expect(data.data.warnings).toEqual([]);
   });
 });

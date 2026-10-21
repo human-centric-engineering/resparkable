@@ -27,6 +27,11 @@ import { findUnsetEnvVarReferences } from '@/lib/orchestration/env-template';
 import { updateAgentCapabilitySchema } from '@/lib/validations/orchestration';
 import { cuidSchema } from '@/lib/validations/common';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import {
+  assertBindingFieldsUnchanged,
+  assertBindingsEditable,
+  platformBindingsLocked,
+} from '@/lib/orchestration/agents/platform-agent-guard';
 
 /**
  * Narrow shape used by `collectMissingEnvVars`. See the matching
@@ -65,6 +70,18 @@ function parseIds(raw: RouteParams): { agentId: string; capabilityId: string } {
   return { agentId: agentIdParse.data as string, capabilityId: capIdParse.data as string };
 }
 
+/** The agent a binding belongs to, as far as the platform-agent guard reads it. */
+async function loadAgent(
+  agentId: string
+): Promise<{ isSystem: boolean; slug: string; name: string }> {
+  const agent = await prisma.aiAgent.findUnique({
+    where: { id: agentId },
+    select: { isSystem: true, slug: true, name: true },
+  });
+  if (!agent) throw new NotFoundError(`Agent ${agentId} not found`);
+  return agent;
+}
+
 export const PATCH = withAdminAuth<RouteParams>(async (request, session, { params }) => {
   const clientIP = getClientIP(request);
 
@@ -73,10 +90,30 @@ export const PATCH = withAdminAuth<RouteParams>(async (request, session, { param
 
   const body = await validateRequestBody(request, updateAgentCapabilitySchema);
 
+  // On a platform agent the binding's on/off state is the platform's (the
+  // reconcile re-enables it); its config and rate limit are the org's, since
+  // the reconcile never writes them (§116 t-725). Compared by value, so a
+  // dialog that re-sends the unchanged state passes.
+  const agent = await loadAgent(agentId);
+  if (platformBindingsLocked(agent)) {
+    const current = await prisma.aiAgentCapability.findUnique({
+      where: { agentId_capabilityId: { agentId, capabilityId } },
+      select: { isEnabled: true },
+    });
+    if (!current) {
+      throw new NotFoundError(`Capability ${capabilityId} is not attached to agent ${agentId}`);
+    }
+    assertBindingFieldsUnchanged(agent, current, body);
+  }
+
   const data: Prisma.AiAgentCapabilityUpdateInput = {};
   if (body.isEnabled !== undefined) data.isEnabled = body.isEnabled;
   if (body.customConfig !== undefined) {
-    data.customConfig = body.customConfig as Prisma.InputJsonValue;
+    // null clears the config (the Configure dialog sends it for a blank box).
+    // Written as Prisma.JsonNull explicitly, as the attach route does; Prisma 7
+    // stores a literal null the same way (JSON null), measured on a real DB.
+    data.customConfig =
+      body.customConfig === null ? Prisma.JsonNull : (body.customConfig as Prisma.InputJsonValue);
   }
   if (body.customRateLimit !== undefined) data.customRateLimit = body.customRateLimit;
 
@@ -120,6 +157,8 @@ export const DELETE = withAdminAuth<RouteParams>(async (request, session, { para
 
   const log = await getRouteLogger(request);
   const { agentId, capabilityId } = parseIds(await params);
+
+  assertBindingsEditable(await loadAgent(agentId));
 
   try {
     await prisma.aiAgentCapability.delete({

@@ -26,15 +26,18 @@ vi.mock('@/lib/db/client', () => ({
     aiProviderConfig: {
       findMany: vi.fn(),
     },
+    // The resolver hydrates the model registry first (#813).
+    aiProviderModel: {
+      findMany: vi.fn().mockResolvedValue([]),
+    },
   },
 }));
 
-vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
-  isApiKeyEnvVarSet: vi.fn((envVar: string | null) => {
-    if (!envVar) return false;
-    return envVar === 'PRESENT_KEY' || envVar === 'OTHER_PRESENT_KEY';
-  }),
-}));
+// Reachability goes through the credential seam (§120 t-744), whose default
+// reads the row's env var — so the keys are real env vars, not a stubbed check.
+process.env.PRESENT_KEY = 'present';
+process.env.OTHER_PRESENT_KEY = 'present';
+delete process.env.MISSING_KEY;
 
 vi.mock('@/lib/orchestration/llm/settings-resolver', () => ({
   getDefaultModelForTask: vi.fn(async (task: string) => {
@@ -65,6 +68,8 @@ import {
   registerProviderEligibility,
   resetProviderEligibility,
 } from '@/lib/orchestration/llm/provider-eligibility';
+import { getModel, __resetForTests as resetRegistry } from '@/lib/orchestration/llm/model-registry';
+import { __resetForTests as resetHydrate } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -128,6 +133,7 @@ describe('resolveAgentProviderAndModel', () => {
         providerSlug: 'openai',
         model: 'gpt-4o-mini',
         fallbacks: ['anthropic'],
+        provenance: { task: 'chat', primary: 'explicit', fallbacks: 'explicit' },
       });
       expect(prisma.aiProviderConfig.findMany).not.toHaveBeenCalled();
     });
@@ -244,6 +250,56 @@ describe('resolveAgentProviderAndModel', () => {
 
       expect(result.providerSlug).toBe('anthropic');
       expect(result.fallbacks).toEqual(['openai', 'ollama-local']);
+    });
+  });
+
+  // The binding tells the call-time gate (§120 t-741) where each provider came
+  // from, so the eligibility rule sees the same `source` at call time that it
+  // saw at selection.
+  describe('provenance', () => {
+    it('records an auto-picked primary and a system fill', async () => {
+      setProviders([
+        makeProviderRow({ slug: 'anthropic' }),
+        makeProviderRow({ slug: 'openai', createdAt: new Date('2026-04-16T00:00:00Z') }),
+      ]);
+
+      const result = await resolveAgentProviderAndModel(makeAgent(), 'routing');
+
+      expect(result.provenance).toEqual({
+        task: 'routing',
+        primary: 'primary',
+        fallbacks: 'system',
+      });
+    });
+
+    it("records a named provider and the agent's own fallback list as explicit", async () => {
+      setProviders([makeProviderRow({ slug: 'anthropic' })]);
+
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({ provider: 'anthropic', model: '', fallbackProviders: ['openai'] }),
+        'chat'
+      );
+
+      expect(result.provenance).toEqual({
+        task: 'chat',
+        primary: 'explicit',
+        fallbacks: 'explicit',
+      });
+    });
+
+    it('records an auto-picked primary with an explicit fallback list', async () => {
+      setProviders([makeProviderRow({ slug: 'anthropic' })]);
+
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({ fallbackProviders: ['openai'] }),
+        'chat'
+      );
+
+      expect(result.provenance).toEqual({
+        task: 'chat',
+        primary: 'primary',
+        fallbacks: 'explicit',
+      });
     });
   });
 });
@@ -566,5 +622,41 @@ describe('resolveAgentProviderAndModel — provider eligibility seam', () => {
     // a candidate), and what remains is in the resolver's order, not the rule's.
     expect(result.providerSlug).toBe('anthropic');
     expect(result.fallbacks).toEqual(['ollama']);
+  });
+});
+
+// #813: the chat handler reads `getModel(model).maxContext` for its history
+// budget BEFORE it fetches a provider, so `getProvider`'s hydrate is too late
+// for it. The resolver runs first on every agent path, so it hydrates too.
+describe('resolveAgentProviderAndModel — model registry hydration (#813)', () => {
+  const DATED_ID = 'gpt-4o-mini-2024-07-18';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetRegistry();
+    resetHydrate();
+  });
+
+  it('leaves a matrix-only model resolvable by the time it returns', async () => {
+    expect(getModel(DATED_ID)).toBeUndefined();
+    vi.mocked(prisma.aiProviderModel.findMany).mockResolvedValue([
+      {
+        providerSlug: 'openai',
+        modelId: DATED_ID,
+        name: 'Pinned snapshot',
+        tierRole: 'worker',
+        deploymentProfiles: ['hosted'],
+        contextLength: 'medium',
+        toolUse: 'strong',
+        capabilities: ['chat'],
+        paramProfile: null,
+        costPerMillionTokens: 0.375,
+        isActive: true,
+      },
+    ] as never);
+
+    await resolveAgentProviderAndModel(makeAgent({ provider: 'openai', model: DATED_ID }));
+
+    expect(getModel(DATED_ID)).toMatchObject({ provider: 'openai', maxContext: 32_000 });
   });
 });

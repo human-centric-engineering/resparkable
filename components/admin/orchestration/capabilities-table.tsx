@@ -27,6 +27,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Edit,
+  Eye,
   MoreHorizontal,
   Plus,
   Search,
@@ -36,6 +37,7 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-access';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tip } from '@/components/ui/tooltip';
 import {
@@ -69,6 +71,7 @@ import { API } from '@/lib/api/endpoints';
 import { parseApiResponse } from '@/lib/api/parse-response';
 import { parsePaginationMeta } from '@/lib/validations/common';
 import type { PaginationMeta } from '@/types/api';
+import { agentCount, OtherOrgUsage } from '@/components/admin/orchestration/other-org-usage';
 
 export interface CapabilitiesTableProps {
   initialCapabilities: AiCapabilityListItem[];
@@ -118,12 +121,18 @@ function isCurrentlyQuarantined(cap: {
   return state;
 }
 
+/** Agents using a capability in every org: this org's, listed, plus other orgs', counted (§107 t-752). */
+function agentsUsing(cap: AiCapabilityListItem): number {
+  return cap._agents.length + cap._otherOrgAgentCount;
+}
+
 export function CapabilitiesTable({
   initialCapabilities,
   initialMeta,
   availableCategories,
 }: CapabilitiesTableProps) {
   const router = useRouter();
+  const readOnly = useSharedSettingsReadOnly();
   const [capabilities, setCapabilities] = useState(initialCapabilities);
   const [meta, setMeta] = useState(initialMeta);
   const [search, setSearch] = useState('');
@@ -338,12 +347,14 @@ export function CapabilitiesTable({
             </Button>
           )}
         </div>
-        <Button asChild size="sm">
-          <Link href="/admin/orchestration/capabilities/new">
-            <Plus className="mr-2 h-4 w-4" />
-            New capability
-          </Link>
-        </Button>
+        {!readOnly && (
+          <Button asChild size="sm">
+            <Link href="/admin/orchestration/capabilities/new">
+              <Plus className="mr-2 h-4 w-4" />
+              New capability
+            </Link>
+          </Button>
+        )}
       </div>
 
       {listError && (
@@ -478,37 +489,44 @@ export function CapabilitiesTable({
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{cap.rateLimit ?? '—'}</TableCell>
                   <TableCell className="text-right tabular-nums">
-                    {cap._agents.length === 0 ? (
+                    {agentsUsing(cap) === 0 ? (
                       '0'
                     ) : (
                       <Popover>
                         <PopoverTrigger asChild>
                           <button className="cursor-pointer tabular-nums hover:underline">
-                            {cap._agents.length} →
+                            {agentsUsing(cap)} →
                           </button>
                         </PopoverTrigger>
                         <PopoverContent className="w-64 p-0" align="end">
                           <div className="border-b px-3 py-2">
                             <p className="text-sm font-medium">
-                              {cap._agents.length} agent{cap._agents.length !== 1 ? 's' : ''} using{' '}
+                              {agentCount(agentsUsing(cap))} using{' '}
                               <span className="font-semibold">{cap.name}</span>
                             </p>
                           </div>
-                          <ul className="max-h-48 overflow-y-auto py-1">
-                            {cap._agents.map((agent) => (
-                              <li key={agent.id}>
-                                <Link
-                                  href={`/admin/orchestration/agents/${agent.id}`}
-                                  className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
-                                >
-                                  <span className="truncate">{agent.name}</span>
-                                  <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
-                                    {agent.slug}
-                                  </span>
-                                </Link>
-                              </li>
-                            ))}
-                          </ul>
+                          {cap._agents.length > 0 && (
+                            <ul className="max-h-48 overflow-y-auto py-1">
+                              {cap._agents.map((agent) => (
+                                <li key={agent.id}>
+                                  <Link
+                                    href={`/admin/orchestration/agents/${agent.id}`}
+                                    className="hover:bg-muted flex items-center gap-2 px-3 py-1.5 text-sm transition-colors"
+                                  >
+                                    <span className="truncate">{agent.name}</span>
+                                    <span className="text-muted-foreground ml-auto shrink-0 font-mono text-xs">
+                                      {agent.slug}
+                                    </span>
+                                  </Link>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          <OtherOrgUsage
+                            count={cap._otherOrgAgentCount}
+                            afterList={cap._agents.length > 0}
+                            className="px-3 py-2"
+                          />
                         </PopoverContent>
                       </Popover>
                     )}
@@ -517,7 +535,7 @@ export function CapabilitiesTable({
                     <Switch
                       checked={cap.isActive}
                       onCheckedChange={(v) => void handleToggleStatus(cap, v)}
-                      disabled={cap.isSystem}
+                      disabled={cap.isSystem || readOnly}
                       aria-label={`Toggle ${cap.name} active`}
                     />
                   </TableCell>
@@ -535,10 +553,14 @@ export function CapabilitiesTable({
                         <DropdownMenuItem
                           onClick={() => router.push(`/admin/orchestration/capabilities/${cap.id}`)}
                         >
-                          <Edit className="mr-2 h-4 w-4" />
-                          Edit
+                          {readOnly ? (
+                            <Eye className="mr-2 h-4 w-4" />
+                          ) : (
+                            <Edit className="mr-2 h-4 w-4" />
+                          )}
+                          {readOnly ? 'View' : 'Edit'}
                         </DropdownMenuItem>
-                        {!cap.isSystem && (
+                        {!cap.isSystem && !readOnly && (
                           <DropdownMenuItem
                             className="text-red-600"
                             onClick={() => setDeleteTarget(cap)}
@@ -591,6 +613,7 @@ export function CapabilitiesTable({
       <DeleteCapabilityDialog
         target={deleteTarget}
         usedBy={deleteTarget?._agents ?? []}
+        otherOrgAgentCount={deleteTarget?._otherOrgAgentCount ?? 0}
         error={null}
         isDeleting={isLoading}
         onCancel={() => {

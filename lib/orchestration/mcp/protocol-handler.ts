@@ -6,12 +6,14 @@
  * prompts) with scope checking, rate limiting, and audit logging.
  *
  * Platform-agnostic: no Next.js imports.
+ *
+ * Tenancy posture: row-keyed — `keyRateLimitCache` by MCP API key id,
+ * refreshed under the system scope (lib/tenancy/process-state.ts).
  */
 
 import { logger } from '@/lib/logging';
 import {
   JsonRpcErrorCode,
-  MCP_LOG_LEVELS,
   McpScope,
   negotiateMcpProtocolVersion,
   type JsonRpcRequest,
@@ -19,8 +21,7 @@ import {
   type McpAuthContext,
   type McpCapabilities,
   type McpInitializeResult,
-  type McpLogLevel,
-  type McpSession,
+  type McpProtocolVersion,
 } from '@/types/mcp';
 import {
   mcpToolCallParamsSchema,
@@ -34,11 +35,8 @@ import {
   listMcpResources,
   readMcpResource,
   listMcpResourceTemplates,
-  isRegisteredMcpResourceUri,
 } from '@/lib/orchestration/mcp/resource-registry';
-import { getMcpSessionManager } from '@/lib/orchestration/mcp/singletons';
 import { listMcpPrompts, getMcpPrompt } from '@/lib/orchestration/mcp/prompt-registry';
-import { extractProgressToken } from '@/lib/orchestration/mcp/progress-tracker';
 import {
   completeMcpReference,
   type McpCompletionRef,
@@ -48,7 +46,16 @@ import type { McpServerState } from '@/lib/orchestration/mcp/types';
 
 interface HandlerContext {
   auth: McpAuthContext;
-  session: McpSession;
+  /**
+   * The revision to answer this request at.
+   *
+   * A request, not a session (§39 t-718): every MCP request now stands alone,
+   * so the version comes from the caller's `MCP-Protocol-Version` header —
+   * resolved once in the transport — or from `initialize`'s own params on the
+   * handshake. It used to be read off a stored session, which is why the field
+   * it replaced could be stale for the life of a process.
+   */
+  protocolVersion: McpProtocolVersion;
   serverState: McpServerState;
   rateLimiter: McpRateLimiter;
 }
@@ -132,7 +139,7 @@ export async function handleMcpRequest(
  * Dispatch to the appropriate method handler.
  */
 async function dispatchMethod(request: JsonRpcRequest, context: HandlerContext): Promise<unknown> {
-  const { auth, session } = context;
+  const { auth, protocolVersion } = context;
 
   switch (request.method) {
     case 'initialize':
@@ -142,67 +149,35 @@ async function dispatchMethod(request: JsonRpcRequest, context: HandlerContext):
       return {};
 
     case 'tools/list':
-      requireInitialized(session);
       requireScope(auth, McpScope.TOOLS_LIST);
-      return handleToolsList(request.params, session, auth);
+      return handleToolsList(request.params, protocolVersion, auth);
 
     case 'tools/call':
-      requireInitialized(session);
       requireScope(auth, McpScope.TOOLS_EXECUTE);
-      // Validate the optional progress token early so a bad shape gets a
-      // clean INVALID_PARAMS instead of silently being ignored. Reporter
-      // wiring into capabilities is opt-in and lands per-capability.
-      validateProgressToken(request.params);
       return handleToolsCall(request.params, auth);
 
     case 'resources/list':
-      requireInitialized(session);
       requireScope(auth, McpScope.RESOURCES_READ);
       return handleResourcesList(request.params);
 
     case 'resources/templates/list':
-      requireInitialized(session);
       requireScope(auth, McpScope.RESOURCES_READ);
       return handleResourcesTemplatesList();
 
     case 'resources/read':
-      requireInitialized(session);
       requireScope(auth, McpScope.RESOURCES_READ);
-      validateProgressToken(request.params);
       return handleResourcesRead(request.params, auth);
 
-    case 'resources/subscribe':
-      requireInitialized(session);
-      requireScope(auth, McpScope.RESOURCES_READ);
-      requireDurableSession(session, 'resources/subscribe');
-      return handleResourcesSubscribe(request.params, session);
-
-    case 'resources/unsubscribe':
-      requireInitialized(session);
-      requireScope(auth, McpScope.RESOURCES_READ);
-      requireDurableSession(session, 'resources/unsubscribe');
-      return handleResourcesUnsubscribe(request.params, session);
-
-    case 'logging/setLevel':
-      requireInitialized(session);
-      requireDurableSession(session, 'logging/setLevel');
-      // Logging level is a per-session knob; the spec does not require a
-      // scope. Anyone with a valid session can ask for less verbose logs.
-      return handleLoggingSetLevel(request.params, session);
-
     case 'completion/complete':
-      requireInitialized(session);
       // Scope check is per ref-type and happens inside the handler — a
       // prompt-ref needs prompts:read, a resource-ref needs resources:read.
       return handleCompletionComplete(request.params, auth);
 
     case 'prompts/list':
-      requireInitialized(session);
       requireScope(auth, McpScope.PROMPTS_READ);
       return handlePromptsList(request.params);
 
     case 'prompts/get':
-      requireInitialized(session);
       requireScope(auth, McpScope.PROMPTS_READ);
       return handlePromptsGet(request.params);
 
@@ -222,7 +197,7 @@ function handleInitialize(
   params: Record<string, unknown> | undefined,
   context: HandlerContext
 ): McpInitializeResult {
-  const { serverState, session } = context;
+  const { serverState } = context;
 
   const negotiation = negotiateMcpProtocolVersion(params?.protocolVersion);
   if (!negotiation) {
@@ -240,25 +215,23 @@ function handleInitialize(
   }
 
   // Advertise only features that have working handlers in this build.
-  // tools / resources / prompts broadcast list_changed when the admin mutates
-  // their catalogue. resources.subscribe accepts resources/subscribe +
-  // resources/unsubscribe and pushes notifications/resources/updated.
-  // logging:{} signals logging/setLevel + notifications/message support.
-  // completions:{} signals completion/complete support.
   //
-  // Every one of those except `completions` needs a session that outlives the
-  // request, so under `MCP_SESSION_MODE=stateless` they are withheld. Refusing
-  // the calls (see `requireDurableSession`) is the backstop; not advertising is
-  // the fix, because a conforming client then never asks. `completions` stays in
-  // both modes — `completion/complete` is a plain request/response lookup.
-  const durable = !session.ephemeral;
+  // Every capability that PUSHES is absent, and permanently (§39 t-718):
+  // `listChanged` promises `notifications/{tools,resources,prompts}/list_changed`,
+  // `resources.subscribe` promises `notifications/resources/updated`, and
+  // `logging: {}` IS the signal that `logging/setLevel` and
+  // `notifications/message` work. All four needed a session and a
+  // server-to-client stream outliving the request; there is neither. Not
+  // advertising is the fix rather than refusing the calls, because a conforming
+  // client then never asks — the refusals are gone too, so an attempt now gets
+  // METHOD_NOT_FOUND like any other unknown method.
+  //
+  // `completions` stays: `completion/complete` is a plain request/response
+  // lookup that pushes nothing.
   const capabilities: McpCapabilities = {
-    tools: durable ? { listChanged: true } : {},
-    resources: durable ? { listChanged: true, subscribe: true } : {},
-    prompts: durable ? { listChanged: true } : {},
-    // Dropped entirely rather than emptied: `logging: {}` IS the signal that
-    // logging/setLevel works, so an empty object would still advertise it.
-    ...(durable ? { logging: {} } : {}),
+    tools: {},
+    resources: {},
+    prompts: {},
     completions: {},
   };
 
@@ -276,7 +249,7 @@ const DEFAULT_PAGE_SIZE = 50;
 
 async function handleToolsList(
   params: Record<string, unknown> | undefined,
-  session: McpSession,
+  protocolVersion: McpProtocolVersion,
   auth: McpAuthContext
 ): Promise<{ tools: unknown[]; nextCursor?: string }> {
   // Scope the catalogue to the key's agent so discovery matches dispatch: a
@@ -287,11 +260,11 @@ async function handleToolsList(
   const page = allTools.slice(offset, offset + limit);
   const nextCursor = offset + limit < allTools.length ? encodeCursor(offset + limit) : undefined;
 
-  // Annotations are a 2025-06-18 addition. Emit them only when the session
-  // negotiated that version or newer; for 2024-11-05 clients the field is
+  // Annotations are a 2025-06-18 addition. Emit them only when the caller
+  // declared that version or newer; for 2024-11-05 clients the field is
   // silently dropped (the spec says clients SHOULD ignore unknown fields,
   // but being clean is cheap).
-  const emitAnnotations = session.protocolVersion >= '2025-06-18';
+  const emitAnnotations = protocolVersion >= '2025-06-18';
 
   return {
     tools: page.map((t) => ({
@@ -375,54 +348,6 @@ async function handleResourcesRead(
   return { contents: [content] };
 }
 
-async function handleResourcesSubscribe(
-  params: Record<string, unknown> | undefined,
-  session: McpSession
-): Promise<Record<string, never>> {
-  const uri = extractUri(params);
-
-  // Subscriptions are for concrete URIs only — clients can't subscribe
-  // to a template (`resparkable://patterns/{id}`). Detect template syntax
-  // before any registry lookup so we give a clear error.
-  if (uri.includes('{') || uri.includes('}')) {
-    throw new McpProtocolError(
-      JsonRpcErrorCode.INVALID_PARAMS,
-      'Cannot subscribe to a template URI. Subscribe to concrete instances only (e.g. resparkable://patterns/5, not resparkable://patterns/{id}).'
-    );
-  }
-
-  // Reject ghost subscriptions to URIs the registry doesn't know about —
-  // those clients would never receive an update notification anyway.
-  if (!(await isRegisteredMcpResourceUri(uri))) {
-    throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, `Unknown resource URI: ${uri}`);
-  }
-
-  const result = getMcpSessionManager().subscribe(session.id, uri);
-  if (result === 'limit-exceeded') {
-    throw new McpProtocolError(
-      JsonRpcErrorCode.INVALID_REQUEST,
-      'Subscription limit exceeded. Unsubscribe from existing URIs before adding more.'
-    );
-  }
-  if (result === 'session-not-found') {
-    throw new McpProtocolError(JsonRpcErrorCode.SESSION_NOT_FOUND, 'Session not found or expired');
-  }
-  // Per spec, the response payload is an empty object.
-  return {};
-}
-
-async function handleResourcesUnsubscribe(
-  params: Record<string, unknown> | undefined,
-  session: McpSession
-): Promise<Record<string, never>> {
-  const uri = extractUri(params);
-  const result = getMcpSessionManager().unsubscribe(session.id, uri);
-  if (result === 'session-not-found') {
-    throw new McpProtocolError(JsonRpcErrorCode.SESSION_NOT_FOUND, 'Session not found or expired');
-  }
-  return Promise.resolve({});
-}
-
 async function handleCompletionComplete(
   params: Record<string, unknown> | undefined,
   auth: McpAuthContext
@@ -483,55 +408,6 @@ function parseCompletionRef(raw: unknown): McpCompletionRef {
     JsonRpcErrorCode.INVALID_PARAMS,
     'ref.type must be "ref/prompt" or "ref/resource"'
   );
-}
-
-function handleLoggingSetLevel(
-  params: Record<string, unknown> | undefined,
-  session: McpSession
-): Record<string, never> {
-  const level = params?.level;
-  if (typeof level !== 'string') {
-    throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, 'level is required');
-  }
-  if (!(MCP_LOG_LEVELS as readonly string[]).includes(level)) {
-    throw new McpProtocolError(
-      JsonRpcErrorCode.INVALID_PARAMS,
-      `Unknown level: ${level}. Expected one of: ${MCP_LOG_LEVELS.join(', ')}`
-    );
-  }
-  getMcpSessionManager().setLogLevel(session.id, level as McpLogLevel);
-  return {};
-}
-
-/**
- * Validate `params._meta.progressToken` shape if present. Throws
- * `INVALID_PARAMS` for malformed tokens; no-op for absent tokens.
- */
-function validateProgressToken(params: Record<string, unknown> | undefined): void {
-  const meta = params?._meta;
-  if (meta === undefined || meta === null) return;
-  if (typeof meta !== 'object') {
-    throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, '_meta must be an object');
-  }
-  try {
-    extractProgressToken(meta as Record<string, unknown>);
-  } catch (err) {
-    if (err instanceof RangeError) {
-      throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, err.message);
-    }
-    throw err;
-  }
-}
-
-function extractUri(params: Record<string, unknown> | undefined): string {
-  const uri = params?.uri;
-  if (typeof uri !== 'string' || uri.length === 0) {
-    throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, 'uri is required');
-  }
-  if (uri.length > 500) {
-    throw new McpProtocolError(JsonRpcErrorCode.INVALID_PARAMS, 'uri exceeds 500 char limit');
-  }
-  return uri;
 }
 
 async function handlePromptsList(
@@ -605,45 +481,6 @@ function handleNotification(method: string): null {
 // Helpers
 // ============================================================================
 
-function requireInitialized(session: McpSession): void {
-  if (!session.initialized) {
-    throw new McpProtocolError(
-      JsonRpcErrorCode.INTERNAL_ERROR,
-      'Session not initialized — call initialize first'
-    );
-  }
-}
-
-/**
- * Refuse a method that needs a session outliving the request.
- *
- * Under `MCP_SESSION_MODE=stateless` there is nowhere to keep a subscription or
- * a log level, and the process that would emit the notification is not
- * guaranteed to be the one still running. Accepting the call and returning
- * success would be the worse failure: a subscription that never notifies looks
- * identical to a resource that never changes, and the client has no way to tell.
- *
- * Named in the message so an operator reading a client's error knows which knob
- * produced it, and distinct from METHOD_NOT_FOUND because the method exists —
- * it is the topology that cannot carry it.
- *
- * **Ordering:** call this AFTER `requireScope` where a scope applies, so a key
- * without permission gets the same denial in either session mode rather than
- * being told which mode the server runs. The mode is not a secret — an
- * authenticated caller can read it off the absent `Mcp-Session-Id` header — but
- * mode-independent errors for an unauthorised key are the less surprising
- * behaviour. Pinned by "an unauthorised key gets the same denial in either
- * session mode" in the protocol-handler tests.
- */
-function requireDurableSession(session: McpSession, method: string): void {
-  if (session.ephemeral) {
-    throw new McpProtocolError(
-      JsonRpcErrorCode.STATELESS_UNSUPPORTED,
-      `${method} requires a durable session; this server runs MCP_SESSION_MODE=stateless`
-    );
-  }
-}
-
 function requireScope(auth: McpAuthContext, scope: string): void {
   if (!hasScope(auth, scope)) {
     throw new McpProtocolError(
@@ -675,17 +512,59 @@ function extractResourceUri(request: JsonRpcRequest): string | undefined {
   return undefined;
 }
 
-/** Placeholder — override rate limit from McpApiKey.rateLimitOverride */
+/**
+ * Per-key rate-limit overrides from `McpApiKey.rateLimitOverride`, keyed by
+ * key id — unique across orgs, so one process-wide map is correct.
+ *
+ * Filling it is the part that is not (§108 t-712). The refresh is kicked off
+ * from `getKeyRateLimit` on the request path, so it inherited whichever org
+ * that request was running as, and `McpApiKey` is tenant-owned: at `multi` the
+ * map then held one org's overrides and every other org's key fell back to the
+ * default limit for the next five minutes — silently, and differently
+ * depending on who happened to refresh it. The read is genuinely global, so it
+ * takes the audited system scope, exactly as the maintenance tick's idle-gate
+ * horizon does.
+ */
 let keyRateLimitCache = new Map<string, number | null>();
 let keyRateLimitCacheAt = 0;
+/**
+ * The refresh in flight, if any.
+ *
+ * `getKeyRateLimit` kicks the refresh off without awaiting it, and the
+ * freshness stamp is only written when it resolves — so without this latch
+ * every request arriving during a refresh starts another one. That was a
+ * duplicate query before; now each duplicate is an audited RLS bypass with an
+ * `info` line, and a burst at a five-minute boundary would produce N of them,
+ * drowning the signal that log exists to give (`lib/tenancy/context.ts`).
+ * Same shape as `model-registry-db-hydrate.ts`.
+ */
+let keyRateLimitRefresh: Promise<void> | null = null;
+/**
+ * The earliest a failed refresh may be retried.
+ *
+ * The freshness stamp is only written on success, so without this a failing
+ * query is re-attempted by EVERY request — the latch dedupes concurrent
+ * refreshes, not serial ones — and each attempt is an audited bypass with its
+ * own `info` line. A pool exhausted for a minute under load would emit one
+ * per request, which is the drowning the latch exists to prevent, arriving by
+ * the other door. Thirty seconds rather than the full TTL: a transient blip
+ * should not cost five minutes of every org's overrides.
+ */
+let keyRateLimitRetryAt = 0;
 const KEY_RATE_CACHE_TTL = 5 * 60 * 1000;
+const KEY_RATE_FAILURE_BACKOFF_MS = 30 * 1000;
 
 async function loadKeyRateLimits(): Promise<void> {
   const { prisma } = await import('@/lib/db/client');
-  const keys = await prisma.mcpApiKey.findMany({
-    where: { isActive: true, rateLimitOverride: { not: null } },
-    select: { id: true, rateLimitOverride: true },
-  });
+  const { runAsSystem } = await import('@/lib/tenancy/context');
+  const keys = await runAsSystem(
+    'mcp: per-key rate-limit overrides, which are keyed by a key id and read for every org',
+    () =>
+      prisma.mcpApiKey.findMany({
+        where: { isActive: true, rateLimitOverride: { not: null } },
+        select: { id: true, rateLimitOverride: true },
+      })
+  );
   const map = new Map<string, number | null>();
   for (const k of keys) {
     map.set(k.id, k.rateLimitOverride);
@@ -694,9 +573,45 @@ async function loadKeyRateLimits(): Promise<void> {
   keyRateLimitCacheAt = Date.now();
 }
 
+/**
+ * Test-only: forget the overrides so the next lookup refreshes.
+ *
+ * The cache is module state with a five-minute TTL, so without this a test
+ * asserting on the refresh depends on being the first in its file to reach
+ * this code path.
+ */
+export function __resetKeyRateLimitCacheForTests(): void {
+  keyRateLimitCache = new Map<string, number | null>();
+  keyRateLimitCacheAt = 0;
+  keyRateLimitRefresh = null;
+  keyRateLimitRetryAt = 0;
+}
+
+/**
+ * Start a refresh unless one is already running, and never reject.
+ *
+ * The caller cannot await this — the limit is wanted now, from whatever the
+ * cache holds — so a database failure here has nowhere to go but a log line.
+ * Before this it had nowhere to go at all: an unhandled rejection.
+ */
+function refreshKeyRateLimits(): void {
+  if (keyRateLimitRefresh || Date.now() < keyRateLimitRetryAt) return;
+  keyRateLimitRefresh = loadKeyRateLimits()
+    .catch((err: unknown) => {
+      keyRateLimitRetryAt = Date.now() + KEY_RATE_FAILURE_BACKOFF_MS;
+      logger.warn('MCP per-key rate-limit overrides could not be refreshed', {
+        error: err instanceof Error ? err.message : String(err),
+        retryInMs: KEY_RATE_FAILURE_BACKOFF_MS,
+      });
+    })
+    .finally(() => {
+      keyRateLimitRefresh = null;
+    });
+}
+
 function getKeyRateLimit(apiKeyId: string): number | null {
   if (Date.now() - keyRateLimitCacheAt > KEY_RATE_CACHE_TTL) {
-    void loadKeyRateLimits();
+    refreshKeyRateLimits();
   }
   return keyRateLimitCache.get(apiKeyId) ?? null;
 }

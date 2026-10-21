@@ -50,8 +50,12 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
-  isApiKeyEnvVarSet: vi.fn(() => false),
   clearCache: vi.fn(),
+}));
+
+// `apiKeyPresent` is the credential seam's answer (§120 t-744), not the env var's.
+vi.mock('@/lib/orchestration/llm/provider-credentials', () => ({
+  hasProviderKey: vi.fn(async () => false),
 }));
 
 vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
@@ -61,9 +65,19 @@ vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
 
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
+// The real count runs (against the mocked client, at single); a test
+// overrides one answer to stand in for another org's references (t-731).
+vi.mock('@/lib/orchestration/admin/global-config-usage', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/orchestration/admin/global-config-usage')>();
+  return { ...actual, providerUsage: vi.fn(actual.providerUsage) };
+});
+
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import { isApiKeyEnvVarSet, clearCache } from '@/lib/orchestration/llm/provider-manager';
+import { providerUsage } from '@/lib/orchestration/admin/global-config-usage';
+import { clearCache } from '@/lib/orchestration/llm/provider-manager';
+import { hasProviderKey } from '@/lib/orchestration/llm/provider-credentials';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -84,6 +98,7 @@ function makeProvider(overrides: Record<string, unknown> = {}) {
     metadata: null,
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
     createdBy: ADMIN_ID,
     createdAt: new Date('2025-01-01'),
     updatedAt: new Date('2025-01-01'),
@@ -146,7 +161,7 @@ describe('GET /api/v1/admin/orchestration/providers/:id', () => {
   describe('Successful retrieval', () => {
     it('returns provider with apiKeyPresent field', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
 
       const response = await GET(makeRequest(), makeParams(PROVIDER_ID));
@@ -159,7 +174,8 @@ describe('GET /api/v1/admin/orchestration/providers/:id', () => {
       // test-review:accept tobe_true — structural boolean assertion on API response field
       expect(data.success).toBe(true);
       expect(data.data.id).toBe(PROVIDER_ID);
-      expect(typeof data.data.apiKeyPresent).toBe('boolean');
+      // The seam's answer, passed through (it was told `true` above).
+      expect(data.data.apiKeyPresent).toBe(true);
     });
   });
 
@@ -215,7 +231,7 @@ describe('PATCH /api/v1/admin/orchestration/providers/:id', () => {
   describe('Successful update', () => {
     it('updates provider and returns 200 with apiKeyPresent field', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
       vi.mocked(prisma.aiProviderConfig.update).mockResolvedValue(
         makeProvider({ name: 'Updated' })
@@ -232,12 +248,13 @@ describe('PATCH /api/v1/admin/orchestration/providers/:id', () => {
       );
       // test-review:accept tobe_true — structural boolean assertion on API response field
       expect(data.success).toBe(true);
-      expect(typeof data.data.apiKeyPresent).toBe('boolean');
+      // The seam's answer, passed through (it was told `true` above).
+      expect(data.data.apiKeyPresent).toBe(true);
     });
 
     it('updates all optional fields in a single payload', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
       vi.mocked(prisma.aiProviderConfig.update).mockResolvedValue(makeProvider());
 
@@ -265,6 +282,34 @@ describe('PATCH /api/v1/admin/orchestration/providers/:id', () => {
         isActive: false,
         metadata: { team: 'platform' },
       });
+    });
+
+    it('sets a jurisdiction upper-cased, clears it with null, and leaves it when absent (§120 t-742)', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
+      vi.mocked(prisma.aiProviderConfig.update).mockResolvedValue(makeProvider());
+
+      await PATCH(makeRequest('PATCH', { jurisdiction: 'us' }), makeParams(PROVIDER_ID));
+      await PATCH(makeRequest('PATCH', { jurisdiction: null }), makeParams(PROVIDER_ID));
+      await PATCH(makeRequest('PATCH', { name: 'Renamed' }), makeParams(PROVIDER_ID));
+
+      const data = vi.mocked(prisma.aiProviderConfig.update).mock.calls.map(([args]) => args.data);
+      expect(data[0]).toMatchObject({ jurisdiction: 'US' });
+      expect(data[1]).toMatchObject({ jurisdiction: null });
+      expect(data[2]).not.toHaveProperty('jurisdiction');
+    });
+
+    it('refuses a jurisdiction that is not a short code', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
+
+      const response = await PATCH(
+        makeRequest('PATCH', { jurisdiction: 'European Union' }),
+        makeParams(PROVIDER_ID)
+      );
+
+      expect(response.status).toBe(400);
+      expect(prisma.aiProviderConfig.update).not.toHaveBeenCalled();
     });
 
     it('clears provider cache after update', async () => {
@@ -306,7 +351,7 @@ describe('PATCH /api/v1/admin/orchestration/providers/:id', () => {
       process.env[secretEnvVar] = secretValue;
 
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      vi.mocked(isApiKeyEnvVarSet).mockReturnValue(true);
+      vi.mocked(hasProviderKey).mockResolvedValue(true);
       const current = makeProvider({ apiKeyEnvVar: 'OLD_KEY' });
       const updated = makeProvider({ apiKeyEnvVar: secretEnvVar });
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(current);
@@ -326,7 +371,8 @@ describe('PATCH /api/v1/admin/orchestration/providers/:id', () => {
       const data = JSON.parse(responseText) as {
         data: { apiKeyPresent: boolean; apiKeyEnvVar?: string };
       };
-      expect(typeof data.data.apiKeyPresent).toBe('boolean');
+      // The seam's answer, passed through (it was told `true` above).
+      expect(data.data.apiKeyPresent).toBe(true);
 
       // Cleanup
       delete process.env[secretEnvVar];
@@ -505,6 +551,26 @@ describe('DELETE /api/v1/admin/orchestration/providers/:id?permanent=true', () =
       where: { fallbackProviders: { has: 'anthropic' } },
     });
     expect(prisma.aiCostLog.count).toHaveBeenCalledWith({ where: { provider: 'anthropic' } });
+  });
+
+  it('refuses on every org’s references, as providerUsage counts them (t-731)', async () => {
+    // providerUsage counts in every org (its own tests run it at multi);
+    // here only another org's agents reference the provider.
+    vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
+    vi.mocked(providerUsage).mockResolvedValueOnce({
+      primaryAgents: 0,
+      fallbackAgents: 2,
+      costLogRows: 0,
+    });
+
+    const response = await DELETE(
+      makeRequest('DELETE', undefined, { permanent: 'true' }),
+      makeParams(PROVIDER_ID)
+    );
+
+    expect(response.status).toBe(409);
+    expect(providerUsage).toHaveBeenCalledWith('anthropic');
+    expect(prisma.aiProviderConfig.delete).not.toHaveBeenCalled();
   });
 
   it('returns 409 when agents reference the slug as primary provider', async () => {

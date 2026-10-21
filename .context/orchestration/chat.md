@@ -128,6 +128,12 @@ Concretely:
 9. **`warning`** — non-terminal, may appear at any point. Carries `code` and `message`. Codes: `budget_warning` (agent at ≥80% spend), `input_flagged` (input guard detected a pattern), `output_flagged` (output guard detected a pattern), `citation_missing` / `citation_hallucinated` (citation guard detected a violation in `warn_and_continue` mode), `provider_retry` (falling back to next provider), `tool_not_advertised` (the model asked for a tool the agent was never offered this turn — refused before dispatch, and also emitted as the `capability.refused_not_advertised` hook event), `tool_unavailable` (the repeated-failure circuit breaker skipped a tool). Clients should display transiently and clear when the stream ends. **The embed widget currently drops `warning` frames entirely** — its event dispatch handles `start` / `content` / `content_reset` / `status` / `citations` / `approval_required` / `error` / `done` and nothing else — so every code above is admin-surface-only today. That predates the codes added for #488 and applies to all of them equally; it is worth knowing before relying on a warning reaching an end user.
 10. **`content_reset`** — emitted when the provider fallback activates mid-stream. Carries `reason: 'provider_fallback'`. **Clients must discard all buffered `content` deltas** received before this event and start accumulating fresh.
 
+## Pre-token latency
+
+Before the first `content` event, `runInner` does several database reads. The mutually independent ones — the entity context block (`buildContext`), per-user memories (`aiUserMemory.findMany`), and capability definitions (`getCapabilityDefinitions`) — run concurrently in one `Promise.all`, so their round trips overlap instead of stacking (#449). This matters most on serverless, where the app→Postgres round trip is paid per query. `capabilityDefinitions` is not consumed until the tool loop; it is hoisted into the batch because nothing in between affects it.
+
+The genuinely dependent reads stay sequential: cap settings → `loadOrCreateConversation` → `loadHistory` → the message count (only when `maxMessagesPerConversation` is set) → the user-message persist (skipped on an [agent-opened turn](#agent-opened-turns-and-app-metadata)). They chain on the conversation id, and the order is load-bearing: history is loaded before the new user message is written. Adding a read to the batch that depends on the resolved prompt or the built messages would be a reordering, not a scheduling change.
+
 ## Agent-opened turns and app metadata
 
 Two `ChatRequest` fields exist for apps that drive a conversation rather than
@@ -509,9 +515,9 @@ export function initAppContextContributors(): void {
 
 Registration is idempotent by type: re-registering a type replaces its loader. The loader signature is `(id, request: ContextRequest) => Promise<string>`; a loader that ignores the 2nd arg (`(id) => …`) stays valid. Ships empty upstream so a fork's edits merge cleanly.
 
-**Cache:** plain `Map<string, { value, expiresAt }>` with a 60 s TTL per `(type, id, userId)`. An empty `userId` collapses to a single shared partition (byte-for-byte the pre-widening `(type, id)` key space), so one user's per-user context never leaks to another. Matches the dispatcher's pattern — no shared TTL utility is introduced.
+**Cache:** plain `Map<string, { value, expiresAt }>` with a 60 s TTL per `(orgId, type, id, userId)`. An empty `userId` collapses to a single shared partition **within the org** (byte-for-byte the pre-widening key space), so one user's per-user context never leaks to another. The org comes first and is not optional (§108 t-712): `type` and `id` both arrive from the request and the bodies they key are built from tenant-owned rows — `pattern` keys by a pattern _number_ over `AiKnowledgeChunk` — so a user who belongs to two orgs would otherwise open `pattern:3` in one and be served its knowledge inside the other's prompt. At `single` the prefix is one constant. Matches the dispatcher's pattern — no shared TTL utility is introduced.
 
-**Invalidation:** `invalidateContext(type, id, request?)` drops a single entry — pass the same `request` (i.e. `userId`) given to `buildContext` so the matching per-user partition is cleared. The streaming handler calls this after every tool dispatch when a context is bound, so a future mutating capability (e.g. `update_pattern`) triggers a re-fetch on the next turn. Phase 2c ships no mutating capabilities, but the hook is wired so later slices don't need to retrofit.
+**Invalidation:** `invalidateContext(type, id, request?)` drops a single entry — pass the same `request` (i.e. `userId`) given to `buildContext` so the matching per-user partition is cleared, and call it inside the same org, since it builds the same org-prefixed key. The streaming handler calls this after every tool dispatch when a context is bound, so a future mutating capability (e.g. `update_pattern`) triggers a re-fetch on the next turn. Phase 2c ships no mutating capabilities, but the hook is wired so later slices don't need to retrofit.
 
 ## Resuming a surface conversation
 
@@ -556,7 +562,7 @@ The post-detection sibling of the guard-floor seam. When an inline guard **flags
 
 **Fire-and-forget.** Emission never delays or breaks the turn: each contributor runs on a microtask (so it can't block the handler), and a synchronous throw or an async rejection is swallowed and logged. It fires **before** the `block` short-circuit, so a `block` outcome is still observed. An empty registry is a no-op — inert in vanilla Resparkable.
 
-A contributor receives a `GuardEventContext` keyed on the turn's `(contextType, contextId, agentId, userId, conversationId)` and a `GuardEvent` = `{ guard: 'input'|'output'|'citation', outcome: GuardMode }` — where `outcome` is the effective mode the guard acted in (`block` = turn stopped, `warn_and_continue` = warned, `log_only` = logged only, `none` = flagged but no action). It is **observation only**: it cannot change detection or the action taken (use a guard-floor contributor to raise strictness). A throwing init is logged and rolled back: contributors registered before the throw would otherwise observe every guard firing for the life of the process — and these are the observers that notify and escalate — from a config the log reports as disabled. See [Fork Init Seams](../architecture/fork-init-seams.md).
+A contributor receives a `GuardEventContext` keyed on the turn's `(contextType, contextId, agentId, userId, conversationId)` — plus `embedVisitorId` when the caller is an anonymous embed widget visitor, whose `userId` is then the synthetic visitor id rather than a `User.id`, so check it before writing `userId` into a foreign key to `user` (#705, t-765) — and a `GuardEvent` = `{ guard: 'input'|'output'|'citation', outcome: GuardMode }` — where `outcome` is the effective mode the guard acted in (`block` = turn stopped, `warn_and_continue` = warned, `log_only` = logged only, `none` = flagged but no action). It is **observation only**: it cannot change detection or the action taken (use a guard-floor contributor to raise strictness). A throwing init is logged and rolled back: contributors registered before the throw would otherwise observe every guard firing for the life of the process — and these are the observers that notify and escalate — from a config the log reports as disabled. See [Fork Init Seams](../architecture/fork-init-seams.md).
 
 ```typescript
 // lib/app/guard-event-contributors.ts — called once by the chat handler
@@ -615,6 +621,8 @@ Per-user-per-agent persistent memory that survives across conversations. Stored 
 1. Before building the message array, the handler loads all memories for `(request.userId, agent.id)` from `AiUserMemory`, ordered by `updatedAt DESC`, capped at 50 entries.
 2. If memories exist, they're injected as a `[User memories]` system message after the context block but before conversation history. Format: `- key: value` per entry.
 3. Agents read/write memories via two built-in capabilities: `read_user_memory` and `write_user_memory`.
+
+**An embed widget visitor has no memory** (#705, t-765). Both capabilities refuse a visitor with `anonymous_visitor`, and the load in step 1 finds no rows under a visitor id. The visitor id is a hash of the embed token and the client IP, so remembering per visitor would read one person's memories back to everyone sharing their address. See [`embed.md`](./embed.md#a-visitor-is-not-a-user).
 
 **Capabilities:**
 

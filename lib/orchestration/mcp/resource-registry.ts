@@ -10,6 +10,9 @@
  * `lib/app/mcp-resources.ts` (#563).
  *
  * Platform-agnostic: no Next.js imports.
+ *
+ * Tenancy posture: global-config for the resource cache; the handler maps
+ * are code registrations (lib/tenancy/process-state.ts).
  */
 
 import { prisma } from '@/lib/db/client';
@@ -320,9 +323,18 @@ let cachedResources: McpResourceDefinition[] | null = null;
 let cachedAt = 0;
 
 /**
- * List all MCP-exposed resources that are enabled.
+ * A row is a template when its URI carries a `{param}` expression — RFC 6570's
+ * only marker of a variable, `{?q}` included. A query string with no
+ * expression is a fixed URI and is read as-is. The one test behind both
+ * listings, so a row lands in exactly one of `resources/list` and
+ * `resources/templates/list`.
  */
-export async function listMcpResources(): Promise<McpResourceDefinition[]> {
+function isTemplateUri(uri: string): boolean {
+  return /\{[^}]+\}/.test(uri);
+}
+
+/** Every enabled row, templates included, behind the 5-minute cache. */
+async function loadEnabledResources(): Promise<McpResourceDefinition[]> {
   const now = Date.now();
   if (cachedResources && now - cachedAt < CACHE_TTL_MS) {
     return cachedResources;
@@ -341,6 +353,17 @@ export async function listMcpResources(): Promise<McpResourceDefinition[]> {
 
   cachedAt = Date.now();
   return cachedResources;
+}
+
+/**
+ * List the concrete MCP-exposed resources that are enabled — the rows a client
+ * can read as-is. Templated rows (those with a `{param}` expression) are
+ * left to {@link listMcpResourceTemplates}: listing one here offers an entry
+ * that can only be read with the literal `{param}` in it.
+ */
+export async function listMcpResources(): Promise<McpResourceDefinition[]> {
+  const all = await loadEnabledResources();
+  return all.filter((r) => !isTemplateUri(r.uri));
 }
 
 /**
@@ -473,7 +496,7 @@ export async function listMcpResourceTemplates(): Promise<McpResourceTemplate[]>
   });
 
   return rows
-    .filter((r) => /\{[^}]+\}/.test(r.uri) || r.uri.includes('?'))
+    .filter((r) => isTemplateUri(r.uri))
     .map((r) => ({
       uriTemplate: r.uri,
       name: r.name,
@@ -492,10 +515,13 @@ export function clearMcpResourceCache(): void {
  * Check whether a concrete URI is registered (exactly or as the
  * concrete instance of a parameterised template).
  *
- * Used by `resources/subscribe` to reject ghost subscriptions — the spec
- * lets a client subscribe to any URI, but accepting subs for URIs that
- * have no handler is misleading (the client will never get an `updated`
- * notification). Reject early instead.
+ * **No platform caller since §39 t-718.** It existed for
+ * `resources/subscribe`, to reject a ghost subscription: the spec let a client
+ * subscribe to any URI, and accepting one for a URI with no handler was
+ * misleading, because no `updated` notification would ever arrive. That method
+ * went with the stateful transport. Kept because it is on the MCP barrel and a
+ * fork may use it, and because whatever implements `subscriptions/listen` will
+ * want exactly this check for its `resourceSubscriptions` filter.
  *
  * Returns true when:
  *   - the URI matches an enabled resource exactly, OR
@@ -504,7 +530,8 @@ export function clearMcpResourceCache(): void {
  *     `resparkable://knowledge/patterns/{number}`).
  */
 export async function isRegisteredMcpResourceUri(uri: string): Promise<boolean> {
-  const all = await listMcpResources();
+  // Unfiltered: the prefix match below needs the template rows.
+  const all = await loadEnabledResources();
   for (const r of all) {
     if (r.uri === uri) return true;
     // Strip template params + query suffix from the registered URI to get

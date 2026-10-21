@@ -229,9 +229,9 @@ A short primer first: HTTP is request/response — the client asks, the server a
 
 ### 2.2 JSON-RPC 2.0 over Streamable HTTP for the MCP server
 
-**What is it?** Model Context Protocol (MCP) is the protocol Anthropic defined for letting AI clients (Claude Desktop, IDE extensions, other agents) discover and invoke tools and resources on a remote server. "Streamable HTTP" means the client uses ordinary HTTP requests for calls and an SSE stream for asynchronous notifications. JSON-RPC 2.0 is a small request/response protocol where every call has a `method` name, parameters, and an `id` for correlation.
+**What is it?** Model Context Protocol (MCP) is the protocol Anthropic defined for letting AI clients (Claude Desktop, IDE extensions, other agents) discover and invoke tools and resources on a remote server. "Streamable HTTP" means the client uses ordinary HTTP requests for calls; it also defined an SSE stream for asynchronous notifications, which revision 2026-07-28 removed and Sunrise no longer offers (§39 t-718). JSON-RPC 2.0 is a small request/response protocol where every call has a `method` name, parameters, and an `id` for correlation.
 
-**What we chose:** A full MCP server implementation using JSON-RPC 2.0 over Streamable HTTP — POST for requests, GET for the notification stream, DELETE for session termination. Up to 20 batched JSON-RPC requests per call, 1 MB max body.
+**What we chose:** A full MCP server implementation using JSON-RPC 2.0 over Streamable HTTP. **POST is the only method** (§39 t-718); GET and DELETE answer `405 Allow: POST`. It was originally POST for requests, GET for the notification stream and DELETE for session termination — revision 2026-07-28 removed the latter two and Sunrise followed, which is the reversal §2.7 records. Up to 20 batched JSON-RPC requests per call, 1 MB max body.
 
 **Alternatives**
 
@@ -246,9 +246,12 @@ A short primer first: HTTP is request/response — the client asks, the server a
 
 - Any MCP client — Claude Desktop, an IDE, another agent platform — can connect to Resparkable without bespoke client code.
 - HTTP transport works through corporate proxies and is debuggable with `curl`.
-- Sessions are bounded per-key (`maxSessionsPerKey`), so a noisy client cannot exhaust the server.
+- No session is held at all (§39 t-718), so there is nothing for a noisy client to
+  exhaust and nothing that breaks when consecutive requests land on different
+  instances. This bullet used to read "sessions are bounded per-key
+  (`maxSessionsPerKey`)"; see 2.7 for why that whole design was withdrawn.
 
-**Where it lives:** `lib/orchestration/mcp/` (server, session manager, resource handlers), `app/api/v1/orchestration/mcp/` (the route), `.context/orchestration/mcp.md`.
+**Where it lives:** `lib/orchestration/mcp/` (server, resource handlers), `app/api/v1/mcp/route.ts` (the route), `.context/orchestration/mcp.md`.
 
 ### 2.3 Outbound webhooks with retry
 
@@ -340,9 +343,20 @@ A short primer first: HTTP is request/response — the client asks, the server a
 
 **Where it lives:** `lib/orchestration/llm/` (cost logging), `lib/orchestration/hooks/` (hook dispatch), `lib/orchestration/webhooks/` (webhook dispatch).
 
-### 2.7 MCP session lifecycle and eviction
+### 2.7 MCP session lifecycle and eviction — WITHDRAWN (§39 t-718)
 
-**What is it?** When an MCP client connects to Resparkable, the server tracks a session in memory for that client — notification queue, active subscriptions, last-seen timestamp. Letting sessions accumulate forever leaks memory; expiring them too aggressively breaks long-running clients that are simply idle between tool calls.
+> **This decision was reversed, not refined.** MCP holds no session at all now:
+> revision 2026-07-28 removes protocol-level sessions, the `initialize`
+> handshake and the GET stream, and the transport that held them threw on any
+> platform serving traffic from more than one process — which is the platform's
+> own deployment target. The section is kept because the reasoning below was
+> sound for the design it served, and because the trade-off it names (in-memory,
+> per-process, per-instance) is the one that decided the reversal. Nothing in it
+> describes shipped code. `maxSessionsPerKey` is dropped by migration and
+> `lib/orchestration/mcp/session-manager.ts` no longer exists. Current design:
+> [`mcp.md`](../mcp.md#one-transport-and-it-holds-nothing).
+
+**What is it?** When an MCP client connected to Resparkable, the server tracked a session in memory for that client — notification queue, active subscriptions, last-seen timestamp. Letting sessions accumulate forever leaks memory; expiring them too aggressively breaks long-running clients that are simply idle between tool calls.
 
 **What we chose:** A 1-hour idle TTL on every session, plus a `maxSessionsPerKey` cap that rejects new sessions for an API key already at the limit. Sessions are reaped on creation attempts (the manager prunes expired entries before counting toward the cap).
 
@@ -360,7 +374,7 @@ A short primer first: HTTP is request/response — the client asks, the server a
 - The per-key cap fails closed — a runaway client cannot exhaust the server by opening sessions.
 - State is in-memory and per-process; the multi-instance trade-off is covered in Section 10.2.
 
-**Where it lives:** `lib/orchestration/mcp/session-manager.ts`, `.context/orchestration/mcp.md`.
+**Where it lived:** `lib/orchestration/mcp/session-manager.ts`, deleted in §39 t-718.
 
 ---
 
@@ -575,7 +589,7 @@ This section covers how an agent actually executes — the structure of a workfl
 
 **What is it?** Building a workflow from a blank canvas is intimidating. New admins want a starting point — "give me a customer-support pattern," "give me a content-review pipeline." A _template_ is a pre-built workflow they can clone and adapt. A _dry-run mode_ lets them execute the workflow with mocked LLM and tool calls so they can verify the flow without spending budget.
 
-**What we chose:** Workflows and templates share one table (`AiWorkflow`). Built-in templates are workflows with `isTemplate: true, templateSource: 'builtin'` (currently 11 of them, covering routing, RAG, content review, escalation, scheduled summaries, and other common patterns). Custom user-created templates use `templateSource: 'custom'`. The list endpoint supports filtering by source and category. Every workflow exposes a dry-run endpoint that walks the DAG with stubbed step outputs so the admin can see the path, the parallelism, and the conditional branches without paying for it.
+**What we chose:** Workflows and templates share one table (`AiWorkflow`). Custom templates an admin saves are workflows with `isTemplate: true` (`templateSource: 'custom'` when made by "Save as template"). The 12 built-in templates (routing, RAG, content review, escalation, scheduled summaries, inbound replies and other common patterns) are code, served beside the org's own by the templates endpoint, which filters by source. **Revised in §116 t-727:** built-ins were once seeded as install-org rows, which no other org could read and which could not be copied per org (the slug is unique across the install); serving them from code gives every org the same set, and the seeded rows are retired. Every workflow exposes a dry-run endpoint that walks the DAG with stubbed step outputs so the admin can see the path, the parallelism, and the conditional branches without paying for it.
 
 **Alternatives**
 
@@ -592,7 +606,7 @@ This section covers how an agent actually executes — the structure of a workfl
 - Custom templates let an organisation curate its own pattern library without code changes.
 - Dry-run lets a workflow author iterate cheaply — the path is verified before any LLM call is made for real.
 
-**Where it lives:** `lib/orchestration/workflows/` (validator, semantic checker, template scanner), `app/api/v1/admin/orchestration/workflows/templates/` (list endpoint), `app/api/v1/admin/orchestration/workflows/[id]/dry-run/` (dry-run endpoint), `.context/orchestration/workflows.md`.
+**Where it lives:** `lib/orchestration/workflows/` (validator, semantic checker, template scanner), `lib/orchestration/workflows/template-catalogue.ts` and `app/api/v1/admin/orchestration/workflows/templates/` (the catalogue and its endpoint), `app/api/v1/admin/orchestration/workflows/[id]/dry-run/` (dry-run endpoint), `.context/orchestration/workflows.md`.
 
 ### 3.10 Workflow-step provenance via `output.sources` lift
 

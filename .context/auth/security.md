@@ -147,7 +147,12 @@ better-auth's own revocation is endpoint-scoped — it wants a request context
 that a verification callback does not have — so this goes at the `session`
 table directly. Omitting `exceptSessionToken` revokes everything, which is the
 correct degradation when the current session cannot be identified: one extra
-login beats leaving an attacker's session alive.
+login beats leaving an attacker's session alive. An optional `activeOrgId`
+narrows the delete to the sessions acting in one org — what removing a member
+from an org uses (§106, `lib/tenancy/lifecycle.ts`), so their sessions in other
+orgs survive. That path does not depend on the cache window below: the guard
+re-reads the membership on every request into a non-install org, so a removed
+member is refused at the next request regardless.
 
 **Deleting the row is not instant everywhere.** `session.cookieCache` (above)
 is enabled with a 5-minute `maxAge`, and `withAuth()` (`lib/auth/guards.ts`)
@@ -259,6 +264,11 @@ function validateOrigin(request: NextRequest): boolean {
     return true;
   }
 
+  // The embed widget's routes, called cross-origin by design (see below)
+  if (CROSS_ORIGIN_TOKEN_ROUTES.some((route) => route.test(request.nextUrl.pathname))) {
+    return true;
+  }
+
   const origin = request.headers.get('origin');
   const host = request.headers.get('host');
 
@@ -271,6 +281,17 @@ function validateOrigin(request: NextRequest): boolean {
   }
 }
 ```
+
+**Cross-origin token routes are exempt** (#705, t-765). The embed widget runs on
+a partner's domain, so every POST it makes carries a foreign `Origin`; until
+the exemption, the check refused them all and no visitor on a partner site could
+send a message. `CROSS_ORIGIN_TOKEN_ROUTES` in `proxy.ts` lists them:
+`/api/v1/embed/*` and `/api/v1/orchestration/approvals/:id/{approve,reject}/embed`.
+Skipping the check is safe there because CSRF rides on cookies the browser
+attaches by itself, and these routes read none: they authenticate with a token
+the caller must hold (`X-Embed-Token`, or a signed approval token) and enforce
+their own origin allowlist. A route added to the list must keep both
+properties.
 
 ## Auth Rate Limiting
 

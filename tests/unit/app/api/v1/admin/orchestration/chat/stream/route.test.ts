@@ -27,7 +27,7 @@ import type { NextRequest } from 'next/server';
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiAgent: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
     },
   },
 }));
@@ -164,7 +164,7 @@ describe('POST /api/v1/admin/orchestration/chat/stream', () => {
     vi.mocked(chatLimiter.check).mockReturnValue(makeRateLimitResult(true));
     // Per-agent rate-limit lookup — return a generic agent row so the
     // route progresses to streamChat. Individual tests can override.
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
       id: 'agent_test',
       rateLimitRpm: null,
     } as never);
@@ -241,7 +241,7 @@ describe('POST /api/v1/admin/orchestration/chat/stream', () => {
     // Per-agent throttling honours `AiAgent.rateLimitRpm`. The bucket
     // key (agentId:userId) is shared with the consumer route so a user
     // can't bypass their per-agent throttle by switching surfaces.
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
       id: 'agent_capped',
       rateLimitRpm: 1,
     } as never);
@@ -259,13 +259,23 @@ describe('POST /api/v1/admin/orchestration/chat/stream', () => {
     // Defensive: the route resolves the agent before checking its
     // rate limit. A missing agent short-circuits with NOT_FOUND
     // rather than letting streamChat throw deeper in the stack.
-    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(null);
 
     const req = createMockRequest(validPayload);
     const response = await POST(req);
 
     expect(response.status).toBe(404);
     expect(streamChat).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits a platform slug's system instance, as streamChat will load it (§116 t-725)", async () => {
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(null);
+
+    await POST(createMockRequest({ ...validPayload, agentSlug: 'pattern-advisor' }));
+
+    expect(prisma.aiAgent.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { slug: 'pattern-advisor', isSystem: true } })
+    );
   });
 
   it('returns 401 when not authenticated', async () => {

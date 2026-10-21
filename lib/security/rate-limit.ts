@@ -19,6 +19,10 @@
  *   return new Response('Too Many Requests', { status: 429 });
  * }
  * ```
+ *
+ * Tenancy posture: shared-by-decision for the section and per-flow limiters,
+ * each keyed by the caller rather than the org and each holding its own LRU;
+ * row-keyed for the two dynamic limiters (lib/tenancy/process-state.ts).
  */
 
 import { LRUCache } from 'lru-cache';

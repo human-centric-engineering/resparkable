@@ -24,6 +24,7 @@ import {
   toProviderError,
   toProviderErrorWithUsage,
   isRequestFault,
+  isRequestFaultCode,
   fetchWithTimeout,
   withRetry,
   DEFAULT_TIMEOUT_MS,
@@ -292,6 +293,17 @@ describe('isRequestFault', () => {
     ]) {
       expect(isRequestFault(v)).toBe(false);
     }
+  });
+});
+
+describe('isRequestFaultCode', () => {
+  it('answers from the code alone, for callers that only see a stream event', () => {
+    // The judge_call step reads failures off chat `error` events, where the
+    // ProviderError itself does not survive (§77 t-747).
+    expect(isRequestFaultCode('truncated_no_output')).toBe(true);
+    expect(isRequestFaultCode('provider_not_permitted')).toBe(true);
+    expect(isRequestFaultCode('provider_error')).toBe(false);
+    expect(isRequestFaultCode('rate_limited')).toBe(false);
   });
 });
 

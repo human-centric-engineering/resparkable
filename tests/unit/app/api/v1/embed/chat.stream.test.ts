@@ -68,7 +68,6 @@ vi.mock('@/lib/logging/context', () => ({
       requestId: 'req-test-123',
       visitorId: 'vid-test-123',
       method: 'POST',
-      url: 'https://mysite.com/api/v1/embed/chat/stream',
       userAgent: 'test-agent/1.0',
     })
   ),
@@ -80,6 +79,7 @@ import { resolveEmbedToken, isOriginAllowed } from '@/lib/embed/auth';
 import { streamChat } from '@/lib/orchestration/chat';
 import { embedChatLimiter, imageLimiter } from '@/lib/security/rate-limit';
 import { logger } from '@/lib/logging';
+import { getTenantContext, type TenantContext } from '@/lib/tenancy/context';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -88,6 +88,7 @@ const VALID_CONTEXT = {
   agentSlug: 'support-bot',
   userId: 'user-1',
   allowedOrigins: ['https://mysite.com'],
+  orgId: 'cmorg000000000000000other',
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -163,12 +164,24 @@ describe('POST /api/v1/embed/chat/stream', () => {
       expect(response.status).toBe(429);
     });
 
-    it('does not call resolveEmbedToken when rate limited', async () => {
-      vi.mocked(embedChatLimiter.check).mockReturnValue({ success: false } as never);
-
+    it('keys the per-flow limit on the verified visitor id, not the raw token (#701)', async () => {
       await POST(makePostRequest({ message: 'hello' }, { 'x-embed-token': VALID_TOKEN }));
 
-      expect(vi.mocked(resolveEmbedToken)).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+      // The resolver's visitor id is derived from the token row + IP; the
+      // header value as presented must never be the bucket key.
+      expect(embedChatLimiter.check).toHaveBeenCalledWith(VALID_CONTEXT.userId);
+      expect(embedChatLimiter.check).not.toHaveBeenCalledWith(expect.stringContaining(VALID_TOKEN));
+    });
+
+    it('refuses an unknown token without opening a per-flow bucket for it', async () => {
+      vi.mocked(resolveEmbedToken).mockResolvedValue(null);
+
+      const response = await POST(
+        makePostRequest({ message: 'hello' }, { 'x-embed-token': 'made-up-token' })
+      );
+
+      expect(response.status).toBe(401);
+      expect(vi.mocked(embedChatLimiter.check)).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
     });
   });
 
@@ -280,6 +293,27 @@ describe('POST /api/v1/embed/chat/stream', () => {
       expect(vi.mocked(logger.withContext)).toHaveBeenCalledWith(
         expect.objectContaining({ requestId: 'req-test-123', userAgent: 'test-agent/1.0' })
       );
+    });
+
+    it('runs the stream inside the token’s org — seen from inside, not from the arguments (§106, t-673)', async () => {
+      // `streamChat` is where the handler's work begins; what it sees is what
+      // every conversation write and cost row under it will see.
+      let seen: TenantContext | null | undefined;
+      vi.mocked(streamChat).mockImplementation(() => {
+        seen = getTenantContext();
+        return (async function* () {})();
+      });
+
+      await POST(
+        makePostRequest(
+          { message: 'Hello' },
+          { 'x-embed-token': VALID_TOKEN, origin: 'https://mysite.com' }
+        )
+      );
+
+      expect(seen).toEqual({ orgId: VALID_CONTEXT.orgId, source: 'embed-token', role: undefined });
+      // …and nothing leaks past the response.
+      expect(getTenantContext()).toBeNull();
     });
 
     it('returns SSE response on success', async () => {

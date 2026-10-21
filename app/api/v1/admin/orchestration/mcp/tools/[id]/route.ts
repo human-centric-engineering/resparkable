@@ -11,55 +11,59 @@ import { successResponse } from '@/lib/api/responses';
 import { NotFoundError } from '@/lib/api/errors';
 import { validateRequestBody } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
-import { clearMcpToolCache, broadcastMcpToolsChanged } from '@/lib/orchestration/mcp';
+import { clearMcpToolCache } from '@/lib/orchestration/mcp';
 import { updateExposedToolSchema } from '@/lib/validations/mcp';
 import { cuidSchema } from '@/lib/validations/common';
 
-export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const { id } = await params;
-  cuidSchema.parse(id);
+export const PATCH = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const { id } = await params;
+    cuidSchema.parse(id);
 
-  const log = await getRouteLogger(request);
-  const body = await validateRequestBody(request, updateExposedToolSchema);
+    const log = await getRouteLogger(request);
+    const body = await validateRequestBody(request, updateExposedToolSchema);
 
-  const existing = await prisma.mcpExposedTool.findUnique({ where: { id } });
-  if (!existing) throw new NotFoundError('Exposed tool not found');
+    const existing = await prisma.mcpExposedTool.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError('Exposed tool not found');
 
-  const updated = await prisma.mcpExposedTool.update({
-    where: { id },
-    data: body,
-    include: { capability: true },
-  });
+    const updated = await prisma.mcpExposedTool.update({
+      where: { id },
+      data: body,
+      include: { capability: true },
+    });
 
-  clearMcpToolCache();
-  broadcastMcpToolsChanged();
+    clearMcpToolCache();
 
-  log.info('MCP exposed tool updated', {
-    adminId: session.user.id,
-    toolId: id,
-    changedKeys: Object.keys(body),
-  });
+    log.info('MCP exposed tool updated', {
+      adminId: session.user.id,
+      toolId: id,
+      changedKeys: Object.keys(body),
+    });
 
-  return successResponse(updated);
-});
+    return successResponse(updated);
+  },
+  { writesSharedSettings: true }
+);
 
-export const DELETE = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const { id } = await params;
-  cuidSchema.parse(id);
+export const DELETE = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const { id } = await params;
+    cuidSchema.parse(id);
 
-  const log = await getRouteLogger(request);
+    const log = await getRouteLogger(request);
 
-  const existing = await prisma.mcpExposedTool.findUnique({ where: { id } });
-  if (!existing) throw new NotFoundError('Exposed tool not found');
+    const existing = await prisma.mcpExposedTool.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundError('Exposed tool not found');
 
-  await prisma.mcpExposedTool.delete({ where: { id } });
-  clearMcpToolCache();
-  broadcastMcpToolsChanged();
+    await prisma.mcpExposedTool.delete({ where: { id } });
+    clearMcpToolCache();
 
-  log.info('MCP exposed tool deleted', {
-    adminId: session.user.id,
-    toolId: id,
-  });
+    log.info('MCP exposed tool deleted', {
+      adminId: session.user.id,
+      toolId: id,
+    });
 
-  return successResponse({ id, deleted: true });
-});
+    return successResponse({ id, deleted: true });
+  },
+  { writesSharedSettings: true }
+);

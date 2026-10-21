@@ -238,6 +238,11 @@ POST /api/v1/users/invite
 - `name`: Required, 1-100 characters
 - `email`: Required, valid email format
 - `role`: Optional, one of `USER`, `ADMIN` (default: `USER`)
+- `orgId`: Optional — the org the invitee joins on acceptance (default: the
+  install org). Must exist and be `ACTIVE`; the authorization policy is asked
+  whether the caller may administer it (§106)
+- `orgRole`: Optional, one of `OWNER`, `ADMIN`, `MEMBER` (default: `MEMBER`,
+  or `OWNER` for the first member of a new org)
 
 **Response** (201 Created):
 
@@ -250,6 +255,8 @@ POST /api/v1/users/invite
       "email": "jane@example.com",
       "name": "Jane Doe",
       "role": "USER",
+      "orgId": null,
+      "orgRole": null,
       "invitedAt": "2026-01-07T14:30:00.000Z",
       "expiresAt": "2026-01-14T14:30:00.000Z",
       "link": "http://localhost:3000/accept-invite?token=...&email=jane@example.com"
@@ -258,21 +265,52 @@ POST /api/v1/users/invite
 }
 ```
 
+**Response** (200 OK) when a valid invitation is already pending and
+`?resend=true` was not given — no new email, no `link`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "Invitation already pending. Use ?resend=true to send a new invitation email.",
+    "invitation": {
+      "email": "jane@example.com",
+      "name": "Jane Doe",
+      "role": "USER",
+      "orgId": null,
+      "orgRole": null,
+      "invitedAt": "2026-01-07T14:30:00.000Z",
+      "expiresAt": "2026-01-14T14:30:00.000Z"
+    },
+    "emailStatus": "pending"
+  }
+}
+```
+
+`orgId` / `orgRole` say where the pending invitation points. A resend
+(`?resend=true`) re-sends _this_ invitation: the pending org keys carry over
+unless the body sends either `orgId` or `orgRole`, in which case the body's
+pair replaces both; the platform `role` is always the body's.
+
 **Error Responses**:
 
 - **401 Unauthorized**: No valid session
-- **403 Forbidden**: User does not have ADMIN role
-- **400 Validation Error**: Invalid request body
+- **403 Forbidden**: User does not have ADMIN role, or the policy refuses the
+  named org
+- **400 Validation Error**: Invalid request body, or the named (or pending)
+  org does not exist / is not active
 - **409 Conflict**: User already exists with this email
 
 **Flow**:
 
 1. Check if user already exists (409 if exists)
-2. Check if invitation already sent (return existing if valid)
-3. Generate secure token (SHA-256 hashed)
-4. Store invitation in `Verification` table with metadata
-5. Send invitation email
-6. Return invitation details
+2. Check if invitation already sent (return existing if valid, unless resending)
+3. Resolve the org — the body's, else the pending invitation's — and check it
+   exists, is active, and the policy allows this caller to invite into it
+4. Generate secure token (SHA-256 hashed)
+5. Store invitation in `Verification` table with metadata
+6. Send invitation email
+7. Return invitation details
 
 **Note**: User is NOT created until invitation is accepted.
 
@@ -369,9 +407,16 @@ POST /api/auth/accept-invite
 
 **Implementation**: Page route at `app/(auth)/accept-invite/page.tsx`
 
+## Org Endpoints
+
+The org API — the caller's memberships, `POST /api/v1/orgs/switch`, an org's
+members, and the vendor's create / suspend / export / delete — is documented
+in [Org Endpoints](./org-endpoints.md).
+
 ## Related Documentation
 
 - [API Overview](./endpoints.md) - API design principles and common patterns
 - [User Endpoints](./user-endpoints.md) - User management API
 - [OAuth Integration](../auth/oauth.md) - OAuth setup and configuration
 - [User Creation Patterns](../auth/user-creation.md) - Signup vs invitation flows
+- [Org Endpoints](./org-endpoints.md) - Memberships, the switch, org lifecycle

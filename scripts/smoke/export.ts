@@ -6,7 +6,7 @@
  * the *arguments* the manifest builds — the right `where`, the right `omit` —
  * but never that the resulting queries run. Type-checking catches a wrong
  * column name; it does not catch `omit` combined with `include` on a relation
- * load, or a `mode: 'insensitive'` filter on a column type that rejects it.
+ * load, or a by-email match that Postgres widens to someone else's rows.
  *
  * Also asserts the property that matters most and is easiest to regress: no
  * credential material reaches the bundle. That check is a recursive sweep over
@@ -39,6 +39,8 @@ import {
 } from '@/lib/privacy/subject-source-registry';
 import { isEmptySection } from '@/scripts/smoke/export-assertions';
 import { PLATFORM_ADMIN_ROLE } from '@/lib/auth/roles';
+import { runAsOrg } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const PREFIX = 'smoke-test-export';
 const stamp = Date.now();
@@ -91,15 +93,23 @@ async function main(): Promise<void> {
   let subjectUserId: string | null = null;
   let agentId: string | null = null;
   let contactId: string | null = null;
+  let strangerContactId: string | null = null;
   let workflowId: string | null = null;
   let costLogId: string | null = null;
 
   try {
-    const email = `${PREFIX}-subject-${stamp}@example.com`;
+    // The `_` is deliberate: an unescaped ILIKE reads it as a one-character
+    // wildcard, which the stranger's contact row below exists to catch. The
+    // capitals are too: the contact row is stored lower-cased, so the export
+    // only finds it if the source normalises the account address.
+    const email = `${PREFIX}_Subject-${stamp}@Example.com`;
+    // The same address with that one `_` swapped for a literal character.
+    const nearMatchEmail = `${PREFIX}xSubject-${stamp}@Example.com`;
 
     // ADMIN so the export also covers an attribution source (a created agent).
     const subject = await prisma.user.create({
-      data: { name: `${PREFIX} subject`, email, role: PLATFORM_ADMIN_ROLE },
+      // Verified: contact messages are matched only to a proven address.
+      data: { name: `${PREFIX} subject`, email, emailVerified: true, role: PLATFORM_ADMIN_ROLE },
     });
     subjectUserId = subject.id;
 
@@ -258,17 +268,29 @@ async function main(): Promise<void> {
       },
     });
 
-    // No FK to User — proves the by-email source resolves against real Postgres,
-    // including the case-insensitive match.
+    // No FK to User — proves the by-email source resolves against real Postgres.
+    // Stored lower-cased, as the contact route's `emailSchema` stores it.
     const contact = await prisma.contactSubmission.create({
       data: {
         name: `${PREFIX} contact`,
-        email: email.toUpperCase(),
+        email: email.toLowerCase(),
         subject: 'smoke',
         message: 'smoke enquiry',
       },
     });
     contactId = contact.id;
+
+    // A stranger whose address differs from the subject's only where the
+    // subject's has `_`. A pattern match would hand this row to the subject.
+    const strangerContact = await prisma.contactSubmission.create({
+      data: {
+        name: `${PREFIX} stranger`,
+        email: nearMatchEmail.toLowerCase(),
+        subject: 'smoke',
+        message: 'smoke stranger enquiry',
+      },
+    });
+    strangerContactId = strangerContact.id;
 
     // ---------------------------------------------------------------------
     console.log('\nexporting…');
@@ -317,7 +339,12 @@ async function main(): Promise<void> {
     check(bundle.personalData.apiKeys?.length === 1, 'API key metadata exported');
     check(
       bundle.personalData.contactSubmissions?.length === 1,
-      'contact submission matched by email, case-insensitively'
+      'contact submission matched by email'
+    );
+    const contacts = bundle.personalData.contactSubmissions as Array<{ id: string }> | undefined;
+    check(
+      contacts?.[0]?.id === contact.id,
+      "the exported contact submission is the subject's own, not a near-match"
     );
     check(bundle.attributions.agents?.length === 1, 'created agent exported as attribution');
 
@@ -528,9 +555,10 @@ async function main(): Promise<void> {
     // webhook subscriptions all cascade from the user; the agent, the workflow
     // (and its executions) and the contact submission do not — the workflow is
     // SetNull-retained on the user, so it outlives the delete below.
-    if (contactId)
+    const contactIds = [contactId, strangerContactId].filter((id): id is string => id !== null);
+    if (contactIds.length > 0)
       await prisma.contactSubmission
-        .deleteMany({ where: { id: contactId } })
+        .deleteMany({ where: { id: { in: contactIds } } })
         .catch(() => undefined);
     // Both cost rows: the attributed one is SetNull (survives the user delete)
     // and the unattributed one was never linked, so neither cascades away.
@@ -550,7 +578,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(async (err) => {
+// The install org is the org a smoke runs for: at `multi` a tenant-owned
+// read outside any scope refuses rather than reads wide (§107 t-708).
+runAsOrg(INSTALL_ORG_ID, main, { source: 'job' }).catch(async (err) => {
   console.error('\n✗ smoke:export failed:', err);
   try {
     await prisma.$disconnect();

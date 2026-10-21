@@ -17,7 +17,24 @@
  * - Empty body is tolerated (name/slug default to source-based values)
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
+
+// The org's provider policy (§120 t-743): approves everything unless a test
+// refuses a slug. Hoisted, so it applies however the route is imported.
+const mockUnapprovedProviders = vi.hoisted(() =>
+  vi.fn(async (_slugs: readonly string[]): Promise<string[]> => [])
+);
+vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/org-provider-policy')>()),
+  unapprovedProviders: mockUnapprovedProviders,
+}));
+
+/** Refuse exactly these slugs, as an org with no grant for them would. */
+function refuse(...barred: string[]) {
+  mockUnapprovedProviders.mockImplementation(async (slugs) =>
+    slugs.filter((slug) => barred.includes(slug))
+  );
+}
 import { NextRequest } from 'next/server';
 import { POST } from '@/app/api/v1/admin/orchestration/agents/[id]/clone/route';
 import {
@@ -26,6 +43,10 @@ import {
   mockUnauthenticatedUser,
 } from '@/tests/helpers/auth';
 import { Prisma } from '@prisma/client';
+import {
+  __resetPlatformAgentsForTests,
+  registerPlatformAgent,
+} from '@/lib/orchestration/agents/platform-agents';
 
 // ─── Mock dependencies ───────────────────────────────────────────────────────
 
@@ -432,6 +453,66 @@ describe('POST /api/v1/admin/orchestration/agents/:id/clone', () => {
     });
   });
 
+  describe('Reserved slugs (§116 t-725)', () => {
+    afterEach(() => {
+      __resetPlatformAgentsForTests();
+    });
+
+    it('refuses a chosen slug that a platform agent holds', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeSourceAgent() as never);
+
+      const response = await POST(makePostRequest({ slug: 'cleanup-agent' }), makeParams(AGENT_ID));
+
+      expect(response.status).toBe(400);
+      const data = await parseJson<{ error: { details: { slug: string[] } } }>(response);
+      expect(data.error.details.slug[0]).toContain('reserved for a platform agent');
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('moves past a generated slug that a platform agent holds', async () => {
+      // A fork registered `<source>-copy` as a platform agent: the clone
+      // takes the next variant instead of squatting on it.
+      registerPlatformAgent({
+        slug: 'my-source-copy',
+        audience: 'every-org',
+        agent: {
+          name: 'Fork agent',
+          description: 'A fork agent',
+          systemInstructions: 'x',
+          temperature: 0.2,
+          maxTokens: 10,
+        },
+        capabilities: [],
+        knowledgeTags: [],
+      });
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+        ...makeSourceAgent(),
+        slug: 'my-source',
+      } as never);
+      const slugs: unknown[] = [];
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn: (tx: never) => unknown) => {
+        const tx = {
+          aiAgentVersion: { create: vi.fn().mockResolvedValue({}) },
+          aiAgent: {
+            create: vi.fn((args: { data: Record<string, unknown> }) => {
+              slugs.push(args.data.slug);
+              return Promise.resolve({ ...makeClonedAgent(), slug: args.data.slug });
+            }),
+          },
+          aiAgentCapability: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        };
+        return fn(tx as never);
+      });
+
+      const response = await POST(makePostRequest(), makeParams(AGENT_ID));
+
+      expect(response.status).toBe(201);
+      expect(slugs).toEqual(['my-source-copy-2']);
+    });
+  });
+
   describe('Knowledge-access grant carry-over', () => {
     it('carries over tag grants from source to clone', async () => {
       // Arrange: source agent has tag grants
@@ -662,5 +743,36 @@ describe('POST /api/v1/admin/orchestration/agents/:id/clone', () => {
         customRateLimit: null,
       });
     });
+  });
+});
+
+describe('POST /api/v1/admin/orchestration/agents/:id/clone — approved providers (§120 t-743)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUnapprovedProviders.mockImplementation(async () => []);
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  it('refuses to clone an agent whose provider the org is not approved for', async () => {
+    refuse('anthropic');
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeSourceAgent() as never);
+
+    const response = await POST(makePostRequest(), makeParams(AGENT_ID));
+
+    expect(response.status).toBe(400);
+    const body = await parseJson<{ error: { details: Record<string, unknown> } }>(response);
+    expect(body.error.details).toMatchObject({ unapprovedProviders: ['anthropic'] });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('checks every provider the clone copies, fallbacks included', async () => {
+    vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue({
+      ...makeSourceAgent(),
+      fallbackProviders: ['openai'],
+    } as never);
+
+    await POST(makePostRequest(), makeParams(AGENT_ID));
+
+    expect(mockUnapprovedProviders).toHaveBeenCalledWith(['anthropic', 'openai']);
   });
 });

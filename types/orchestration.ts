@@ -1314,6 +1314,12 @@ export interface BudgetSummary {
 export type AiAgentListItem = AiAgent & {
   _count: { capabilities: number; conversations: number };
   _budget: BudgetSummary | null;
+  /**
+   * Providers the agent names that its org is no longer approved for — its
+   * calls are refused until a platform admin grants them (§120 t-745). `[]`
+   * when none; `null` when unknown: no org in scope, or the org's provider policy could not be read.
+   */
+  _unapprovedProviders: string[] | null;
   creator?: { name: string | null };
   profile: { id: string; name: string; slug: string; isSystem: boolean } | null;
 };
@@ -1343,7 +1349,10 @@ export interface CapabilityAgentRef {
 
 /** Enriched capability row returned by the list endpoint. */
 export type AiCapabilityListItem = AiCapability & {
+  /** The caller's org's agents with it attached (every agent at `single`). */
   _agents: CapabilityAgentRef[];
+  /** Agents in other orgs with it attached, active or not: counted, never named (§107 t-752). */
+  _otherOrgAgentCount: number;
 };
 
 /** Enriched knowledge-tag row returned by the list endpoint. */

@@ -4,6 +4,7 @@ import {
   RESPARKABLE_AGENT_SLUGS,
   RESPARKABLE_PROFILE_SLUG,
 } from '@/lib/framework/resparkable/agents';
+import { requireOrgId } from '@/lib/tenancy/context';
 
 /**
  * Seed the nine Resparkable agents.
@@ -404,7 +405,7 @@ const unit: SeedUnit = {
       };
 
       await prisma.aiAgent.upsert({
-        where: { slug: agent.slug },
+        where: { orgId_slug: { orgId: requireOrgId(), slug: agent.slug } },
         update: {
           // Code-adjacent: instructions describe the capabilities this build
           // registered, and the profile link is what carries the guardrails.

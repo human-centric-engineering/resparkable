@@ -145,6 +145,12 @@ describe('DeactivateProviderModelsCapability', () => {
     });
   });
 
+  describe('shared settings (§107 t-751)', () => {
+    it('declares that it changes a shared setting, so the dispatcher refuses it outside the install org', () => {
+      expect(new DeactivateProviderModelsCapability().writesSharedSettings).toBe(true);
+    });
+  });
+
   describe('execute() — happy path', () => {
     it('deactivates a model and returns deactivated=1', async () => {
       const cap = new DeactivateProviderModelsCapability();

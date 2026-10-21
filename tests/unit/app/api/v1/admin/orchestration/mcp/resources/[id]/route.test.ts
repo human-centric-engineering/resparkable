@@ -52,19 +52,13 @@ vi.mock('@/lib/api/context', () => ({
 
 vi.mock('@/lib/orchestration/mcp', () => ({
   clearMcpResourceCache: vi.fn(),
-  broadcastMcpResourcesChanged: vi.fn(),
-  broadcastMcpResourceUpdated: vi.fn(),
 }));
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
 
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import {
-  broadcastMcpResourceUpdated,
-  broadcastMcpResourcesChanged,
-  clearMcpResourceCache,
-} from '@/lib/orchestration/mcp';
+import { clearMcpResourceCache } from '@/lib/orchestration/mcp';
 import {
   mockAdminUser,
   mockUnauthenticatedUser,
@@ -200,12 +194,6 @@ describe('PATCH /mcp/resources/:id', () => {
 
     // test-review:accept no_arg_called — zero-arg side-effect trigger
     expect(clearMcpResourceCache).toHaveBeenCalled();
-    // test-review:accept no_arg_called — zero-arg side-effect trigger
-    expect(broadcastMcpResourcesChanged).toHaveBeenCalled();
-    // Per-URI fan-out lets subscribed clients refresh just this resource
-    // without re-running resources/list. Asserting the URI argument
-    // exercises the new Phase 4 wiring.
-    expect(broadcastMcpResourceUpdated).toHaveBeenCalledWith('resparkable://knowledge/search');
   });
 
   it('toggles isEnabled to false', async () => {
@@ -336,7 +324,5 @@ describe('DELETE /mcp/resources/:id', () => {
 
     // test-review:accept no_arg_called — zero-arg side-effect trigger
     expect(clearMcpResourceCache).toHaveBeenCalled();
-    // test-review:accept no_arg_called — zero-arg side-effect trigger
-    expect(broadcastMcpResourcesChanged).toHaveBeenCalled();
   });
 });

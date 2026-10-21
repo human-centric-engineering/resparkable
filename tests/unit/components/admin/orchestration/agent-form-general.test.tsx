@@ -67,6 +67,7 @@ const MOCK_PROVIDERS = [
     metadata: {},
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
   },
 ];
 
@@ -183,6 +184,7 @@ describe('AgentForm — General tab', () => {
     it('slug is disabled in edit mode (cannot be changed after creation)', () => {
       // Arrange
       const mockAgent = {
+        orgId: null,
         id: 'agent-1',
         name: 'Existing Agent',
         slug: 'existing-agent',

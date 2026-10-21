@@ -3,7 +3,10 @@
  *
  * GET  /api/v1/admin/orchestration/providers — paginated list. Every row
  *      is hydrated with `apiKeyPresent: boolean` via `listProvidersWithStatus`.
- *      The env var *value* is NEVER returned or logged.
+ *      The env var *value* is NEVER returned or logged. Each row also carries
+ *      `approvedForOrg`: whether the org in context may use it (§120 t-745) —
+ *      always `true` at `single` and for the install org, `null` when it is
+ *      unknown (no org in scope, or the policy could not be read).
  * POST /api/v1/admin/orchestration/providers — create a new provider row.
  *
  * Authentication: Admin role required.
@@ -17,11 +20,10 @@ import { ConflictError } from '@/lib/api/errors';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
 import { getClientIP } from '@/lib/security/ip';
-import {
-  isApiKeyEnvVarSet,
-  clearCache as clearProviderCache,
-} from '@/lib/orchestration/llm/provider-manager';
-import { getCircuitBreakerStatus } from '@/lib/orchestration/llm/circuit-breaker';
+import { clearCache as clearProviderCache } from '@/lib/orchestration/llm/provider-manager';
+import { hasProviderKey } from '@/lib/orchestration/llm/provider-credentials';
+import { refusedProvidersOrUnknown } from '@/lib/orchestration/agents/provider-approval';
+import { getCircuitBreakerStatusForProvider } from '@/lib/orchestration/llm/circuit-breaker';
 import { listProvidersQuerySchema, providerConfigSchema } from '@/lib/validations/orchestration';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 
@@ -56,10 +58,17 @@ export const GET = withAdminAuth(async (request, _session) => {
     prisma.aiProviderConfig.count({ where }),
   ]);
 
-  const data = rows.map((config) => ({
+  // `apiKeyPresent` asks the credential seam (§120 t-744): with a fork
+  // resolver registered the env var may be deliberately empty.
+  const [keyPresent, refused] = await Promise.all([
+    Promise.all(rows.map((config) => hasProviderKey(config))),
+    refusedProvidersOrUnknown(rows.map((config) => config.slug)),
+  ]);
+  const data = rows.map((config, index) => ({
     ...config,
-    apiKeyPresent: isApiKeyEnvVarSet(config.apiKeyEnvVar),
-    circuitBreaker: getCircuitBreakerStatus(config.slug) ?? {
+    apiKeyPresent: keyPresent[index],
+    approvedForOrg: refused ? !refused.has(config.slug) : null,
+    circuitBreaker: getCircuitBreakerStatusForProvider(config.slug) ?? {
       state: 'closed' as const,
       failureCount: 0,
     },
@@ -70,57 +79,61 @@ export const GET = withAdminAuth(async (request, _session) => {
   return paginatedResponse(data, { page, limit, total });
 });
 
-export const POST = withAdminAuth(async (request, session) => {
-  const clientIP = getClientIP(request);
+export const POST = withAdminAuth(
+  async (request, session) => {
+    const clientIP = getClientIP(request);
 
-  const log = await getRouteLogger(request);
-  const body = await validateRequestBody(request, providerConfigSchema);
+    const log = await getRouteLogger(request);
+    const body = await validateRequestBody(request, providerConfigSchema);
 
-  try {
-    const provider = await prisma.aiProviderConfig.create({
-      data: {
-        name: body.name,
-        slug: body.slug,
-        providerType: body.providerType,
-        baseUrl: body.baseUrl ?? null,
-        apiKeyEnvVar: body.apiKeyEnvVar ?? null,
-        isLocal: body.isLocal,
-        isActive: body.isActive,
-        metadata: (body.metadata ?? Prisma.JsonNull) as Prisma.InputJsonValue,
-        timeoutMs: body.timeoutMs ?? null,
-        maxRetries: body.maxRetries ?? null,
-        createdBy: session.user.id,
-      },
-    });
+    try {
+      const provider = await prisma.aiProviderConfig.create({
+        data: {
+          name: body.name,
+          slug: body.slug,
+          providerType: body.providerType,
+          baseUrl: body.baseUrl ?? null,
+          apiKeyEnvVar: body.apiKeyEnvVar ?? null,
+          isLocal: body.isLocal,
+          isActive: body.isActive,
+          jurisdiction: body.jurisdiction ?? null,
+          metadata: (body.metadata ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+          timeoutMs: body.timeoutMs ?? null,
+          maxRetries: body.maxRetries ?? null,
+          createdBy: session.user.id,
+        },
+      });
 
-    clearProviderCache(provider.slug);
+      clearProviderCache(provider.slug);
 
-    log.info('Provider created', {
-      providerId: provider.id,
-      slug: provider.slug,
-      adminId: session.user.id,
-    });
+      log.info('Provider created', {
+        providerId: provider.id,
+        slug: provider.slug,
+        adminId: session.user.id,
+      });
 
-    logAdminAction({
-      userId: session.user.id,
-      action: 'provider.create',
-      entityType: 'provider',
-      entityId: provider.id,
-      entityName: provider.name,
-      clientIp: clientIP,
-    });
+      logAdminAction({
+        userId: session.user.id,
+        action: 'provider.create',
+        entityType: 'provider',
+        entityId: provider.id,
+        entityName: provider.name,
+        clientIp: clientIP,
+      });
 
-    return successResponse(
-      { ...provider, apiKeyPresent: isApiKeyEnvVarSet(provider.apiKeyEnvVar) },
-      undefined,
-      { status: 201 }
-    );
-  } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      throw new ConflictError(
-        `Provider with slug '${body.slug}' or name '${body.name}' already exists`
+      return successResponse(
+        { ...provider, apiKeyPresent: await hasProviderKey(provider) },
+        undefined,
+        { status: 201 }
       );
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictError(
+          `Provider with slug '${body.slug}' or name '${body.name}' already exists`
+        );
+      }
+      throw err;
     }
-    throw err;
-  }
-});
+  },
+  { writesSharedSettings: true }
+);

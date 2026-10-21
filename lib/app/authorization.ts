@@ -129,11 +129,20 @@
  *    who has no account here, has. Likewise a scheduled run paused at a
  *    `human_approval` gate is found in the queue only by a principal admitted
  *    to ownerless executions; refuse everyone and the gate waits for the 7-day
- *    reap. Keep a principal your policy admits to each kind — a vendor-level
- *    operator, until the identity work defines the role — and prove it with
+ *    reap. Keep a principal your policy admits to each kind — platform staff,
+ *    under Sunrise's default — and prove it with
  *    `checkOwnerlessReachability(yourPolicy, principals)` from
  *    `lib/auth/orphan-reads.ts`, run beside the parity check over the same
  *    roster. It fails naming the kind nobody reaches and what that closes.
+ *    **The org facts are on the principal** (§106): `viewer.orgId` and
+ *    `viewer.orgRole` (`OWNER` / `ADMIN` / `MEMBER`, `lib/tenancy/roles.ts`)
+ *    are filled by the guard for the org the request entered — never read
+ *    them from the tenant context. Sunrise's default already lets an org
+ *    OWNER/ADMIN administer, and read the ownerless `this-row` of, a resource
+ *    carrying their org (`resource.orgId === viewer.orgId`); the capability
+ *    question stays platform-only until the data layer scopes those reads by
+ *    org. The `scope.org` argument carries the same org id for a policy that
+ *    prefers to read it there.
  *  - **A resolver that returns `null`, or throws, denies the request** before
  *    your policy is consulted — it is not a state you can widen, and it never
  *    reaches `canRead`. `'nothing'` means the route declared no resolver at
@@ -180,10 +189,11 @@
  *    itself refuse. Do your loading elsewhere and register synchronously.
  *  - **An `admin`-scoped API key bypasses the role check** and always has: the
  *    scope is the capability. The design record pins that scope as
- *    platform-only (Q6), and minting one already requires a platform admin with
- *    a browser session. Keys do not carry an org yet, so "an org-bound key can
- *    never hold `admin`" is not something this seam can enforce today — that
- *    arrives with the org axis.
+ *    platform-only (Q6): minting one requires a platform admin with a browser
+ *    session acting in the install org, an `admin` key is stored with no org,
+ *    and both guards refuse a key that carries one — so "an org-bound key
+ *    can never hold `admin`" holds at mint and at both guards, and your
+ *    policy cannot widen it: the refusal runs before the policy is asked.
  *
  * Full guide: .context/auth/authorization.md · CUSTOMIZATION.md §4 ·
  * lib/auth/authorization.ts

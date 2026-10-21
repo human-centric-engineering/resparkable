@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { csvEscape } from '@/lib/api/csv';
+import { parseCsvRecords } from '@/tests/helpers/csv';
 
 describe('csvEscape', () => {
   describe('RFC 4180 quoting', () => {
@@ -20,6 +21,43 @@ describe('csvEscape', () => {
 
     it('wraps values containing newlines in double quotes', () => {
       expect(csvEscape('line1\nline2')).toBe('"line1\nline2"');
+    });
+
+    it('wraps values containing a lone carriage return in double quotes', () => {
+      expect(csvEscape('line1\rline2')).toBe('"line1\rline2"');
+    });
+
+    it('wraps values containing CRLF in double quotes', () => {
+      expect(csvEscape('line1\r\nline2')).toBe('"line1\r\nline2"');
+    });
+
+    // Only the lone-CR case failed before #768; LF and CRLF guard
+    // behaviour that already worked.
+    it.each(['\r\n', '\r', '\n'])(
+      'does not let an interior line break (%j) start a record of its own',
+      (sep) => {
+        const cell = csvEscape(`thanks!${sep}=SUM(A1:A2)`);
+        const csv = ['a,b', [cell, 'x'].join(',')].join(sep);
+        expect(parseCsvRecords(csv)).toEqual([
+          ['a', 'b'],
+          [`thanks!${sep}=SUM(A1:A2)`, 'x'],
+        ]);
+      }
+    );
+
+    it('keeps a mid-cell CR inside its record so it cannot open a new cell (#768)', () => {
+      // No comma or quote, so only the CR can trigger quoting. A
+      // spreadsheet treats a bare CR as a record break. Unquoted, the
+      // text after it would land in column A of a new record, where its
+      // first character escapes the leading-character neutraliser.
+      const cell = csvEscape("thanks!\r=cmd|' /C calc'!A0");
+      const csv = ['a,b', [cell, 'x'].join(',')].join('\r\n');
+
+      const records = parseCsvRecords(csv);
+      expect(records).toEqual([
+        ['a', 'b'],
+        ["thanks!\r=cmd|' /C calc'!A0", 'x'],
+      ]);
     });
 
     it('doubles internal quotes and wraps in outer quotes', () => {
@@ -59,12 +97,10 @@ describe('csvEscape', () => {
       expect(csvEscape(input)).toBe('"\'=HYPERLINK(""https://evil.example"",""click"")"');
     });
 
-    it('neutralises a leading carriage return', () => {
-      // \r is a formula trigger on its own but the RFC 4180 wrap
-      // doesn't currently watch for it (only \n). Locked in here so
-      // any future widening of the wrapper's trigger set keeps both
-      // behaviours intact.
-      expect(csvEscape('\rfoo')).toBe("'\rfoo");
+    it('neutralises AND quotes a leading carriage return', () => {
+      // \r is a formula trigger on its own, and also a record separator
+      // to a spreadsheet, so both the prefix and the RFC 4180 wrap fire.
+      expect(csvEscape('\rfoo')).toBe('"\'\rfoo"');
     });
 
     it('applies BOTH neutralisation AND quoting when the value also contains a comma', () => {

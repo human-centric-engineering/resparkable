@@ -25,6 +25,7 @@
 import type { NextRequest } from 'next/server';
 import { auth } from '@/lib/auth/config';
 import { logger } from '@/lib/logging';
+import { collapseDynamicSegments } from '@/lib/logging/redact-path';
 import { getClientIP } from '@/lib/security/ip';
 import {
   createRateLimitResponse,
@@ -39,6 +40,7 @@ import {
   resolveAppRateLimitKeyResolver,
   type RateLimitRule,
 } from '@/lib/security/rate-limit-policy';
+import { resolveRateLimitCredential } from '@/lib/security/rate-limit-credentials';
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
 
 // Auto-wire the app's rate-limit registrations (fork-readiness — the `lib/app/`
@@ -193,7 +195,7 @@ export async function applyRateLimit(request: NextRequest): Promise<Response | n
     // can fix the config instead of silently failing open.
     logger.warn('Rate-limit policy references an unknown tier; skipping limiter', {
       tier: rule.tier,
-      pathname: request.nextUrl.pathname,
+      pathname: collapseDynamicSegments(request.nextUrl.pathname),
     });
     return null;
   }
@@ -271,11 +273,17 @@ async function buildToken(rule: RateLimitRule, request: NextRequest): Promise<st
  *   ID. Falls back to `ip:${IP}` if no session (typical for routes the
  *   user hasn't authenticated to yet — they still get a per-IP bucket so
  *   anonymous traffic can't grief authenticated buckets).
- * - `'api-key'` extracts the API key hash from `Authorization: Bearer <key>`.
- *   Falls back to IP if missing.
- * - `'embed-token'` extracts the embed token from the `X-Embed-Token` header
- *   (and combines with IP, mirroring the existing `embed:user:${token}:${ip}`
- *   convention used by the embed chat limiter). Falls back to IP if missing.
+ * - `'api-key'` looks up the key in `Authorization: Bearer <key>` and returns
+ *   the stored key's id. Falls back to `ip:${IP}` when the header is missing
+ *   or names no live key.
+ * - `'embed-token'` looks up the `X-Embed-Token` token and returns its stored
+ *   id combined with the IP (one bucket per visitor of an embedding site).
+ *   Falls back to `ip:${IP}` when the header is missing or names no live token.
+ *
+ * The two credential strategies never key on the header as presented: the
+ * caller chooses that value, so it would give them a fresh bucket per request
+ * (#701). See `lib/security/rate-limit-credentials.ts` for what a lookup
+ * costs and when it falls back to the IP.
  *
  * IP fallback exists because rate-limiting is best-effort defense in depth —
  * if we can't identify the caller more precisely, we still want *some* bucket
@@ -329,21 +337,21 @@ async function resolveIdentifier(key: RateLimitRule['key'], request: NextRequest
     }
 
     case 'api-key': {
-      const header = request.headers.get('authorization');
-      if (header) {
-        // `Authorization: Bearer <key>` — use the key value as the bucket
-        // identifier. Hashing happens inside the API-key resolution layer;
-        // for rate-limiting we just need a stable per-key string.
-        const match = /^Bearer\s+(.+)$/i.exec(header.trim());
-        if (match?.[1]) return `key:${match[1]}`;
-      }
-      return `ip:${ip}`;
+      // Parsed exactly as the routes parse it (`resolveApiKey`, the MCP
+      // transport): a case-sensitive `Bearer ` and the rest verbatim, so the
+      // proxy never gives its own bucket to a header the route would refuse.
+      const header = request.headers.get('authorization') ?? '';
+      const bearer = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+      if (!bearer) return `ip:${ip}`;
+      const id = await resolveRateLimitCredential('api-key', bearer, ip);
+      return id ? `key:${id}` : `ip:${ip}`;
     }
 
     case 'embed-token': {
       const token = request.headers.get('x-embed-token');
-      if (token) return `embed:${token}:${ip}`;
-      return `ip:${ip}`;
+      if (!token) return `ip:${ip}`;
+      const id = await resolveRateLimitCredential('embed-token', token, ip);
+      return id ? `embed:${id}:${ip}` : `ip:${ip}`;
     }
   }
 }

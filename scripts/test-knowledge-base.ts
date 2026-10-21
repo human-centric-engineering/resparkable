@@ -5,7 +5,8 @@
  *
  * Requires:
  * - A running PostgreSQL with the resparkable database
- * - For search: an embedding provider (OPENAI_API_KEY or Ollama running)
+ * - For search: an embedding provider row (OpenAI, Voyage, or a local one such as
+ *   Ollama). OPENAI_API_KEY alone is not enough since t-740: add OpenAI as a provider.
  * - For seed-only mode: no embedding provider needed (inserts without embeddings)
  */
 
@@ -13,21 +14,16 @@ import { resolve } from 'path';
 import { readFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import { z } from 'zod';
-import { config } from 'dotenv';
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
+// First: the app client below validates the environment at import time.
+import '@/prisma/load-env';
+import { prisma } from '@/lib/db/client';
 import { seedChunkSchema } from '@/lib/orchestration/knowledge/seeder';
 import { DEFAULT_KNOWLEDGE_BASE_ID } from '@/lib/orchestration/knowledge/document-manager';
 import { buildDocumentSlugBase } from '@/lib/orchestration/knowledge/document-slug';
 import { PLATFORM_ADMIN_ROLE } from '@/lib/auth/roles';
 
-// Load env from .env.local
-config({ path: resolve(__dirname, '../.env.local') });
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
+// The app client — through the tenancy chokepoint, so the document and its
+// chunks are stamped with the install org rather than landing NULL (§107).
 
 const DOCUMENT_NAME = 'Agentic Design Patterns';
 const CHUNKS_PATH = resolve(__dirname, '../prisma/seeds/data/chunks/chunks.json');
@@ -98,10 +94,11 @@ async function seedWithoutEmbeddings(): Promise<void> {
       `INSERT INTO ai_knowledge_chunk (
         id, "chunkKey", "documentId", content,
         "chunkType", "patternNumber", "patternName", category,
-        section, keywords, "estimatedTokens", metadata
+        section, keywords, "estimatedTokens", metadata, "orgId"
       ) VALUES (
         gen_random_uuid()::text, $1, $2, $3,
-        $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+        $4, $5, $6, $7, $8, $9, $10, $11::jsonb,
+        (SELECT "orgId" FROM ai_knowledge_document WHERE id = $2)
       )`,
       chunk.id,
       document.id,
@@ -190,7 +187,10 @@ async function testVectorSearch(): Promise<void> {
 
   if (embeddingCount === 0) {
     console.log('  No embeddings found. To test vector search:');
-    console.log('  1. Set OPENAI_API_KEY in .env.local, OR');
+    console.log(
+      '  1. Add an embedding provider row (OpenAI, Voyage) on the admin Providers page —'
+    );
+    console.log('     with OPENAI_API_KEY in .env.local, the page detects it and adds OpenAI, OR');
     console.log('  2. Run Ollama locally (ollama serve && ollama pull nomic-embed-text)');
     console.log('  3. Configure an AiProviderConfig for the embedding provider');
     console.log('  Then run: npx tsx scripts/test-knowledge-base.ts --search-only');
@@ -243,7 +243,7 @@ async function main() {
     console.log('\n--- Done ---\n');
   } finally {
     await prisma.$disconnect();
-    await pool.end();
+    await prisma.$disconnect();
   }
 }
 

@@ -15,6 +15,8 @@
  * - Development: caches pool on globalForPrisma (hot-reload reuse)
  * - Development: PrismaClient created with ['query', 'error', 'warn'] log config
  * - Production: PrismaClient created with ['error'] only log config
+ * - Tenancy seam: the exported client is the base client through `withTenancy`
+ *   in both modes (the extension itself is tested in tenancy-extension.test.ts)
  *
  * @see lib/db/client.ts
  */
@@ -83,6 +85,17 @@ async function importClientWithEnv(opts: {
     this.__type = 'MockPrismaClient';
   });
 
+  // The chokepoint wraps the base client; here it is a pass-through that
+  // records what it was handed, so these tests stay about the singleton.
+  const mockWithTenancy = vi.fn((base: unknown, _options: unknown) => ({
+    __type: 'TenancyClient',
+    base,
+  }));
+  const mockContext = {
+    getTenantContext: vi.fn(),
+    isMultiTenant: vi.fn(() => false),
+  };
+
   // Only set TENANCY_MODE on the mock env when the test supplies it, so the
   // "undefined behaves like single" back-compat case is genuinely undefined.
   const mockEnvValue: {
@@ -106,6 +119,8 @@ async function importClientWithEnv(opts: {
   vi.doMock('@prisma/adapter-pg', () => ({ PrismaPg: MockPrismaPg }));
   vi.doMock('@prisma/client', () => ({ PrismaClient: MockPrismaClient }));
   vi.doMock('@/lib/env', () => ({ env: mockEnvValue }));
+  vi.doMock('@/lib/db/tenancy-extension', () => ({ withTenancy: mockWithTenancy }));
+  vi.doMock('@/lib/tenancy/context', () => mockContext);
 
   const clientMod = await import('@/lib/db/client');
 
@@ -115,6 +130,8 @@ async function importClientWithEnv(opts: {
     MockPool,
     MockPrismaPg,
     MockPrismaClient,
+    mockWithTenancy,
+    mockContext,
   };
 }
 
@@ -256,14 +273,15 @@ describe('lib/db/client', () => {
   });
 
   describe('Singleton caching — non-production (development)', () => {
-    it('should cache prisma on globalForPrisma in development', async () => {
+    it('should cache the base prisma client on globalForPrisma in development', async () => {
       // Arrange + Act
-      const { prisma } = await importClientWithEnv({ NODE_ENV: 'development' });
+      const { MockPrismaClient } = await importClientWithEnv({ NODE_ENV: 'development' });
 
-      // Assert — the module wrote the instance into globalThis
+      // Assert — the module wrote the BASE instance into globalThis (the
+      // extension is applied fresh on every evaluation)
       const g = globalThis as unknown as { prisma?: unknown };
       expect(g.prisma).toBeDefined();
-      expect(g.prisma).toBe(prisma);
+      expect(g.prisma).toBe(MockPrismaClient.mock.instances[0]);
     });
 
     it('should cache pool on globalForPrisma in development', async () => {
@@ -284,66 +302,83 @@ describe('lib/db/client', () => {
       const cachedPool = { __type: 'CachedPool', connect: vi.fn() };
 
       // Act — pass pre-seeded globals so the module finds them at load time
-      const { prisma, MockPrismaClient } = await importClientWithEnv({
+      const { MockPrismaClient, mockWithTenancy } = await importClientWithEnv({
         NODE_ENV: 'development',
         preSeededGlobal: { prisma: cachedPrisma, pool: cachedPool },
       });
 
-      // Assert — module returned the cached instance without calling the constructor
-      expect(prisma).toBe(cachedPrisma);
+      // Assert — the cached base client was wrapped, not replaced
       expect(MockPrismaClient).not.toHaveBeenCalled();
+      expect(mockWithTenancy).toHaveBeenCalledWith(cachedPrisma, expect.anything());
     });
   });
 
-  describe('Tenancy seam (TENANCY_MODE guard)', () => {
-    it('should throw at import when TENANCY_MODE is multi', async () => {
-      // Arrange + Act + Assert — the guard fails loud rather than letting
-      // unscoped queries run with no isolation. The error points at the playbook.
-      await expect(
-        importClientWithEnv({ NODE_ENV: 'development', TENANCY_MODE: 'multi' })
-      ).rejects.toThrow(/TENANCY_MODE=multi is not implemented/);
-    });
-
-    it('should NOT construct the PrismaClient when TENANCY_MODE is multi', async () => {
-      // Arrange — capture the constructor across the throwing import
-      let captured: ReturnType<typeof vi.fn> | undefined;
-      try {
-        const mod = await importClientWithEnv({
-          NODE_ENV: 'development',
-          TENANCY_MODE: 'multi',
-        });
-        captured = mod.MockPrismaClient;
-      } catch {
-        // expected — the module throws before returning. The point is that the
-        // guard runs ahead of client construction, asserted below via the smoke
-        // case: in 'single'/undefined the client IS constructed.
-      }
-
-      // Assert — import rejected, so no module exports were returned
-      expect(captured).toBeUndefined();
-    });
-
-    it('should construct the client normally when TENANCY_MODE is single', async () => {
+  describe('Tenancy seam (the chokepoint)', () => {
+    it('exports the client withTenancy returns, wrapped around the constructed PrismaClient', async () => {
       // Arrange + Act
-      const { prisma, MockPrismaClient } = await importClientWithEnv({
+      const { prisma, MockPrismaClient, mockWithTenancy, mockContext } = await importClientWithEnv({
         NODE_ENV: 'development',
         TENANCY_MODE: 'single',
       });
 
-      // Assert — explicit single is a no-op: client builds as usual
-      expect(prisma).toBeDefined();
-      expect(MockPrismaClient).toHaveBeenCalledTimes(1);
+      // Assert — the base client goes in, the extended client comes out, and
+      // the extension reads the real context and mode, with the install org
+      // as the single-tenant answer.
+      const baseInstance = MockPrismaClient.mock.instances[0] as unknown;
+      expect(mockWithTenancy).toHaveBeenCalledTimes(1);
+      expect(mockWithTenancy).toHaveBeenCalledWith(baseInstance, {
+        isMultiTenant: mockContext.isMultiTenant,
+        getTenantContext: mockContext.getTenantContext,
+        installOrgId: 'install',
+      });
+      expect(prisma).toBe(mockWithTenancy.mock.results[0].value);
     });
 
-    it('should construct the client when TENANCY_MODE is undefined (single-tenant default)', async () => {
+    it('no longer throws at import when TENANCY_MODE is multi — the extension scopes instead', async () => {
+      // Arrange + Act
+      const { prisma, MockPrismaClient, mockWithTenancy } = await importClientWithEnv({
+        NODE_ENV: 'development',
+        TENANCY_MODE: 'multi',
+      });
+
+      // Assert — same construction as single; the mode is read per operation
+      // inside the extension, never at import.
+      expect(prisma).toBeDefined();
+      expect(MockPrismaClient).toHaveBeenCalledTimes(1);
+      expect(mockWithTenancy).toHaveBeenCalledTimes(1);
+    });
+
+    it('applies the extension when TENANCY_MODE is undefined (single-tenant default)', async () => {
       // Arrange + Act — env without TENANCY_MODE (the default before anyone sets it)
-      const { prisma, MockPrismaClient } = await importClientWithEnv({
+      const { prisma, MockPrismaClient, mockWithTenancy } = await importClientWithEnv({
         NODE_ENV: 'development',
       });
 
-      // Assert — undefined is treated as single; the guard only trips on 'multi'
+      // Assert
       expect(prisma).toBeDefined();
       expect(MockPrismaClient).toHaveBeenCalledTimes(1);
+      expect(mockWithTenancy).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-wraps the cached BASE client on hot reload, so the extension reads the live context module', async () => {
+      // Arrange — what survives a reload is the base client (it owns the pool)
+      const cachedBase = { __type: 'CachedPrismaClient' };
+
+      // Act
+      const { prisma, MockPrismaClient, mockWithTenancy } = await importClientWithEnv({
+        NODE_ENV: 'development',
+        preSeededGlobal: { prisma: cachedBase, pool: { __type: 'CachedPool' } },
+      });
+
+      // Assert — no new base client, but a fresh extension over the cached
+      // one: a retained extended client would close over the previous
+      // evaluation's AsyncLocalStorage and see no context after a reload.
+      expect(MockPrismaClient).not.toHaveBeenCalled();
+      expect(mockWithTenancy).toHaveBeenCalledTimes(1);
+      expect(mockWithTenancy.mock.calls[0][0]).toBe(cachedBase);
+      expect(prisma).toBe(mockWithTenancy.mock.results[0].value);
+      const g = globalThis as unknown as { prisma?: unknown };
+      expect(g.prisma).toBe(cachedBase);
     });
   });
 

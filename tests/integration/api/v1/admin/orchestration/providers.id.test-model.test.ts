@@ -80,6 +80,7 @@ function makeProvider() {
     metadata: null,
     timeoutMs: null,
     maxRetries: null,
+    jurisdiction: null,
     createdBy: 'system',
     createdAt: new Date('2025-01-01'),
     updatedAt: new Date('2025-01-01'),
@@ -122,6 +123,7 @@ function makeMockProvider(
     chat: ReturnType<typeof vi.fn>;
     chatStream: ReturnType<typeof vi.fn>;
     embed: ReturnType<typeof vi.fn>;
+    embedMany: ReturnType<typeof vi.fn>;
     listModels: ReturnType<typeof vi.fn>;
     testConnection: ReturnType<typeof vi.fn>;
     transcribe: ReturnType<typeof vi.fn>;
@@ -271,13 +273,37 @@ describe('POST /api/v1/admin/orchestration/providers/:id/test-model', () => {
   });
 
   describe('Capability-aware routing', () => {
-    it('routes embedding capability through provider.embed (not chat)', async () => {
+    it('refuses an embedding test on a class without embedMany, as ingestion does (t-740)', async () => {
+      // Falling back to embed() would pass while every upload failed with
+      // embedding_unsupported.
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
       vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
       const chatMock = vi.fn();
-      const embedMock = vi.fn().mockResolvedValue([0.1, 0.2, 0.3]);
+      const embedMock = vi.fn().mockResolvedValue([0.1]);
       vi.mocked(getProvider).mockResolvedValue(
         makeMockProvider({ chat: chatMock, embed: embedMock }) as never
+      );
+
+      const response = await POST(
+        makeRequest({ model: 'text-embedding-3-small', capability: 'embedding' }),
+        makeParams()
+      );
+
+      expect(response.status).toBe(200);
+      const data = await parseJson<{ data: { ok: boolean; error?: string } }>(response);
+      expect(data.data.ok).toBe(false);
+      expect(data.data.error).toBe('provider_no_embedding_support');
+      expect(embedMock).not.toHaveBeenCalled();
+      expect(chatMock).not.toHaveBeenCalled();
+    });
+
+    it('routes embedding capability through embedMany (not chat)', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
+      const chatMock = vi.fn();
+      const embedManyMock = vi.fn().mockResolvedValue({ embeddings: [[0.1, 0.2, 0.3]] });
+      vi.mocked(getProvider).mockResolvedValue(
+        makeMockProvider({ chat: chatMock, embedMany: embedManyMock }) as never
       );
 
       const response = await POST(
@@ -292,8 +318,29 @@ describe('POST /api/v1/admin/orchestration/providers/:id/test-model', () => {
       expect(data.data.ok).toBe(true);
       expect(typeof data.data.latencyMs).toBe('number');
       expect(data.data.capability).toBe('embedding');
-      expect(embedMock).toHaveBeenCalledTimes(1);
+      expect(embedManyMock).toHaveBeenCalledTimes(1);
       expect(chatMock).not.toHaveBeenCalled();
+    });
+
+    it('tests an embedding model through embedMany with that model, as ingestion does (t-740)', async () => {
+      // The deprecated embed() ignores the model under test (and, on Voyage,
+      // the row's baseUrl), so the button could pass while ingestion failed.
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiProviderConfig.findUnique).mockResolvedValue(makeProvider());
+      const embedMock = vi.fn();
+      const embedManyMock = vi.fn().mockResolvedValue({ embeddings: [[0.1]] });
+      vi.mocked(getProvider).mockResolvedValue(
+        makeMockProvider({ embed: embedMock, embedMany: embedManyMock }) as never
+      );
+
+      const response = await POST(
+        makeRequest({ model: 'text-embedding-3-large', capability: 'embedding' }),
+        makeParams()
+      );
+
+      expect(response.status).toBe(200);
+      expect(embedManyMock).toHaveBeenCalledWith(['hello'], { model: 'text-embedding-3-large' });
+      expect(embedMock).not.toHaveBeenCalled();
     });
 
     it('refuses unsupported capabilities without invoking the SDK', async () => {

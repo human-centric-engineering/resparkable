@@ -55,7 +55,13 @@ export const POST = withAdminAuth<{ id: string }>(async (request, _session, { pa
   }
   const definition = defParsed.data;
   const structural = validateWorkflow(definition);
-  const semantic = await semanticValidateWorkflow(definition);
+  // A diagnostic of the published version, so every override is checked
+  // against the org's approved providers (§120 t-743), with none excused. It
+  // saves nothing, so an unreadable policy skips that check, logged, rather
+  // than failing the whole report.
+  const semantic = await semanticValidateWorkflow(definition, {
+    approval: { onUnreadable: 'skip' },
+  });
 
   const errors = [...structural.errors, ...semantic.errors];
   const result = { ok: errors.length === 0, errors };

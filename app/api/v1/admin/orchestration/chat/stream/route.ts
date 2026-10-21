@@ -31,6 +31,7 @@ import { streamChat } from '@/lib/orchestration/chat';
 import { chatStreamRequestSchema } from '@/lib/validations/orchestration';
 import { getRequestId, getVisitorId } from '@/lib/logging/context';
 import { validateImageMagicBytes, validatePdfMagicBytes } from '@/lib/storage/image';
+import { platformSlugWhere } from '@/lib/orchestration/agents/platform-agent-guard';
 
 export const POST = withAdminAuth(async (request, session) => {
   const userLimit = chatLimiter.check(session.user.id);
@@ -48,8 +49,9 @@ export const POST = withAdminAuth(async (request, session) => {
   // their per-agent throttle by switching surfaces. The lookup is a
   // single indexed find and is intentionally separate from the heavier
   // agent resolution inside `streamChat`.
-  const agent = await prisma.aiAgent.findUnique({
-    where: { slug: body.agentSlug },
+  const agent = await prisma.aiAgent.findFirst({
+    // As streamChat will load it: a platform slug is its system row (§116).
+    where: { slug: body.agentSlug, ...platformSlugWhere(body.agentSlug) },
     select: { id: true, rateLimitRpm: true },
   });
   if (!agent) {

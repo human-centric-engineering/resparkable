@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { generateRequestId } from '@/lib/logging/context';
 import { logger } from '@/lib/logging';
+import { collapseDynamicSegments } from '@/lib/logging/redact-path';
 import {
   VISITOR_COOKIE_NAME,
   VISITOR_HEADER_NAME,
@@ -15,8 +16,15 @@ import { setSecurityHeaders } from '@/lib/security/headers';
 import { applyRateLimit } from '@/lib/security/rate-limit-middleware';
 import { classifySurface } from '@/lib/app/surface';
 import { appProtectedRoutes } from '@/lib/app/protected-routes';
+import { registerAppTenantResolver } from '@/lib/app/tenant-resolver';
+import { resolveTenantFromRequest, TENANT_HEADER_NAME } from '@/lib/tenancy/resolver';
 import { AUTH_LANDING_ROUTE } from '@/lib/auth-landing/route';
 import { isInviteOnly } from '@/lib/auth/signup-mode';
+
+// The fork's tenant resolver, registered once at module load — the
+// `registerAppRateLimits` shape. Ships empty; a throw here aborts the proxy
+// bundle, which is the right outcome for a scaffold that cannot register.
+registerAppTenantResolver();
 
 /**
  * Next.js Proxy
@@ -85,6 +93,27 @@ function isAuthenticated(request: NextRequest): boolean {
 }
 
 /**
+ * Routes a partner site calls cross-origin by design, exempt from the Origin
+ * check below (#705, t-765): the embed widget's API (`/api/v1/embed/*`) and its
+ * in-chat approval buttons (`/approvals/:id/approve/embed`, `/reject/embed`).
+ * The widget runs on someone else's domain, so its every POST carries a foreign
+ * Origin, and the check refused them all: a visitor on a partner site could
+ * never send a message.
+ *
+ * The exemption is safe because the check defends against CSRF, which rides on
+ * credentials the browser attaches by itself — cookies. None of these routes
+ * reads a session or cookie: they authenticate with a token the caller must
+ * hold (the `X-Embed-Token` header, or a signed approval token), and each
+ * enforces its own origin allowlist (the embed token's `allowedOrigins`,
+ * `embedAllowedOrigins` for approvals). A route added here must keep both
+ * properties.
+ */
+const CROSS_ORIGIN_TOKEN_ROUTES = [
+  /^\/api\/v1\/embed\//,
+  /^\/api\/v1\/orchestration\/approvals\/[^/]+\/(approve|reject)\/embed$/,
+];
+
+/**
  * Validate origin for state-changing requests (additional CSRF protection)
  *
  * Better-auth provides CSRF protection via tokens, but this adds defense-in-depth
@@ -96,6 +125,10 @@ function isAuthenticated(request: NextRequest): boolean {
 function validateOrigin(request: NextRequest): boolean {
   // Only validate state-changing methods
   if (!['POST', 'PUT', 'DELETE', 'PATCH'].includes(request.method)) {
+    return true;
+  }
+
+  if (CROSS_ORIGIN_TOKEN_ROUTES.some((route) => route.test(request.nextUrl.pathname))) {
     return true;
   }
 
@@ -171,13 +204,15 @@ export async function proxy(request: NextRequest): Promise<NextResponse | Respon
   // Optional per-request access log (default off, behind LOG_HTTP_ACCESS).
   // Makes anonymous navigation visible server-side. The final response
   // status is not available to the proxy for passthrough requests, so the
-  // line carries the request shape + correlation keys only.
+  // line carries the request shape + correlation keys only. The path has its
+  // id- and credential-shaped segments collapsed: a page like `/s/<token>`
+  // would otherwise log a live credential on every visit (#685).
   if (isHttpAccessLogEnabled()) {
     logger.info('http_access', {
       requestId,
       visitorId: visitorId ?? undefined,
       method: request.method,
-      path: pathname,
+      path: collapseDynamicSegments(pathname),
     });
   }
 
@@ -288,6 +323,28 @@ export async function proxy(request: NextRequest): Promise<NextResponse | Respon
     requestHeaders.set(VISITOR_HEADER_NAME, visitorId);
   } else {
     requestHeaders.delete(VISITOR_HEADER_NAME);
+  }
+
+  // The org a fork's tenant resolver names for this request (§106) — the
+  // same sole-writer shape as the visitor id, and the `else` is the security
+  // property: with no resolver, or a resolver that answers nothing, any
+  // inbound copy is stripped so a client cannot pick its org by header. The
+  // guard trusts this header for WHICH org only because of that, and still
+  // verifies membership. Sunrise ships no resolver; the header is absent on
+  // every request until a fork registers one in lib/app/tenant-resolver.ts.
+  const tenantOrgId = resolveTenantFromRequest(request, (error) => {
+    logger.error(
+      'Tenant resolver threw; treating as no answer and stripping the org header',
+      error,
+      {
+        hint: 'lib/app/tenant-resolver.ts registered a resolver that throws on this request. Every request it throws on falls back to the session’s org.',
+      }
+    );
+  });
+  if (tenantOrgId) {
+    requestHeaders.set(TENANT_HEADER_NAME, tenantOrgId);
+  } else {
+    requestHeaders.delete(TENANT_HEADER_NAME);
   }
 
   const response = NextResponse.next({

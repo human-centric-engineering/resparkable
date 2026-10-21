@@ -81,6 +81,9 @@ const mockInitAppSubjectSources = vi.fn();
 vi.mock('@/lib/db/client', () => ({ prisma: mockPrisma }));
 vi.mock('@/lib/logging', () => ({ logger: mockLogger }));
 
+const mockEnv = vi.hoisted(() => ({ TENANCY_MODE: 'single' }));
+vi.mock('@/lib/env', () => ({ env: mockEnv }));
+
 const mockCollectAppSubjectData = vi.fn().mockResolvedValue({});
 /**
  * Stubbed alongside the collector, not omitted. Leaving it out does not fail —
@@ -111,10 +114,12 @@ import {
   EXCLUDED_SOURCES,
   type SubjectDataSource,
 } from '@/lib/privacy/export-sources';
+import { getTenantContext, runAsOrg } from '@/lib/tenancy/context';
 
 const SUBJECT = {
   id: 'user-1',
   email: 'Subject@Example.com',
+  emailVerified: true,
   name: 'Subject',
   role: 'USER',
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -137,6 +142,7 @@ function argsTo(delegate: string): Record<string, unknown> {
 beforeEach(() => {
   vi.clearAllMocks();
   resetDelegates();
+  mockEnv.TENANCY_MODE = 'single';
   mockUserFindUnique.mockResolvedValue(SUBJECT);
   mockCollectAppSubjectData.mockResolvedValue({});
   mockInitAppSubjectSources.mockReset();
@@ -267,14 +273,251 @@ describe('exportUserData', () => {
       expect(argsTo('aiWorkflowExecution').where).toEqual({ userId: 'user-1' });
     });
 
-    it('matches contact submissions on the subject email, case-insensitively', async () => {
-      // No FK to User — the public form takes an address. Case matters because
-      // the stored address may differ in case from the account's.
+    it('matches contact submissions exactly on the normalised subject email', async () => {
+      // No FK to User — the public form takes an address, and its only writer
+      // stores it trimmed and lower-cased (`emailSchema`). So the read
+      // normalises the same way and matches exactly. Not `mode: 'insensitive'`:
+      // Prisma compiles that to an unescaped ILIKE, where `_` and `%` in an
+      // address match other people's submissions.
       await exportUserData(PARAMS);
 
-      expect(argsTo('contactSubmission').where).toEqual({
-        email: { equals: 'Subject@Example.com', mode: 'insensitive' },
+      expect(argsTo('contactSubmission').where).toEqual({ email: 'subject@example.com' });
+    });
+
+    it('trims the subject email before matching contact submissions', async () => {
+      // `emailSchema` trims too, so an account address with stray whitespace
+      // (one written by a path other than better-auth) still finds its rows.
+      mockUserFindUnique.mockResolvedValue({ ...SUBJECT, email: '  Subject@Example.com ' });
+
+      await exportUserData(PARAMS);
+
+      expect(argsTo('contactSubmission').where).toEqual({ email: 'subject@example.com' });
+    });
+  });
+
+  describe('contact submissions for an unverified address', () => {
+    it('exports none, without reading the table', async () => {
+      // The contact form proves nothing about who typed an address, so an
+      // account that never verified its address could be anyone's: handing it
+      // the messages under that address could hand over a stranger's.
+      mockUserFindUnique.mockResolvedValue({ ...SUBJECT, emailVerified: false });
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(callsTo('contactSubmission')).toHaveLength(0);
+      expect(bundle.personalData.contactSubmissions).toEqual([]);
+    });
+  });
+
+  describe('reading across every org at multi (§107 t-748)', () => {
+    // The email as the contact form stores it: trimmed and lower-cased.
+    const NORMALISED_EMAIL = SUBJECT.email.trim().toLowerCase();
+    const isSubject = (value: unknown) =>
+      value === SUBJECT.id || value === SUBJECT.email || value === NORMALISED_EMAIL;
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
+
+    /**
+     * Relation filters a source may pin the subject through — the subject's
+     * id on a RELATED row, which narrows to the subject's rows only where the
+     * relation says so. Named one by one: `Org` is the orgs the subject has a
+     * membership in. A new one is a judgement, so it fails here until named.
+     */
+    const RELATION_PINS = new Set(['Org.memberships']);
+
+    /** Whether one field's filter is the subject exactly: no negation, no list with others. */
+    function fieldPins(value: unknown): boolean {
+      if (isSubject(value)) return true;
+      if (!isRecord(value)) return false;
+      const keys = Object.keys(value);
+      // An exact `equals` only. With `mode: 'insensitive'` Prisma emits an
+      // unescaped ILIKE, so `_` or `%` in the value match other people's rows.
+      if (keys.every((k) => k === 'equals' || k === 'mode')) {
+        return value.mode !== 'insensitive' && isSubject(value.equals);
+      }
+      if (keys.length === 1 && Array.isArray(value.in)) {
+        return value.in.length > 0 && value.in.every(isSubject);
+      }
+      return false;
+    }
+
+    /**
+     * Whether `where` pins `model`'s rows to the subject: their id or email
+     * on one of the row's own fields, at the top level or under `AND` —
+     * never through `OR`, `NOT` or a negating operator (`not`, `notIn`,
+     * `none`, `every`), which do not narrow the read to them and under the
+     * bypass would read other people's rows in every org.
+     */
+    function pinsSubject(model: string, where: unknown): boolean {
+      if (!isRecord(where)) return false;
+      return Object.entries(where).some(([key, value]) => {
+        if (key === 'AND') {
+          const parts = Array.isArray(value) ? value : [value];
+          return parts.some((part) => pinsSubject(model, part));
+        }
+        if (key === 'OR' || key === 'NOT') return false;
+        if (RELATION_PINS.has(`${model}.${key}`)) {
+          return isRecord(value) && isRecord(value.some) && pinsSubject(model, value.some);
+        }
+        return fieldPins(value);
       });
+    }
+
+    /**
+     * Relations each source reads rows through (`include`, or a nested
+     * `select`). Under the bypass a related row is not held to one org, so
+     * every relation is named here, with why it is still the subject's.
+     */
+    const RELATION_READS: Record<string, string[]> = {
+      // The org row of each of the subject's own memberships: id, slug, name.
+      OrgMembership: ['org'],
+      // The messages and share link of the subject's own conversations.
+      AiConversation: ['messages', 'share'],
+    };
+
+    function relationReads(args: Record<string, unknown>): string[] {
+      const { include, select } = args;
+      const fromInclude = isRecord(include)
+        ? Object.entries(include)
+            .filter(([, v]) => Boolean(v))
+            .map(([k]) => k)
+        : [];
+      const fromSelect = isRecord(select)
+        ? Object.entries(select)
+            .filter(([, v]) => isRecord(v))
+            .map(([k]) => k)
+        : [];
+      return [...fromInclude, ...fromSelect].sort();
+    }
+
+    const delegateOf = (model: string) => model.charAt(0).toLowerCase() + model.slice(1);
+
+    /** The tenant context each read saw, recorded from one source and the app seam. */
+    function recordContexts(): Array<{ orgId: string | null; source: string } | null> {
+      const seen: Array<{ orgId: string | null; source: string } | null> = [];
+      // A plain array, not a promise: the delegate's mock type wants a void
+      // return, and the source awaits whatever it is handed.
+      delegateFor('aiConversation').findMany.mockImplementation(() => {
+        seen.push(getTenantContext());
+        return [];
+      });
+      mockCollectAppSubjectData.mockImplementation(async () => {
+        seen.push(getTenantContext());
+        return {};
+      });
+      return seen;
+    }
+
+    const ACTIVE_ORG = 'cmorg00000000000000active';
+
+    it('reads every source and the app seam in the system scope, whatever org the caller is in', async () => {
+      // A session enters its active org, and the policy would AND every read
+      // with it; an admin API key enters none. Both must read as the bypass.
+      mockEnv.TENANCY_MODE = 'multi';
+      const seen = recordContexts();
+
+      await runAsOrg(ACTIVE_ORG, () => exportUserData(PARAMS), { source: 'session' });
+      await exportUserData(PARAMS);
+
+      const system = { orgId: null, source: 'system' };
+      expect(seen).toEqual([system, system, system, system]);
+    });
+
+    it('enters no scope at single, where there is one org and no policy', async () => {
+      // A collector or helper reading the implicit install org keeps working.
+      const seen = recordContexts();
+
+      await runAsOrg(ACTIVE_ORG, () => exportUserData(PARAMS), { source: 'session' });
+      await exportUserData(PARAMS);
+
+      const session = { orgId: ACTIVE_ORG, source: 'session', role: undefined };
+      expect(seen).toEqual([session, session, null, null]);
+    });
+
+    it('pins every source on the subject, so the bypass widens it to their rows alone', async () => {
+      await exportUserData(PARAMS);
+
+      const unpinned = SUBJECT_DATA_SOURCES.map((source) => source.model).filter(
+        (model) => !pinsSubject(model, argsTo(delegateOf(model)).where)
+      );
+      expect(unpinned).toEqual([]);
+    });
+
+    it('reads related rows only through relations named as the subject’s', async () => {
+      await exportUserData(PARAMS);
+
+      const reads = Object.fromEntries(
+        SUBJECT_DATA_SOURCES.map((source) => [
+          source.model,
+          relationReads(argsTo(delegateOf(source.model))),
+        ]).filter(([, relations]) => relations.length > 0)
+      );
+      expect(reads).toEqual(RELATION_READS);
+    });
+
+    it('does not count a subject named under OR, NOT, a negation or a list with others as pinned', () => {
+      // The pinning check is only worth its pass if it can fail.
+      const id = SUBJECT.id;
+      for (const where of [
+        { OR: [{ userId: id }, { isPublic: true }] },
+        { NOT: { userId: id } },
+        { userId: { not: id } },
+        { userId: { notIn: [id] } },
+        { userId: { in: [id, 'someone-else'] } },
+        { memberships: { none: { userId: id } } },
+        { agent: { createdBy: id } },
+      ]) {
+        expect(pinsSubject('AiConversation', where), JSON.stringify(where)).toBe(false);
+      }
+      expect(pinsSubject('Org', { memberships: { every: { userId: id } } })).toBe(false);
+
+      expect(pinsSubject('AiConversation', { AND: [{ userId: id }, { isPublic: true }] })).toBe(
+        true
+      );
+      expect(pinsSubject('AiConversation', { userId: { in: [id] } })).toBe(true);
+      expect(pinsSubject('Org', { memberships: { some: { userId: id, role: 'OWNER' } } })).toBe(
+        true
+      );
+      expect(pinsSubject('ContactSubmission', { email: NORMALISED_EMAIL })).toBe(true);
+      expect(pinsSubject('ContactSubmission', { email: { equals: NORMALISED_EMAIL } })).toBe(true);
+      expect(
+        pinsSubject('ContactSubmission', { email: { equals: NORMALISED_EMAIL, mode: 'default' } })
+      ).toBe(true);
+      // A case-insensitive match is a pattern match in Postgres, not a pin.
+      expect(
+        pinsSubject('ContactSubmission', { email: { equals: SUBJECT.email, mode: 'insensitive' } })
+      ).toBe(false);
+    });
+
+    /** Hold the first source's read open; return whether the second started meanwhile. */
+    async function secondStartsWhileFirstIsOpen(): Promise<boolean> {
+      const [first, second] = SUBJECT_DATA_SOURCES.map((source) => delegateOf(source.model));
+      let release: (rows: unknown[]) => void = () => {};
+      delegateFor(first).findMany.mockReturnValue(
+        new Promise<unknown[]>((resolve) => {
+          release = resolve;
+        })
+      );
+
+      const pending = exportUserData(PARAMS);
+      await vi.waitFor(() => expect(callsTo(first)).toHaveLength(1));
+      // Let any reads that were started together reach their delegates.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const started = callsTo(second).length > 0;
+
+      release([]);
+      await pending;
+      expect(callsTo(second)).toHaveLength(1);
+      return started;
+    }
+
+    it('reads one source at a time at multi, so an export never queues its reads behind the pool', async () => {
+      mockEnv.TENANCY_MODE = 'multi';
+      expect(await secondStartsWhileFirstIsOpen()).toBe(false);
+    });
+
+    it('still reads the sources together at single, where no read holds a transaction', async () => {
+      expect(await secondStartsWhileFirstIsOpen()).toBe(true);
     });
   });
 

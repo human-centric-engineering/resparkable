@@ -1,9 +1,9 @@
 # Fork Init Seams
 
-Twelve of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
+Fourteen of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
 core registry runs the fork's `initApp*()` function **once, lazily, before its
 first read**. (Most of `lib/app/` is not this — the majority of those files are
-value and config scaffolds with no init function at all, and two of the fourteen
+value and config scaffolds with no init function at all, and two of the sixteen
 `initApp*` exports are different shapes; see below.)
 That lets a fork accumulate registrations at module-import time without a startup
 hook, and without core needing to know which bundle realm got there first.
@@ -62,6 +62,8 @@ Three properties come with it:
 | `jobs.ts`                          | `initAppJobs`                        | `lib/orchestration/maintenance/app-jobs.ts`                 | roll back, log, degrade        |
 | `knowledge-access-contributors.ts` | `initAppKnowledgeAccessContributors` | `lib/orchestration/knowledge/resolveAgentDocumentAccess.ts` | roll back, log, degrade        |
 | `mcp-resources.ts`                 | `initAppMcpResources`                | `lib/orchestration/mcp/resource-registry.ts`                | roll back, log, degrade        |
+| `platform-agents.ts`               | `initAppPlatformAgents`              | `lib/orchestration/agents/platform-agents.ts`               | roll back, log, degrade        |
+| `provider-credentials.ts`          | `initAppProviderCredentials`         | `lib/orchestration/llm/provider-credentials.ts`             | roll back, log, **refuse**     |
 | `user-created.ts`                  | `initAppUserCreatedHooks`            | `lib/auth/user-created-hooks.ts`                            | roll back, log, degrade        |
 
 ## The other family: `registerApp*`
@@ -73,11 +75,12 @@ every fork's registrations in it silently never run. `fork-init-seams.test.ts`
 guards them by import detection and pins the count at **three**, so adding a
 fourth is a deliberate edit rather than a silent one.
 
-| Edit this file     | Export                           | Called by                                                                               |
-| ------------------ | -------------------------------- | --------------------------------------------------------------------------------------- |
-| `db-drift.ts`      | `registerAppDriftProbes`         | `scripts/db/check-drift.ts` (a CLI, not a runtime module)                               |
-| `rate-limit.ts`    | `registerAppRateLimits`          | the rate-limit middleware, at module scope                                              |
-| `llm-providers.ts` | `registerAppProviderEligibility` | `ensureWired()` in `lib/orchestration/llm/provider-eligibility.ts`, lazily on first use |
+| Edit this file       | Export                           | Called by                                                                                  |
+| -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
+| `db-drift.ts`        | `registerAppDriftProbes`         | `scripts/db/check-drift.ts` (a CLI, not a runtime module)                                  |
+| `rate-limit.ts`      | `registerAppRateLimits`          | the rate-limit middleware, at module scope                                                 |
+| `llm-providers.ts`   | `registerAppProviderEligibility` | `ensureWired()` in `lib/orchestration/llm/provider-eligibility.ts`, lazily on first use    |
+| `tenant-resolver.ts` | `registerAppTenantResolver`      | `proxy.ts`, at module scope (§106 — the resolver runs on every request; Web-standard only) |
 
 The third is the one to read if you are adding a fourth. It was originally wired
 as a module-load side effect of its consumer, which made registration depend on

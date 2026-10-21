@@ -67,6 +67,7 @@ import type { FieldMeta, ModelNode, RelationEdge } from '@/lib/portability/model
 import type { JsonRef, SoftRef, TransferPolicy } from '@/lib/portability/policy';
 import type { IncomingBundle, IncomingTable } from '@/lib/portability/read-bundle';
 import { policyFor } from '@/lib/portability/registry';
+import { requireOrgId } from '@/lib/tenancy/context';
 import { writeOrder, type DependencyEdge, type WriteOrder } from '@/lib/portability/write-order';
 
 /** How much of a long list a plan will show. */
@@ -425,8 +426,26 @@ export function isWritableScalar(field: FieldMeta): boolean {
 /** Single-column foreign keys this planner can follow. Composite keys are reported, not walked. */
 function followableRelations(node: ModelNode): RelationEdge[] {
   return node.relations.filter(
-    (relation) => relation.fromFields.length === 1 && relation.toFields.length === 1
+    (relation) =>
+      relation.fromFields.length === 1 &&
+      relation.toFields.length === 1 &&
+      relation.toModel !== ORG_MODEL
   );
+}
+
+/** The model a tenant-owned row names its org through (Sunrise 0.13). */
+export const ORG_MODEL = 'Org';
+
+/**
+ * A model's columns that name its org. Set from the importing context, never
+ * from the bundle, for the reason the owner column is: the org a row came
+ * from is a claim about somewhere else. A null here would leave the row in no
+ * org, where an `orgId_slug` lookup never finds it.
+ */
+export function orgColumnsOf(node: ModelNode): string[] {
+  return node.relations
+    .filter((relation) => relation.toModel === ORG_MODEL && relation.fromFields.length === 1)
+    .map((relation) => relation.fromFields[0]);
 }
 
 /** The id a row carries in the bundle, or `null` when it has none. */
@@ -753,6 +772,8 @@ async function planModel(
 
   const relations = followableRelations(node);
   const idColumns = new Set(node.idFields);
+  const orgColumns = orgColumnsOf(node);
+  const targetOrgId = orgColumns.length > 0 ? requireOrgId() : null;
 
   for (const row of table.rows) {
     const sourceId = sourceIdOf(node, row);
@@ -761,6 +782,8 @@ async function planModel(
 
     // The rule the whole subsystem rests on. Not a remap — an overwrite.
     if (policy.ownerColumn) resolved[policy.ownerColumn] = targetUserId;
+    // The same rule for the org: the importing one, whatever the bundle says.
+    for (const column of orgColumns) resolved[column] = targetOrgId;
 
     for (const column of Object.keys(row)) {
       const field = fields.get(column);
@@ -782,6 +805,7 @@ async function planModel(
       // and not of the bundle.
       if (field.isUpdatedAt) continue;
       if (policy.ownerColumn === field.name) continue;
+      if (orgColumns.includes(field.name)) continue;
       if (idColumns.has(field.name)) continue;
       // Supplied by the importer rather than carried — the answer to a redacted
       // column that the schema still insists on.
@@ -966,6 +990,13 @@ function notWrittenColumns(policy: TransferPolicy, node: ModelNode): NotWritten[
     out.push({
       column: policy.ownerColumn,
       reason: 'Overwritten with the account doing the importing, whatever the bundle says.',
+    });
+  }
+
+  for (const column of orgColumnsOf(node)) {
+    out.push({
+      column,
+      reason: 'Overwritten with the organisation doing the importing, whatever the bundle says.',
     });
   }
 

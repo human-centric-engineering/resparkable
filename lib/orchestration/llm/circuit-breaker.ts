@@ -15,9 +15,21 @@
  * balancer), each instance maintains its own breaker state independently.
  * For coordinated circuit breaking across instances, this would need to
  * be backed by a shared store such as Redis.
+ *
+ * Keyed per CREDENTIAL, not per provider (§120 t-744): `getBreaker` takes the
+ * key `breakerKeyOf(provider)` / `getProviderWithFallbacks().breakerKey`
+ * returns — the slug for the install's shared credential, slug + identity for
+ * one a fork's credential resolver gives a single org. So one org's failing
+ * key never pauses another org's healthy one. The admin reads aggregate by
+ * provider (`getCircuitBreakerStatusForProvider`, `resetBreakersForProvider`).
+ *
+ * Tenancy posture: shared-by-decision — per (provider slug, credential
+ * identity); the shared credential is shared by every org that uses it
+ * (lib/tenancy/process-state.ts).
  */
 
 import { logger } from '@/lib/logging';
+import { slugOfCredentialKey } from '@/lib/orchestration/llm/credential-key';
 import { dispatchWebhookEvent } from '@/lib/orchestration/webhooks/dispatcher';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -83,7 +95,12 @@ export class CircuitBreaker {
       if (wasClosed) {
         this.openedAt = now;
         void dispatchWebhookEvent('circuit_breaker_opened', {
-          providerSlug: this.slug,
+          // The provider SLUG, never the credential key this breaker is keyed
+          // on (§120 t-744): receivers match on the slug, and an org's
+          // credential identity is not theirs to see. A per-credential breaker
+          // says so without saying whose.
+          providerSlug: slugOfCredentialKey(this.slug),
+          perCredential: slugOfCredentialKey(this.slug) !== this.slug,
           failures: this.failures.length,
           threshold: this.config.failureThreshold,
           // Config the receiver needs to understand how long the breaker
@@ -189,6 +206,15 @@ export function getBreaker(slug: string, config?: Partial<CircuitBreakerConfig>)
   return breaker;
 }
 
+/**
+ * The breaker for `key` if one exists, without creating it. For a check that
+ * may be handed a string that is not a credential key (a provider NAME), where
+ * `getBreaker` would leave a stray breaker behind.
+ */
+export function peekBreaker(key: string): CircuitBreaker | undefined {
+  return breakers.get(key);
+}
+
 /** Status snapshot of a circuit breaker. */
 export interface CircuitBreakerStatus {
   state: CircuitState;
@@ -209,7 +235,44 @@ export function getCircuitBreakerStatus(slug: string): CircuitBreakerStatus | nu
   };
 }
 
-/** Get all slugs that have an active breaker. */
+/** How bad a state is, for picking the one an admin should see. */
+const STATE_SEVERITY: Record<CircuitState, number> = { closed: 0, half_open: 1, open: 2 };
+
+/**
+ * The status an admin should see for a provider: the worst of its
+ * credentials' breakers (§120 t-744), or `null` when none exists. With only the
+ * shared credential that is exactly `getCircuitBreakerStatus(slug)`.
+ */
+export function getCircuitBreakerStatusForProvider(slug: string): CircuitBreakerStatus | null {
+  let worst: CircuitBreakerStatus | null = null;
+  for (const key of breakers.keys()) {
+    if (slugOfCredentialKey(key) !== slug) continue;
+    const status = getCircuitBreakerStatus(key);
+    if (
+      status &&
+      (worst === null ||
+        STATE_SEVERITY[status.state] > STATE_SEVERITY[worst.state] ||
+        (status.state === worst.state && status.failureCount > worst.failureCount))
+    ) {
+      worst = status;
+    }
+  }
+  return worst;
+}
+
+/**
+ * Reset every credential's breaker for a provider — what an admin's "reset
+ * breaker" means. Creates the shared one if none exists, as `getBreaker(slug)`
+ * always did, so the action has a breaker to report on.
+ */
+export function resetBreakersForProvider(slug: string): void {
+  getBreaker(slug).reset();
+  for (const [key, breaker] of breakers) {
+    if (key !== slug && slugOfCredentialKey(key) === slug) breaker.reset();
+  }
+}
+
+/** Get all keys (slug, or slug + credential identity) that have an active breaker. */
 export function getAllBreakerSlugs(): string[] {
   return Array.from(breakers.keys());
 }

@@ -7,12 +7,14 @@
 > (features, tasks, ordering, ownership) lives in the HCE Hub under the
 > **Multi-tenancy** phase and is deliberately not restated here.
 >
-> Companions: [`multi-tenancy.md`](./multi-tenancy.md) (the RLS playbook — the
-> proven policy pattern and its gotchas) and
+> Companions: [`multi-tenancy.md`](./multi-tenancy.md) (the playbook — since
+> §107 t-710 the operator's and fork's enablement guide: how to turn the
+> capability on, what a fork adds for its own models, what the tests catch,
+> the gotchas that survive) and
 > [`multi-tenancy-research.md`](./multi-tenancy-research.md) (the gap analysis
 > this capability answers). Where this document and either companion disagree,
 > this document is the decision; the research is the survey it was made from,
-> and the playbook is the recipe it builds with.
+> and the playbook is how what was built is used.
 
 ## Who this is for
 
@@ -36,17 +38,17 @@ per session. They answer the research doc's §6 decision gate and §13 Q0/Q1/Q2.
 
 ### Decided by consequence
 
-| Question (research §13)                           | Answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Control plane decoupled from `TENANCY_MODE`? (Q8) | **Yes.** With one org always existing, #366's bespoke single-tenant case is "org-admin of the install org" — no third `role` value. The vendor/customer split of the 68 admin surfaces is written down in [the playbook's control-plane section](./multi-tenancy.md#the-control-plane-which-admin-surfaces-are-whose), derived from the model inventory; the decision seam that routes it is `canAdminister`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| Global-config models per tenant? (Q3)             | **No, in v1.** Provider configs/models, capabilities, profiles, flags, tags and both singletons stay global. Per-tenant defaults/budgets are a separately-costed later decision (research §5C B3). One consequence to state plainly: **one embedding model per install** — vector dimension is a schema property, not a setting.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| Credential custody (Q5)                           | **Declined as policy.** Shared platform keys + per-org quotas ship; `resolveProviderCredential(config, ctx)` (default: today's `process.env` lookup) keeps gateway / vault-reference / workload-federation models open. Sunrise never stores a tenant's vendor key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Breakers / in-flight counters per tenant? (Q4)    | **Global in v1**, keyed on (provider slug, credential identity) so a later per-tenant policy is a keying change, not a redesign.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| `admin` API-key scope (Q6)                        | **Platform-only.** Mintable only by a platform ADMIN; org-bound keys can never carry it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| `AiCostLog` ownership (Q10)                       | **Yes** — durable `userId` (groundwork), `orgId` (row isolation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Impersonation (Q7)                                | **Platform-tier.** It is a compliance surface (consent, time-box, distinct audit actor); forks would each get it subtly wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Storage ladder (Q9)                               | **Publish rungs 0–5; exclude rung 6** (arbitrary bespoke backends). Rung 5 — a dedicated deployment — already ships.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Auto-fallback (Q15)                               | **Fixed via an eligibility seam**: fallback only within `resolveEligibleProviders(ctx)`; default = today's behaviour at `single`, deny-by-default at `multi`. **Shipped 2026-09-03** as `registerProviderEligibility` (`lib/app/llm-providers.ts`), covering the auto-picked primary AND both fallback lists at the agent-binding resolver, plus the second chokepoint — a workflow step with no `modelOverride`, knowledge keyword enrichment, an unpinned retroactive-review judge, audio transcription's matrix fallback, and (added 2026-09-07) the knowledge embedder's fallback chain including its bare-`OPENAI_API_KEY` arm, all of which resolve a provider without reaching the resolver and so consult the seam directly via `isProviderEligible`. Every path is listed as covered or not in the coverage table in `.context/orchestration/llm-providers.md`; still uncovered by design are an explicit step or review `modelOverride`, an operator's pinned audio default and the `EVALUATION_*` env vars. **That table is hand-derived and was short on all three occasions it was checked**, so it is the current state rather than a boundary — the same file documents the Proxy every manager-built provider passes through and the two routes that bypass the provider manager, which is why a complete boundary needs enforcement where calls pass through rather than at each site that chooses (see the journal decision and its correction on this feature). **The limit, decided 2026-09-07: that guarantee binds Sunrise core, not a fork’s own code** — a fork can construct a provider directly, and a guard it owns the source to is not a boundary. What ships instead is enumerability: `METHOD_DISPOSITION` fails the build when the egress surface widens. An EXPLICIT `agent.provider` is deliberately not overridden at runtime; enforcing that belongs at write time (do not offer a provider the org has not approved), which is per-org work. Both layers are required: write-time validation cannot reach agents stranded by a policy that changed after they were configured, nor writes that bypass the form. |
+| Question (research §13)                           | Answer                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Control plane decoupled from `TENANCY_MODE`? (Q8) | **Yes.** With one org always existing, #366's bespoke single-tenant case is "org-admin of the install org" — no third `role` value. The vendor/customer split of the 68 admin surfaces is written down in [the playbook's control-plane section](./multi-tenancy.md#the-control-plane-which-admin-surfaces-are-whose), derived from the model inventory; the decision seam that routes it is `canAdminister`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Global-config models per tenant? (Q3)             | **No, in v1.** Provider configs/models, capabilities, profiles, flags, tags and both singletons stay global. Per-tenant defaults/budgets are a separately-costed later decision (research §5C B3). One consequence to state plainly: **one embedding model per install** — vector dimension is a schema property, not a setting.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Credential custody (Q5)                           | **Declined as policy.** Shared platform keys + per-org quotas ship; `resolveProviderCredential(config)` (default: today's `process.env` lookup) keeps gateway / vault-reference / workload-federation models open. Sunrise never stores a tenant's vendor key. **Shipped (§120 t-744)** as the `lib/app/provider-credentials.ts` seam (`registerProviderCredentialResolver`): a resolver is asked per call with the org in context and returns the key and a non-secret identity; a resolver or registration that throws refuses the credential rather than falling back to the environment.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Breakers / in-flight counters per tenant? (Q4)    | **Global in v1**, keyed on (provider slug, credential identity) so a later per-tenant policy is a keying change, not a redesign. Confirmed by the §108 t-712 scan: the key was the slug alone, because the credential was a process environment variable, so the slug WAS the credential identity. **Re-keyed in §120 t-744**, when the credential seam made per-org keys possible: the provider client cache, the breakers and the in-flight counter key on `credentialKey(slug, identity)`, which is the bare slug for the install's shared credential (so nothing changes at rest) and slug + identity for a per-org one.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `admin` API-key scope (Q6)                        | **Platform-only.** Mintable only by a platform ADMIN; org-bound keys can never carry it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `AiCostLog` ownership (Q10)                       | **Yes** — durable `userId` (groundwork), `orgId` (row isolation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Impersonation (Q7)                                | **Platform-tier.** It is a compliance surface (consent, time-box, distinct audit actor); forks would each get it subtly wrong.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Storage ladder (Q9)                               | **Publish rungs 0–5; exclude rung 6** (arbitrary bespoke backends). Rung 5 — a dedicated deployment — already ships.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Auto-fallback (Q15)                               | **Fixed via an eligibility seam**: fallback only within `resolveEligibleProviders(ctx)`; default = today's behaviour at `single`, deny-by-default at `multi`. **Shipped 2026-09-03** as `registerProviderEligibility` (`lib/app/llm-providers.ts`), covering the auto-picked primary AND both fallback lists at the agent-binding resolver, plus the second chokepoint — a workflow step with no `modelOverride`, knowledge keyword enrichment, an unpinned retroactive-review judge, audio transcription's matrix fallback, and (added 2026-09-07) the knowledge embedder's fallback chain (whose bare-`OPENAI_API_KEY` arm was retired in t-740, and whose calls go through the provider manager since then), all of which resolve a provider without reaching the resolver and so consult the seam directly via `isProviderEligible`. Every path is listed as covered or not in the coverage table in `.context/orchestration/llm-providers.md`; not filtered at selection, by design, are an explicit step or review `modelOverride` and the `EVALUATION_*` env vars (the pinned audio default is asked as `'explicit'` since §120 t-741). **That table is hand-derived and was short on all three occasions it was checked**, so it describes where Sunrise chooses, not the boundary. **The boundary is the call-time gate (§120 t-741)**: the Proxy every manager-built provider passes through asks the rule before every vendor call, operator choices included (as `source: 'explicit'`), and refuses rather than reroutes. One route still bypasses the provider manager: direct construction (the knowledge embedder was the second until t-740 routed it through `embedMany`). **The limit, decided 2026-09-07: that guarantee binds Sunrise core, not a fork’s own code** — a fork can construct a provider directly, and a guard it owns the source to is not a boundary. What ships instead is enumerability: `METHOD_DISPOSITION` fails the build when the egress surface widens. An EXPLICIT `agent.provider` is deliberately not rerouted at runtime — the gate refuses it instead — and the better enforcement belongs at write time (do not offer a provider the org has not approved), which is per-org work. Both layers are required: write-time validation cannot reach agents stranded by a policy that changed after they were configured, nor writes that bypass the form. |
 
 ## Design principles
 
@@ -98,14 +100,49 @@ sync conflict is a "keep both", not a re-read.
 
 ## Target architecture
 
-> **Target state, not current state.** The tenancy pieces named in this
-> section — `lib/tenancy/context.ts`, `prisma/schema/tenancy.prisma`,
-> `lib/auth/authorization.ts`, `lib/auth/roles.ts`, `lib/app/authorization.ts`,
-> `lib/app/tenant-resolver.ts`, `db:tenancy:enable` — do not exist yet
-> (verified at v0.11.2); they are the agreed shape the Hub features build
-> toward. The chokepoints they attach to (`proxy.ts`, `lib/auth/guards.ts`,
-> `lib/db/client.ts`, the maintenance tick) all exist today. A tenancy path
-> here becomes a real reference only when its feature ships.
+> **Partly target state.** Of the tenancy pieces named in this section,
+> `lib/auth/authorization.ts`, `lib/auth/roles.ts` and `lib/app/authorization.ts`
+> shipped with §105 (0.12.0); `prisma/schema/tenancy.prisma` with its
+> identity migration and `lib/tenancy/{roles,constants,membership}.ts` shipped
+> with §106 t-669 ([`.context/tenancy/identity.md`](../tenancy/identity.md));
+> `Session.activeOrgId`, the switch and org-aware invitations with t-670;
+> `lib/tenancy/context.ts`, `lib/tenancy/entry.ts`, `lib/app/tenant-resolver.ts`
+> (+ `lib/tenancy/resolver.ts`), the `x-sunrise-org` header, the guards
+> entering the org and the default policy's org arm with t-671
+> ([`.context/tenancy/context.md`](../tenancy/context.md)); the org
+> lifecycle API, `lib/tenancy/lifecycle.ts`, and the org-level privacy entry
+> points (`exportOrgData`, `eraseOrg`, the `orgId` manifest) with t-672
+> ([`.context/api/org-endpoints.md`](../api/org-endpoints.md)); every
+> credential bound to an org at mint and entering it at resolution
+> (`resolveCredentialOrg`, `orgForMint`, `lib/orchestration/invite-tokens.ts`)
+> with t-673 ([`.context/tenancy/identity.md#credentials`](../tenancy/identity.md#credentials));
+> `orgId` on every tenant-owned model (42, child rows included), backfilled
+> to the install org, with the classification allowlists and the runtime
+> roster in `lib/tenancy/classification.ts` and the org-export dispositions
+> for each, with §107 t-705; the `lib/db/client.ts` `$extends`
+> (`lib/db/tenancy-extension.ts`, [`tenancy/context.md`](../tenancy/context.md#the-data-layer--libdbtenancy-extensionts))
+> — `orgId` stamped on every tenant-owned create in both modes, every
+> operation scoped by `set_config` at `multi`, the `$transaction` override,
+> the bypass GUC under `runAsSystem`, the throw before SQL with no context,
+> and the seam awaiting inside the scope — with t-706; the dormant
+> `org_isolation` policies (one per tenant-owned table, in a raw-SQL
+> migration), `db:tenancy:enable|disable`, the required role split with
+> `MIGRATE_DATABASE_URL` and `db:tenancy:role`, and the derived T-series
+> drift probes ([`tenancy/isolation.md`](../tenancy/isolation.md)) with
+> t-707. Of this section's request path, everything down to and including
+> Postgres exists, and so does the background tick's leg: every platform job
+> and the schedules sweep run through `forEachOrg`, one org-scoped context per
+> iteration, with the existing batch caps becoming per-org caps inside the
+> scope; the audit-table prune and the idle-gate horizon are the two
+> `runAsSystem(reason)` uses, and the fork job seam's `scope` defaults to
+> per-org (`lib/orchestration/maintenance/job-scope.ts`, §108 t-711). At
+> `TENANCY_MODE=single` the same components run with the
+> install org as the only answer, as the diagram says. One measurement from
+> t-706 that binds §115 and any fork layer: the exported client is typed
+> `Omit<PrismaClient, '$on'>` and asserted from the `$extends` result,
+> because typing it as the extension's own result type made `tsc` exhaust a
+> 4 GB heap across this tree (baseline 7 s) — every call site re-instantiates
+> the dynamic extension types. A further layer keeps the same exported type.
 
 Request path at `multi` — at `single` the same components run with the install
 org as the only answer:
@@ -141,7 +178,7 @@ background tick → forEachOrg(fn)  one org-scoped context per iteration, per-or
   the install-scoped `AuthBootstrap`.
 - **Context** — `lib/tenancy/context.ts`: `AsyncLocalStorage<{ orgId, source }>`
   where `source` ∈ session · api-key · embed-token · mcp-key · resolver ·
-  system · job. Entered by the guards (in-repo precedent:
+  inbound-trigger · approval-token · system · job. Entered by the guards (in-repo precedent:
   `lib/auth/signup-mode.ts`); `requireTenantContext()` throws at `multi`;
   `runAsOrg`, `runAsSystem(reason)` (logged), `forEachOrg` for non-request call
   stacks. `getFullContext()` carries `orgId` so breach scoping is lookup, not
@@ -153,11 +190,13 @@ background tick → forEachOrg(fn)  one org-scoped context per iteration, per-or
   so policies version with the schema (the pgvector-index precedent in the
   baseline migration) while `npm run db:tenancy:enable` runs only
   `ALTER TABLE … ENABLE/FORCE ROW LEVEL SECURITY` over the derived tenant-owned
-  set. At `multi` the app connects as a restricted role (no `BYPASSRLS`, not
-  the table owner); migrations and seeds use a privileged DSN. Child rows
-  without their own `orgId` use join-based policies; hot-path children
-  (`AiMessage`, `AiKnowledgeChunk`, `AiMessageEmbedding`, `AiCostLog`)
-  denormalise the column. `orgId` is nullable first and backfilled to the
+  set (after backfilling any `NULL` `orgId` to the install org); `disable`
+  clears both flags. At `multi` the app connects as a restricted role (no `BYPASSRLS`, not
+  the table owner); migrations and seeds use a privileged DSN. Every
+  tenant-owned row carries its own `orgId`, child rows included — no
+  join-based policies, so the policy, the probe and the injection derive from
+  one column (§107 planning decision, 2026-09-18: a join policy is
+  hand-written per table and cannot be derived). `orgId` is nullable first and backfilled to the
   install org; `NOT NULL` is a later staged migration (the
   `AiKnowledgeDocument.slug` precedent).
 - **Control plane** — `lib/auth/authorization.ts` default policy; override
@@ -166,12 +205,17 @@ background tick → forEachOrg(fn)  one org-scoped context per iteration, per-or
 
 ### Namespace rules
 
-Human-meaningful slugs (`AiAgent`, `AiWorkflow`, `AiKnowledgeBase`,
-`AiKnowledgeDocument`) become `@@unique([orgId, slug])`. Global-config slugs
-stay global. **Routing keys stay globally unique** — trigger channels,
-`dedupKey`, `idempotencyKey`, inbound/webhook slugs — because the routes they
+Human-meaningful slugs (`AiAgent`, `AiKnowledgeBase`, `AiKnowledgeDocument`)
+are `@@unique([orgId, slug])` — shipped with §107 t-708, together with the two
+partial uniques on the same tables that Prisma cannot model (the ready-document
+dedupe on `(orgId, fileHash)`, one default knowledge base per org), which would
+otherwise have failed an org's upload with a violation from a table it cannot
+see into. Global-config slugs stay global. **Routing keys stay globally
+unique** — trigger channels, `dedupKey`, `idempotencyKey`, inbound/webhook
+slugs, and so `AiWorkflow.slug` (journal decision) — because the routes they
 address carry no tenant: those routes resolve the row under system context and
-then `runAsOrg(row.orgId)`.
+then `runAsOrg(row.orgId)` (the inbound route and the HMAC approval routes do,
+with t-708; [`tenancy/context.md`](../tenancy/context.md)).
 
 ## Assurance
 
@@ -189,40 +233,221 @@ exists because its failure mode is silent:
 
 ## Spike register
 
-Open questions a day of throwaway code answers better than a paragraph; resolve
-before sizing the dependent work, and fold findings back into this document.
+Open questions a day of throwaway code answers better than a paragraph. Items
+5 and 6 were resolved by §106 (t-670 and t-671; see
+[`tenancy/identity.md`](../tenancy/identity.md) and
+[`tenancy/context.md`](../tenancy/context.md)). Items 1–4 and the three added
+by §105/§106 were answered on 2026-09-19 by
+`scripts/spikes/rls-chokepoint-spike.ts` (§107 t-704), run against a local
+`pgvector/pgvector:pg15` container direct and through PgBouncer 1.25 in
+transaction mode, and against a Neon preview branch (PostgreSQL 17.11, direct
+and `-pooler`). All 42 checks pass on both. The script header carries the run
+commands; the numbers below are from those runs.
 
-1. **Client extension × interactive transactions.** The documented pattern
-   wraps each op in a _batch_ transaction; callers already inside
-   `prisma.$transaction(async tx => …)` need one `set_config` per transaction,
-   not a nested batch per op.
-2. **Nested-create `orgId`.** `$allModels.create` sees only top-level args;
-   children created via nested writes rely on join policies or explicit
-   denormalisation. `WITH CHECK` is the backstop either way — verify it fires.
-3. **Per-op cost and pooling.** Two round trips per op at `multi`; measure
-   behind Neon's pooled endpoint and PgBouncer transaction mode.
-4. **Dormant policies.** Confirm `CREATE POLICY` without enablement is fully
-   inert for any single-tenant role, and that `migrate dev`'s drift output
-   stays manageable with probes.
-5. **Session `additionalFields` in better-auth 1.7.** Type inference through
-   `customSessionClient`; whether org switching is `updateSession` or a
-   database hook on session create.
-6. **Proxy runtime.** The resolver-seam contract must be Web-standard only —
-   the proxy may run on Edge for Vercel-deployed forks.
+> **The one fact that reshapes 3.3 first:** on Neon the deploy role
+> (`neondb_owner`, via `neon_superuser`) is **not** superuser but **has
+> `BYPASSRLS`**. An app connecting as it is never subject to a policy, FORCE
+> or not. At `multi` the app **must** connect as a separate `NOBYPASSRLS`
+> login role; the migrate DSN keeps `neondb_owner`. The role split is a
+> requirement of the deploy target, not an option.
+
+1. **Client extension × interactive transactions — answered.** A top-level
+   `query.$allOperations` hook fires for ops made through the `tx` client
+   inside `$transaction(async tx => …)`, but the documented per-op
+   `$transaction([set_config, op])` wrap issued from inside one **runs on a
+   different connection and escapes the transaction** — a write made that
+   way survived a rollback. It is not a nesting error; it is silent. So the
+   shape is: an extension `client` component **may replace `$transaction`**
+   (Prisma accepts it; no Proxy over the client needed). **How it delegates
+   matters:** the replacement must call the runtime's own `$transaction`
+   (read off the base client) with `this` set to the _outermost_ client
+   (`Prisma.getExtensionContext(this)`). Closing over an inner layer's
+   `$transaction` instead clones the transaction client from that layer, and
+   a hook added by any later `$extends` — §115's guard — silently never
+   fires inside a transaction; the review caught it, and 6b now asserts the
+   outer hook fires on the `tx` client. The replacement
+   issues one `set_config` at the top of an interactive transaction and runs
+   the callback under an ALS `inTx` flag that makes the per-op hook pass
+   through; the setter itself must be issued **inside** that flag or it is
+   wrapped onto another connection too. For the batch form it prepends the
+   setter and slices the results. Measured: three ops in one interactive
+   transaction → exactly one `set_config`; 20 interleaved per-op wraps across
+   four pooled connections each saw only their org, and an unscoped query
+   afterwards saw 0 rows. The override survives a further `$extends` layer
+   (item 8). **The inverse hazard is real too:** an op issued on the _root_
+   client from inside a transaction callback is not bound to that
+   transaction, and an ALS-keyed pass-through lets it run unwrapped on
+   another connection — it read 0 rows at `multi` beside a `tx` op that read 2. Prisma hands the hook an undocumented `__internalParams.transaction`
+   that is set for the `tx`-bound op and absent for the root-client op in the
+   same callback, so 3.2 should key the pass-through on _that_ (or on both),
+   not on the ALS flag alone; it is undocumented, so a test pins it.
+2. **Nested-create `orgId` — answered.** `WITH CHECK` fires: a nested create
+   with no `orgId` at `multi` is refused (`P2039`, the Postgres message in
+   `meta.driverAdapterError`) and the parent rolls back with it. Two remedies
+   both work: (a) a recursive walk over `create` / `createMany` /
+   `connectOrCreate` using the client's runtime data model (relation fields
+   carry the target model), which landed `orgId` on nested children of two
+   models in one create; (b) a column `DEFAULT
+NULLIF(current_setting('app.current_org', true), '')`, which fills a nested
+   child with no injection because Prisma omits the unset column. **3.2 ships
+   (a)** — at `single` the GUC is never set, so (b) would leave `NULL` there
+   and the one-code-path principle would be lost. Three rules the walk
+   taught: it runs on **every write** whatever the root model — an `AiAgent`
+   create reaches tenant-owned `embedTokens` while `AiAgent` itself is not
+   yet tenant-owned, and a nested create under an `update` root (measured)
+   or inside a nested `update` / `upsert` is a create all the same, so the
+   walk descends `create` / `createMany` / `createManyAndReturn` / `update` /
+   `updateMany` / both `upsert` branches at the root and `create` /
+   `createMany` / `connectOrCreate` / `update` / `upsert` under relations —
+   but **stamps `orgId` only on create-shaped nodes**. An update payload is
+   descended for the nested creates it may carry and never stamped: stamping
+   it would `SET "orgId" = <current org>` and, wherever RLS is not enforcing
+   (every `single` install), silently move another org's row into the
+   caller's (measured: an `update` and an `updateMany` under the install
+   org's context leave org B's rows in org B). At `multi` **every write** is wrapped when a context exists, not only
+   writes on tenant-owned roots — the nested inserts run inside the root's
+   statement and need the GUC. Reads on non-tenant models
+   stay unwrapped; a no-context write on a non-tenant root (the switch route's
+   `session.update`) passes through with `WITH CHECK` as the backstop.
+3. **Per-op cost and pooling — measured.** The wrap is a four-statement
+   transaction (`BEGIN`, `set_config`, op, `COMMIT`) where there was one
+   statement, and the cost is round trips, not work: local direct 0.5 → 2.0 ms
+   median per op (×4), local PgBouncer 0.4 → 1.6 ms (×4), Neon from a
+   developer machine 19 → 63 ms direct and 16 → 65 ms pooled (×3.3–4). Five
+   ops in one interactive transaction cost **0.33–0.46×** of five wraps on
+   every target, so the amortisation lever is transaction scope, not the
+   hook. In-region (Vercel → Neon) the absolute cost is the ×4 of a ~1 ms
+   round trip. Through the pooler: `set_config(…, true)` outside an explicit
+   transaction is gone by the next statement (a one-statement transaction);
+   a **session-level `SET` poisons the pooler's server connection for other
+   clients** (client 2 read client 1's org and an unscoped query saw both
+   orgs' rows) — the wrapped op still saw only its org because `SET LOCAL`
+   inside the transaction overrides the session value, but nothing unwrapped
+   is safe on a poisoned pool. Six interactive transactions each holding
+   400 ms against a client pool of 4 completed in 850 ms locally, 1.1 s on
+   Neon, no errors. Also observed: a pooler keeps server connections
+   authenticated by role OID, so dropping and recreating a role behind it
+   hands out sessions with the old role's (now absent) grants.
+4. **Dormant policies — answered.** `CREATE POLICY` on a table without
+   `ENABLE ROW LEVEL SECURITY` is inert for a `NOBYPASSRLS` role: every row
+   visible, a `NULL`-org insert accepted. After `ENABLE` + `FORCE` the same
+   role sees 0 rows and `WITH CHECK` refuses. `ENABLE` twice is a no-op;
+   `DISABLE ROW LEVEL SECURITY` **plus** `NO FORCE ROW LEVEL SECURITY` (two
+   independent flags; `DISABLE` alone leaves `relforcerowsecurity` set)
+   leave the policies in place and clear the two `pg_class` flags
+   (`relrowsecurity`, `relforcerowsecurity`) — those flags are the
+   idempotence check `db:tenancy:enable|disable` should read, and the
+   disable script must issue both statements.
+   `prisma migrate diff` from the database to the schema **does not mention
+   policies at all** (it emits only the known unmodelled-index drops), so
+   policies neither appear in nor are dropped by `migrate dev`; the drift
+   probes are the only thing that notices a missing one.
+5. **Session `additionalFields`** — resolved in §106 t-670.
+6. **Proxy runtime** — resolved in §106 t-671.
+7. **FORCE RLS and the migrate role — answered.** A `NOBYPASSRLS` table
+   _owner_ sees every row without FORCE and **sees and updates nothing under
+   FORCE** — a data migration run by such a role backfills zero rows and
+   reports success. A `BYPASSRLS` role (superuser locally, `neondb_owner` on
+   Neon) is unaffected. The remedy for any role is the policy's bypass arm:
+   `current_setting('app.bypass_rls', true) = 'on' OR …` in both `USING` and
+   `WITH CHECK`, set with `set_config('app.bypass_rls','on', true)` inside the
+   transaction — the owner saw everything again with it, and it is what
+   `runAsSystem` maps to. So: policies carry the bypass arm; migrations that
+   touch tenant-owned rows open with the bypass setter (Prisma runs each
+   migration in one transaction); the app role is `NOBYPASSRLS` and is
+   granted `USAGE` on the schema, `SELECT/INSERT/UPDATE/DELETE` on all tables
+   and `USAGE/SELECT` on all sequences, plus `ALTER DEFAULT PRIVILEGES` for
+   tables future migrations create. On Neon `neondb_owner` cannot `DROP OWNED
+BY`; a role is removed by revoking those grants explicitly first.
+8. **Types, layering and the tenant-owned set — answered.** The extended
+   client's `$transaction` hands its callback a `tx` that satisfies a callee
+   typed `(tx: Prisma.TransactionClient)`, so the four such callers need no
+   change (the spike file itself is under `npm run type-check`). A second
+   `$extends` layer inspecting `args.where` on `findMany` composes with the
+   tenancy layer — both hooks fire, scoping intact, outside a transaction
+   _and_ on the `tx` client inside one, the latter only because the
+   `$transaction` override delegates with the outermost client as `this`
+   (item 1). That is §115's starting point; its per-read cost was not
+   measured separately (one object walk per read).
+   Prisma types the **top-level** `$allOperations` hook's `args` and `query`
+   as `any` (the per-model hooks are typed): 3.2 owes a typed boundary at
+   that one point rather than a lint exemption. The generated client's
+   `_runtimeDataModel` (a private property, stable across Prisma 7) carries
+   every model's field names, kinds, relation targets and **`dbName`**, so
+   the tenant-owned set — "has an `orgId` scalar" minus the system allowlist
+   — and the table names the policies, probes and enable script need are all
+   derivable at runtime with no registration; a schema-parsing test pins the
+   derivation to `prisma/schema/*.prisma`. Today it derives the four
+   credential models plus `OrgMembership`, which the allowlist removes.
+
+9. **Bypass GUC versus bypass role — decided for the GUC, t-706 (journal
+   decision at merge).** `runAsSystem` runs on the same client and pool and
+   sets `app.bypass_rls` for its transaction. The role alternative would
+   hand `runAsSystem`'s callback a different client — a signature change
+   every consumer and fork feels — and the GUC arm must exist in the
+   policies regardless, for the migrate role under FORCE (item 7). The
+   exposure below is bounded by the raw-SQL allowlist. As spiked: the spike validates
+   the bypass as a GUC arm in the policy, and proves (item 7) that the
+   `NOBYPASSRLS` app role can set it. That is the property `runAsSystem`
+   needs, and it is also the property an attacker wants: a SQL injection
+   into the app's connection — a `$queryRawUnsafe` that ever receives user
+   input — becomes a one-statement total bypass
+   (`SELECT set_config('app.bypass_rls','on',true)` in the same transaction),
+   not a cross-row read inside one tenant. The alternative is role-based:
+   `runAsSystem` runs on a second pool connected as a `BYPASSRLS` role the
+   app role cannot assume, and the GUC arm exists only for the migrate-role
+   remedy. Cost: a second DSN and pool at `multi`; benefit: no reachable
+   bypass from the request path at all. 3.2 decides, with the raw-SQL
+   allowlist (`tests/unit/db-raw-sql-allowlist.test.ts`) as the input: on
+   2026-09-19 `lib/` and `app/` hold ten `$queryRawUnsafe` /
+   `$executeRawUnsafe` sites (vector search, cost reports, conversation
+   search, the knowledge seeder and embedder), every one passing values as
+   `$n` parameters and using the unsafe form only for SQL structure — the
+   injection would have to arrive through a future site, which is what the
+   allowlist exists to make deliberate. (Raised by the security
+   review of the spike PR.)
+
+One hazard is about the seam rather than the client, and the spike closes it
+there. A `PrismaPromise` is lazy: the extension hook — and with it the read of
+the tenant context — runs when the promise is awaited, not when it is created.
+`lib/tenancy/context.ts` did `tenantContext.run(ctx, fn)`, so
+`runAsOrg(org, () => prisma.x.findMany())` with a **non-async** callback
+returned the promise out of the scope unawaited and lost the context (it threw
+at `multi` in the spike). Changing the seam to
+`tenantContext.run(ctx, async () => await fn())` makes the await happen inside
+the scope; measured, the same non-async callback then keeps its context. t-706
+made that change in `runAsOrg` / `runAsSystem` (and so `forEachOrg`) and pins
+it with a lazy-thenable test, rather than documenting a rule every caller has
+to remember.
 
 ## What a fork gets, and what it owns
 
-Enabling the capability (`TENANCY_MODE=multi` + `db:tenancy:enable` + the
-restricted app role) gives a fork org identity, membership, invitations,
-context propagation, RLS row isolation, tenant-aware background work,
-org-scoped storage/export/providers, quota and budget primitives, and the
-org-admin console — maintained and regression-tested upstream.
+Enabling the capability (`TENANCY_MODE=multi` + the restricted app role +
+`db:tenancy:enable` — the walkthrough is the
+[playbook](./multi-tenancy.md#enabling-it-end-to-end)) gives a fork, today:
+org identity, membership and invitations (§106), context propagation on
+every request (§106), RLS row isolation with per-org namespaces (§107),
+org-level export and erasure, background work that runs per org (§108
+t-711) and a declared tenancy posture for every process-global holder in
+`lib/` (§108 t-712) — maintained and regression-tested upstream, the two-org
+harness on every PR. Still to ship, and listed as such in the
+playbook's
+[what you do not yet get](./multi-tenancy.md#what-you-get-at-multi-and-what-you-do-not-yet):
+platform-owned system agents (§116), org-scoped storage/export/provider
+policy (§109), quota and budget primitives (§110), and the org-admin console
+(§111).
 
 A fork owns:
 
-- **Its own models** — add `orgId` to each tenant-owned app model; the
-  classification test will name every model until it is classified; injection,
-  policies and the harness then cover them automatically (principle 4).
+- **Its own models** — add `orgId` to each tenant-owned app model, in the
+  shape [`identity.md`](../tenancy/identity.md#what-a-fork-may-add--and-what-it-may-not)
+  gives; the classification test will name every model until it is
+  classified, the policy-coverage test until its migration carries the
+  policy, the org-sources test until it has an export disposition;
+  injection, the setter, the probes, the enable script and the harness then
+  cover it automatically (principle 4). The playbook's
+  [what a fork adds](./multi-tenancy.md#what-a-fork-adds-for-its-own-models)
+  is the table of those tests.
 - **The product layer** — plans, billing, pricing, self-serve signup, org
   branding, and any team/workspace layer beneath the org.
 - **Tenant arrival beyond the session** — a subdomain or path scheme via
@@ -240,9 +465,17 @@ A fork owns:
   across them.
 - Single-tenant forks feel no behaviour change at any point; the install org is
   invisible to their operators.
-- The per-sync tenancy checklist in the playbook shrinks to what the tests
-  cannot catch (new process-global state, new background jobs); the rest is
-  enforced in CI.
+- The per-sync tenancy checklist in the playbook
+  ([what the tests catch, and what a merge still checks](./multi-tenancy.md#what-the-tests-catch-and-what-a-merge-still-checks))
+  is now entirely tests, enforced in CI in the fork as well as upstream,
+  because the guards are unit tests over the schema, the migrations and the
+  `lib/` tree rather than a job only upstream runs. §108 t-711 retired the
+  background-jobs grep (a platform job cannot exist without a declared
+  scope; a fork job defaults to per-org) and t-712 retired the last one, on
+  process-global state, with `lib/tenancy/process-state.ts` plus the scanner
+  that holds it level with the tree. That grep was also measured to be
+  broken: it matched `new Map(` and every cache in the tree is written
+  `new Map<string, X>()`, so it had been reporting clean on all of them.
 
 ## Explicitly out of scope (v1)
 

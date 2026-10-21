@@ -36,6 +36,10 @@ import { AlertCircle, Check, Info, Loader2, Plus, Save, Shield, Trash2 } from 'l
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  SharedSettingsSaveHint,
+  useSharedSettingsReadOnly,
+} from '@/components/admin/shared-settings-access';
 import { FieldHelp } from '@/components/ui/field-help';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -56,6 +60,7 @@ import { capabilityFunctionDefinitionSchema } from '@/lib/validations/orchestrat
 import { jsonEquals } from '@/lib/utils/json-equal';
 import { useTimeout } from '@/lib/hooks/use-timeout';
 import type { AiCapability } from '@/types/prisma';
+import { agentCount, OtherOrgUsage } from '@/components/admin/orchestration/other-org-usage';
 
 /**
  * Narrow an untrusted JSON blob (API response or Prisma JSON field) to a
@@ -164,6 +169,8 @@ export interface CapabilityFormProps {
   mode: 'create' | 'edit';
   capability?: AiCapability;
   usedBy?: UsedByAgentSummary[];
+  /** Agents in other orgs with it attached: counted, never named (§107 t-752). */
+  otherOrgUsedByCount?: number;
   availableCategories?: string[];
 }
 
@@ -445,8 +452,10 @@ export function CapabilityForm({
   mode,
   capability,
   usedBy = [],
+  otherOrgUsedByCount = 0,
   availableCategories = [],
 }: CapabilityFormProps) {
+  const readOnly = useSharedSettingsReadOnly();
   const router = useRouter();
   const isEdit = mode === 'edit';
 
@@ -1005,7 +1014,8 @@ export function CapabilityForm({
           <Button type="button" variant="outline" asChild>
             <Link href="/admin/orchestration/capabilities">Cancel</Link>
           </Button>
-          <Button type="submit" disabled={submitting || saved}>
+          <SharedSettingsSaveHint />
+          <Button type="submit" disabled={readOnly || submitting || saved}>
             {submitting ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1668,10 +1678,10 @@ export function CapabilityForm({
             )}
           </div>
 
-          {isEdit && usedBy.length > 0 && (
+          {isEdit && usedBy.length + otherOrgUsedByCount > 0 && (
             <div className="bg-card rounded-md border p-4">
               <p className="text-sm font-medium">
-                Used by {usedBy.length} agent{usedBy.length === 1 ? '' : 's'}
+                Used by {agentCount(usedBy.length + otherOrgUsedByCount)}
               </p>
               <p className="text-muted-foreground mb-3 text-xs">
                 Changes to this capability&apos;s safety settings apply to every agent that has it
@@ -1684,6 +1694,11 @@ export function CapabilityForm({
                   </Badge>
                 ))}
               </div>
+              <OtherOrgUsage
+                count={otherOrgUsedByCount}
+                afterList={usedBy.length > 0}
+                className="mt-2"
+              />
             </div>
           )}
         </TabsContent>

@@ -7,14 +7,16 @@
  * `app/admin/orchestration/agents/new/page.tsx`.
  *
  * Test Coverage:
- * - Renders create form with provider/model data hydrated
+ * - Renders the create form from the prefetched providers and model matrix
  * - Form renders in create mode with free-text fallback when fetches fail
+ * - The effective-defaults preview seeds the provider and model on create
  *
  * @see app/admin/orchestration/agents/new/page.tsx
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -63,6 +65,24 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => ({ get: () => null }),
 }));
 
+// `getEffectiveAgentDefaults` is the one helper on these pages that reads
+// Prisma directly (provider + default-model lookups) rather than going through
+// the mocked `serverFetch`. Stub it so the tests stay away from Prisma and each
+// one controls the preview it asserts on. The other prefetch-helpers exports
+// stay real.
+vi.mock('@/lib/orchestration/prefetch-helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/prefetch-helpers')>()),
+  getEffectiveAgentDefaults: vi.fn(),
+}));
+
+/** The documented "nothing to inherit" preview. */
+const NOTHING_TO_INHERIT = {
+  provider: '',
+  model: '',
+  inheritedProvider: true,
+  inheritedModel: true,
+};
+
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const MOCK_PROVIDERS = [
@@ -78,9 +98,28 @@ const MOCK_PROVIDERS = [
     description: null,
     metadata: {},
   },
+  {
+    id: 'prov-2',
+    name: 'OpenAI',
+    slug: 'openai',
+    apiKeyEnvVar: 'OPENAI_API_KEY',
+    isActive: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    baseUrl: null,
+    description: null,
+    metadata: {},
+  },
 ];
 
-const MOCK_MODELS = [{ provider: 'anthropic', id: 'claude-opus-4-6', tier: 'frontier' }];
+// Provider-matrix rows, the shape `/provider-models` returns and
+// `readProviderMatrixRows` parses — anything else is dropped and the form falls
+// back to a free-text model box.
+const MOCK_MODELS = [
+  { providerSlug: 'anthropic', modelId: 'claude-opus-4-6', capabilities: ['chat'] },
+  { providerSlug: 'openai', modelId: 'gpt-4o-mini', capabilities: ['chat'] },
+  { providerSlug: 'openai', modelId: 'gpt-4o', capabilities: ['chat'] },
+];
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -134,8 +173,10 @@ function setupServerFetch(
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('NewAgentPage (server component)', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const { getEffectiveAgentDefaults } = await import('@/lib/orchestration/prefetch-helpers');
+    vi.mocked(getEffectiveAgentDefaults).mockResolvedValue(NOTHING_TO_INHERIT);
   });
 
   afterEach(() => {
@@ -172,6 +213,40 @@ describe('NewAgentPage (server component)', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /create agent/i })).toBeInTheDocument();
     });
+  });
+
+  it('starts the form on the effective-defaults preview the page resolved', async () => {
+    const { serverFetch, parseApiResponse } = await import('@/lib/api/server-fetch');
+    const { getEffectiveAgentDefaults } = await import('@/lib/orchestration/prefetch-helpers');
+    // Preview the SECOND provider, so a selection can only have come from the
+    // preview — not from the form defaulting to the first or only one.
+    setupServerFetch(serverFetch as never, parseApiResponse as never, {
+      '/provider-models': { data: MOCK_MODELS },
+      '/providers': { data: MOCK_PROVIDERS },
+    });
+    vi.mocked(getEffectiveAgentDefaults).mockResolvedValue({
+      provider: 'openai',
+      model: 'gpt-4o',
+      inheritedProvider: true,
+      inheritedModel: true,
+    });
+
+    const { default: NewAgentPage } = await import('@/app/admin/orchestration/agents/new/page');
+
+    render(await NewAgentPage());
+
+    // A new agent has nothing of its own, so the page asks for both.
+    expect(getEffectiveAgentDefaults).toHaveBeenCalledWith({ provider: '', model: '' });
+
+    // On create the preview is the starting value, so it selects the provider…
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /model/i }));
+    expect(screen.getByRole('combobox', { name: /provider/i })).toHaveTextContent(/openai/i);
+    // …and the model with it, as a pair. openai's SECOND model, because the form
+    // picks a provider's first model when none is set.
+    const modelSelect = screen.getByRole('combobox', { name: /^model/i });
+    expect(modelSelect).toHaveTextContent(/gpt-4o/i);
+    expect(modelSelect).not.toHaveTextContent(/gpt-4o-mini/i);
   });
 
   it('renders with free-text fallback when provider fetch fails', async () => {

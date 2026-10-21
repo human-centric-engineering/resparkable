@@ -1022,6 +1022,39 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.14.0 (77 commits, v0.12.1..v0.14.0).** Two upstream
+  releases, 0.13.0 and 0.14.0, taken in one merge rather than the two stages
+  upstream suggests for a large database. Twelve migrations; on this
+  install's tables none of them is slow. `TENANCY_MODE` stays `single`.
+
+  **Agent slugs are unique per org.** `AiAgent.slug` lost its global unique
+  for `orgId_slug`, so the binding resolver, two seeds and the triage eval
+  script now name the org through `requireOrgId()`, which at `single` is the
+  install org.
+
+  **This tier's models are classified for tenancy.** Sunrise's new guard
+  names every model with no `orgId` that is on neither allowlist. This tier's
+  31 models and `TransferJob` belong to a person, not an org, so they sit on
+  `SYSTEM_MODELS`, a core file, under a FORK comment. See Sunrise ask #54 and
+  upstream [#1041](https://github.com/human-centric-engineering/sunrise/issues/1041).
+
+  **An account import lands in the importing org.** Thirty-eight core tables
+  gained `orgId`. The importer now sets it from the importing context, as it
+  sets the owner column from the importing account, rather than copying it
+  from the bundle or nulling it. A null would have left an imported agent in
+  no org, where an `orgId_slug` lookup never finds it. `AiAgent` merges on
+  `[orgId, slug]`, `transferJobs` runs its queue inside the install org so its
+  writes are stamped, and `Org` and `OrgMembership` are excluded from transfer.
+
+  **This tier's system workflows are on the importer's list.** The seven
+  workflows `framework-resparkable/005-workflows.ts` seeds are added to
+  `SYSTEM_WORKFLOW_SLUGS`, another core edit for want of a seam (Sunrise ask
+  #55).
+
+  **The stateful MCP transport is gone upstream**, with resource
+  subscriptions and `maxSessionsPerKey`, so the per-URI update broadcasts this
+  tier fired on agent, workflow and knowledge changes go with it.
+
 - **Merged Sunrise 0.12.1 (101 commits, v0.11.2..v0.12.1).** Two upstream
   releases. The security fix in 0.12.1 is the one to read first: a sign-up
   request could name its own `role`, and cannot any more.
@@ -2846,6 +2879,1834 @@ release process.
 - **`GET /api/v1/resparkable/search` does not log the query text.** It is the most
   sensitive string a user sends this product, and a log line outlives the search;
   the route logs its length and the hit count instead.
+
+## [0.14.0] — 2026-10-08
+
+> **Alpha release.** Twentieth tagged Sunrise release. **MINOR bump**. It
+> carries two multi-tenancy features, platform-owned system agents (§116) and
+> per-org provider policy (§120), plus the install-org rules for shared
+> settings (§107 t-751–t-753) and a security batch on logging, exports and
+> outbound messages. Measured against `v0.13.0`: 50 PRs merged, no direct
+> commits, 25 issues closed; the suite is 1,261 files and 25,968 tests.
+>
+> **`TENANCY_MODE=single` stays the default.** Entries that apply only at
+> `multi` say so. §120 shipped without its check against a deployed `multi`
+> install (an owner ruling); its behaviour is proved by its tests only.
+>
+> ## What a fork has to do
+>
+> **Six migrations.** None rewrites rows, but two take locks that scale with
+> table size, so apply them off-peak on a large install:
+> `chunk_key_per_org` builds a unique index on `ai_knowledge_chunk` (not
+> `CONCURRENTLY`), and `conversation_owner_exclusive` validates a CHECK
+> constraint by scanning `ai_conversation`. All six:
+> `20260929180000_chunk_key_per_org`, `20260930120000_retire_builtin_template_rows`,
+> `20261001100000_provider_jurisdiction`, `20261006120000_embed_visitor_conversations`,
+> `20261006130000_conversation_owner_exclusive` and
+> `20261006140000_execution_reply_conversation`. **Check each deployed database
+> before applying `retire_builtin_template_rows`.** It switches off the twelve
+> seeded `tpl-*` workflow rows, so a schedule wired to one is skipped and a run
+> waiting on approval fails when approved. The entry under **Changed** gives a
+> query that lists what is wired to each.
+>
+> **Before you deploy: clone any system agent whose prompt you customised.**
+> Where the maintenance tick is scheduled, its `platformAgents` task reconciles
+> each org within 15 minutes of the new code running; the first `db:seed` does
+> too, whichever comes first. Both write each platform agent's behavioural
+> fields back to Sunrise's definition, and the admin API now refuses those
+> edits (the §116 entries under **Changed**).
+> Provider, model, budgets, rate limit and retention stay yours. The
+> agent-only seed units and the built-in template seeds are removed (see
+> **Removed**), so a fork that edited one will see a modify/delete conflict.
+> Carry an agent edit into a replacement registered from
+> `lib/app/platform-agents.ts`. A template seed edit has nothing to carry over.
+>
+> **Already at `TENANCY_MODE=multi` with customer orgs?** From the moment the
+> new code is live, every org but the install org is refused all AI calls
+> (`provider_not_permitted`) until it is granted providers. The route that
+> grants them, `PUT /api/v1/admin/orgs/[id]/providers`, arrives with the same
+> deploy, so script the grants as an immediate post-deploy step. Erasure
+> hooks and `collectAppSubjectData()` now run as the system scope at `multi`,
+> so `requireOrgId()` throws inside them and a row they create needs an
+> explicit `orgId`. Backup import runs from the install org only, until §109
+> t-738.
+>
+> **Changes a build will not catch:**
+>
+> - **Sentry 11** collects request bodies, headers, cookies and gen-AI inputs
+>   by default. A fork with Sentry on should set `dataCollection`, and add the
+>   `scrubSentrySpan` / `scrubSentryEvent` hooks (both in **Security**).
+> - **dotenv 18's `-r dotenv/config` preload ignores `dotenv_config_path=`.**
+>   Set `DOTENV_CONFIG_PATH` instead.
+> - **Logs.** `url` is gone from the request log context, `endpoint` collapses
+>   ids and tokens to `[param]`, and a dozen log keys are renamed. Dashboards
+>   and alerts on the old keys need updating.
+> - **Behaviour.**
+>   - A `judge_call` with a `threshold` now fails the step when the judge
+>     returns no score, finds its criterion not applicable, or scores outside
+>     0–1. A custom judge scoring 1–10 or 0–100, or a gate on
+>     `eval-judge-context-precision`, fails on every run.
+>   - A `tool_call` step now interpolates its `args`.
+>   - Workflows can no longer send outreach on a conversation they were not
+>     handling: pass `replyConversationId` only for a genuine reply.
+>   - Recorded costs change: they use the model's real rates, and unpriced
+>     turns are flagged.
+>   - Reverts, imports and bulk agent actions now add agent versions, and
+>     those routes return a retryable `409` on a version clash.
+> - **Embed visitors.** Hook and webhook payloads for an embed visitor carry
+>   `userId: null` plus `embedVisitorId`. Check `isEmbedUserId` before writing
+>   a caller id into a `User` foreign key.
+> - **Knowledge embedding.** A keyless remote embedding row now fails with
+>   `missing_api_key`: mark a self-hosted one Local. The bare
+>   `OPENAI_API_KEY` embedding fallback is removed.
+>
+> **Dependency alerts accepted for this release:**
+>
+> - `deepmerge-ts` (high), under the Prisma CLI.
+> - `postcss-selector-parser` (moderate), under `@tailwindcss/typography`.
+>   Both have a fix only in a new major version under their parents.
+> - `katex` (low), under mermaid.
+> - `sprintf-js` (moderate), under `mammoth` → `argparse`. No patched
+>   release exists, and only mammoth's command-line tool uses argparse, which
+>   Sunrise never runs.
+> - `braces` / `micromatch` / `fast-glob` (high), under
+>   `@next/eslint-plugin-next`. Lint-only. With `eslint-config-next` and the
+>   plugin itself, this chain accounts for 5 of the 8 highs `npm audit`
+>   reports.
+
+### Added
+
+- **`ComputedCost.unpriced`, `ModelInfo.pricingUnknown` and
+  `isMatrixOwnedFigure(id, field)`** (#813, t-769). `calculateCost` returns
+  `unpriced: true` when no rate was available, so a caller can tell "not
+  priced" from "free"; `pricingUnknown` marks a registry entry that only a
+  null-cost Model Matrix row supplied; `isMatrixOwnedFigure` says whether a
+  registry figure follows its matrix row. See **Fixed**.
+- **Platform agents: Sunrise's own agents, defined in code, with one instance
+  per org** (multi-tenancy §116 t-724). The sixteen agents seeds used to write
+  once, as the install org's rows, are now definitions in
+  `lib/orchestration/agents/platform-agents.ts` (`CORE_PLATFORM_AGENTS`,
+  `PlatformAgentDefinition`, `PLATFORM_AGENT_BASELINE`, `listPlatformAgents()`,
+  `platformAgentsForOrg()`, `registerPlatformAgent()`). They are materialised
+  as ordinary `isSystem` agents in **every** org by
+  `reconcilePlatformAgents(orgId)`
+  (`lib/orchestration/agents/reconcile-platform-agents.ts`), which runs from
+  `createOrg`, from the new seed unit `021-platform-agents`, and from a new
+  per-org maintenance job. At `multi` a new org's clean-up upload, MCP tool
+  calls, evaluation judges and case generator now work with no manual step.
+  `provider-model-auditor`, `audit-report-writer`, `pattern-advisor` and
+  `quiz-master` stay in the install org only (the last two, the Learn page's,
+  help the install's app admins; t-733). **At `single` the install org's agents are the same rows as before**:
+  a fresh `db:seed` produces the same sixteen, field for field (`cleanup-agent`
+  now also gets its `v1` version, which the old seed order skipped). See
+  [`platform-agents.md`](./.context/orchestration/platform-agents.md).
+- **A new fork seam, `lib/app/platform-agents.ts` → `initAppPlatformAgents()`**
+  (§116 t-724). It registers a fork's own platform agent, or replaces a
+  Sunrise one by slug (logged at warn). Run once, lazily, through
+  `createAppInitGate`. It ships empty, with a new row in
+  `tests/unit/lib/app/defaults.test.ts`.
+- **`platformAgent: 'code' | 'org'` on `AgentFieldDescriptor`, and
+  `platformAgentFieldNames()`** in `agent-field-registry.ts` (§116 t-724).
+  This is who owns a field on a platform agent. It is required on every core
+  field, so a new `AiAgent` column must take a side and (if `'code'`) a
+  baseline value. It is optional on a fork's `appAgentFields`: a fork field
+  without it is ignored by the reconcile.
+- **A `platformAgents` background task on the maintenance tick** (§116 t-724),
+  appended to the `backgroundTasks` list the tick route returns. Every 15
+  minutes, per org, it reconciles an org whose platform agents are behind
+  the running code, or still missing a capability or tag its agents declare
+  or its copy of the patterns knowledge (t-726).
+  Otherwise it is one `Org` read per org. It records its
+  progress in a new platform-owned `Org.settings.platformAgents` key, beside
+  `retention`. Every other key in `settings` is preserved.
+- **`listActiveOrgIds(db?)`** takes an optional client (§116 t-724), for a
+  caller holding its own connection, such as the seed runner.
+- **`GET /admin/orchestration/agents/:id` returns `platformAgent`** (§116
+  t-725): `{ lockedFields, tunableFields, bindingsLocked }` on a system agent,
+  `null` on an org's own. It is the split the API enforces, and the agent form
+  renders from it. **`getPlatformAgent(slug)`** in `platform-agents.ts` reads
+  the registry by slug.
+- **`getOrCreateDefaultKnowledgeBase(db?)`** takes an optional client (§116
+  t-726), as `listActiveOrgIds` does. **`materialisePatternsKnowledge()`**,
+  **`loadPatternsChunks()`** and **`parseSeedChunks()`** in `seeder.ts`, and
+  the constants in the new `lib/orchestration/knowledge/patterns-knowledge.ts`
+  (`PATTERNS_DOCUMENT_SLUG` among them), are the patterns knowledge's per-org
+  seam.
+
+- **`LlmProvider.embedMany?(texts, { model, dimensions?, inputType? })`**, with
+  the `EmbedManyOptions` / `EmbedManyResult` types (t-740). This is how
+  knowledge ingestion and search now reach an embedding vendor: through the
+  provider manager, counted by the in-flight Proxy like chat, instead of the
+  embedder's own `fetch`. Implemented by `VoyageProvider` and
+  `OpenAiCompatibleProvider`, and classified `track` in `METHOD_DISPOSITION`.
+  It is optional, so a fork's provider class written against the older contract
+  still compiles, but such a class cannot be used for knowledge embedding
+  (`embedding_unsupported`). Implement it to make it usable. It must return
+  plain `number[]` vectors in input order, send `dimensions` only when given
+  one, and refuse redirects. `OpenAiCompatibleProvider` asks for
+  `encoding_format: 'float'`, because the `openai` SDK's base64 default decodes
+  to `Float32Array`.
+- **A call-time provider gate** (§120 t-741). Every vendor call through the
+  provider manager (`chat`, `chatStream`, `embed`, `embedMany`, `transcribe`,
+  `transcribeStream`) now asks the provider eligibility rule first, per call,
+  and a refused call throws `ProviderCallRefusedError` (a `ProviderError`,
+  code `provider_not_permitted`, with a `reason` of `'policy'` or
+  `'no_org_scope'`) from `provider-eligibility.ts`. Until now the
+  rule was only consulted where a provider was chosen, from a hand-maintained
+  list of sites; a site missing from it now chooses less well but cannot send
+  a call the rule refuses. To tell the rule where a provider came from,
+  `getProvider(slug, context?)` and `getProviderWithFallbacks(primary,
+  fallbacks, provenance?)` take a new optional argument, and
+  `ResolvedAgentBinding` gains `provenance`. **A call made without one is
+  permitted only if the rule permits it both as `'primary'` and as
+  `'explicit'`**, the two things a lone provider fetched by name can be, so a fork
+  calling `getProvider` directly should pass a context. At `TENANCY_MODE=multi`
+  a vendor call outside any org scope, or inside `runAsSystem`, is refused.
+  At `single` with no rule registered (the default), nothing changes.
+  `listModels` and `testConnection` are not gated. See
+  [`llm-providers.md` → The call-time gate](./.context/orchestration/llm-providers.md#the-call-time-gate).
+
+- **A provider credential seam: `lib/app/provider-credentials.ts`**
+  (`initAppProviderCredentials`, primitive `registerProviderCredentialResolver`
+  in `lib/orchestration/llm/provider-credentials.ts`) (§120 t-744). Where a
+  provider row's API key comes from: by default the env var it names, as
+  before; a fork can resolve keys from a gateway, a vault reference or workload
+  federation, or give each org its own. A resolver returns the key and a
+  non-secret `identity`, and is asked on every `getProvider` with the org in
+  context. Sunrise still stores no tenant's key. A resolver or registration
+  that throws refuses the credential (`credential_unavailable`) rather than
+  falling back to the environment. Also exported: `hasProviderCredential`
+  (can this row be called), `hasProviderKey` (does it have a key — the admin
+  `apiKeyPresent` flag), `filterProvidersWithCredential` and `readEnvKey` from
+  the seam module; `breakerKeyOf` and `getProviderIfBreakerClosed` from the
+  provider manager; `getCircuitBreakerStatusForProvider` /
+  `resetBreakersForProvider` from the circuit breaker. The
+  `circuit_breaker_opened` webhook gains `perCredential`, and its
+  `providerSlug` stays the plain slug. See
+  [`llm-providers.md` → Provider credentials](./.context/orchestration/llm-providers.md#provider-credentials-fork-seam).
+
+- **Per-org approved providers at `multi`** (§120 t-742). The install org may
+  use every provider. Every other org may use only the providers a platform
+  admin has granted it, and starts with none. The grant is the org's new
+  platform-owned `Org.settings.providers` slice,
+  `{ approved: string[], jurisdictions?: string[] }`, which stores provider row
+  ids, so a grant survives a rename and does not pass to a new provider created
+  under a deleted one's slug. It is enforced inside
+  `resolveEligibleProviders`, so it applies at every selection site and in the
+  call-time gate on every vendor call. A fork's `registerProviderEligibility`
+  rule now runs on what core's rule permitted, so it can narrow the org's set
+  and never widen it. At `single` nothing changes. See
+  [`llm-providers.md` → Per-org approved providers](./.context/orchestration/llm-providers.md#per-org-approved-providers-core-at-multi).
+- **`GET` / `PUT /api/v1/admin/orgs/[id]/providers`** (§120 t-742). Platform
+  admins read and replace an org's approved providers and jurisdictions. Each
+  replace writes an `org.providers.replace` audit row. The install org has no
+  set and a `PUT` naming it is refused. The `PUT` names providers by slug and
+  must state `jurisdictions` (`null` lifts the restriction); an unknown slug
+  is a 400, and a clash with a concurrent settings write is a 409
+  (as it now is on `PATCH /api/v1/admin/orgs/[id]`). Both return each grant as
+  `{ id, slug }`. Also
+  exported: `readOrgProviderPolicy` / `writeOrgProviderPolicy` /
+  `isSettingsWriteConflict` from `lib/tenancy/org-settings.ts`,
+  `orgProviderPolicySchema` / `orgProviderPolicyInputSchema` /
+  `jurisdictionSchema` from `lib/validations/tenancy.ts`, and
+  `lib/orchestration/llm/org-provider-policy.ts`.
+- **`AiProviderConfig.jurisdiction`** (§120 t-742; migration
+  `20261001100000_provider_jurisdiction`): a nullable, upper-cased code for
+  where the vendor processes data, writable through the provider create and
+  update APIs. An org held to jurisdictions is permitted only providers
+  recorded in one of them. A provider with none recorded matches no
+  restriction.
+
+- **Saving an agent or workflow step that names a provider the org is not
+  approved for is refused at `multi`** (§120 t-743). Agent create, update,
+  clone and version restore return 400 `VALIDATION_ERROR`, with
+  `details.unapprovedProviders` and a per-field `details.errors` entry; only
+  providers the write introduces are checked, so a stranded agent can still
+  be edited. A workflow step `modelOverride` whose provider is not approved is
+  a new semantic error, `PROVIDER_NOT_APPROVED`: create, save-as-template,
+  publish and rollback refuse it (publish and rollback only for a provider the
+  new version introduces), `/validate` reports it, and execution does not
+  check it.
+  `semanticValidateWorkflow` takes a new optional
+  `{ approval: { held?, onUnreadable? } }` argument for it; that check also
+  covers `supervisor` steps' overrides. Also exported:
+  `findUnapprovedModelOverridesIn` and `assertWorkflowProvidersApproved`. Bundle and backup import keep such agents
+  and workflows and add a warning. New helpers: `unapprovedProviders` in
+  `org-provider-policy.ts`, `lib/orchestration/agents/provider-approval.ts`, and
+  `findUnapprovedModelOverrides` in `semantic-validator.ts`. At `single`
+  nothing changes. See
+  [`llm-providers.md`](./.context/orchestration/llm-providers.md).
+
+- **An Organisations page, and approved providers shown in the agent UI**
+  (§120 t-745). `/admin/orgs` lists every org and `/admin/orgs/[id]` edits its
+  approved providers and jurisdictions (under Management in the sidebar);
+  rename, suspend and members stay API-only. The agent form offers a provider
+  the org is not approved for disabled, with the reason, and an agent stranded
+  by a later policy change shows it in the agents list and on its edit page.
+  New response fields: `approvedForOrg: boolean | null` on each row of
+  `GET /api/v1/admin/orchestration/providers`, and
+  `_unapprovedProviders: string[] | null` on each agent from
+  `GET /agents` and `GET /agents/:id` (on `AiAgentListItem` too; `null` when
+  that is unknown: no org in scope, or the policy could not be read). New
+  helpers `strandedAgentProviders` and `refusedProvidersOrUnknown` in
+  `lib/orchestration/agents/provider-approval.ts`. At `single` every provider
+  is approved and nothing is disabled.
+
+- **Every-org usage on the shared-settings read API, and the scope that
+  counts it** (§107 t-752). The new fields name the caller's org's agents and
+  count other orgs' without naming them. All are `0` at `single`.
+  - `GET /provider-models` and `GET /providers/:id/models` add
+    `otherOrgAgentCount` per model.
+  - `GET /capabilities` adds `_otherOrgAgentCount` per item.
+  - `GET /capabilities/:id/agents` keeps its array and adds
+    `meta.otherOrgAgentCount`.
+  - The counts run in the new `runAsCrossOrgCount()`
+    (`lib/tenancy/context.ts`). It is the `runAsSystem` bypass logged at
+    debug, because the admin pages ask on every load. The always-run
+    `tests/unit/lib/tenancy/cross-org-count-sites.test.ts` confines it to
+    `lib/orchestration/admin/global-config-usage.ts`.
+
+- **Shared-settings pages are read-only outside the install org, at `multi`**
+  (§107 t-753). They say so before a write is refused (t-751): a notice with
+  a button that switches the session to the install org, and create, edit,
+  delete and toggle actions hidden or disabled. This covers providers, the
+  model matrix, capabilities, agent profiles, knowledge tags, the MCP pages,
+  feature flags, orchestration settings and its backup import, the setup
+  wizard and the provider-detection banner. The admin layout reads
+  `getSharedSettingsAccess(session)` (new,
+  `lib/tenancy/shared-settings-access.ts`) once per request and provides it;
+  the switch is offered only to a member of the install org. From the new
+  `components/admin/shared-settings-access.tsx`: components ask
+  `useSharedSettingsReadOnly()` (and `useIsInstallOrg()` for install-only
+  actions), pages render `<SharedSettingsReadOnlyNotice />`, a server page
+  wraps its create link in `<SharedSettingsEditOnly>`, and a disabled save
+  gets `<SharedSettingsSaveHint />`. Outside the provider the components
+  are editable as before, but `useIsInstallOrg()` answers `false`, so the
+  install-only model audit is hidden until a provider says otherwise. `sessionActingOrgId()` (new, `lib/tenancy/entry.ts`) is
+  the one derivation of a cookie session's org that this and
+  `GET /api/v1/orgs` share. Nothing changes at `single`. **Forks:** an admin
+  component of yours that writes one of the `GLOBAL_CONFIG_MODELS` should ask
+  the hook too; the server refuses the write either way.
+
+### Changed
+
+- **Reverting an agent's instructions, importing an agent over it, restoring a
+  backup over it, and bulk activate / deactivate / delete now each add an agent
+  version** (t-779). `POST /admin/orchestration/agents/:id/instructions-revert`,
+  `POST /admin/orchestration/agents/import`, `POST /admin/orchestration/backup/import`
+  and `POST /admin/orchestration/agents/bulk` used to change an agent's
+  versioned config without one, so its newest version no longer matched what
+  it ran. Version history now shows each such change as a new vN, summarised by
+  the fields it changed; an agent created by an import gets a v1, and an agent
+  with no history keeps its prior config as v1 first. A write that leaves an
+  agent matching its newest version adds none. These routes, like PATCH, now
+  return a retryable `409` when a concurrent edit takes the version number. The
+  version-history diff also stops reporting an object field as changed when only
+  its key order differs. The workflow `chat_turn` step reads an agent and its
+  newest version in one snapshot, so an edit committed mid-read cannot pin a
+  turn to a version it did not run.
+- **The Model Matrix no longer overrides the price or context window of a
+  model the registry already knows** (#813, t-769). A positive figure from the
+  static map or OpenRouter now wins over the row's blended rate and context
+  bucket, at runtime and in `GET /admin/orchestration/models`. An operator who
+  relied on editing the matrix to re-price a known model must now do it
+  elsewhere; a model only the matrix knows is still priced from its row.
+- **Log keys renamed so word-based redaction leaves them readable** (#951).
+  The logger now redacts any key containing a sensitive word (see Security),
+  which would also hide non-secret keys such as `tokenId` or `hasApiKey`, as
+  their snake_case forms already were. Sunrise's own such keys are renamed;
+  dashboards or alerts reading the old keys should switch:
+  - `missingEnv` (a list of unset variable names) replaces the `has*`
+    booleans in the email, S3 and WhatsApp configuration warnings;
+  - `deliveryStatus` / `messageId` replace `emailStatus` / `emailId` in the
+    invitation and contact routes; `deliveryEnabled` replaces `emailEnabled`;
+    `verificationRequired` replaces `requireEmailVerification`;
+  - `grantedKey` replaces `tokenKey` (storage token mismatch); `recordId`
+    replaces `tokenId` (embed and invite token refusals, embed-token admin
+    routes); `keyId` replaces `apiKeyId` (unscoped MCP knowledge search);
+    `usage` replaces `tokenUsage` (evaluation completed).
+  - The sensitive-field lists drop their `_` spellings (`api_key`,
+    `first_name`, …): one letters-only spelling now covers every form.
+- **A `tool_call` step interpolates its `args`** (t-770). Every string in an
+  authored `args` object now resolves `{{input.…}}`, `{{<stepId>.output}}`,
+  `{{trigger.…}}` and the rest, as every other step type's config already did;
+  objects and arrays are walked, with the same walker the admin trace viewer
+  uses. As in every step type, an interpolated value is a string: a reference
+  to a number or an object arrives as its text, so pass structured args with
+  `argsFrom`. Args taken from `argsFrom` or the `inputData` fallback are data
+  and are passed through unchanged. **For a fork:** a
+  `tool_call` whose `args` held literal `{{…}}` text meant to reach the
+  capability verbatim now gets it interpolated (a missing reference becomes
+  the empty string).
+- **A `judge_call` step with a `threshold` now fails when the judge does not
+  properly score** (§77 t-747). It used to report `passed: true` whenever the
+  judge returned no score — a vendor error, no provider, the org's provider
+  policy refusing it (common at `multi` since §120), a reply that was not
+  `{score, reasoning}` JSON, or a platform judge finding its criterion not
+  applicable (for example faithfulness and citation judges on an answer with no
+  `[N]` markers, correctness, recall and answer-similarity judges with no
+  expected output, the brand-voice judge with no voice) — and compared an
+  out-of-range score as if it were valid. So a quality gate let through
+  anything the judge did not properly score. The step now throws, with the
+  judge's `errorCode`, `judge_not_applicable` or `judge_score_out_of_range`, and
+  its `errorStrategy` decides: the default `fail` fails the run, `retry`
+  retries unless the cause cannot change, `fallback` routes to the author's
+  step. **An existing workflow whose judge sometimes fails, or gates on a
+  criterion that does not always apply, will now fail where it used to pass
+  unjudged; so will a gate on `eval-judge-context-precision`, which this step
+  passes no citations, and one on a custom judge that scores outside 0–1
+  (1–10, 0–100), on every run.** Without a threshold, nothing changes.
+- **`@sentry/nextjs` 11, mermaid 12 and dotenv 18** (t-758). Core calls Sentry
+  only through `lib/errors/sentry.ts`, whose calls are unchanged, and ships no
+  `Sentry.init`. **A fork that configures Sentry:** v11 collects request and
+  response bodies, headers, cookies, query and database parameters and gen-AI
+  inputs and outputs by default, and Sunrise's agents carry personal data
+  through all of them; set `dataCollection` as
+  [`sentry-setup.md`](./.context/monitoring/sentry-setup.md) shows, and import
+  `withSentryConfig` from `@sentry/nextjs/config`. Mermaid 12 lays diagrams out
+  with ELK and a new default look. dotenv 18 adds a CLI and an opt-in fast
+  parser, and `config({ path })` is unchanged, but **its `-r dotenv/config`
+  preload no longer reads `dotenv_config_path=` from the command line**: it
+  loads `.env` and ignores the argument. Set `DOTENV_CONFIG_PATH=.env.local`
+  in the environment instead (`scripts/diagnose-eval-run.ts` and
+  `verify-eval-run.ts` now say so).
+- **At `multi`, a fork's erasure hooks and subject-export collector run as the
+  system scope** (§107 t-748). `registerErasureCleanupHook`'s
+  `cleanupExternal` and `scrubInTransaction`, and `collectAppSubjectData()`
+  (`lib/app/data-export.ts`), used to run in whatever org the caller had
+  entered: the session's active org, or none from an admin API key, where a
+  tenant-owned query threw. A person's rows can sit in several orgs, so they now
+  run as `runAsSystem`. Filter every query on the subject you are handed, since
+  an unfiltered one reaches every org's rows. There is no org to ask for:
+  `requireOrgId()` throws, and a tenant-owned row a hook creates is not stamped,
+  so write its `orgId` explicitly. At `single` nothing changes.
+- **The browser-tab icons moved from `public/` to `app/favicon.ico` and
+  `app/icon.svg`** (#640). Next links both from `<head>` itself, so the SVG
+  (vector, and the only kind that can follow `prefers-color-scheme`) is now
+  actually served; before, nothing linked `public/favicon.svg`. Rebranding is
+  replacing those two files, with no `app/layout.tsx` edit. A fork that
+  replaced either `public/` icon merges cleanly: the files move unchanged
+  upstream, so git carries the fork's own icons to `app/favicon.ico` and
+  `app/icon.svg`. **If you wrote a `metadata.icons` block into
+  `app/layout.tsx`, drop it** — a link to `/favicon.svg` now 404s. Don't add
+  icons back to `public/`: `public/favicon.ico` next to `app/favicon.ico` makes
+  `/favicon.ico` a 500 in dev ("conflicting public file and page file").
+- **At `TENANCY_MODE=multi`, an org other than the install org can no longer
+  call any AI provider until it is granted one** (§120 t-742). An install
+  that is already at `multi` with customer orgs must grant each one its
+  providers with `PUT /api/v1/admin/orgs/[id]/providers` when it takes this
+  release, or their chat, workflow, embedding and transcription calls are
+  refused with `provider_not_permitted`. Single-tenant installs are
+  unaffected.
+- **Provider clients, circuit breakers and in-flight counts are keyed per
+  credential** (§120 t-744), on `credentialKey(slug, identity)`: the bare slug
+  for the install's shared credential, so nothing changes until a credential
+  resolver returns another identity. `getProviderWithFallbacks` now also
+  returns `breakerKey`; pass it (or `breakerKeyOf(provider)`) to `getBreaker`
+  instead of the slug. The admin provider list and health route aggregate a
+  provider's breakers, and the live-engine dashboard's in-flight `provider` is
+  that key. A provider's breaker is checked once it is fetched (that is what
+  says which credential applies), and a chat turn that fails over credits its
+  success to the provider that served it, not the primary it left — which had
+  cleared the failure just recorded. Reachability checks (auto-pick, the agent
+  form preview, the clean-up agent's pin, the admin model routes) and the admin
+  `apiKeyPresent` flag now ask the credential seam instead of reading
+  `process.env`.
+- **An eligibility rule now also decides operator-chosen providers, at call
+  time** (§120 t-741). Selection still never reroutes an explicit
+  `agent.provider`, a step's `modelOverride`, a pinned embedding default, or an
+  `EVALUATION_*` env var, but the call-time gate refuses one the rule refuses,
+  asking it with `source: 'explicit'` and `primarySlug` set to that provider
+  (the context keeps its contract: `primarySlug` is `null` only for
+  `'primary'`). So a fork rule that barred a provider only for `'primary'` /
+  `'system'` behaves as before, and one that barred it for `'explicit'` too
+  now stops agents that name it, where before it only removed it from their
+  fallback lists. The pinned **audio** default is now asked at selection, as
+  `'explicit'`, and a refused pin falls through to the next permitted audio
+  row, as an unreachable pin already did. A refusal counts as a request fault:
+  chat does not fail over from it, a workflow step does not retry it and fails
+  with code `provider_not_permitted` (as a refused task default already did)
+  whichever executor wraps it, a fork's included — `ExecutorError` now takes
+  that code and a non-retriable verdict from a refusal within ten levels of
+  its `cause` chain (the engine's `executor_threw` wrapper keeps its code and
+  only becomes non-retriable),
+  no circuit breaker records it, and the retroactive-review route answers 403
+  `provider_not_permitted` for a refused `modelOverride` or
+  `EVALUATION_JUDGE_MODEL`.
+- **`getProvider` prefers a slug match over a name match** (§120 t-741). It
+  used one unordered `findFirst` over both, so a caller holding one row's slug
+  could be handed a different row whose name equalled it. A name lookup is no
+  longer cached under the name: it queries on each call, and reuses the slug's
+  cached instance rather than rebuilding it.
+
+- **Admin edits to a system agent's platform-owned fields no longer
+  survive** (§116 t-724). This is the upgrade to look at. On the first
+  reconcile after deploying (the maintenance tick runs one within 15 minutes,
+  and so does the first `db:seed`, whichever comes first), and on every
+  reconcile after that, each
+  platform agent's name, description, instructions, temperature, max tokens,
+  knowledge settings, visibility, persona, guardrails and brand voice are
+  written back to the definition's. So are its capability bindings (stray ones removed, disabled ones re-enabled), except `mcp-system`'s, which stay the org's so strict-mode grants survive, and its knowledge-tag grants
+  (document grants cleared). A version row records each change. **Provider,
+  model, fallback providers, provider config, monthly budget, per-turn cap,
+  rate limit and retention are the org's, and are never touched.** Before this, re-seeding overwrote the prompts (and descriptions) of the judges, the case generator and `mcp-system`, refreshed `cleanup-agent`'s prompt only while it had never been edited, and left the others alone. An install that customised a system agent's
+  prompt should recreate it as its own agent (clone it) before upgrading.
+  The API now refuses these edits (§116 t-725, below).
+- **The admin API refuses an edit to what the platform owns on its agents**
+  (§116 t-725). On a system agent, `PATCH /agents/:id` returns 403 for a
+  change to any field the agent field registry marks `platformAgent: 'code'`,
+  naming the fields. That widens the old three (slug, instructions,
+  deactivation) to every behavioural field, the profile link and the grants,
+  and `isActive: true` is now refused too, so a retired agent stays off. A
+  field sent unchanged passes, so a client echoing the whole agent back is
+  refused only for what it changed. The org's fields (provider, model,
+  fallbacks, provider config, budget, per-turn cap, rate limit, retention)
+  stay writable. The binding routes refuse attach, detach and switching a
+  binding on or off (its `customConfig` and `customRateLimit` stay writable,
+  since the reconcile never writes them; `mcp-system`'s bindings stay the
+  org's). `PATCH
+  /agents/:id/widget-config` refuses a system agent. Version restore applies
+  only the org's fields and leaves the grants. **A client that edited a
+  system agent's prompt or settings through the API now gets a 403** where it
+  used to get a 200 that the next reconcile undid.
+- **Platform slugs are reserved** (§116 t-725). Creating or renaming an agent
+  to a registered platform slug (a Sunrise one, install-only included, or one
+  a fork registers) returns 400 on `slug`. Clone refuses one the caller chose
+  and skips past a generated one, and `POST /agents/import` and the config
+  restore skip such an agent with a warning. An org that already has an agent
+  of its own under such a slug keeps it, but the clean-up and `mcp-system`
+  lookups, the patterns-tag grant, the quiz master on the Learn page and in
+  saved quiz scores, and every load by a platform slug in chat (the judges and
+  case generator), in workflow `agent_call`, `chat_turn` and orchestrator
+  steps, in consumer and admin chat, and in the validation and cost estimates
+  that check those slugs ahead of a run, now match
+  only system agents, so that org
+  gets "not found" instead of its own agent run in the platform's place.
+- **The agent form shows a platform agent's platform-owned fields read-only**
+  and never sends them (§116 t-725). Its banner says what the org can change.
+  The capabilities tab keeps Configure (custom config and rate limit) but not
+  attach, detach or the switch, except on `mcp-system`; the embed tab keeps
+  its tokens but not the widget appearance, and the instructions history
+  drops Revert. Leaving the config or rate limit blank in Configure now
+  clears it (a blank used to leave the old value in place).
+  **"Audit Models" shows in the install org only**, and the
+  dashboard's agent count excludes system agents.
+- **`AiKnowledgeChunk.chunkKey` is unique per org, and the patterns knowledge
+  follows its agents** (§116 t-726, t-733). Migration
+  `20260929180000_chunk_key_per_org` replaces the global `UNIQUE (chunkKey)`
+  with `UNIQUE (orgId, chunkKey)`, so `chunkKey` alone is no longer a
+  `findUnique` / `upsert` key: a fork that looks a chunk up by it must add
+  the org. The platform-agent reconcile writes the "Agentic Design Patterns"
+  document, its 191 chunks and tag link into an org's own default knowledge
+  base, without embeddings, wherever an agent declares the patterns tag: in
+  core, the install org only. A fork agent that declares it takes a copy into
+  every org it is for. `seedChunks()` and `POST /knowledge/seed` write into
+  the caller's org's default knowledge base, are idempotent by the
+  document's slug rather than its name, and no longer grant the tag to the
+  pattern advisor and quiz master themselves: the reconcile does. **An
+  existing copy is never refreshed**, as before: an org holding one from an
+  earlier `chunks.json` keeps it, with a warning. `npm run
+  db:seed:embeddings` embeds the install org's chunks, and now runs at
+  `multi` too.
+- **Seeds `005-pattern-advisor`, `008-mcp-server` and `010-model-auditor` no
+  longer create agents** (§116 t-724). They still seed the pattern and cost
+  capabilities, the MCP server config and resources, and the audit
+  capabilities and workflow. Their content changed, so each re-runs once.
+- **The built-in workflow templates are served from code, to every org**
+  (§116 t-727). `GET /api/v1/admin/orchestration/workflows/templates` now
+  returns `BUILTIN_WORKFLOW_TEMPLATES` from code, then the calling org's own
+  template rows (`lib/orchestration/workflows/template-catalogue.ts`), and
+  the new-workflow and edit pages read their "Use template" list from it.
+  At `multi` every org's builder now offers all twelve. **The endpoint's
+  response changed:** each entry is `{ source: 'builtin' | 'custom', slug,
+  name, description, workflowDefinition, patternsUsed, metadata }`; it is no
+  longer paginated (at most 100 of the org's own, with `meta.customTruncated`
+  true when that cap cut the list), and the `category` filter
+  is gone. `source` stays, but a value other than `builtin` or `custom` is
+  now a 400 rather than ignored.
+- **The seeded built-in template rows are retired on upgrade** (§116 t-727).
+  Migration `20260930120000_retire_builtin_template_rows` switches each of
+  the twelve `tpl-*` rows off and clears its template flag, keeping the row,
+  its versions and its executions. **Check each deployed database first**:
+  anything wired to one of those rows stops when it is switched off (a
+  schedule is skipped, and a run waiting on approval fails when approved).
+  This query lists what is wired to each:
+
+  ```sql
+  SELECT w.slug, w."isActive",
+    (SELECT count(*) FROM ai_workflow_schedule s WHERE s."workflowId" = w.id) AS schedules,
+    (SELECT count(*) FROM ai_workflow_trigger t WHERE t."workflowId" = w.id) AS triggers,
+    (SELECT count(*) FROM ai_workflow_execution e WHERE e."workflowId" = w.id
+       AND e.status IN ('pending', 'running', 'paused_for_approval')) AS open_runs,
+    (SELECT count(*) FROM ai_agent_capability c
+       WHERE c."customConfig" -> 'allowedWorkflowSlugs' ? w.slug) AS run_workflow_bindings
+  FROM ai_workflow w
+  WHERE w."isTemplate" AND NOT w."isSystem"
+    AND w.slug IN ('tpl-customer-support', 'tpl-content-pipeline',
+      'tpl-saas-backend', 'tpl-research-agent', 'tpl-conversational-learning',
+      'tpl-data-pipeline', 'tpl-outreach-safety', 'tpl-code-review',
+      'tpl-autonomous-research', 'tpl-cited-knowledge-advisor',
+      'tpl-scheduled-source-monitor', 'tpl-inbound-conversation-handler')
+  ORDER BY w.slug;
+  ```
+
+  Also look for code or external callers naming a `tpl-*` slug, such as a
+  seed creating a schedule, or a caller of
+  `/api/v1/webhooks/trigger/tpl-…`. For a row that is in use, either switch
+  it back on from the workflows list (it keeps its slug, schedules and
+  triggers, and runs as an ordinary workflow), or recreate it with **Use
+  template** and move its schedule or trigger over. Backup export and import
+  now skip a built-in slug carried as a template, so a backup taken before
+  the upgrade cannot bring a seeded row back; a row switched back on is an
+  ordinary workflow and is backed up as one.
+
+  **A fork that added its own templates** to `BUILTIN_WORKFLOW_TEMPLATES`
+  also had seed 004 write them as rows, and this migration names only the
+  twelve core slugs. Add a migration of your own with the same `UPDATE` for
+  your slugs; until then those rows stay active templates, hidden from the
+  "Use template" list (the code version is served instead) but listed on
+  the workflows page.
+
+- **The provider manager now SSRF-checks a configured Voyage `baseUrl`** at
+  build time (t-740), as it already did for OpenAI-compatible rows. Knowledge
+  text is posted there by `VoyageProvider.embedMany`, which honours the row's
+  `baseUrl` as the knowledge embedder did; the embedder used to run this check
+  itself. A Voyage row whose `baseUrl` fails the guard now fails to build with
+  `unsafe_base_url`. As for OpenAI-compatible rows, loopback is allowed only
+  when the row is marked Local.
+- **Knowledge embedding now goes through the provider manager's build rules**
+  (t-740), with three consequences for existing installs:
+  - **Keyless remote endpoints.** An OpenAI-compatible embedding row that is
+    not marked Local and has no API key used to embed, because the embedder
+    sent no `Authorization` header. The manager requires a key for a
+    non-local row, as it always has for chat, so that row now fails with
+    `missing_api_key`. For a keyless self-hosted server (TEI, vLLM), mark the
+    row Local, which also costs it at $0. For a hosted one, set its API key.
+  - **Timeouts.** A batch of more than one text gets at least 5 minutes
+    (`EMBEDDING_BATCH_TIMEOUT_MS`), where the old embedder set none. A single
+    text, such as a search query inside a chat turn, keeps the row's own
+    timeout.
+  - **Test model.** The admin **Test model** action for an embedding model
+    (`POST /api/v1/admin/orchestration/providers/[id]/test-model`) now calls
+    `embedMany` with the model under test. It used to call `embed`, which
+    ignored that model and, on Voyage, the row's `baseUrl`.
+
+- **`listMcpResources()` and `resources/list` no longer return templated
+  resources** (#823). A row whose URI has a `{param}` expression (for example
+  `fork://project/{slug}`) used to appear in both `resources/list` and
+  `resources/templates/list`, offering clients an entry that could only be read
+  with the literal `{slug}`. It now appears in `resources/templates/list`
+  only. `listMcpResources()`, exported from `@/lib/orchestration/mcp`, keeps its
+  name and type but returns only concrete rows, so a fork that called it to
+  enumerate every enabled row (templates included) should call
+  `listMcpResourceTemplates()` as well. `isRegisteredMcpResourceUri()` is
+  unchanged: it still matches a concrete URI against template rows.
+
+- **At `multi`, shared settings change only from the install org** (§107
+  t-751). Providers, provider models, capabilities, agent profiles, knowledge
+  tags, feature flags, MCP exposure and server config, and orchestration
+  settings are one row serving every org, so a change made by a platform
+  admin switched into a customer's org landed in every org. The rule is
+  `canChangeSharedSettings()` in the new `lib/tenancy/shared-settings.ts`:
+  the install org or a system scope only, and never a call stack that entered
+  no org.
+  - **Routes:** `withAdminAuth` takes a new option,
+    `{ writesSharedSettings: true }`, and 34 write handlers declare it. At
+    `multi` the guard refuses a session entered into any org but the install
+    org with a 403 whose `details.reason` is
+    `shared_settings_install_org_only`. An unbound admin API key, which
+    enters no org, is still allowed. Reads are unchanged.
+  - **The backup import** (`POST …/backup/import`) is one of them. At `multi`
+    it now runs from the install org only, until §109 t-738 splits a
+    backup's shared settings from the importing org's own data.
+  - **Capabilities:** `BaseCapability` has a new declarative
+    `writesSharedSettings` flag, set by `add_provider_models`,
+    `deactivate_provider_models` and `apply_audit_changes`. The dispatcher
+    refuses a declared capability, with the error code
+    `shared_settings_install_org_only`, before approval or execution.
+
+  **Forks:** a route of yours that writes one of the `GLOBAL_CONFIG_MODELS`
+  must declare the option, and a capability class that writes one must set
+  the flag. The always-run `tests/unit/scripts/ci/shared-settings-writes.test.ts`
+  names any that doesn't. Nothing changes at `single`.
+
+### Deprecated
+
+- **`LlmProvider.embed`** (t-740). It cannot choose a model or dimension or
+  report usage, and knowledge embedding never used it. Use `embedMany`. It
+  will be removed at the next MAJOR. Until then it stays for fork provider
+  classes and the admin test-model route.
+
+### Removed
+
+- **The agent-only seed units `006-quiz-master`, `016-evaluation-judges`,
+  `017-case-generator-agent`, `018-rag-evaluation-judges` and
+  `020-cleanup-agent`** (§116 t-724), replaced by `021-platform-agents`. Their
+  prompts moved verbatim to
+  `lib/orchestration/agents/platform-agent-definitions/`. A fork that edited
+  one of these files will see a modify/delete conflict. Carry the edit into a
+  replacement registered from `lib/app/platform-agents.ts` instead.
+- **The seed units `004-builtin-templates` and `005-backfill-step-descriptions`**
+  (§116 t-727). The built-in templates are no longer rows, so nothing mirrors
+  them. A fork that added a template to `BUILTIN_WORKFLOW_TEMPLATES` has it
+  served from code with no change, but its old row needs retiring (see the
+  migration entry above). A fork that edited either seed will see a
+  modify/delete conflict; there is nothing to carry over.
+- **`SYSTEM_AGENT_PROTECTED_FIELDS`** from `agent-field-registry.ts` (§116
+  t-725). The three fields it named are now three of many:
+  `platformAgentFieldNames('code')` is the list the API and version restore
+  hold a system agent to.
+
+- **The bare `OPENAI_API_KEY` embedding fallback, and `UNCONFIGURED_OPENAI_SLUG`
+  (`'env:openai'`)** from `knowledge/embedder.ts` (t-740). The embedder's last
+  resort sent documents to `api.openai.com` off the env var alone, with no
+  provider row an admin could see. It dated from before provider rows and
+  env-key detection existed. **Upgrade check:** your install is unaffected if
+  Settings has an embedding model selected, or an active OpenAI, Voyage or
+  local provider row exists. If neither, add OpenAI as a provider (the
+  Providers page detects `OPENAI_API_KEY` and creates it in one step). It then
+  produces the same model and 1536-dimension vectors, so nothing needs
+  re-embedding. Until you do, a document upload fails with an error that names
+  the fix (the server logs a `warn` saying the same), and **Generate
+  Embeddings** stays disabled behind the knowledge page's "Add an embedding
+  provider" banner. Existing embeddings are untouched. A fork eligibility rule naming `env:openai` now matches nothing.
+
+### Fixed
+
+- **Recorded AI costs use the model's real rates, and a turn nobody could
+  price is marked as such** (#813, t-769). **Recorded costs change.** Three
+  defects, one fix each:
+  - Once the Model Matrix had been loaded into the model registry, a matrix
+    row's single blended rate replaced the registry's separate input and output
+    rates (gpt-4o-mini cost its 0.375 blend on both sides), and its coarse
+    context bucket (`high` → 200,000) replaced the model's real window, which
+    the chat handler uses as its history budget. `registerModels()` now keeps a
+    positive registry figure and lets a row fill only a zero. A model only the
+    matrix knows keeps its own row's figures, and an edit to that row,
+    clearing included, takes effect on the next hydrate. See **Changed** for what this
+    takes away from operators.
+  - A model only the matrix knows (a dated snapshot id such as
+    `gpt-4o-mini-2024-07-18`, a discovered model) was costed at \$0 on the chat
+    path and in the evaluation worker: neither ever loaded the matrix into the
+    registry. `getProvider`, `resolveAgentProviderAndModel`, `runLlmCall`,
+    keyword enrichment, the cleanup page's context window and the retroactive
+    execution review now do: one query a minute (every 10 s while it fails,
+    once one has landed). An OpenRouter refresh no longer
+    drops the matrix's models until the next hydrate.
+  - A turn with no price (a model the registry still does not know, or a
+    matrix row whose cost is null) was stored at \$0 exactly like a free one,
+    and a null-cost row did not even log the "unknown model" warning.
+    `logCost` now stamps `metadata.pricing = 'unknown'` on the `AiCostLog`
+    row (not on a local turn). An explicit cost of 0 is still a free model.
+- **The SMS / WhatsApp inbound-reply template sends its reply** (t-770). Its
+  `send_reply` step is a `tool_call`, and `tool_call` was the one step type
+  that did not interpolate its config, so `{{trigger.conversationId}}` and
+  `{{respond_to_inbound.output}}` reached `send_message_to_channel` as literal
+  text and every reply failed with `conversation_not_found`. See **Changed**.
+- **An embed widget visitor's first message now starts a conversation**
+  (#705, t-765). It failed before any reply on every install: the handler
+  wrote the anonymous `embed_<hash>` visitor id into `AiConversation.userId`,
+  a foreign key to `User`. A visitor is deliberately not a `User` (owner
+  ruling), so they stay out of the user lists and every user's export and
+  erasure. A visitor's conversation now has no `userId`; the new nullable
+  **`AiConversation.embedVisitorId`** column (migration
+  `20261006120000_embed_visitor_conversations`) owns it, and continuing a
+  conversation matches on it. A CHECK constraint,
+  `ai_conversation_owner_exclusive` (migration
+  `20261006130000_conversation_owner_exclusive`, drift probe A9), keeps a row
+  from carrying both. The per-user conversation cap does not apply to a
+  visitor (owner ruling): a visitor cannot archive conversations and shares an
+  identity behind a NAT. Every built-in tool that would write the visitor id
+  into a user key now decides explicitly: `read_user_memory`,
+  `write_user_memory`, `add_provider_models` and `send_message_to_channel`
+  refuse a visitor with `anonymous_visitor`, and `run_workflow` runs the
+  sub-workflow unowned, as a scheduled run does (the document-cleanup tools
+  already refuse an embed conversation before writing anything). An embed
+  turn's cost rows are now written, unattributed. The `conversation.started`,
+  `message.created` and `capability.refused_not_advertised` hook events and the
+  `conversation_escalated` webhook name a visitor as `embedVisitorId`, with
+  `userId: null`; the `budget_exceeded` webhook names them as `embedVisitorId`
+  with no `actorUserId`; and the guard-events seam's `GuardEventContext` gains
+  an optional **`embedVisitorId`**, set for a visitor (whose `userId` there is
+  still the visitor id). Engagement analytics count each visitor as their own
+  participant. When the server no longer recognises a conversation as the
+  visitor's (their IP changed), the widget starts afresh as New chat does and
+  hands back the message and attachments they just sent. The widget also could not send a message from a
+  partner site at all: `proxy.ts`'s CSRF origin check refused every
+  cross-origin POST. The embed routes and the embed approval routes, which
+  authenticate with a token rather than a cookie and check their own origin
+  allowlist, are now exempt (`CROSS_ORIGIN_TOKEN_ROUTES`). **For a fork:** a
+  feature that writes a caller's id into a `User` foreign key must check
+  `isEmbedUserId` (`lib/embed/auth.ts`) first, and decide what a visitor gets.
+- **At `multi`, a person's data export holds their rows from every org**
+  (§107 t-748). `exportUserData()` read inside whatever org the caller had
+  entered, so the self-service and admin exports returned only the session's
+  active org's conversations, memories and executions, and an admin API key's
+  export threw. At `multi` it now reads, one source at a time, as the audited
+  system scope. A fork's hook and collector change with it; see **Changed**.
+- **An evaluation run where every case errored is now `failed`, not `completed`**
+  (#801). A run with no scored result (no provider configured, a provider
+  outage) used to look the same as a clean one, so a fork polling run `status`
+  for `completed` read an empty evaluation as a result. It now ends `failed`
+  with `summary.note = 'all_cases_failed'`, `summary.casesFailed` and
+  `summary.dominantErrorCode`; a run where only some cases failed stays
+  `completed`. The experiment compare page no longer reports a failed or
+  cancelled variant run as still queued.
+- **At `multi`, the models matrix, a provider's model list and the
+  capabilities pages no longer call a shared model or capability unused while
+  another org uses it** (§107 t-752). They counted only the entered org, so
+  from the install org the matrix offered to delete a model another org's
+  agents relied on.
+  - Their counts, "has agent" filters, sort and the matrix's delete-disabled
+    state now add other orgs' agents (the new fields under Added).
+  - So do the capability page's "used by" card and quarantine blast radius,
+    and the capabilities list's delete warning.
+  - On these pages other orgs' rows are counted with `groupBy`, never read.
+    With no org entered (an admin API key) nothing is the caller's, so every
+    agent is in the count.
+  - The workflow-pin check reads only workflows whose JSON could pin the
+    model, and the knowledge-tag check makes three queries instead of five.
+
+- **Backup import no longer overwrites a system workflow** (t-729). The
+  provider-model audit (`tpl-provider-model-audit`, `isSystem: true`) was
+  exported in every bundle and versioned over on import, so restoring an older
+  bundle republished its stale definition and could deactivate the workflow,
+  which PATCH refuses. The export now leaves system workflows out, as it does
+  system agents and capabilities. The import skips one by slug, using the new
+  `SYSTEM_WORKFLOW_SLUGS` / `isSystemWorkflowSlug()` in
+  `lib/orchestration/workflows/template-catalogue.ts`, or by an existing row's
+  `isSystem` flag, and reports the skip. A bundle exported before this fix
+  still carries the audit workflow; importing it reports the skip whether or
+  not the target has that row. A fork's own seeded system workflow is covered
+  by the row flag wherever the importing org can see the row (at `multi`, a
+  row in another org is invisible, and the import fails on the slug as any
+  cross-org slug collision does today). The export leaves out the
+  same two, so a bundle no longer carries a row the import would refuse.
+  **Cost:** an admin's own edits to a system workflow are no longer in the
+  backup, so a restore to a fresh install brings back the seed's version.
+  **If you restored an older bundle before this fix**, check that the
+  provider-model audit workflow is active and is not marked as a template,
+  since that restore could have changed either. PATCH accepts `isActive: true`,
+  so an inactive one can be re-activated through the API. It refuses any
+  template-status change on a system workflow, and the seed resets that only when
+  `010-model-auditor` or the audit template it hashes changes, so a wrongly-set flag needs a direct
+  database update.
+
+- **An org export at `multi` now holds the exported org's data** (t-735).
+  `exportOrgData()` read its sources as whichever org the caller was in. The
+  admin route's guard enters the admin's own active org, so exporting any
+  other org gave a bundle whose tenant sections were all empty, with no
+  error. With an admin API key, which enters no org, it threw. It now reads
+  every source inside `runAsOrg(orgId)`. Nothing changes at `single`.
+  The export also reads its sources one at a time now, not all 42 at once,
+  so at `multi` a large org's reads don't queue behind the connection pool
+  and time out. `eraseOrg()` needed no change. The two-org smoke now erases
+  an org holding knowledge documents, from inside another org and from no
+  org, and checks that afterwards no tenant-owned table holds a row carrying
+  that org (a cost row stays, with its org cleared, by design) (t-730).
+
+- **Save as template works at `multi` when another org holds the slug**
+  (t-728). `AiWorkflow.slug` is unique across the install, but the slug loop
+  in `POST /api/v1/admin/orchestration/workflows/:id/save-as-template` read
+  through the org's isolation policy. It called a slug free that another org
+  held, and the create was refused with a 400 "please try again" that could
+  never succeed. It now picks the slug with the new `findFreeWorkflowSlug()`
+  in `lib/orchestration/workflows/slug-availability.ts`, which checks every
+  org under the system scope and returns only the free slug. The slug is also
+  cut to 100 characters (`WORKFLOW_SLUG_MAX_LENGTH`), the cap the workflow
+  API validates against. A longer one was saved, and every later save from
+  the builder then failed validation. That could happen at `single` too,
+  for example by saving a template of a template. `isWorkflowSlugTaken()` in
+  the same module is for the backup importer, which still fails to import a
+  slug another org holds until t-738 moves it onto this check.
+
+- **Deleting global config at `multi` now counts every org's usage**
+  (t-731). Providers, provider models, knowledge tags and agent profiles are
+  shared by every org, but the in-use checks counted through the caller's
+  org only. So `DELETE /providers/:id?permanent=true`,
+  `DELETE /provider-models/:id` and `DELETE /knowledge/tags/:id` could remove
+  something another org's agents or workflows still used. An agent profile's
+  `agentCount` (list) and `detachedAgentCount` (delete) were short too. The
+  checks now go through the new `lib/orchestration/admin/global-config-usage.ts`
+  (`providerUsage`, `providerModelUsage`, `knowledgeTagUsage`,
+  `agentProfileUsage`, `knowledgeTagCounts`), which counts under the system
+  scope at `multi`. A refusal names only the caller's own rows. Other orgs'
+  usage is a count, in the new `otherOrgAgentCount` / `otherOrgWorkflowCount`
+  / `otherOrgDocumentCount` details fields and in the message. A forced tag
+  delete, which strips the tag from every org's documents, is now told how
+  many of them are another org's first. The read surfaces count every org
+  too:
+  - the tag list's `documentCount` / `agentCount`, so "unused" and the bulk
+    delete mean unused by any org;
+  - `GET /knowledge/tags/:id` and `GET /agent-profiles/:id`, which add
+    `otherOrgDocumentCount` / `otherOrgAgentCount` beside the caller's own
+    lists.
+
+  The tag-delete dialog, the tag drill-down, the model-delete dialog and the
+  profile edit form show those counts. The model check now also counts a
+  model pinned through a `supervisor` step, which it used to miss even at
+  `single`. Not yet moved: the provider-models matrix list and
+  `GET /providers/:id/models` still count the caller's org (t-751, which
+  also makes shared settings editable only from the install org). Nothing
+  else changes at `single`.
+
+- **`npm run test:changed:coverage` now holds each changed file to 80%, as
+  documented** (t-749). It passed `--coverage.thresholds.perFile=true`, which
+  vitest's CLI reads as the string `"true"`, so per-file mode never switched on
+  and the floor applied to the **average** of the changed files. A file at 75%
+  branches passed beside a well-covered one. It now passes the bare flag. The
+  self-test checks the parsed value with vitest's `parseCLI`, and an integration
+  test runs a real vitest over a thin file and a well-covered one. **Fork
+  note:** a PR whose changed files only cleared 80% on average now fails
+  `/pre-pr`, which is what the gate always claimed to do. The failure names the
+  file.
+
+### Security
+
+- **The Prisma CLI's `mysql2` is forced to `^3.23.1`** (t-781), for
+  GHSA-3f6p-5ww8-9rcr (high) and GHSA-rgwj-5xj2-c3m3 (medium). `prisma` 7.10 pins
+  `mysql2` to exactly 3.15.3 and only uses it to connect to a MySQL server, which
+  a Postgres install never does. The fix is a scoped `overrides` entry
+  (`prisma` → `mysql2`) in `package.json`, with its removal condition in
+  `overrideReasons`; a fork's own `mysql2` dependency is not affected. A fork
+  that keeps its own `overrides` should merge the entry rather than drop it.
+- **Client error reports and Sentry events no longer carry the page URL's
+  query string, fragment or credential-shaped path segments** (#952). The
+  global client error handler (`lib/errors/handler.ts`) sent
+  `window.location.href` as `extra.url`; it now sends the collapsed pathname
+  as **`extra.path`** (update any Sentry saved search or alert on `extra.url`),
+  and scrubs URLs in its context and in the error it reports.
+  `lib/errors/sentry.ts` registers a new `scrubSentryEvent` on Sentry's
+  global scope (client: `initErrorTracking()`; Node server: `instrumentation.ts`),
+  so error and transaction events, their breadcrumbs and stack frames are
+  scrubbed from then on without a fork change. **Forks with Sentry on should add
+  `beforeSendSpan: scrubSentrySpan`** to each `Sentry.init` (spans are
+  streamed past event processors in `@sentry/nextjs` 11), and
+  `beforeSend: scrubSentryEvent` to `instrumentation-client.ts` (the client
+  registration runs after hydration, so load-time errors would miss it) and
+  `sentry.edge.config.ts`. New helpers
+  `scrubUrl()`, `scrubUrlsInText()`, `scrubUrlsDeep()` and
+  `scrubUrlsInError()` live in `lib/logging/redact-path.ts`. See
+  [`sentry-setup.md`](./.context/monitoring/sentry-setup.md#page-urls).
+- **The `api-key` and `embed-token` rate-limit key strategies key on a
+  verified credential** (#701). Both built the bucket from the header value
+  as presented, so a caller could open a new bucket per request and the cap
+  never engaged. The middleware now looks the presented key or token up
+  (`lib/security/rate-limit-credentials.ts`, cached 60s per verified
+  credential) and keys on the stored row's id; a value that names no live
+  credential gets the IP bucket. Lookups of unverified values are capped by a
+  separate per-IP lookup budget (30/min). The proxy now parses
+  `Authorization` exactly as the routes do (case-sensitive `Bearer `). A
+  fork rule using either strategy (via `registerRateLimitRule()`) gets the
+  same behaviour, and the identifier segment changes from the raw value to
+  `key:sk:<id>` / `key:mcp:<id>` / `embed:<id>:<ip>`. The embed chat
+  stream's per-flow `embedChatLimiter` now runs after the token is resolved
+  and keys on the visitor id derived from the token row, not the raw header.
+  `API_KEY_PREFIX` (`lib/auth/api-keys.ts`) and `MCP_API_KEY_PREFIX`
+  (`lib/orchestration/mcp/auth.ts`) are exported.
+
+- **`send_message_to_channel` sends only within the conversation being
+  handled** (t-770). It sent on whatever `conversationId` its caller passed, so
+  a model steered by the person chatting, by an inbound message or by content
+  an MCP client was reading, or the starter of a workflow run (a model calling
+  `run_workflow` included), could have the operator's number message anyone
+  who had ever written to it, given that conversation's id. Now a workflow
+  step, fixed (`tool_call`) or AI-driven (`agent_call`, the orchestrator),
+  sends only on its run's new **`AiWorkflowExecution.replyConversationId`**
+  (migration `20261006140000_execution_reply_conversation`, `onDelete:
+  SetNull`), which the inbound route sets and the rerun route copies through
+  the new `ExecuteOptions.replyConversationId` only when the admin asks, with
+  the new `resendReply` (the re-run dialog's "Send the reply to the person
+  again" checkbox), and only for a finished original, so a re-run never texts
+  a real person on its own; an interactive chat only on
+  its own conversation; an MCP client never. Anything else is refused with
+  `conversation_not_permitted`, and logged, before the conversation is read.
+  **For an operator:** a workflow that texted a thread other than the one it
+  replies on (reminders, outreach), or an MCP client that sent outbound
+  messages, now gets that refusal; deliberate outreach is not supported yet.
+  **For a fork:** pass `replyConversationId` to `engine.execute()` only for a
+  conversation the run is genuinely replying on, never one from a request or a
+  model; it is what authorises the run to message that conversation.
+- **Route log lines no longer carry a credential or an email from the
+  request URL** (#685). The logger redacts by key name only, and the request
+  context bound to every line a route logs held the URL verbatim, so a token
+  in a path (`/api/v1/x/<token>`), or a token or searched-for email in a query
+  string, reached stdout and the admin log buffer whatever the route's own
+  log fields said.
+  - **Breaking: `url` is removed** from what `getRequestContext()`,
+    `getFullContext()` and `getRouteLogger()` bind. A fork that read or
+    parsed `context.url` in its logs should use `endpoint` and `method`, and
+    log any query parameter it needs explicitly.
+  - `endpoint` (`getEndpointPath()`) now collapses id- and credential-shaped
+    path segments to `[param]`: UUIDs, cuids, email addresses, JWTs, and 20+
+    character hex, base64 or percent-encoded tokens; readable slugs stay
+    (`collapseDynamicSegments()` / `loggablePath()` in
+    `lib/logging/redact-path.ts`). Dashboards grouping on a resolved
+    `endpoint` will see the collapsed form.
+  - New: `getRouteLogger(request, { endpoint })` pins a route pattern,
+    logged verbatim, for a dynamic segment the heuristic cannot recognise (a
+    short token, a dotted or one-case secret).
+    `DELETE /api/v1/admin/invitations/[email]` uses it.
+  - The other server-side lines that logged a request path collapse it the same way:
+    the proxy's `http_access` line (`LOG_HTTP_ACCESS=true`), which covers page
+    routes such as a `/s/<token>` share link; the auth guards' `path` on
+    their refusal and ownership lines; the auth catch-all's `authPath`
+    (better-auth's `/reset-password/<token>`); and the rate-limit
+    middleware's unknown-tier warning.
+
+- **Outbound webhook and document URLs are no longer logged verbatim**
+  (#953). Hook and webhook-subscription deliveries, the escalation webhook,
+  the webhook create and test routes, the notification step and
+  knowledge-base URL fetches logged the target URL as configured, so a
+  credential carried in it (a Slack or Discord webhook path, a signed URL's
+  query, userinfo) reached stdout and the admin log buffer. They now log
+  `loggableUrl()` (new in `lib/logging/redact-path.ts`): origin plus the
+  collapsed path, with userinfo, query and fragment dropped, and
+  `[non-http-url]` for any other scheme. `describeFetchFailure()`
+  (`lib/errors/fetch-error.ts`) now reduces any URL quoted in the error it
+  describes, so a delivery's `error` field and stored `lastError` no longer
+  carry one either, and a knowledge-base fetch error reaches the route's error
+  log reduced. The outbound HTTP client's `HTTP request: sending` line
+  collapses its `path`, and its `host_not_allowed` error, which reaches the
+  model, carries the reduced URL. A path secret the
+  `collapseDynamicSegments()` heuristic does not recognise (under 20
+  characters, or containing `:`) is still kept.
+  **Not covered:** the execution trace still shows a step's configured URL,
+  in its `input` and in a `send_notification` step's `output.url`, as the
+  workflow definition does; `output.url` keeps the working URL because later
+  steps and resumed runs read it.
+
+- **The logger redacts camelCase and kebab-case keys** (#951). Key matching
+  lower-cased a key before looking for word boundaries, which erased the
+  camelCase boundary, so `userPassword`, `accessToken`, `clientSecret`,
+  `userEmail` and similar keys were written in the clear while `password` and
+  `user_email` were redacted. Keys are now split into words at every
+  non-letter and at camelCase and acronym boundaries, and a pattern matches a
+  run of consecutive words; every key redacted before is still redacted.
+  Production log fields that change from clear text to `[REDACTED]` /
+  `[PII REDACTED]`:
+  - the sign-up hook's `userEmail`, the OAuth invitation-mismatch line's
+    `invitationEmail` and `oauthEmail`, and the invitation-delete route's
+    `deletedByEmail`;
+  - `sendEmail`'s recipients, now logged as `recipientEmail` instead of `to`
+    on every send line, so invitation, contact and welcome mail no longer log
+    the address in production;
+  - `clientIP` on the inbound signature-failure and verification-handshake
+    lines and the webhook-trigger execution line (IP is in the PII list; set
+    `LOG_SANITIZE_PII=false` to keep it);
+  - PostHog's debug `apiKeyPrefix`, and `apiKeyEnvVar` in the May 2026
+    provider migration scripts' skip warnings.
+
+- **`csvEscape` quotes a lone CR, so free text can no longer start a CSV
+  record of its own** (#768). It quoted on comma, quote and LF only; a CR after
+  the first character was emitted bare, a spreadsheet read it as a record break,
+  and the text after it opened a new cell past the leading-trigger prefix. Both
+  admin exports that use it are fixed for every free-text column:
+  `/conversations/export` (message content, conversation title) and
+  `/approvals/history` (notes, reason, workflow name, step label, approver
+  name). A fork that wrapped `csvEscape` to quote CR can drop the wrapper.
+
+- **A data export no longer hands the subject another person's contact-form
+  messages** (#766). `exportUserData()` matched `ContactSubmission` with
+  `mode: 'insensitive'`, which Prisma compiles to an unescaped `ILIKE`, so `_`
+  or `%` in the subject's address matched other people's rows. It now matches
+  exactly on the address trimmed and lower-cased, which is how the contact route
+  stores it. A fork that copied the old `collectAppSubjectData()` example from
+  `.context/privacy/data-export.md` into `lib/app/data-export.ts`, or used the
+  same match anywhere else keyed by email, should change it the same way.
+
+- **Erasing an account now deletes the contact-form messages sent from its
+  address, and both erasure and export attribute those messages only to a
+  verified address** (t-767). `ContactSubmission` has no FK to `User`, so the
+  erasure cascade never reached it: `eraseUser()` reported success and left the
+  person's name, address and messages behind, while the export already treated
+  those rows as theirs. They are now deleted inside the erasure transaction,
+  matched exactly on the account's stored address, trimmed and lower-cased,
+  through `contactSubmissionsOf()`, the matcher the export also uses. The
+  contact form proves nothing about who typed an address, so an account whose
+  `emailVerified` is false now matches none of them: its erasure leaves them,
+  and **its export no longer includes them** (it previously did, so with email
+  verification off an account opened under someone else's address received
+  their enquiries). Where verification is required (the production default)
+  this affects only sign-ups that never verified; when one leaves messages
+  behind, erasure logs a warning with the count so an operator can handle them
+  by hand. A fork with its own table keyed by email needs the same step in an
+  erasure hook's `scrubInTransaction`, and the same verified-only
+  rule if a public form fills it; `.context/privacy/data-erasure.md` shows how.
+
+- **The email-preview server's copy of Next is no longer in the `next/og`
+  remote-code-execution range** (t-758). `@react-email/ui` (dev-only) pins
+  `next` 16.3.3; a scoped `overrides` entry makes it use the app's own `next`,
+  with its removal condition in `overrideReasons`. engine.io, undici,
+  brace-expansion and fast-uri move to fixed versions in range. The highs
+  `npm audit` still reports are pre-existing: Prisma 7.10's CLI pins
+  `deepmerge-ts`, and `braces` (lint-only) has no fixed release. Prisma's
+  `mysql2` pin is overridden by t-781, above.
+
+## [0.13.0] — 2026-09-24
+
+> **Alpha release.** Nineteenth tagged Sunrise release. **MINOR bump**. It
+> carries three multi-tenancy features: org identity (§106), row and namespace
+> isolation (§107), and tenant-aware jobs and caches (§108). It also removes the
+> stateful MCP transport. Measured against `v0.12.1`: 20 PRs merged, no direct
+> commits, two issues closed; the suite is 1,220 files and 24,767 tests.
+>
+> **`TENANCY_MODE=single` stays the default, and every tenancy entry below
+> states its single-mode behaviour.** `multi` can now be switched on end to end;
+> [`multi-tenancy.md`](./.context/architecture/multi-tenancy.md#enabling-it-end-to-end)
+> gives the steps. The rest of the phase has not landed, so read
+> [what you do not yet get](./.context/architecture/multi-tenancy.md#what-you-get-at-multi-and-what-you-do-not-yet)
+> before turning it on. The system agents, for one, are still the install
+> org's rows.
+>
+> ## What a fork has to do: merge it in two stages
+>
+> Six migrations. One of them, `20260919200000_tenant_owned_org_id`, adds
+> `orgId` to 38 tables and backfills every existing row: 38 `UPDATE`s and 38
+> new indexes. That rewrite is the one to schedule on a large database. To
+> apply the identity half first, **merge in two stages, deploying each**.
+> Staging is recommended, not required; a fork with small tables can take the
+> tag in one merge.
+>
+> **Stage 1: merge commit `7d511506`** (#815, the end of §106). Name the SHA,
+> not a branch. Make it a **merge commit, never a squash**. Then run `prisma
+> migrate deploy` and deploy before starting stage 2. If you merge twice and
+> deploy once, every migration runs together and the staging buys nothing.
+> At this commit `lib/sunrise-version.ts` still reads `0.12.1`, which is an
+> ancestor, so the fork-sync ancestry check passes. Stage 1 is the **§106
+> entries below**. They carry these things to act on:
+>
+> - **Two migrations:** `20260917120000_org_identity` (the `Org` and
+>   `OrgMembership` tables, the install org, a membership for every user,
+>   nullable `orgId` on the four credential tables, and
+>   `Session.activeOrgId`, which is also a better-auth session
+>   `additionalField` now) and
+>   `20260918120000_credential_org_backfill`. The second re-runs the first's
+>   backfill; on a fork, where both run in one deploy, it updates nothing.
+> - **A new seam row**, `lib/app/tenant-resolver.ts`, in
+>   `tests/unit/lib/app/defaults.test.ts`. It ships empty.
+> - **Docblock-only edits to `lib/app/authorization.ts`.** A fork that filled
+>   that file keeps its code and takes the comment. If your policy compares
+>   `resource.orgId === viewer.orgId`, guard the resource side: two
+>   `undefined`s compare equal.
+> - **Type changes a build finds:** `EmbedContext` and `McpAuthContext` require
+>   `orgId`.
+> - **One change a build does NOT find:** `runInvitedSignup` takes the
+>   invitation as a second argument, and that argument defaults to `null`. So
+>   a fork's own call with one argument still compiles and still passes the
+>   `invite_only` gate. But the new user's org membership is then decided
+>   without the invitation. An invited platform admin joins the install org as
+>   `MEMBER`, not `OWNER`. An invitation naming another org is ignored. Pass
+>   the invitation metadata at every call site you own.
+> - **Test changes:** the role-literal guard now also polices `'OWNER'` and
+>   `'MEMBER'`. `org-sources.test.ts` fails on any model of yours that carries
+>   `orgId` until it has a disposition in `lib/privacy/org-sources.ts`.
+> - **A dependency move:** `@better-auth/core` moves to `dependencies` at the
+>   same pin.
+>
+> **Stage 2: merge `v0.13.0`.** It brings the other four migrations:
+>
+> - `tenant_owned_org_id`, the backfill above;
+> - `org_isolation_policies`, which creates the RLS policies but does **not**
+>   enable them;
+> - `org_scoped_slugs`;
+> - `remove_mcp_max_sessions_per_key`.
+>
+> And these, each of which announces itself:
+>
+> 1. **Three new always-run tests name your models.**
+>    `model-classification.test.ts` fails on any model that neither carries
+>    `orgId` nor sits on an allowlist. `policy-coverage.test.ts` fails on a
+>    tenant-owned table without its `org_isolation` policy.
+>    `org-scoped-slugs.test.ts` fails on a tenant-owned slug that is still a
+>    global `@unique`. The fix for each is in the §107 entries; never delete
+>    an allowlist row to pass.
+> 2. **`where: { slug }` on `AiAgent`, `AiKnowledgeBase` or
+>    `AiKnowledgeDocument` no longer type-checks.** Use `findFirst` inside an
+>    org context, or `orgId_slug`.
+> 3. **`prisma` is a `TenancyClient`.** Only a parameter annotated exactly
+>    `PrismaClient` needs changing.
+> 4. **The stateful MCP transport is gone.** The table under _Removed_ lists
+>    every symbol, route and env var. `PATCH …/mcp/settings` is now strict: a
+>    body carrying `maxSessionsPerKey`, or any unknown key, gets a 400.
+> 5. **Retention's exported shapes moved.** `RetentionResult` and
+>    `RetentionWindows` lose their audit-log fields.
+>    `POST …/maintenance/tick` gains a ninth `backgroundTasks` name,
+>    `auditLogRetention`.
+> 6. **A test that mocks `@/lib/admin/logs`** must now return
+>    `registerLogTenancy`.
+> 7. **A docblock-only edit to `lib/app/db-drift.ts`**, handled the same way
+>    as the `authorization.ts` edit in stage 1.
+> 8. **Process-global state is now declared.** A fork that adds a module-level
+>    cache to a platform file under `lib/` meets the
+>    `lib/tenancy/process-state.ts` scanner test.
+>
+> Three new optional env vars, all needed only to enable `multi`:
+> `MIGRATE_DATABASE_URL`, plus `TENANCY_APP_ROLE_PASSWORD` and
+> `TENANCY_APP_ROLE` (defaults to `sunrise_app`) for `db:tenancy:role`. Delete `MCP_SESSION_MODE`
+> wherever you set it.
+>
+> **Two behaviour changes at `single`, both corrections.**
+> `AiApiKey.lastUsedAt` is now written; it had been `NULL` for every key. And
+> `POST /api/v1/user/api-keys` refuses an `admin` key asked for while acting
+> in any org but the install org.
+>
+> **Read the MCP entry under _Security_ even though the code is gone.** A fork
+> still on 0.12.x that runs `MCP_SESSION_MODE=stateful` is exposed to a
+> cross-key SSE hijack; the default (`stateless`) never was.
+
+### Added
+
+- **`runDetached(fn)` on `lib/tenancy/context.ts`** (multi-tenancy §108 t-715)
+  — runs `fn` outside every tenant scope, for arming something whose lifetime
+  is the **process's** from inside a request. An `AsyncLocalStorage` store is
+  captured when `setInterval` is called, so a repeating timer armed inside
+  `runAsOrg` carries that org for the life of the process: every line it logs
+  is attributed to whichever org made the first request after boot, and at
+  `multi` every query it makes is scoped to them. It has **no caller in the
+  platform**: the one it was written for, `McpSessionManager`'s eviction sweep,
+  went with the stateful MCP transport later in this same release (see
+  `Removed`). It ships anyway, because the rule is the asset and the alternatives
+  at a call site are both wrong — `runAsSystem` (an audited database bypass) or a
+  re-derived `AsyncLocalStorage.exit`. **Use it only where the timer's
+  work belongs to the process rather than to one org** — a timer belonging to
+  one org's work (a lease heartbeat, a delivery retry, a `fetch` abort) must
+  KEEP the context it was armed in, because its callback writes that org's rows.
+  "Outlives the request" is not the test: a delivery retry does, and it still
+  belongs to the org that armed it. Nor is this `runAsSystem`, which logs a
+  reason on every entry and is the audited database bypass — a claim about what
+  the code may read that arming a timer is not making.
+- **`registerLogTenancy(bridge)` and the `LogTenancy` type on
+  `lib/admin/logs.ts`** (multi-tenancy §108 t-714) — how the admin log buffer
+  learns which org a line was produced in, and whether the install runs more
+  than one. `lib/tenancy/context.ts` registers it at module scope; nothing else
+  needs to call it. It exists as a registration rather than an import because
+  `lib/admin/logs.ts` must reach no other module at runtime: the logger pulls
+  it in with a literal `require` and is itself imported by client components,
+  so an import here puts `lib/db/client.ts` — and `pg` — in the browser
+  bundle. **Forks:** a test that does `vi.mock('@/lib/admin/logs', …)` must now
+  return `registerLogTenancy`, or importing anything that loads the tenancy
+  module throws.
+- **Each org can set its own retention windows** (multi-tenancy §108 t-713).
+  `PATCH /api/v1/admin/orgs/[id]` takes
+  `settings: { retention: { … } }` — the five windows the tenant retention
+  sweep reads (`webhookRetentionDays`, `webhookDlqRetentionDays`,
+  `costLogRetentionDays`, `executionRetentionDays`, `evaluationRetentionDays`),
+  each optional and nullable, stored on `Org.settings`. A key omitted inherits
+  the global `AiOrchestrationSettings` window; `null` carries whatever `null`
+  means for that column globally (keep forever, except
+  `webhookDlqRetentionDays`, whose existing fallback is "use
+  `webhookRetentionDays`"); `{ "retention": null }` or `{}` removes the slice.
+  A slice is stored and returned in both tenancy modes but **applied at
+  `multi` only** — no prune carries an `orgId`, so at `single`, where there are
+  no policies, one org's window would reach every org's rows. The write refuses
+  a slice whose **effective** cost-log window is shorter than the execution
+  window it would inherit, `executionRetentionDays: null` included: executions
+  kept for ever outlive every finite cost-log window, so keeping them needs
+  `costLogRetentionDays: null` with it. The write replaces
+  the `retention` key and preserves every other key in `settings`, which is a
+  fork's. `auditLogRetentionDays` is deliberately not settable: it prunes a
+  system table with no org. Both objects are strict, and an org's slice is
+  refused when the cost-log window it sets undercuts the execution window it
+  would inherit. Platform admin only until the org console (§111). Two new
+  modules — `lib/tenancy/org-settings.ts` (the slice: its schema, the
+  per-key read and the write-merge) and
+  `lib/orchestration/retention-windows.ts` (`loadRetentionWindows`, the new
+  `loadEffectiveRetentionWindows()`, `readRetentionWindows()` and
+  `RETENTION_WINDOW_KEYS`, moved out of `lib/orchestration/retention.ts`,
+  which re-exports them). `readRetentionWindows()` is `loadRetentionWindows()`
+  without the swallow-on-error, for callers that must not read "I could not
+  look" as "there is nothing to check". See
+  `.context/orchestration/retention.md`.
+- **A fork's recurring job declares whose rows it acts on** (multi-tenancy
+  §108 t-711). `AppJob` (`lib/orchestration/maintenance/app-jobs.ts`, the
+  `registerAppJob` seam) gains an optional `scope?: JobScope` —
+  `'per-org' | { system: string }`, the type re-exported from the same
+  module, with `DEFAULT_APP_JOB_SCOPE = 'per-org'`. A per-org job runs once
+  per active org inside that org's tenant context (its Prisma calls see and
+  stamp that org's rows only; at `multi` the row-level policies enforce it);
+  a system job runs once under the audited bypass with the stated reason
+  logged. Additive: a registration with no `scope` is per-org, which on a
+  single-tenant install is the install org — today's behaviour, now
+  explicit. `lib/app/jobs.ts` is unchanged.
+- **A CI job drives the platform as two orgs and proves neither can see the
+  other** (multi-tenancy §107 t-709). `smoke-multi` in `ci.yml` runs the
+  operator's sequence on a fresh pgvector container — migrate and seed as
+  the owner, `db:tenancy:role --create`, `db:tenancy:enable`, the drift
+  check at `TENANCY_MODE=multi` as the restricted role (93 probes) — then
+  the new `npm run smoke:tenancy-isolation`
+  (`scripts/smoke/tenancy-isolation.ts`, throwaway databases only) as that
+  role: two orgs with equivalent rows, and as one org every read path —
+  vector search, cost reports, conversation semantic search, the message
+  embedder's raw `INSERT`, relation reach from a global root, `forEachOrg`,
+  the credential resolvers and the inbound route called as nobody — answers
+  its own rows and none of the other's. `smoke:tenancy` now also asserts at
+  `single` that RLS is neither enabled nor forced on any tenant-owned table.
+  New on `lib/tenancy/context.ts`: **`runAsCredentialLookup(credential, fn)`**
+  — the null-org system scope for the one read that learns which org a
+  credential belongs to, logged at debug; `resolveApiKey`,
+  `resolveEmbedToken` and `authenticateMcpRequest` run their lookup (and the
+  `lastUsedAt` touch) inside it, which closes the known gap where every
+  credential-authenticated request threw at `multi`, and the inbound and
+  approval routes use it in place of `runAsSystem`. One behaviour change
+  rides along: `AiApiKey.lastUsedAt` is now actually written on every
+  `sk_` request — the previous `void prisma.aiApiKey.update(…)` never ran,
+  a `PrismaPromise` being lazy until awaited, so the column has been `NULL`
+  for every key since it was added; a failed touch is logged at warn. The conversation
+  semantic-search SQL moved from the admin route into
+  `lib/orchestration/chat/conversation-semantic-search.ts`
+  (`searchConversationEmbeddings`) so the harness drives the statement
+  itself; the route's behaviour is unchanged.
+
+- **Isolation policies ship dormant with the schema, and one command turns
+  them on or off** (multi-tenancy §107, the database half of row isolation).
+  One raw-SQL migration, `20260920120000_org_isolation_policies`, creates an
+  `org_isolation` policy on every tenant-owned table (42) — `USING` and
+  `WITH CHECK` both `"orgId" = NULLIF(current_setting('app.current_org',
+  true), '')` behind the bypass arm `current_setting('app.bypass_rls', true) =
+  'on'` — **without** enabling RLS, so a `migrate deploy` carries them while a
+  single-tenant install pays nothing. New commands: `npm run
+  db:tenancy:enable` (refuses if any table lacks its policy; backfills `NULL`
+  `orgId` to the install org — a platform `admin` API key excepted, its `NULL`
+  being the point, and `AiCostLog` skipped, a detached row being no org's — then `ENABLE` + `FORCE ROW LEVEL SECURITY` on every
+  tenant-owned table — derived from the generated client, no list) and `db:tenancy:disable` (`DISABLE` +
+  `NO FORCE`, both flags), each idempotent by reading `pg_class` and
+  refusing to report success until the flags read back; `npm run
+  db:tenancy:role -- --create|--drop` for the required `LOGIN NOBYPASSRLS`
+  app role (`TENANCY_APP_ROLE`, password only via
+  `TENANCY_APP_ROLE_PASSWORD`, sent as a locally computed SCRAM-SHA-256
+  verifier) with its grants and default privileges — nothing on
+  `_prisma_migrations` — refusing to touch a superuser, a `BYPASSRLS` role,
+  a table owner or the connecting role, and revoking before dropping (Neon
+  refuses `DROP OWNED BY`). `prisma/seed.ts` prefers the same owner DSN and
+  now runs through the tenancy chokepoint as the install org (`SeedContext.prisma`
+  is the extended client), so every seeded tenant-owned row is stamped;
+  the raw `INSERT`s that write tenant-owned rows (message embeddings,
+  knowledge chunks from the seeder, the document manager and the two dev
+  scripts) read `orgId` off the parent row in the same statement. A blank
+  `MIGRATE_DATABASE_URL` is unset in every reader, `lib/env.ts` included. New optional env
+  var **`MIGRATE_DATABASE_URL`** — the owner DSN `prisma.config.ts` and the
+  `db:tenancy:*` scripts prefer over `DATABASE_URL`, because a table's owner
+  (and any `BYPASSRLS` role, Neon's `neondb_owner` included) is never
+  subject to the policies. `npm run db:drift-check` gains a derived T-series:
+  `tenancyDriftProbes()` (new export on `lib/db/drift-probes.ts`) yields one
+  `policyExists` probe per tenant-owned table always and an
+  enabled-and-forced probe per table at `TENANCY_MODE=multi` (9 + 42 probes
+  at `single`, 9 + 84 at `multi`); the script now runs under `runAsSystem`.
+  New `lib/tenancy/isolation.ts` (side-effect-free): `orgIsolationPolicySql`,
+  `planRlsSwitch`, `runTenancySwitch`. **Fork note:** a new
+  `tests/unit/lib/tenancy/policy-coverage.test.ts` fails naming any
+  tenant-owned table — yours included — without exactly one `org_isolation`
+  policy in the migrations (append `orgIsolationPolicySql('<table>')` to a new
+  migration), and any non-tenant table carrying one. Behaviour at
+  `TENANCY_MODE=single` is unchanged: the policies are inert until enabled.
+  Docs: new `.context/tenancy/isolation.md`.
+- **Every tenant-owned row knows its org** (multi-tenancy §107, first
+  schema task). One migration, `20260919200000_tenant_owned_org_id`, adds a
+  nullable `orgId` + `org Org? @relation(onDelete: Cascade)` (`SetNull` on
+  `AiCostLog`, a billing record) + `@@index` to
+  the 38 tenant-owned published models that did not yet carry one — every
+  agent, conversation, message, knowledge, workflow, evaluation, experiment,
+  webhook and cost row, child tables included (no join-based policies; the
+  column is what everything derives from) — and backfills every existing row
+  to the install org. `NOT NULL` is a later staged migration. `Org` gains a
+  back-relation per model. New `lib/tenancy/classification.ts`:
+  `SYSTEM_MODELS`, `GLOBAL_CONFIG_MODELS`, `classifyModels()` and
+  `tenantOwnedModels(prisma)` (model → table, derived from the client it is
+  given at runtime — the roster the row-isolation policies, drift probes and
+  enable script will read). Every one of the 38 has a disposition in
+  `lib/privacy/org-sources.ts` (36 `export` — withholding the signing secrets on
+  `AiWebhookSubscription` and `AiWorkflowTrigger`, an execution's `leaseToken`,
+  and an event hook's secret and custom header values via `toSafeHook`;
+  `AiMessageEmbedding` and `AiWorkflowExecutionLeaseEvent` excluded with
+  reasons), so an org export now carries 42 sections. **Fork note:** a new
+  `tests/unit/lib/tenancy/model-classification.test.ts` fails by name on any
+  model — yours included — that neither carries `orgId` nor sits on an
+  allowlist; add the column (the shape is in
+  `.context/tenancy/identity.md`) or classify it deliberately, never by
+  deleting from an allowlist. Behaviour at `TENANCY_MODE=single` is
+  unchanged. The data-layer chokepoint (under _Changed_) stamps the column
+  on every create; a row created between this migration and that stamping
+  carries `NULL`, which the org export treats as the install org's at
+  `single` and strictly at `multi`, where `db:tenancy:enable` will backfill
+  before enforcing.
+- **Every install has an org, and every user belongs to one** (multi-tenancy
+  §106, first task). Two published model interfaces in a new
+  `prisma/schema/tenancy.prisma`: `Org` (`slug`, `name`, `status`
+  `ACTIVE|SUSPENDED`, `settings`) and `OrgMembership` (`role`
+  `OWNER|ADMIN|MEMBER`, unique on `(orgId, userId)`, both FKs cascade), with
+  the client-safe vocabulary in `lib/tenancy/roles.ts` (`ORG_ROLES`,
+  `orgAdministers()`) and the install org's fixed identity in
+  `lib/tenancy/constants.ts` (`INSTALL_ORG_ID`). One migration,
+  `20260917120000_org_identity`, creates the tables, inserts the install org,
+  makes every existing user a member — a real platform admin as `OWNER`,
+  everyone else (the SERVICE config-owner included) as `MEMBER` — and adds a
+  nullable, backfilled `orgId` to `AiApiKey`, `AiAgentEmbedToken`,
+  `AiAgentInviteToken` and `McpApiKey` (an `admin`-scoped API key stays
+  `NULL`: it is a platform credential) plus `Session.activeOrgId`, wired by
+  the next bullet.
+  `userCreateAfterHook` gives every later user a membership (non-blocking,
+  logged at error on failure; the session path self-heals it in t-670), and
+  the `001-system-owner` seed gives the config-owner one on a fresh install.
+  `OrgMembership` is an `export` source and `Org` an `attribution` source in
+  `SUBJECT_DATA_SOURCES`; `npm run smoke:tenancy` proves the invariant against
+  a real database. Behaviour at `TENANCY_MODE=single` is unchanged (the
+  third bullet below says how the guards and the policy read these rows
+  without changing a single-tenant answer). Fork note: the role-literal guard
+  (`tests/unit/auth-role-literals.test.ts`) now also polices `'OWNER'` /
+  `'MEMBER'` outside `lib/tenancy/roles.ts`; the org-role enum is closed —
+  product tiers belong beneath the org, on your side of the FK. Guide:
+  [`.context/tenancy/identity.md`](./.context/tenancy/identity.md).
+- **A session knows which org it acts in, a user can switch between theirs,
+  and an invitation can name one** (multi-tenancy §106, second task).
+  `Session.activeOrgId` is now a better-auth session `additionalField`
+  (`input: false` — server-written only; the public `/update-session`
+  refuses it) chosen by a new `sessionCreateBeforeHook` at every sign-in: the
+  user's only org, else the install org if they belong to it, else the most
+  recently joined — and a user with **no membership at all** is given the
+  install-org default right there (the self-heal t-669 promised). It reaches
+  `AuthSession.session` (`lib/auth/guards.ts`, optional so hand-built
+  sessions still compile), the inferred server type, and `useSession()` on the
+  client. New endpoint `POST /api/v1/orgs/switch` `{ orgId }` (`API.ORGS.SWITCH`)
+  verifies membership, writes the row and re-issues the cookie cache; API-key
+  callers are refused. `invitationMetadataSchema` gains optional `orgId` /
+  `orgRole` and `POST /api/v1/users/invite` accepts both (the org must exist
+  and be active; the authorization policy is asked `canAdminister` about it —
+  platform admins only today, since `withAdminAuth` admits nobody else). The membership a new user
+  gets is one function, `membershipForNewUser(user, invitation)` in
+  `lib/tenancy/membership.ts`: the install org by the role rule on the role
+  the invitation **grants** (so an invited platform ADMIN now owns the install
+  org — the gap t-669 documented), or the named org with its `orgRole`, where
+  **the first member of a new org is its `OWNER`**. `runInvitedSignup` takes
+  the invitation as a second argument. `@better-auth/core` moves from
+  devDependencies to dependencies (same exact pin): the hooks share the
+  membership through its request state (`lib/auth/pending-signup.ts`).
+  Behaviour at `TENANCY_MODE=single` is unchanged: with one org and no
+  invitation metadata every session flow writes the same rows plus one
+  populated column, and every pending invitation round-trips as before.
+- **A request knows which org it is acting for, and the admin decision can
+  read it** (multi-tenancy §106, third task — the gating PR for the phase).
+  Three additions to the public surface:
+  - **The tenant context** — `lib/tenancy/context.ts`: `getTenantContext()`,
+    `requireTenantContext()` (throws at `multi` when nothing entered a
+    context; answers the install org, marked `implicit`, at `single`),
+    `runAsOrg(orgId, fn)`, `runAsSystem(reason, fn)` (logged) and
+    `forEachOrg(fn)` (one scope per active org, sequential; uncalled in core
+    until §108). Both guards enter it for every request they admit — from
+    `session.activeOrgId`, the API key's org, or the resolver header below —
+    verifying membership and org status wherever a non-install org is named
+    (a refusal is a 403 that names nothing), and run the handler inside it.
+    The guard-less webhook trigger enters its key's org the same way. An
+    `admin`-scoped key is a platform credential and enters none.
+    `getRequestContext()` / `getFullContext()` now carry `orgId` (a new
+    `LogContext` field) inside a scope.
+  - **A new fork seam**, `lib/app/tenant-resolver.ts` →
+    `registerAppTenantResolver()`, wired by `proxy.ts` at module scope, and a
+    new request-header contract: the proxy writes `x-sunrise-org` from the
+    fork's resolver (`registerTenantResolver()` in `lib/tenancy/resolver.ts`,
+    Web-standard only) and **strips any inbound copy** when there is no
+    answer — the proxy is the header's sole writer, the visitor-id shape.
+    Ships empty; `defaults.test.ts` and `fork-init-seams.test.ts` (registrar
+    count 3→4, `proxy.ts` a consumer) enforce it.
+  - **The policy reads the org.** `AuthorizationPrincipal` gains `orgId?` /
+    `orgRole?` (filled by the guard — told, not sniffed) and the guards pass
+    `{ org }` as `scope`. `DEFAULT_AUTHORIZATION_POLICY.canAdminister` grants
+    an org `OWNER`/`ADMIN` a resource that carries **their** org, and
+    `canRead`'s `'unattributed'` arm admits them to the `this-row` of one —
+    answered before the once-per-kind diagnostic. A `null` resource, or one
+    without an `orgId`, still grants nothing (platform-ops surfaces stay
+    platform-only); the capability question stays platform-only until §107
+    scopes ownerless reads by org. `resolveApiKey()` returns the key's
+    `orgId` and `ownerAccountType` (optional in the type — a test double
+    built before the org axis still compiles).
+
+  Behaviour at `TENANCY_MODE=single` is unchanged, by construction and by
+  sweep: the install org is entered with **no membership read** (its role is
+  the platform role projected by the same rule the migration and the signup
+  hook apply), no core route that predates the next bullet names an
+  org-carrying resource so the org arm cannot fire on any of them, and
+  `authorization-org.test.ts` asserts every principal × every question those
+  routes can ask answers identically with and without org facts, on both
+  policies. Fork note: a policy that compares `resource.orgId ===
+  viewer.orgId` must guard the resource side — both `undefined` compares
+  equal. Guide: [`.context/tenancy/context.md`](./.context/tenancy/context.md).
+- **An org can be created, suspended, exported and erased, and its members
+  managed, without touching its members' other orgs** (multi-tenancy §106,
+  fourth task). Two documented API surfaces and two privacy entry points:
+  - **The org API** ([`.context/api/org-endpoints.md`](./.context/api/org-endpoints.md)).
+    Member view, `withAuth`: `GET /api/v1/orgs` (my memberships, marks the
+    active one; like the switch it does **not** enter the session's org, so a
+    member of a suspended org can still find the way out), `GET
+    /api/v1/orgs/[id]` (any member), `GET/POST /api/v1/orgs/[id]/members` and
+    `PATCH/DELETE /api/v1/orgs/[id]/members/[userId]` — admitted by the
+    policy's org arm (the org's own `OWNER`/`ADMIN` **while acting in it**, or
+    a platform admin; no role check in the routes), mutations browser-session
+    only. Platform view, `withAdminAuth`: `GET/POST /api/v1/admin/orgs`,
+    `GET/PATCH/DELETE /api/v1/admin/orgs/[id]` (rename, re-slug, suspend,
+    reinstate; erase), `GET /api/v1/admin/orgs/[id]/export`. Constants under
+    `API.ORGS` / `API.ADMIN`. The rules live once, in `lib/tenancy/lifecycle.ts`,
+    and every refusal carries a `code`: the install org can be renamed but
+    never suspended, re-slugged or deleted (`INSTALL_ORG_IMMUTABLE`); an org
+    keeps at least one `OWNER` (`LAST_OWNER`); only an OWNER — or a platform
+    admin — may grant `OWNER`, change an OWNER's role or remove an OWNER
+    (`OWNER_STANDING`, so an ADMIN cannot take the org from their appointer);
+    the install org's memberships follow the platform role and cannot be
+    edited or removed through the members API (`INSTALL_ORG_MEMBERSHIP`);
+    removing a member revokes their sessions acting in that org
+    (`revokeUserSessions` gains an optional `activeOrgId` filter) and keeps
+    the rest.
+  - **The org arm is a session grant.** `DEFAULT_AUTHORIZATION_POLICY`'s
+    org arm now refuses an `api-key` principal outright (t-671 admitted a
+    key by the org role the entry projected onto it — at `single` that is
+    the key OWNER's platform role, so a `chat` key minted by a platform admin
+    would have read the install org's roster). A key's standing is its
+    scopes; an `admin` key administers as before.
+  - **The ruling on role drift (a):** the install org's `OWNER` set now
+    _follows_ the platform-admin set — `PATCH /api/v1/users/[id]` with a
+    `role` upserts the install-org membership to the rule's answer in the
+    same transaction (`syncInstallMembershipRole`), so a demoted admin no
+    longer keeps `OWNER`.
+  - **`exportOrgData()`** (`lib/privacy/export-org.ts`) and the org manifest
+    `ORG_DATA_SOURCES` / `ORG_EXCLUDED_SOURCES` (`lib/privacy/org-sources.ts`):
+    the roster with member id/name/email, pending invitations into the org
+    (tokens omitted), and the four credential kinds as attribution (hashes and
+    scopes omitted). **Every model carrying an `orgId` column must be declared
+    there** — `tests/unit/lib/privacy/org-sources.test.ts` parses the schema
+    and fails until it is, the subject manifest's guard for an org subject;
+    row isolation will meet it on every model it adds `orgId` to. Guide:
+    [`.context/privacy/org-export.md`](./.context/privacy/org-export.md).
+  - **`eraseOrg()`** (`lib/privacy/erase-org.ts`): one transaction deleting
+    the pending invitations into the org, clearing `Session.activeOrgId` on
+    every session still pointing at it, and the org row (memberships and
+    credentials cascade). **Users are never deleted**; the install org is
+    refused. Guide: [`.context/privacy/org-erasure.md`](./.context/privacy/org-erasure.md).
+
+  Also: `ORG_STATUSES` / `OrgStatus` join `lib/tenancy/roles.ts`;
+  `ORG_ID_SHAPE` is exported from `lib/tenancy/resolver.ts` and shared with
+  the new `orgIdSchema`; `INVITATION_IDENTIFIER_PREFIX` is exported from
+  `lib/utils/invitation-token.ts`. `npm run smoke:tenancy` now walks the whole
+  lifecycle against a real database. Behaviour at `TENANCY_MODE=single` is
+  unchanged: no existing endpoint changes its answer, and on the install org
+  the org arm admits exactly the platform admins the platform check already
+  admitted, because the install-org role is the platform role's projection and
+  is now kept so.
+- **A credential remembers the org it was minted in, and acts only there**
+  (multi-tenancy §106, fifth and last task). The four long-lived credentials
+  — API keys, embed tokens, agent invite tokens, MCP keys — gained an `orgId`
+  column in the identity migration above that nothing wrote at mint; under tenancy each was a
+  credential that worked everywhere. Now every mint writes the org the
+  request was acting in (`orgForMint()` in `lib/tenancy/entry.ts`, one read
+  of the tenant context, never a body field) and every resolution enters it:
+  `resolveEmbedToken` and `authenticateMcpRequest` apply the read rule
+  themselves (`resolveCredentialOrg()`, the org's status read with the row —
+  **a suspended org's embed tokens and MCP keys are refused**, no extra
+  query) and the six guard-less handlers under `app/api/v1/embed/**` and
+  `app/api/v1/mcp` run inside `runAsOrg(orgId, …)` with `source:
+  'embed-token' | 'mcp-key'`; an API key enters through the guards as
+  before. An agent invite token is a gate the session passes through, not a
+  credential that acts: new module `lib/orchestration/invite-tokens.ts`
+  (`resolveInviteToken()`, `consumeInviteToken()`, `InviteTokenOutcome`) is
+  the one implementation `POST /api/v1/chat/stream` and
+  `POST /api/v1/chat/agents/[slug]/validate-token` share, comparing the
+  token's org with the org the guard entered — a token from another org
+  reads as one that does not exist. `orgOfColumn()` names the null-column
+  rule once (install org at `single`, no org at `multi`). One data migration,
+  `20260918120000_credential_org_backfill`, re-runs the identity migration's
+  four backfill `UPDATE`s verbatim (a test holds them byte-equal) so the
+  credentials minted between that migration and this one — `orgId = NULL`, read
+  as the install org at `single`, refused at `multi` — are bound before any
+  install switches modes; from here no mint writes a null org. Guides:
+  [`.context/tenancy/identity.md`](./.context/tenancy/identity.md#credentials)
+  and the org-binding sections of
+  [`api-keys.md`](./.context/orchestration/api-keys.md#org-binding-106),
+  [`embed.md`](./.context/orchestration/embed.md#org-binding-106),
+  [`agent-visibility.md`](./.context/orchestration/agent-visibility.md#org-binding-106)
+  and [`mcp.md`](./.context/orchestration/mcp.md#api-key-lifecycle).
+
+### Removed
+
+- **The stateful MCP transport, and every session-shaped surface with it**
+  (§39 t-718). There is one MCP transport now and it holds nothing: every request
+  stands alone, no `Mcp-Session-Id` is issued, one arriving is **ignored**, and
+  `GET` / `DELETE /api/v1/mcp` answer `405` with `Allow: POST`.
+
+  **Breaking, and the parts a fork has to act on:**
+
+  | Gone                                                          | What to do                                                                 |
+  | ------------------------------------------------------------- | -------------------------------------------------------------------------- |
+  | `MCP_SESSION_MODE`                                             | delete it from every env file and deploy config; an unknown key is inert    |
+  | `GET /api/v1/admin/orchestration/mcp/sessions`                 | nothing to list                                                            |
+  | `DELETE /api/v1/admin/orchestration/mcp/sessions/:id`          | nothing to terminate                                                       |
+  | `McpServerConfig.maxSessionsPerKey` (migration drops the column) | stop sending it to `PATCH …/mcp/settings` — the body is refused with a 400 naming the key, alone or alongside a live field |
+  | `McpSession`, `McpLogLevel`, `MCP_LOG_LEVELS`, `McpLogLevelRank`, `JsonRpcNotification` on `types/mcp.ts` | drop the imports |
+  | `JsonRpcErrorCode.SESSION_NOT_FOUND` (`-32002`) and `.STATELESS_UNSUPPORTED` (`-32005`) | nothing emits either |
+  | `McpSessionManager`, `createEphemeralSession`, `McpResourceAudience`, `NotificationSink` | — |
+  | `getMcpSessionManager()` from `@/lib/orchestration/mcp`        | —                                                                          |
+  | `broadcastMcpToolsChanged`, `broadcastMcpResourcesChanged`, `broadcastMcpPromptsChanged`, `broadcastMcpResourceUpdated` | remove the calls; keep the `clearMcp*Cache()` beside them |
+  | `lib/orchestration/mcp/resource-update-hooks.ts` (`notifyMcpAgentsChanged`, `notifyMcpWorkflowsChanged`, `notifyMcpKnowledgeChanged`) | remove the calls |
+  | `lib/orchestration/mcp/log-emitter.ts` (`emitMcpLog`) and `progress-tracker.ts` (`createProgressReporter`, `extractProgressToken`) | a fork using `emitMcpLog` has no transport to send on |
+  | `resources/subscribe`, `resources/unsubscribe`, `logging/setLevel` | an attempt now answers `METHOD_NOT_FOUND`                                |
+  | the JSON-RPC envelope `GET /api/v1/mcp` used to return with its 405 | stop parsing that 405's body — it is now EMPTY. The stateless GET answered `405` with `{jsonrpc, error: {code: -32005, message}}`; a client or ops script doing `JSON.parse(await res.text())` on it now throws. Read the status and `Allow` instead |
+  | `admin/orchestration/mcp/sessions` page, `mcp-sessions-list.tsx`, `API.ADMIN.ORCHESTRATION.MCP_SESSIONS` and `mcpSessionById` | — |
+
+  **`PATCH /api/v1/admin/orchestration/mcp/settings` now rejects an unknown key**
+  rather than stripping it (`updateMcpSettingsSchema` is `.strict()`). This is
+  what makes the line above true: a plain `z.object` strips what it does not
+  declare, so a settings form PATCHing the whole object got a 200 and lost the
+  `maxSessionsPerKey` value with no signal — the removal announcing itself only in
+  the one shape nobody sends (that key alone). Strict costs a fork one 400 at
+  upgrade time and names the offending key; the same reasoning made §108 t-713's
+  org retention slice strict. It also catches a typo in a field that IS settable,
+  which used to be accepted and ignored.
+
+  **`lib/api/sse.ts` is untouched.** Six non-MCP routes stream through it —
+  `grep -rn "from '@/lib/api/sse'" app` is the list, rather than one copied here
+  that would go stale. The SSE bridge was never MCP's.
+
+  **Why now.** MCP revision
+  [`2026-07-28`](https://modelcontextprotocol.io/specification/2026-07-28/changelog)
+  removes protocol-level sessions, the session headers, the `initialize` handshake
+  and the GET stream; tells a server to answer `405` for GET and DELETE and to
+  **ignore** a legacy `Mcp-Session-Id`; and moves server-push to
+  `subscriptions/listen`. Sunrise's default (`stateless`) was already most of that
+  shape. The other mode could not be run — it threw at module scope on `VERCEL` or
+  `AWS_LAMBDA_FUNCTION_NAME`, which is the platform's own deployment target, and
+  it **refused** a current client outright, answering `400 Missing Mcp-Session-Id
+  header` to a request that correctly sends none. Keeping it meant maintaining two
+  transports where one was unusable and increasingly non-conforming.
+
+  **Server-push is not replaced yet.** `subscriptions/listen` is a different
+  design problem from the one that killed `stateful` — a long-lived stream on a
+  function-per-request platform, rather than state shared across processes — and
+  is tracked separately. Until it lands, an MCP client learns a list changed by
+  asking again; the 5-minute registry caches are cleared on every admin mutation
+  exactly as before, so the next `tools/list` is correct.
+  [`mcp.md`](./.context/orchestration/mcp.md#one-transport-and-it-holds-nothing)
+  carries the two decisions that survive the code: a push audience is decided by
+  what CHANGED rather than by who is subscribed, and a session id is not a
+  capability — the key is.
+
+### Security
+
+- **A cross-key MCP SSE hijack is fixed, and then the surface it was on is
+  removed** (multi-tenancy §108 t-716, then §39 t-718 — both in this release).
+  Read this one even though the code is gone, because **a fork still on 0.12.x or
+  earlier is running it.**
+
+  `GET /api/v1/mcp` attached the SSE notification listener and was the only verb
+  not re-checking that the named session belonged to the authenticated key. A
+  caller holding **any** valid MCP key could open the stream with another key's —
+  at `multi`, another org's — `Mcp-Session-Id` and receive that session's
+  `notifications/message`, `resources/updated` and `progress` pushes, while the
+  rightful owner silently stopped receiving them, because the sink registry was
+  keyed by session id and a second registration replaced the first. Polling that
+  endpoint with someone else's session id also **refreshed** it, so a foreign
+  caller could keep another org's session alive indefinitely.
+
+  Reachable only under `MCP_SESSION_MODE=stateful`, which is not the default and
+  throws on any platform announcing itself function-per-request. **If you run the
+  default (`stateless`), you were never exposed.** If you run `stateful` on an
+  older release, upgrade or switch to the default — in this release the mode, the
+  `GET` stream and the whole session plane are removed, so there is no session for
+  a caller to name.
+
+### Changed
+
+- **MCP sessions were scoped to the org whose key opened them, and are then gone
+  entirely** (multi-tenancy §108 t-716, then §39 t-718 — both in this release).
+  t-716 stamped `McpSession.orgId` from the tenant context, filtered the admin
+  sessions list and the terminate route to the reading org, and made
+  `broadcastMcpResourceUpdated` take a required audience. t-718 removes the
+  transport all of that belonged to, so **nothing in that paragraph is a surface
+  in this release** — it is recorded in `Removed` instead, as one story rather
+  than a breaking change followed by a deletion.
+
+  What it was fixing is still worth knowing if you run an older version at
+  `multi` with `MCP_SESSION_MODE=stateful`: an org admin read every other org's
+  session ids, `apiKeyId`s and activity times and could terminate any of them,
+  and one org's agent edit told every other org that its agent list had changed.
+
+- **The admin Logs page shows only the reading org's lines** (multi-tenancy
+  §108 t-714). `LogEntry` (`types/admin.ts`) gains `orgId?: string | null`,
+  stamped by `addLogEntry` from the tenant context, and `getLogEntries` —
+  behind `GET /api/v1/admin/logs` — filters to the reader's org and counts
+  `total` after that filter. The buffer itself is unchanged: one process-wide
+  ring, scoped at the query. An entry produced outside any tenant scope (boot,
+  a `runAsSystem` job, a request on a platform credential, which carries no org
+  in either mode, or a timer armed through `runDetached`) is stamped `null`. **The scope rule applies at `multi`
+  only**: at `single` the page shows the process's lines exactly as it always
+  has, so a single-tenant install is unchanged. At `multi` an unstamped entry
+  is visible only to a reader who is also outside an org, and an org admin
+  never sees another org's lines —
+  which they previously did, messages, `context` and `meta`, searchable. A
+  platform operator has no cross-org view through this page until §111.
+- **Both org reads now carry the org's settings** (multi-tenancy §108 t-713).
+  `GET /api/v1/admin/orgs/[id]` returns the whole `Org.settings` column, and
+  `createOrg` / `updateOrg` return it on `OrgRecord`. `GET /api/v1/orgs/[id]`
+  gains `settings: { retention }` only — the validated slice, `null` when the
+  org has set none — because that route is readable by every MEMBER and the
+  platform cannot vouch for a key a fork keeps beside its own. An org's data
+  export (`GET /api/v1/admin/orgs/[id]/export`) carries the column too, since
+  it exports the org row whole — so a fork storing its own config in
+  `Org.settings` now sees it there. The retention sweep's incoherent-windows
+  warning now names the org it is about, and no longer reads
+  `executionRetentionDays: null` as "nothing to couple to": executions kept for
+  ever are the longest window, not an absent one.
+- **The maintenance tick runs every platform job and the schedules sweep per
+  org** (multi-tenancy §108 t-711). Every entry in `PLATFORM_JOBS` declares a
+  `scope` (required); all eight existing tasks and `processDueSchedules` are
+  `per-org`, run through `forEachOrg`; the idle-gate horizon read runs under
+  `runAsSystem`. At `TENANCY_MODE=multi` the tick therefore does work again
+  (before, every task threw `No tenant context` and nothing ran) and a tick
+  fired from an admin's session no longer runs inside that admin's org. The
+  published `backgroundTasks` list on `POST /api/v1/admin/orchestration/maintenance/tick`
+  gains a ninth, appended name, **`auditLogRetention`**: the admin and MCP
+  audit-log prunes move out of `enforceRetentionPolicies()` (now
+  tenant-owned tables only, per org) into `enforceSystemRetentionPolicies()`
+  (system scope, once), so `RetentionResult` loses `auditLogsDeleted` /
+  `mcpAuditLogsDeleted` and `SystemRetentionResult` carries them; the exported
+  `RetentionWindows` / `loadRetentionWindows()` lose `auditLogRetentionDays`
+  with them, since the tenant sweep no longer reads that column.
+  `POST /api/v1/admin/orchestration/schedules/tick` runs per org too and gains
+  a `500 SCHEDULER_TICK_FAILED` for a sweep that failed in **every** org —
+  with one org that case already answered 500 by propagating, and without it
+  adding a second org would have turned the same total failure into a 200. At `multi`
+  with more than one org, a per-org task's entry in the completion log line —
+  and the route's `schedules` field — is the fold across orgs
+  (`{ orgs, …summed counters, orgErrors? }`); a single-tenant install sees
+  no change in shape.
+- **Two orgs can each have an agent called `support`** (multi-tenancy §107
+  t-708). `AiAgent`, `AiKnowledgeBase` and `AiKnowledgeDocument` — published
+  model interfaces — move from `slug @unique` to `@@unique([orgId, slug])`
+  (`20260921120000_org_scoped_slugs`; the generated compound key is
+  `orgId_slug`). `AiWorkflow.slug` stays global: it is the unauthenticated
+  `inbound/:channel/:slug` URL segment. **Breaking for a fork that keys a
+  Prisma call on `where: { slug }` for one of the three** — the type no
+  longer admits it; use `findFirst({ where: { slug } })` inside an org
+  context (the tenancy context scopes it at `multi`, the same row at
+  `single`), or `where: { orgId_slug: { orgId: requireOrgId(), slug } }`
+  where the caller has the org (the seeds do; `requireOrgId()` is new on
+  `lib/tenancy/context.ts`, refusing the system scope). The two partial
+  uniques on the same tables that Prisma cannot model move with them, under
+  their existing names: the ready-document dedupe becomes `(orgId,
+  fileHash) WHERE status = 'ready'` and "one default knowledge base"
+  becomes one per org — `getOrCreateDefaultKnowledgeBase()` now upserts
+  the caller's org's default, and only the install org's keeps the fixed id
+  `kb_default`. `npm run db:drift-check`'s A5 and A7 probes assert the new
+  definitions (`indexExists` gains an optional `definitionContains`, the
+  `constraintExists` shape). A new always-run guard,
+  `tests/unit/lib/tenancy/org-scoped-slugs.test.ts`, fails naming any
+  tenant-owned model whose slug is still a global `@unique`. The two routes
+  whose credential is a signed token naming a row — the inbound trigger
+  (`/api/v1/inbound/:channel/:slug`) and the HMAC approval routes — now read
+  that row under `runAsSystem` and run inside `runAsOrg` with the new
+  `TenantContextSource` values `inbound-trigger` and `approval-token`
+  (`resolveCredentialOrg` accepts both); a workflow or execution whose org
+  is suspended, or carries none at `multi`, is a 404. The smoke scripts run
+  their `main` inside the install org.
+
+- **A query runs only inside the org the request entered, and a forgotten
+  path fails loud instead of reading wide** (multi-tenancy §107, the
+  data-layer chokepoint). The tenancy seam's contract changes:
+  `TENANCY_MODE=multi` no longer throws at import. The client
+  `lib/db/client.ts` exports is now the base `PrismaClient` through
+  `withTenancy()` (new `lib/db/tenancy-extension.ts`, a Prisma `$extends`):
+  every create of a tenant-owned row — nested creates included, whatever the
+  root model — is stamped with the org the request entered (the install org
+  at `single` when nothing entered a context; as the scalar `orgId`, or as
+  `org: { connect }` on a row in Prisma's checked form; never overwriting an
+  explicit `orgId`; nothing under `runAsSystem`), and at `multi` every operation on a
+  tenant-owned model, every raw op and every write under a context runs as
+  `$transaction([set_config('app.current_org', <org>, true), op])` with one
+  setter at the top of an interactive or batch `$transaction`, `runAsSystem`
+  setting `app.bypass_rls` instead, and an operation that needs an org and has
+  none throwing before any SQL; a read on a non-tenant model that reaches a
+  tenant-owned one through a relation at any depth (`include` / `select` /
+  `_count`, a relation filter or `orderBy`) is scoped the same way. `runAsOrg` / `runAsSystem` / `forEachOrg` now
+  await their callback inside the scope, so a non-async callback returning a
+  lazy `PrismaPromise` keeps its org. **Type note for forks:** `prisma` is
+  typed `Omit<PrismaClient, '$on'>` (`TenancyClient`) — every call site,
+  `Pick<PrismaClient, …>` default and `typeof prisma.x.y` compiles unchanged;
+  only a parameter annotated exactly `PrismaClient` needs `TenancyClient`, and
+  `$on` was never usable on an extended client. `tenantOwnedModels()` in
+  `lib/tenancy/classification.ts` now takes the client (`tenantOwnedModels(prisma)`)
+  so the module stays free of the client it helps build. Behaviour at
+  `TENANCY_MODE=single` is unchanged apart from the stamped column — no
+  `set_config` is ever issued there, proven through the real Prisma runtime on
+  a recording adapter (`tests/unit/lib/db/tenancy-extension.test.ts`). `multi`
+  is correct only with the policies enabled and a `NOBYPASSRLS` app role
+  (§107's next task ships both).
+
+- **Credential response shapes and resolver contexts carry `orgId`** (§106,
+  with the bullet above). `POST`/`GET /api/v1/user/api-keys` (`null` for an
+  `admin` key), `POST`/`GET …/agents/[id]/invite-tokens`, `POST`/`GET
+  /api/v1/admin/orchestration/mcp/keys` and `POST …/mcp/keys/[id]/rotate`
+  return the org each credential is bound to (the embed-token create already
+  returned the whole row; its `orgId` is now written). `EmbedContext`
+  (`lib/embed/auth.ts`) and `McpAuthContext` (`types/mcp.ts`) gain a
+  required, non-null `orgId` — a fork constructing either by hand adds the
+  field; both resolvers now return `null` for a credential whose org is
+  suspended or, at `multi`, unbound. Two rules on `admin`-scoped API keys
+  are now enforced rather than documented: `POST /api/v1/user/api-keys`
+  stores an `admin` key with no org and refuses `admin` asked for while
+  acting in any org but the install org (`400`, naming no org), and
+  both guards refuse an API key that carries both `admin` and an org —
+  `withAdminAuth` at its scope floor (any org-bound key, whatever its
+  scopes), `withAuth` through `enterApiKeyOrg` (new refusal
+  `bound-admin-key`) — so such a row is admitted nowhere;
+  `lib/app/authorization.ts` says the rule now holds. And at `multi` a
+  request acting in no org — an `admin` key — passes no invite-only gate:
+  the token admits members of its org, and the refusal is logged with its
+  own reason (`no-request-org`). Behaviour at `TENANCY_MODE=single` is
+  unchanged for every honest row: an unbound or install-org credential
+  resolves to the install org exactly as before.
+
+### Fixed
+
+- **Four process-global caches stopped mixing orgs** (multi-tenancy §108
+  t-712). All four are behaviour changes at `TENANCY_MODE=multi` only; at
+  `single` there is one org and none of them changes anything. The event-hook
+  cache (`lib/orchestration/hooks/registry.ts`) was one process-wide
+  `Map<eventType, CachedHook[]>` holding tenant-owned `AiEventHook` rows, so
+  whichever org refreshed it had **its** hooks dispatched for every org for
+  the next 60 seconds — org B's event POSTed its payload to org A's URL,
+  signed with org A's secret, while B's own hooks never fired. It is now
+  keyed by org; `invalidateHookCache()` still clears every partition, and at
+  `multi` an `emitHookEvent` from a call stack that entered no org — or one
+  running as the audited system scope, where the RLS bypass would otherwise
+  fan a single event out to every org's webhook — logs and dispatches nothing
+  rather than reading wide (at `single` the context is the install org, so
+  nothing changes). And the MCP per-key rate-limit override
+  cache (`lib/orchestration/mcp/protocol-handler.ts`) is keyed by API key id,
+  which is unique across orgs — but it was *filled* inside whichever org's
+  request triggered the refresh, and `McpApiKey` is tenant-owned, so every
+  other org's `rateLimitOverride` was silently dropped for five minutes. The
+  read now runs under the audited system scope, behind an in-flight latch and
+  a failure backoff so a burst — or a failing database — cannot turn that
+  audit line into noise. And the chat prompt-context
+  cache (`lib/orchestration/chat/context-builder.ts`) keyed on
+  `(type, id, userId)`, all three of which a request supplies — the built-in
+  `pattern` type keys by a pattern *number* over tenant-owned
+  `AiKnowledgeChunk` rows, and a fork's registered contributor is handed the
+  caller's own `type`/`id` — so a user who belongs to two orgs could open
+  `pattern:3` in one and, inside the 60-second TTL, be served that org's
+  knowledge content in the other org's system prompt. The key now carries the
+  org first, and a call under the audited system scope is refused outright
+  rather than served a body merged from every org's rows.
+  `invalidateContext` builds the same key, so call it inside the org whose
+  entry you mean to drop. And the MCP system-agent cache
+  (`lib/orchestration/mcp/tool-registry.ts`) resolved `mcp-system` by **slug**,
+  which §107 t-708 made unique *per org* and therefore shared *across* them:
+  under the bypass that lookup answers from an arbitrary org, so it now
+  refuses the system scope rather than caching the answer under a sentinel.
+  An install at `single` is unaffected by any of the
+  four, and multi-tenancy remains the opt-in capability the
+  playbook's
+  [what you do not yet get](./.context/architecture/multi-tenancy.md#what-you-get-at-multi-and-what-you-do-not-yet)
+  describes; the new
+  [`lib/tenancy/process-state.ts`](./lib/tenancy/process-state.ts) manifest
+  and its scanner test are what found them, and are what a fork editing a
+  platform module under `lib/` will meet if it adds process-global state.
 
 ## [0.12.1] — 2026-09-17
 
@@ -8940,7 +10801,11 @@ Resparkable safe to fork and to merge upstream releases into.
 
 ---
 
-[Unreleased]: https://github.com/human-centric-engineering/sunrise/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/human-centric-engineering/sunrise/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.13.0...v0.14.0
+[0.13.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.12.1...v0.13.0
+[0.12.1]: https://github.com/human-centric-engineering/sunrise/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.11.2...v0.12.0
 [0.11.2]: https://github.com/human-centric-engineering/sunrise/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/human-centric-engineering/sunrise/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.10.0...v0.11.0

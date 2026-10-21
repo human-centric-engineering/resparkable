@@ -37,7 +37,9 @@ import type {
   ChatCompletionToolChoiceOption,
 } from 'openai/resources/chat/completions/completions';
 
+import { z } from 'zod';
 import { logger } from '@/lib/logging';
+import { describeFetchFailure } from '@/lib/errors/fetch-error';
 import {
   deriveParamProfile,
   supportedReasoningEfforts,
@@ -46,6 +48,7 @@ import { getModel } from '@/lib/orchestration/llm/model-registry';
 import {
   DEFAULT_MAX_RETRIES,
   DEFAULT_TIMEOUT_MS,
+  embeddingTimeoutMs,
   LOCAL_TIMEOUT_MS,
   ProviderError,
   buildRequestOptions,
@@ -57,6 +60,8 @@ import {
 } from '@/lib/orchestration/llm/provider';
 import type {
   ContentPart,
+  EmbedManyOptions,
+  EmbedManyResult,
   LlmFinishReason,
   LlmMessage,
   LlmOptions,
@@ -71,6 +76,19 @@ import type {
 } from '@/lib/orchestration/llm/types';
 import { getTextContent } from '@/lib/orchestration/llm/types';
 import { isCompleteJson } from '@/lib/orchestration/llm/json-completeness';
+
+/**
+ * The embeddings response, as far as `embedMany` reads it. Validated rather
+ * than trusted from the SDK's types: an OpenAI-compatible host is anything an
+ * operator pointed a `baseUrl` at, and some (Ollama, older self-hosted
+ * servers) omit `usage` entirely.
+ */
+const embeddingsResponseSchema = z.object({
+  data: z.array(z.object({ embedding: z.array(z.number()), index: z.number() })),
+  usage: z
+    .object({ prompt_tokens: z.number().optional(), total_tokens: z.number().optional() })
+    .optional(),
+});
 
 /** Sentinel API key for local servers that require *something* in the header. */
 const LOCAL_API_KEY_SENTINEL = 'not-needed';
@@ -465,6 +483,67 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     }
   }
 
+  /**
+   * Embed a batch through the host's `/embeddings` endpoint (t-740).
+   *
+   * **`encoding_format: 'float'` is load-bearing.** Left unset, the `openai`
+   * SDK asks for base64 and decodes it into a `Float32Array`, not a
+   * `number[]`: `JSON.stringify` then writes an object, not an array, and any
+   * caller building a pgvector literal from it breaks quietly. Asking for
+   * floats gets the same RESULT the knowledge embedder got before it moved
+   * here (plain float arrays). It is not the same request: that embedder sent
+   * no `encoding_format` at all, which the SDK does not allow — it always
+   * sends one, and `float` is the spec's own value.
+   *
+   * A batch's timeout is at least `EMBEDDING_BATCH_TIMEOUT_MS`, not the chat
+   * timeout: a 100-chunk batch on a CPU-bound local model can outlast 60s. A
+   * search query (`inputType: 'query'`) keeps the row's own timeout.
+   *
+   * `dimensions` is sent only when the caller passes one: some hosts reject it
+   * for models with a fixed native width (see `EmbedManyOptions`).
+   */
+  async embedMany(texts: string[], options: EmbedManyOptions): Promise<EmbedManyResult> {
+    let raw: unknown;
+    try {
+      raw = await withRetry(
+        () =>
+          this.client.embeddings.create(
+            {
+              model: options.model,
+              input: texts,
+              encoding_format: 'float',
+              ...(options.dimensions !== undefined ? { dimensions: options.dimensions } : {}),
+            },
+            { timeout: embeddingTimeoutMs(this.timeoutMs, options.inputType) }
+          ),
+        {
+          maxRetries: this.maxRetries,
+          isLocal: this.isLocal,
+          operation: 'openai.embeddings.create.batch',
+        }
+      );
+    } catch (err) {
+      throw toProviderError(
+        describeConnectionFailure(err),
+        'OpenAI-compatible embed request failed'
+      );
+    }
+
+    const parsed = embeddingsResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ProviderError('Embeddings response did not match the expected shape', {
+        code: 'invalid_response',
+        retriable: false,
+      });
+    }
+
+    const inputTokens = parsed.data.usage?.prompt_tokens ?? parsed.data.usage?.total_tokens;
+    return {
+      embeddings: [...parsed.data.data].sort((a, b) => a.index - b.index).map((d) => d.embedding),
+      ...(inputTokens !== undefined ? { inputTokens } : {}),
+    };
+  }
+
   async transcribe(
     audio: Blob | Buffer | ArrayBuffer | Uint8Array,
     options: TranscribeOptions
@@ -775,4 +854,37 @@ function safeParseJson(raw: string): Record<string, unknown> {
     logger.warn('Failed to parse OpenAI tool_call arguments', { length: raw.length });
     return {};
   }
+}
+
+/**
+ * Put the network-layer reason on a failed SDK request's message.
+ *
+ * The `openai` SDK reports a refused redirect, a DNS miss and a connection
+ * reset alike as `Connection error.`, with undici's `TypeError: fetch failed`
+ * on `cause` and the real reason one level further down. `toProviderError`
+ * keeps only `err.message`, so without this an operator whose embedding host
+ * started redirecting reads "Connection error." and cannot tell it from an
+ * outage. An HTTP error has no such `cause` and passes through untouched,
+ * `status` included.
+ */
+function describeConnectionFailure(err: unknown): unknown {
+  if (!(err instanceof Error)) return err;
+  // Rewrapping would drop `status`, which decides retry and the error code.
+  if ('status' in err && err.status !== undefined) return err;
+  // Only undici's own signature gets rewritten: a `TypeError('fetch failed')`
+  // somewhere in the chain, carrying the reason on its `cause`. The depth
+  // varies (`withRetry` adds a `ProviderError` above the SDK's error), so walk
+  // to it. Anything else — an SDK timeout, an abort — passes through as is:
+  // describing a non-network error by its own `cause` repeats the message.
+  let node: unknown = err;
+  // Bounded: a cyclic `cause` chain must not spin the event loop.
+  for (let depth = 0; depth < 10 && node instanceof Error; depth++) {
+    if (node instanceof TypeError && node.message === 'fetch failed') {
+      return Object.assign(new Error(`${err.message} ${describeFetchFailure(node)}`), {
+        cause: err,
+      });
+    }
+    node = node.cause;
+  }
+  return err;
 }

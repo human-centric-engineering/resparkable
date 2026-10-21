@@ -54,6 +54,11 @@ import {
 } from '@/lib/orchestration/agents/resolve-effective-prompt';
 import { registerStepType } from '@/lib/orchestration/engine/executor-registry';
 import { narrowReasoningEffort } from '@/lib/orchestration/llm/model-heuristics';
+import { platformSlugWhere } from '@/lib/orchestration/agents/platform-agent-guard';
+import {
+  LATEST_AGENT_VERSION_ID_INCLUDE,
+  readAgentConsistently,
+} from '@/lib/orchestration/agents/agent-versioning';
 
 const DEFAULT_HISTORY_LIMIT = 20;
 const ROLES_TO_LOAD = ['user', 'assistant'] as const;
@@ -89,13 +94,15 @@ export async function executeChatTurn(
       where: { id: conversationId },
       select: { id: true, agentId: true },
     }),
-    prisma.aiAgent.findUnique({
-      where: { slug: config.agentSlug },
-      include: {
-        profile: true,
-        versions: { orderBy: { version: 'desc' }, take: 1, select: { id: true } },
-      },
-    }),
+    // One snapshot for the row and its newest version, so the pin names the
+    // config this turn runs even if an edit commits mid-read.
+    readAgentConsistently(prisma, (tx) =>
+      tx.aiAgent.findFirst({
+        // A platform slug names the org's platform instance only (§116 t-725).
+        where: { slug: config.agentSlug, ...platformSlugWhere(config.agentSlug) },
+        include: { profile: true, versions: LATEST_AGENT_VERSION_ID_INCLUDE },
+      })
+    ),
   ]);
 
   if (!conversation) {
@@ -161,7 +168,8 @@ export async function executeChatTurn(
   const model = config.modelOverride ?? resolvedBinding.model;
   const { provider, usedSlug: providerSlug } = await getProviderWithFallbacks(
     resolvedBinding.providerSlug,
-    resolvedBinding.fallbacks
+    resolvedBinding.fallbacks,
+    resolvedBinding.provenance
   );
 
   // 4. Compose system prompt (persona / voice / guardrails inheritance).

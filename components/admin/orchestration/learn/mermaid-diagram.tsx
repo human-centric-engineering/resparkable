@@ -29,6 +29,14 @@ export function MermaidDiagram({ code }: MermaidDiagramProps) {
             startOnLoad: false,
             theme: 'neutral',
             securityLevel: 'strict',
+            // Labels as SVG <text>, not HTML in <foreignObject>: the
+            // DOMPurify SVG profile below drops <foreignObject> and its
+            // contents, which rendered every node with no label.
+            htmlLabels: false,
+            // Journey and timeline diagrams place text by their own
+            // setting, `fo` (foreignObject) by default; `tspan` is SVG text.
+            journey: { textPlacement: 'tspan' },
+            timeline: { textPlacement: 'tspan' },
           });
           mermaidInitialized = true;
         }

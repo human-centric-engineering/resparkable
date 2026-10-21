@@ -22,6 +22,7 @@ import {
   type ModelRow,
 } from '@/components/admin/orchestration/provider-models-matrix';
 import { useUrlTabs } from '@/lib/hooks/use-url-tabs';
+import { useIsInstallOrg } from '@/components/admin/shared-settings-access';
 
 interface ProvidersTabsProps {
   initialProviders: ProviderRow[];
@@ -44,6 +45,10 @@ export function ProvidersTabs({
   initialModels,
   hasAnyEnvKey = true,
 }: ProvidersTabsProps) {
+  // The provider audit runs the install org's own workflow and agents, which
+  // no other org has, and writes the shared model catalogue — so its button
+  // is offered in the install org only.
+  const canAuditModels = useIsInstallOrg();
   const { activeTab, setActiveTab } = useUrlTabs<ProvidersTab>({
     defaultTab: 'configuration',
     allowedTabs: ALLOWED_TABS,
@@ -61,7 +66,7 @@ export function ProvidersTabs({
       </TabsContent>
 
       <TabsContent value="models">
-        <ProviderModelsMatrix initialModels={initialModels} />
+        <ProviderModelsMatrix initialModels={initialModels} canAuditModels={canAuditModels} />
       </TabsContent>
     </Tabs>
   );

@@ -9,6 +9,9 @@
  * to make here without the tests to match.
  *
  * Platform-agnostic: no Next.js imports.
+ *
+ * Tenancy posture: global-config — the McpServerConfig singleton
+ * (lib/tenancy/process-state.ts).
  */
 
 import { prisma } from '@/lib/db/client';
@@ -49,7 +52,6 @@ export async function getMcpServerConfig(): Promise<McpServerState> {
       // serverVersion bump on the next upsert; existing rows are preserved
       // by the `update: {}` clause so an admin's manual override is sticky.
       serverVersion: RESPARKABLE_VERSION,
-      maxSessionsPerKey: 5,
       globalRateLimit: 60,
       auditRetentionDays: 90,
     },
@@ -60,7 +62,6 @@ export async function getMcpServerConfig(): Promise<McpServerState> {
     isEnabled: row.isEnabled,
     serverName: row.serverName,
     serverVersion: row.serverVersion,
-    maxSessionsPerKey: row.maxSessionsPerKey,
     globalRateLimit: row.globalRateLimit,
     auditRetentionDays: row.auditRetentionDays,
   };

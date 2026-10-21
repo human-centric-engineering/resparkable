@@ -39,6 +39,10 @@ vi.mock('@/lib/orchestration/llm/provider-manager', () => ({
 vi.mock('@/lib/orchestration/llm/model-registry', () => ({
   getModel: vi.fn(),
 }));
+// The registry is hydrated from the Model Matrix before the model lookup (#813).
+vi.mock('@/lib/orchestration/llm/model-registry-db-hydrate', () => ({
+  hydrateFromDb: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('@/lib/orchestration/llm/settings-resolver', () => ({
   // The route falls through to `getDefaultModelForTask('chat')` when
   // JUDGE_MODEL is null (no EVALUATION_JUDGE_* env vars set in the
@@ -67,9 +71,11 @@ import { POST } from '@/app/api/v1/admin/orchestration/executions/[id]/review/ro
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
+import { hydrateFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
 import { runSupervisorAssessment } from '@/lib/orchestration/supervisor';
 import {
+  ProviderCallRefusedError,
   registerProviderEligibility,
   resetProviderEligibility,
 } from '@/lib/orchestration/llm/provider-eligibility';
@@ -298,6 +304,20 @@ describe('POST /api/v1/admin/orchestration/executions/:id/review', () => {
     expect(res.status).toBe(400);
   });
 
+  it('hydrates the model registry before resolving the judge model (#813)', async () => {
+    // A judge model only the Model Matrix knows would otherwise be rejected
+    // as unknown in a module graph that never hydrated.
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(happyExecution() as never);
+    vi.mocked(prisma.aiWorkflowExecution.update).mockResolvedValue({} as never);
+
+    const res = await POST(makeRequest(), makeContext());
+
+    expect(res.status).toBe(200);
+    const hydratedAt = vi.mocked(hydrateFromDb).mock.invocationCallOrder[0];
+    expect(hydratedAt).toBeDefined();
+    expect(hydratedAt).toBeLessThan(vi.mocked(getModel).mock.invocationCallOrder[0]);
+  });
+
   it('returns 400 when modelOverride references a model not in the registry', async () => {
     vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(happyExecution() as never);
     vi.mocked(getModel).mockReturnValue(undefined);
@@ -476,6 +496,43 @@ describe('POST …/review — provider eligibility', () => {
 
     expect(res.status).toBe(200);
     expect(vi.mocked(runSupervisorAssessment)).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 403, not 500, when the call-time gate refuses an operator-chosen judge (§120 t-741)', async () => {
+    // The override is not filtered at selection (above), so the refusal comes
+    // from the gate inside the judge's own call, and bubbles out of the
+    // assessment unwrapped. It is the same policy answer as the task-default
+    // arm's, and gets the same response.
+    vi.mocked(runSupervisorAssessment).mockRejectedValue(new ProviderCallRefusedError('anthropic'));
+
+    const res = await POST(makeRequest({ modelOverride: 'operator-picked-judge' }), makeContext());
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe('provider_not_permitted');
+    expect(vi.mocked(prisma.aiWorkflowExecution.update)).not.toHaveBeenCalled();
+  });
+
+  it('answers a refusal for want of an org scope as a server fault, not a judge choice', async () => {
+    vi.mocked(runSupervisorAssessment).mockRejectedValue(
+      new ProviderCallRefusedError('anthropic', 'no_org_scope')
+    );
+
+    const res = await POST(makeRequest({ modelOverride: 'operator-picked-judge' }), makeContext());
+
+    // A server fault, not a policy answer: no judge choice would fix it.
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('tenant_scope_missing');
+    expect(body.error.message).not.toContain('Choose a judge model');
+  });
+
+  it('still lets any other assessment failure propagate', async () => {
+    vi.mocked(runSupervisorAssessment).mockRejectedValue(new Error('vendor down'));
+
+    const res = await POST(makeRequest({ modelOverride: 'operator-picked-judge' }), makeContext());
+
+    expect(res.status).toBe(500);
   });
 
   it('runs normally when the rule permits the provider', async () => {

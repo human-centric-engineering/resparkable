@@ -156,7 +156,7 @@ Two things to preserve if you touch that guard, both of which shipped broken onc
 
 Two caveats when seeding a live box:
 
-- **Caches do not clear across processes.** The PATCH route pairs every `functionDefinition` write with `capabilityDispatcher.clearCache()`, `clearMcpToolCache()` and `broadcastMcpToolsChanged()`. `db:seed` runs in a different process and cannot, so a running app keeps serving the previous MCP `inputSchema` on `tools/list` for up to the dispatcher's 5-minute TTL. Restart the app after a seed that changes a capability, or wait it out.
+- **Caches do not clear across processes.** The PATCH route pairs every `functionDefinition` write with `capabilityDispatcher.clearCache()` and `clearMcpToolCache()`. `db:seed` runs in a different process and cannot, so a running app keeps serving the previous MCP `inputSchema` on `tools/list` for up to the dispatcher's 5-minute TTL. Restart the app after a seed that changes a capability, or wait it out.
 - **A re-seed only happens when the seed FILE hash changes** (plus any `hashInputs`). Editing a capability class alone will not trigger one — which is why the parity test below matters: it forces the seed constant to change whenever the class does, which is what moves the hash.
 
 Enforced by `tests/unit/prisma/seeds/capability-code-owned-fields.test.ts`, which parses every `aiCapability.upsert` in this directory and checks both directions. **The same shape applies to any seeded row with code-owned fields** — built-in agents' `systemInstructions` are the obvious next case, and the agent seeds are currently inconsistent about it (`008`/`016`/`017`/`018` re-apply them; `005`/`006`/`010` do not).
@@ -221,7 +221,7 @@ export default { name: '...', run: ({ prisma, adminId }) => { ... } };
 
 ## Embeddings (Opt-in)
 
-Knowledge-base chunks are seeded by `007-knowledge-chunks.ts` (calls `seedChunks()` from `lib/orchestration/knowledge/seeder.ts`). Embeddings are **not** part of `db:seed` because they require an active embedding provider (Voyage / OpenAI / Ollama) and cost money.
+Knowledge-base chunks are seeded by `007-knowledge-chunks.ts` for the install org (calls `seedChunks()` from `lib/orchestration/knowledge/seeder.ts`), and by `021-platform-agents.ts` wherever an agent uses them (see [platform agents](../orchestration/platform-agents.md#the-patterns-knowledge)). Embeddings are **not** part of `db:seed` because they require an active embedding provider (Voyage / OpenAI / Ollama) and cost money.
 
 ```bash
 npm run db:seed:embeddings   # Runs embedChunks() — phase 2, paid / network-dependent
@@ -260,7 +260,8 @@ FROM seed_history ORDER BY name;
 
 - **Whole-file hashing.** Any edit to a seed file — including whitespace — triggers a re-run on next `db:seed`. Same for any file listed in `hashInputs`. Safe because units are idempotent `upsert`s, just slightly noisier.
 - **Unit 007 uses the module prisma client.** `007-knowledge-chunks.ts` delegates to `seedChunks()` in `lib/orchestration/knowledge/seeder.ts`, which imports `prisma` from `@/lib/db/client` rather than the context-supplied one. This is intentional — the helper is also used by admin HTTP endpoints — and works fine because both point at the same database. Unit 007 also declares `hashInputs: ['./data/chunks/chunks.json']` so edits to the parsed knowledge-base data trigger a re-run.
-- **Unit 007 depends on Unit 003.** `seedChunks()` creates an `AiKnowledgeDocument` row with `knowledgeBaseId: DEFAULT_KNOWLEDGE_BASE_ID` (FK to `ai_knowledge_base`). Unit 003 (`default-knowledge-base`) creates the parent `kb_default` row. The numeric prefix on each filename pins the order: 003 always applies before 007. Forks that skip `db:seed` entirely won't have either row — runtime upload paths self-heal via `getOrCreateDefaultKnowledgeBase()` in `lib/orchestration/knowledge/document-manager.ts`, but the pre-loaded pattern-advisor chunks won't be present.
+- **Sunrise's own agents are not seeded.** They are [platform agents](../orchestration/platform-agents.md): code definitions that `021-platform-agents` reconciles into every active org, the same reconcile `createOrg` and the `platformAgents` maintenance job run. An agent written by a seed unit is written once; a platform agent's platform-owned fields are written back on every reconcile. Seed an app's own agent the ordinary way; register it as a platform agent only when every org needs its own instance.
+- **Units 007 and 021 both write the install org's copy of the patterns knowledge.** `seedChunks()` writes into the calling org's default knowledge base through `getOrCreateDefaultKnowledgeBase()` (for the install org that is unit 003's `kb_default` row), and is idempotent by the document's slug, so whichever runs second finds it present. Unit 021's platform-agent reconcile writes a copy only where an agent declares the patterns tag, which in core is the install org's install-only pattern advisor and quiz master. Forks that skip `db:seed` entirely get neither from a seed: upload paths create the default knowledge base, but the platform agents and their copy of the patterns knowledge need the service account unit 001 creates, and the reconcile refuses to run without it.
 
 ## Key Files
 

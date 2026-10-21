@@ -38,12 +38,11 @@ export default defineConfig({
     // IT IS ALSO A CORRECTNESS FIX, which is the better half of the argument.
     // happy-dom defines `window`, so `lib/env.ts`'s `typeof window !==
     // 'undefined'` check selected the **client** schema and every server
-    // variable read as `undefined`. Anything branching on `TENANCY_MODE`,
-    // `CAPABILITY_BINDING_MODE` or `MCP_SESSION_MODE` was silently exercising
-    // the undefined path. 44 of the 47 test files that import `@/lib/env` now
-    // run under node and see the real server schema; the remaining three are
-    // two component tests and `env.test.ts`, which asserts on `typeof window`
-    // deliberately.
+    // variable read as `undefined`. Anything branching on `TENANCY_MODE` or
+    // `CAPABILITY_BINDING_MODE` was silently exercising the undefined path. The
+    // handful of files that still opt into happy-dom do so deliberately;
+    // `.context/testing/environments.md` carries the count and the command that
+    // measures it, in one place rather than three that drift apart.
     //
     // GETTING IT WRONG IS ASYMMETRIC, and the docs are precise about this
     // because an earlier draft of this comment was not. A DOM test that lands
@@ -217,6 +216,12 @@ export default defineConfig({
         // did — invisible to a full run, forced to 0% by a scoped run when a
         // one-line edit dragged it in.
         'scripts/test-knowledge-base.ts',
+        // Two more of that family, run by hand against the dev database with
+        // `tsx -r dotenv/config`: they diagnose and drive an evaluation run
+        // end to end, and nothing imports them. They surfaced the same way,
+        // forced to 0% by a usage-comment edit (dotenv 18, t-758).
+        'scripts/diagnose-eval-run.ts',
+        'scripts/verify-eval-run.ts',
         '**/types/**',
         '.next/',
         'coverage/',

@@ -188,6 +188,31 @@ from which failure the subject can detect:
 
 So erasure degrades gracefully and access refuses to.
 
+## Every Org, at `multi`
+
+A person can belong to several orgs, and leave some, so their data has no one
+org to read it as. At `TENANCY_MODE=multi`, `exportUserData()` reads every core
+source **and runs `collectAppSubjectData()`** as the audited system scope
+(`runAsSystem`), whatever org the caller entered: the self-service route runs in
+the session's active org and an admin API key enters none, and the bundle holds
+the person's rows from every org either way (§107 t-748). Before that, the
+`org_isolation` policy narrowed the bundle to the active org, and it reported
+success.
+
+The bypass is safe because every source is pinned on the subject: its `where`
+holds the `userId` or the email on one of the row's own fields, not under `OR`,
+`NOT` or a negation, and every relation it reads through is the subject's own
+(a conversation's messages, a membership's org). `export-user.test.ts` checks
+both for every core source. It cannot check a fork's collector, so **your
+collector must filter on the subject too**, or at `multi` it reads every org's
+rows; and it has no org to ask for, so `requireOrgId()` throws there. The
+sources run one at a time there, as the org export's do: at `multi` each read is
+its own transaction holding a pooled connection. At `single` there is one org and
+no policy, so no scope is entered and the sources still run together.
+
+`scripts/smoke/tenancy-isolation.ts` ([17]) is the proof, against a real
+database as the restricted role.
+
 ## When a Row Matches the Subject but Isn't Theirs
 
 `where: { userId }` encodes an assumption — that a row pointing at someone is a
@@ -231,10 +256,10 @@ A table can identify a person without declaring a Prisma relation to `User` —
 and then it is invisible to a relation-based scan, **and to the erasure
 cascade**. Resparkable has two, both in the manifest by hand:
 
-| Table               | Identified by                    | How it is matched                     |
-| ------------------- | -------------------------------- | ------------------------------------- |
-| `ContactSubmission` | `email` — no user id at all      | `email`, case-insensitively           |
-| `FeatureFlag`       | `createdBy String?`, no relation | `createdBy`, as an attribution source |
+| Table               | Identified by                    | How it is matched                                    |
+| ------------------- | -------------------------------- | ---------------------------------------------------- |
+| `ContactSubmission` | `email` — no user id at all      | `email`, exactly, normalised; verified accounts only |
+| `FeatureFlag`       | `createdBy String?`, no relation | `createdBy`, as an attribution source                |
 
 The guard casts **two nets**, because the first one missed both of these:
 
@@ -249,6 +274,11 @@ The guard casts **two nets**, because the first one missed both of these:
 section rather than through a manifest source. That allowlist is an accounting
 note, not an escape hatch — anything added to it still owes a reader a reason.
 
+Being invisible to the cascade means erasure needs its own step for each.
+`eraseUser()` deletes `ContactSubmission` rows through the same matcher the
+manifest uses (`contactSubmissionsOf()`); see
+[What `eraseUser()` Does Beyond the Cascade](./data-erasure.md#what-eraseuser-does-beyond-the-cascade).
+
 **Neither net can reach `ContactSubmission`.** It holds no user id in any
 column, only an email, so no mechanical scan finds it. That is the residual gap,
 and it is why the manifest still needs a human deciding what a new table holds
@@ -259,6 +289,23 @@ add it by hand and write a test row that says why.
 If your fork adds a table like this — anything keyed by email, phone number, or
 an external identifier rather than `userId` — **the guard will not find it for
 you.** Add it to your own manifest by hand and write a test row that says why.
+
+**Match such a key exactly, on a value normalised the way its writer stores it**
+— never with `mode: 'insensitive'`. Prisma compiles that to an unescaped
+`ILIKE`, so `_` and `%` in an address match other people's rows: in an export
+that hands the subject a stranger's data, and copied onto an erasure path it
+deletes a stranger's rows. `ContactSubmission`'s only writer stores
+`emailSchema` output (trimmed, lower-cased), so its source matches
+`email.trim().toLowerCase()`.
+
+**And attribute a row by address only when the account has proven that
+address.** A public form records whatever address its sender typed, and with
+email verification off anyone can open an account under someone else's. So
+`ContactSubmission` is exported (and erased) only for an account whose
+`emailVerified` is true — `contactSubmissionsOf()` in
+`lib/privacy/contact-submissions.ts` returns no match otherwise. The app
+collector below receives `userId` and `email` only, so a fork table filled by
+an unauthenticated writer should read `emailVerified` off the user row itself.
 
 ## Extending It — the App Seam
 
@@ -276,7 +323,9 @@ export async function collectAppSubjectData({
 }: AppSubjectQuery): Promise<AppSubjectData> {
   const [invoices, enquiries] = await Promise.all([
     prisma.appInvoice.findMany({ where: { userId }, omit: { gatewayToken: true } }),
-    prisma.appEnquiry.findMany({ where: { email: { equals: email, mode: 'insensitive' } } }),
+    // Exact, normalised the way YOUR enquiry writer normalises — this assumes it
+    // stores `emailSchema` output. See "Tables With No `User` FK".
+    prisma.appEnquiry.findMany({ where: { email: email.trim().toLowerCase() } }),
   ]);
 
   return { invoices, enquiries };
@@ -486,6 +535,7 @@ transport (streaming, an expiring download) rather than by dropping rows.
 ## Related Documentation
 
 - [Account Deletion & Right to Erasure](./data-erasure.md) — the Art. 17 counterpart
+- [Org Data Export](./org-export.md) — the same discipline with an organisation as the subject (§106)
 - [Privacy & Cookie Consent](./overview.md) — consent system
 - `lib/privacy/export-sources.ts` — the manifest
 - `lib/app/data-export.ts` — the fork seam (collector + declarations)

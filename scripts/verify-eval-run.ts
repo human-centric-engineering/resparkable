@@ -2,9 +2,7 @@
  * End-to-end verification: seed a small dataset + run, drive the worker
  * directly, and report what happened.
  *
- * Usage:  tsx -r dotenv/config scripts/verify-eval-run.ts dotenv_config_path=.env.local
- *
- * Or via the npm helper: npm run verify:eval-run
+ * Usage:  DOTENV_CONFIG_PATH=.env.local tsx -r dotenv/config scripts/verify-eval-run.ts
  *
  * Bypasses HTTP/auth (uses Prisma directly to set up state) so we can
  * exercise the worker on the dev DB without juggling cookies. This is a
@@ -57,7 +55,7 @@ async function main(): Promise<void> {
   // 1. Resolve admin + agent
   const user = await prisma.user.findUnique({ where: { email: ADMIN_EMAIL } });
   if (!user) throw new Error(`No user with email ${ADMIN_EMAIL}`);
-  const agent = await prisma.aiAgent.findUnique({ where: { slug: AGENT_SLUG } });
+  const agent = await prisma.aiAgent.findFirst({ where: { slug: AGENT_SLUG } });
   if (!agent) throw new Error(`No agent with slug ${AGENT_SLUG}`);
   console.log(`✓ admin=${user.email}  agent=${agent.slug}`);
 

@@ -1,13 +1,25 @@
 # Data Retention & Pruning
 
-How Resparkable automatically deletes aged operational data. All pruning is enforced
-by `enforceRetentionPolicies()` in `lib/orchestration/retention.ts`, run as one
-task of the unified maintenance tick (`POST /api/v1/admin/orchestration/maintenance/tick`,
-called ~every 60s by an external cron). The sweep itself is throttled to **at
-most once an hour** per process, since every window here is measured in days —
-see [per-task minimum intervals](./scheduling.md#unified-maintenance-tick-admin-auth-required-preferred).
-This is the **scheduled-purge** half of
-the platform's data lifecycle; on-demand subject erasure is separate — see
+How Resparkable automatically deletes aged operational data. Pruning is enforced by
+two sweeps in `lib/orchestration/retention.ts` (the windows they prune on are
+resolved in `lib/orchestration/retention-windows.ts`), each a task of the unified
+maintenance tick (`POST /api/v1/admin/orchestration/maintenance/tick`, called
+~every 60s by an external cron) and each throttled to **at most once an hour**
+per process, since every window here is measured in days — see
+[per-task minimum intervals](./scheduling.md#unified-maintenance-tick-admin-auth-required-preferred):
+
+- **`enforceRetentionPolicies()`** — the tenant sweep (task `retention`). Every
+  table it prunes is tenant-owned, so it runs **once per org, inside that org's
+  tenant context** (§108): at `TENANCY_MODE=multi` each prune is confined to
+  the org's rows by the `org_isolation` policies; at `single` the one org is the
+  install org and the sweep behaves as it always did.
+- **`enforceSystemRetentionPolicies()`** — the system sweep (task
+  `auditLogRetention`). The admin audit log and the MCP audit log have no org
+  column, so they are pruned **once, under the audited system scope**, rather
+  than N times.
+
+This is the **scheduled-purge** half of the platform's data lifecycle; on-demand
+subject erasure is separate — see
 [Account Deletion & Right to Erasure](../privacy/data-erasure.md).
 
 ## What gets pruned
@@ -19,14 +31,100 @@ the platform's data lifecycle; on-demand subject erasure is separate — see
 | Webhook DLQ (`exhausted`)                                                                    | `webhookDlqRetentionDays`            | global settings | Falls back to `webhookRetentionDays` when null. |
 | Event-hook deliveries                                                                        | `webhookRetentionDays`               | global settings | Same class as webhook deliveries.               |
 | Cost logs                                                                                    | `costLogRetentionDays`               | global settings | Must be ≥ `executionRetentionDays` — see below. |
-| Admin audit logs                                                                             | `auditLogRetentionDays`              | global settings | Max 3650 days (10y) for compliance regimes.     |
 | **Workflow executions** (+ steps, dispatches, lease events, per-step cost, inbound payloads) | `executionRetentionDays`             | global settings | **Terminal only** — see below.                  |
 | **Evaluation history** (`AiEvaluationSession` / `Run` + their logs/cases)                    | `evaluationRetentionDays`            | global settings | **Terminal only** — see below.                  |
-| MCP audit logs                                                                               | `McpServerConfig.auditRetentionDays` | MCP config      | **Always on** (default 90) — see below.         |
+| Admin audit logs _(system sweep)_                                                            | `auditLogRetentionDays`              | global settings | Max 3650 days (10y) for compliance regimes.     |
+| MCP audit logs _(system sweep)_                                                              | `McpServerConfig.auditRetentionDays` | MCP config      | **Always on** (default 90) — see below.         |
 
 Every global window is **nullable: `null` = keep forever** (skip that prune).
 The two retention columns added for executions and evaluations live on
 `AiOrchestrationSettings` and are editable in the admin Settings → Retention card.
+
+The five windows the tenant sweep uses are **defaults an org can override** —
+see below. The two on the system sweep cannot be: those rows have no org.
+
+## Per-org windows
+
+An org may keep its history on its own schedule (§108 t-713). The five windows
+the tenant sweep reads are stored per org in `Org.settings.retention`, and the
+global row is what an org that sets nothing gets:
+
+```json
+{ "retention": { "executionRetentionDays": 365, "webhookRetentionDays": null } }
+```
+
+| In the slice                  | Effect                                                 |
+| ----------------------------- | ------------------------------------------------------ |
+| key **absent**                | inherit the global window                              |
+| key set to a **number**       | that window, for this org                              |
+| key set to **`null`**         | what `null` means for that column globally — see below |
+| slice absent, `{}`, or `null` | the org is on every global window                      |
+
+Note `null` on `executionRetentionDays` is the one value the coherence rule
+below treats as the **longest** window rather than an absent one: executions
+kept for ever outlive every finite cost-log window, so that combination is
+refused. `null` means **keep that class forever** for four of the five keys. The
+exception is `webhookDlqRetentionDays`, where a null window means "use
+`webhookRetentionDays`" — the fallback in the first table, which preserves
+pre-DLQ behaviour for installs that never set the column. So nulling the DLQ
+window prunes dead-lettered rows on the org's _webhook_ window rather than
+keeping them, and neither level can currently express "prune deliveries but
+never the DLQ".
+
+Precedence is **per key**, so an org that lengthens its execution window still
+follows the platform on everything else — including the DLQ window, which is
+not shortened by overriding `webhookRetentionDays` beside it _unless_ the DLQ
+window is null at both levels, in which case the fallback above applies and the
+webhook window governs both.
+
+**Five keys, not six.** `auditLogRetentionDays` prunes `AiAdminAuditLog`, a
+system model with no `orgId` that the system sweep owns: rows nobody owns
+cannot be kept per owner. `McpServerConfig.auditRetentionDays` is the same
+shape. `AiAgent.retentionDays` was already per agent and therefore per org, and
+is untouched by any of this.
+
+**A slice applies at `TENANCY_MODE=multi` only.** No prune carries an `orgId`,
+so confinement is the `org_isolation` policies' job, and at `single` there are
+no policies at all. `forEachOrg` iterates every ACTIVE org in both modes and
+the org API creates orgs in both, so a `single` install can hold more than one
+— and one org's seven-day window would then delete every org's rows. A slice
+set at `single` is stored and returned by the org API, and the PATCH that
+stores it says so at the time; switching the install to `multi` turns it on.
+The sweep itself is silent, and does not even read the slice — a read whose
+answer it must discard is an hourly query per org that can only fail.
+
+**Writing it**: `PATCH /api/v1/admin/orgs/[id]` with
+`{ "settings": { "retention": { … } } }` — platform admin only until the org
+console (§111) gives an org admin a surface of their own. The PATCH **replaces**
+the slice (a body states the org's whole set of windows) and preserves every
+other key in `settings`, which is where a fork keeps its own org config.
+`{ "retention": null }` removes the slice.
+
+**Reading it**: the sweep resolves the effective windows inside the org's own
+run (`loadEffectiveRetentionWindows()`), and logs which windows the org
+overrode. `GET /api/v1/orgs/[id]` publishes the validated slice to any member;
+`GET /api/v1/admin/orgs/[id]` returns the whole `settings` column.
+
+**The prunes rely on the policies, and per-org windows raise the stakes of
+running without them.** No prune carries an `orgId` in its `where` clause —
+the extension is the chokepoint (§107), so confinement at `multi` is the
+`org_isolation` policies' job. In the window the playbook warns about — an app
+live at `multi` before `db:tenancy:enable` has run, or after a `db:reset` left
+the policies dormant — every org already sees every org's rows. What changes
+here is what the tick does in that window: with one global window its N runs
+deleted the same set N times, and with per-org windows the shortest window any
+org set is applied to everyone's rows. Enable the policies before the app
+serves `multi`, which the
+[playbook](../architecture/multi-tenancy.md) already requires for isolation of
+any kind.
+
+**A stored window that cannot be read is treated as absent**, and only that
+window: the org inherits the global value for it, keeps the rest of its slice,
+and the sweep logs which keys it dropped. Discarding the whole slice over one
+bad key would silently shorten every window the org had lengthened, which is
+the one direction that deletes data. A settings **read failure** is different
+again — the sweep skips its prunes for that org entirely rather than falling
+back to windows the org may have rejected.
 
 ## Terminal-only pruning (executions & evaluations)
 
@@ -54,12 +152,33 @@ an execution reporting real spend with an empty cost breakdown underneath — an
 way to tell a retention artefact from a bug in cost capture. Dashboard aggregates
 are unaffected; it's the per-execution drill-down that empties.
 
-Unlike the evaluation coupling below, this one is **enforced in code**, in three
-places: the settings form blocks the save client-side, the Zod schema rejects a
-whole-form save, and the PATCH route re-checks the patch against the persisted row
-(so moving either side alone is caught). Installs already configured this way
-predate the check and never re-save settings, so `enforceRetentionPolicies()` also
-logs a warning once per sweep when it sees the pair.
+**`null` is not symmetrical in this rule.** Cost logs kept for ever satisfy it
+against anything; **executions** kept for ever violate it against every finite
+cost-log window, because they outlive all of them. So the only coherent way to
+keep executions for ever is to keep cost logs for ever too. Reading both nulls
+as "unset, therefore uncoupled" is a real defect, and it is still present on the
+global side — see the table below.
+
+Unlike the evaluation coupling below, this one is **enforced in code**, in four
+places, and they do not all enforce the same rule yet:
+
+| Where                                                          | Catches a short cost-log window | Catches `executionRetentionDays: null` |
+| -------------------------------------------------------------- | ------------------------------- | -------------------------------------- |
+| The settings form, client-side                                 | yes                             | no                                     |
+| `updateOrchestrationSettingsSchema`'s refine (whole-form save) | yes                             | no                                     |
+| The settings PATCH route, against the persisted row            | yes                             | no                                     |
+| The org PATCH route, against the **effective** pair (§108)     | yes                             | yes                                    |
+
+The three `no`s are one inherited hole, filed against the global surface rather
+than widened from a per-org task.
+
+Three states get past whichever of those apply: an install configured before
+the checks existed and never re-saved; an org whose stored slice is made
+incoherent later by a change to the global row it inherits the other half from;
+and a global `executionRetentionDays: null` set through any of the first three.
+So `enforceRetentionPolicies()` also logs a warning once per sweep, per org,
+naming the org whose pair is wrong — and that warning **does** know the
+asymmetry.
 
 ## Keep `evaluationRetentionDays ≤ executionRetentionDays`
 
@@ -89,18 +208,32 @@ Each prune is a small, uniform addition to `lib/orchestration/retention.ts`:
    means "resolve it yourself" (via `resolveRetentionDays`, for direct callers),
    an explicit `null` means "skip". Then `deleteMany` by `createdAt < cutoff`,
    plus a terminal-status filter for any table with in-flight rows.
-3. Add the column to `RetentionWindows` and `loadRetentionWindows()`, call the
-   prune from `enforceRetentionPolicies()` **passing the loaded window**, and add
-   its count to `RetentionResult`. The sweep reads the settings row exactly once
-   (#442); a prune that resolves its own window inside the sweep puts a
-   round-trip back per tick.
-4. Surface the setting: Zod schema (`lib/validations/orchestration.ts`), the
+3. Add the column to `RetentionWindows` and `loadRetentionWindows()` in
+   `lib/orchestration/retention-windows.ts`, call the prune from
+   `enforceRetentionPolicies()` **passing the loaded window**, and add its count
+   to `RetentionResult`. The sweep reads the settings row exactly once (#442); a
+   prune that resolves its own window inside the sweep puts a round-trip back
+   per tick. **If the table is a system model** (no `orgId` — `SYSTEM_MODELS` in
+   `lib/tenancy/classification.ts`), call it from
+   `enforceSystemRetentionPolicies()` instead and add the count to
+   `SystemRetentionResult`: the tenant sweep runs once per org, and a system
+   table pruned there is pruned N times.
+4. **A tenant window is also an org-settable one.** Add the key to
+   `ORG_RETENTION_KEYS` and `orgRetentionSchema` in
+   `lib/validations/tenancy.ts`, with the same bound the global schema gives
+   it — or, where the global schema gives it none, a bound of your own, as
+   `webhookDlqRetentionDays` has. A test fails until you do — the two key lists are held level, because a
+   window only the platform can set is one no org can override and nothing else
+   would say so. A **system** window has no org slice and does not belong in
+   either list.
+5. Surface the setting: Zod schema (`lib/validations/orchestration.ts`), the
    settings PATCH route, the settings form (with `<FieldHelp>`), and the backup
    exporter/importer/schema for config round-trip.
-5. Add a case to `tests/unit/lib/orchestration/retention.test.ts`.
+6. Add a case to `tests/unit/lib/orchestration/retention.test.ts`, and one to
+   `retention-windows.test.ts` if the resolution itself changed.
 
-The maintenance tick needs no change — it already invokes `enforceRetentionPolicies()`
-and logs every count in its background-task summary.
+The maintenance tick needs no change — it already invokes both sweeps and logs
+every count in its background-task summary.
 
 ## Related Documentation
 

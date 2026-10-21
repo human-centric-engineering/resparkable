@@ -14,6 +14,9 @@ import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import { env } from '@/lib/env';
+import { withTenancy, type TenancyClient } from '@/lib/db/tenancy-extension';
+import { getTenantContext, isMultiTenant } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
@@ -28,15 +31,26 @@ if (env.NODE_ENV !== 'production') globalForPrisma.pool = pool;
 // Create Prisma adapter
 const adapter = new PrismaPg(pool);
 
-// Create Prisma client
-export const prisma =
+// The base client is what survives a hot reload (it owns the pool)
+const baseClient =
   globalForPrisma.prisma ??
   new PrismaClient({
     adapter,
     log: env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
   });
 
-if (env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
+if (env.NODE_ENV !== 'production') globalForPrisma.prisma = baseClient;
+
+// The tenancy chokepoint (§107) is applied fresh on every evaluation: it
+// stamps `orgId` on every tenant-owned create and, at TENANCY_MODE=multi,
+// scopes every operation to the org the request entered. It closes over the
+// tenant context module, which a dev reload re-creates — so never retain the
+// extended client. See .context/tenancy/context.md#the-data-layer--libdbtenancy-extensionts
+export const prisma: TenancyClient = withTenancy(baseClient, {
+  isMultiTenant,
+  getTenantContext,
+  installOrgId: INSTALL_ORG_ID,
+});
 ```
 
 **Why Global**: Prevents creating multiple Prisma clients during Next.js hot-reloading in development.
@@ -832,12 +846,12 @@ Use the `AgentWithCapabilities` type from `@/types/orchestration` to load an age
 
 **Purpose:** Source documents and their vector embeddings for retrieval-augmented generation.
 
-- **`AiKnowledgeDocument`** — tracks uploaded source files. `fileHash` is a SHA-256 used for deduplication. `status` follows `DocumentStatus` (`processing`, `ready`, `failed`). A **partial unique index** (`idx_knowledge_doc_file_hash_ready`) prevents two `ready` documents from sharing a hash; failed uploads are intentionally excluded so callers can retry.
+- **`AiKnowledgeDocument`** — tracks uploaded source files. `fileHash` is a SHA-256 used for deduplication. `status` follows `DocumentStatus` (`processing`, `ready`, `failed`). A **partial unique index** (`idx_knowledge_doc_file_hash_ready`, on `(orgId, fileHash)`) prevents two `ready` documents in one org from sharing a hash; failed uploads are intentionally excluded so callers can retry. `slug` is unique per org (`@@unique([orgId, slug])`, §107 t-708), as on `AiAgent` and `AiKnowledgeBase`.
 - **`AiKnowledgeChunk`** — vector store row. **Non-obvious:**
   - `embedding` is `Unsupported("vector(1536)")?` — it is **not selectable through the Prisma client**. All reads/writes must use `prisma.$queryRaw` with pgvector operators (`<=>` for cosine distance).
   - An HNSW index on `embedding` (`vector_cosine_ops`, m=16, ef_construction=64) supports approximate nearest-neighbour search.
   - `searchVector` is `Unsupported("tsvector")?`, declared as a `GENERATED ALWAYS AS (to_tsvector('english', content || keywords)) STORED` column at the database layer — Postgres auto-populates it on `INSERT`/`UPDATE`, so application code never writes to it. A GIN index supports `ts_rank_cd` ranking when hybrid search is enabled (see `searchConfig.hybridEnabled` in [Knowledge Base — Search](../orchestration/knowledge.md#search)).
-  - `chunkKey` is a unique business key (distinct from `id`) used by the application to stably address chunks across re-ingest.
+  - `chunkKey` is a business key (distinct from `id`) used by the application to stably address chunks across re-ingest. It is unique **per org** (`@@unique([orgId, chunkKey])`, §116 t-726): any org that loads the seeded patterns knowledge holds its fixed keys.
   - `chunkType`, `patternNumber`, `patternName`, `category`, `section` are indexed for filtering; these carry forward metadata from the source document structure.
   - Cascade deletes with the parent document.
 

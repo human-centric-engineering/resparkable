@@ -40,6 +40,9 @@ vi.mock('@/lib/db/client', () => ({
       count: vi.fn(),
     },
     aiAdminAuditLog: { create: vi.fn() },
+    // §108: the tick sweeps per org, so the scope runner reads the active
+    // orgs. One install org is what a `single` install has.
+    org: { findMany: vi.fn(async () => [{ id: 'install' }]) },
   },
 }));
 
@@ -123,6 +126,7 @@ function makeDeleteRequest(): NextRequest {
 const mockWorkflow = { id: VALID_WF_ID, slug: 'test-wf', isActive: true };
 
 const mockScheduleRecord = {
+  orgId: null,
   id: VALID_SCHED_ID,
   workflowId: VALID_WF_ID,
   name: 'Daily run',
@@ -463,6 +467,76 @@ describe('Schedule CRUD API', () => {
       const res = await tickScheduler(makePostRequest({}));
 
       expect(res.status).toBe(401);
+    });
+
+    it('answers 500 when the sweep failed for every org, not 200 with an error list (§108)', async () => {
+      // With one org the throw reaches the guard and this route 500s. Without
+      // this, adding a second org would turn the same total failure into a
+      // 200 — a cron monitor would stop alerting exactly when it got worse.
+      const { prisma } = await import('@/lib/db/client');
+      vi.mocked(prisma.org.findMany).mockResolvedValueOnce([
+        { id: 'org_a' },
+        { id: 'org_b' },
+      ] as never);
+      vi.mocked(processDueSchedules).mockRejectedValue(new Error('schedules down'));
+
+      const res = await tickScheduler(makePostRequest({}));
+      const json = JSON.parse(await res.text());
+
+      expect(res.status).toBe(500);
+      expect(json.error.code).toBe('SCHEDULER_TICK_FAILED');
+      expect(json.error.details.orgErrors).toHaveLength(2);
+    });
+
+    it('answers 500 when there is no active org to sweep for', async () => {
+      // No ACTIVE org is a broken install, not a quiet one — a cron monitor
+      // must not read it as a healthy idle sweep.
+      const { prisma } = await import('@/lib/db/client');
+      vi.mocked(prisma.org.findMany).mockResolvedValueOnce([] as never);
+
+      const res = await tickScheduler(makePostRequest({}));
+      const json = JSON.parse(await res.text());
+
+      expect(res.status).toBe(500);
+      expect(json.error.code).toBe('SCHEDULER_TICK_FAILED');
+      expect(processDueSchedules).not.toHaveBeenCalled();
+    });
+
+    it('still answers 200 when only some orgs failed', async () => {
+      const { prisma } = await import('@/lib/db/client');
+      const { getTenantContext } = await import('@/lib/tenancy/context');
+      vi.mocked(prisma.org.findMany).mockResolvedValueOnce([
+        { id: 'org_a' },
+        { id: 'org_b' },
+      ] as never);
+      vi.mocked(processDueSchedules).mockImplementation(async () => {
+        if (getTenantContext()?.orgId === 'org_a') throw new Error('A down');
+        return { processed: 1, succeeded: 1, failed: 0, errors: [] };
+      });
+
+      const res = await tickScheduler(makePostRequest({}));
+      const json = JSON.parse(await res.text());
+
+      expect(res.status).toBe(200);
+      expect(json.data.processed).toBe(1);
+      expect(json.data.orgErrors).toHaveLength(1);
+    });
+
+    it('runs the sweep inside the iterated org, not the calling admin’s session org (§108)', async () => {
+      // Before §108 this route ran `processDueSchedules()` bare, so at `multi`
+      // it swept only the org the admin's guard had entered. Now it goes
+      // through the same per-org runner as the maintenance tick.
+      const { getTenantContext } = await import('@/lib/tenancy/context');
+      let orgSeen: string | null | undefined = 'never-ran';
+      vi.mocked(processDueSchedules).mockImplementation(async () => {
+        orgSeen = getTenantContext()?.orgId;
+        return { processed: 0, succeeded: 0, failed: 0, errors: [] };
+      });
+
+      const res = await tickScheduler(makePostRequest({}));
+
+      expect(res.status).toBe(200);
+      expect(orgSeen).toBe('install');
     });
 
     it('returns partial results when some schedules fail', async () => {

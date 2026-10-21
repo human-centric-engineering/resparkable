@@ -31,10 +31,23 @@ vi.mock('next/headers', () => ({
  * with a transactional client that records create/update calls so we can
  * verify the import wrote the correct data.
  */
+// The version helpers read the agent back and write `AiAgentVersion` rows;
+// their behaviour is proved in agent-versioning's own tests. Here they are
+// stubbed so the test can assert WHEN the import calls them.
+vi.mock('@/lib/orchestration/agents/agent-versioning', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/lib/orchestration/agents/agent-versioning')>();
+  return {
+    ...actual,
+    ensureBaselineVersion: vi.fn(async () => undefined),
+    recordAgentVersion: vi.fn(async () => 2),
+  };
+});
+
 vi.mock('@/lib/db/client', () => {
   const txMock = {
     aiAgent: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
     },
@@ -189,8 +202,8 @@ describe('Agent Export → Import Round-Trip', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    // tx.aiAgent.findUnique returns null so import creates a new agent
-    txMock.aiAgent.findUnique.mockResolvedValue(null);
+    // tx.aiAgent.findFirst returns null so import creates a new agent
+    txMock.aiAgent.findFirst.mockResolvedValue(null);
     txMock.aiAgent.create.mockResolvedValue({ id: 'new-agent-id', slug: 'research-assistant' });
     txMock.aiAgentCapability.createMany.mockResolvedValue({ count: 1 });
     txMock.aiAgentKnowledgeTag.createMany.mockResolvedValue({ count: 1 });

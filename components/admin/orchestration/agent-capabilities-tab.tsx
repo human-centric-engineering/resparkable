@@ -75,9 +75,19 @@ const PINNED_CAPABILITY_SLUG = 'search_knowledge_base';
 
 export interface AgentCapabilitiesTabProps {
   agentId: string;
+  /**
+   * The agent is a platform agent whose bindings are the platform's (§116
+   * t-725): the API refuses attach, detach and the on/off switch, so they are
+   * hidden or disabled. Configure (custom config and rate limit) stays the
+   * org's: the reconcile never writes either.
+   */
+  bindingsLocked?: boolean;
 }
 
-export function AgentCapabilitiesTab({ agentId }: AgentCapabilitiesTabProps) {
+export function AgentCapabilitiesTab({
+  agentId,
+  bindingsLocked = false,
+}: AgentCapabilitiesTabProps) {
   const [attached, setAttached] = useState<AttachedLink[] | null>(null);
   const [catalogue, setCatalogue] = useState<AiCapability[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -258,13 +268,24 @@ export function AgentCapabilitiesTab({ agentId }: AgentCapabilitiesTabProps) {
         </FieldHelp>
       </div>
 
+      {bindingsLocked && (
+        <p
+          data-testid="platform-bindings-note"
+          className="text-muted-foreground rounded-md border px-3 py-2 text-sm"
+        >
+          This platform agent&apos;s capabilities are set by the platform and updated with each
+          release, so they cannot be attached, detached or switched here. You can still set a
+          per-agent config and rate limit under <strong>Configure</strong>.
+        </p>
+      )}
+
       {error && (
         <div className="border-destructive/50 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm">
           {error}
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className={bindingsLocked ? 'grid gap-4' : 'grid gap-4 md:grid-cols-2'}>
         {/* Attached */}
         <section className="bg-card rounded-md border">
           <header className="border-b px-3 py-2 text-sm font-medium">Attached</header>
@@ -286,6 +307,7 @@ export function AgentCapabilitiesTab({ agentId }: AgentCapabilitiesTabProps) {
                       checked={link.isEnabled}
                       onCheckedChange={(v) => void handleToggleEnabled(link, v)}
                       aria-label={`Toggle ${link.capability.name}`}
+                      disabled={bindingsLocked}
                     />
                     <Button
                       type="button"
@@ -296,16 +318,18 @@ export function AgentCapabilitiesTab({ agentId }: AgentCapabilitiesTabProps) {
                     >
                       Configure
                     </Button>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="text-red-600"
-                      onClick={() => void handleDetach(link.capabilityId)}
-                      aria-label={`Detach ${link.capability.name}`}
-                    >
-                      Detach
-                    </Button>
+                    {!bindingsLocked && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600"
+                        onClick={() => void handleDetach(link.capabilityId)}
+                        aria-label={`Detach ${link.capability.name}`}
+                      >
+                        Detach
+                      </Button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -315,80 +339,82 @@ export function AgentCapabilitiesTab({ agentId }: AgentCapabilitiesTabProps) {
           )}
         </section>
 
-        {/* Available */}
-        <section className="bg-card rounded-md border">
-          <header className="space-y-2 border-b px-3 py-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">Available</span>
-              <span className="text-muted-foreground text-xs">
-                {filteredAvailable.length} of {available.length}
-              </span>
-            </div>
-            {available.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative min-w-0 flex-1">
-                  <Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
-                  <Input
-                    value={availableSearch}
-                    onChange={(e) => setAvailableSearch(e.target.value)}
-                    placeholder="Search name, slug, description…"
-                    className="h-8 pl-8 text-xs"
-                    aria-label="Search available capabilities"
-                  />
-                </div>
-                {availableCategories.length > 1 && (
-                  <Select value={availableCategory} onValueChange={setAvailableCategory}>
-                    <SelectTrigger
-                      className="h-8 w-[140px] text-xs"
-                      aria-label="Filter by category"
-                    >
-                      <SelectValue placeholder="Category" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-                      {availableCategories.map((c) => (
-                        <SelectItem key={c} value={c}>
-                          {c}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )}
+        {/* Available — nothing here can be attached when the platform owns the bindings. */}
+        {!bindingsLocked && (
+          <section className="bg-card rounded-md border">
+            <header className="space-y-2 border-b px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">Available</span>
+                <span className="text-muted-foreground text-xs">
+                  {filteredAvailable.length} of {available.length}
+                </span>
               </div>
-            )}
-          </header>
-          {filteredAvailable.length > 0 ? (
-            <ul className="divide-y">
-              {filteredAvailable.map((cap) => (
-                <li key={cap.id} className="flex items-center justify-between gap-2 p-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{cap.name}</p>
-                    <p className="text-muted-foreground truncate font-mono text-xs">{cap.slug}</p>
-                    {cap.description && (
-                      <p className="text-muted-foreground mt-1 line-clamp-2 text-xs">
-                        {cap.description}
-                      </p>
-                    )}
+              {available.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="text-muted-foreground absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
+                    <Input
+                      value={availableSearch}
+                      onChange={(e) => setAvailableSearch(e.target.value)}
+                      placeholder="Search name, slug, description…"
+                      className="h-8 pl-8 text-xs"
+                      aria-label="Search available capabilities"
+                    />
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void handleAttach(cap.id)}
-                  >
-                    Attach
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-muted-foreground p-3 text-sm">
-              {available.length === 0
-                ? 'Every capability is already attached.'
-                : 'No capabilities match the current search or category.'}
-            </p>
-          )}
-        </section>
+                  {availableCategories.length > 1 && (
+                    <Select value={availableCategory} onValueChange={setAvailableCategory}>
+                      <SelectTrigger
+                        className="h-8 w-[140px] text-xs"
+                        aria-label="Filter by category"
+                      >
+                        <SelectValue placeholder="Category" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
+                        {availableCategories.map((c) => (
+                          <SelectItem key={c} value={c}>
+                            {c}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              )}
+            </header>
+            {filteredAvailable.length > 0 ? (
+              <ul className="divide-y">
+                {filteredAvailable.map((cap) => (
+                  <li key={cap.id} className="flex items-center justify-between gap-2 p-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{cap.name}</p>
+                      <p className="text-muted-foreground truncate font-mono text-xs">{cap.slug}</p>
+                      {cap.description && (
+                        <p className="text-muted-foreground mt-1 line-clamp-2 text-xs">
+                          {cap.description}
+                        </p>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleAttach(cap.id)}
+                    >
+                      Attach
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted-foreground p-3 text-sm">
+                {available.length === 0
+                  ? 'Every capability is already attached.'
+                  : 'No capabilities match the current search or category.'}
+              </p>
+            )}
+          </section>
+        )}
       </div>
 
       <ConfigureDialog
@@ -440,7 +466,9 @@ function ConfigureDialog({ link, agentId, onOpenChange, onSaved }: ConfigureDial
     setSaving(true);
     setError(null);
     try {
-      let customConfig: unknown = undefined;
+      // Blank clears the config (null), as a blank rate limit clears the
+      // override below.
+      let customConfig: unknown = null;
       if (configText.trim()) {
         try {
           customConfig = JSON.parse(configText);
@@ -450,11 +478,10 @@ function ConfigureDialog({ link, agentId, onOpenChange, onSaved }: ConfigureDial
           return;
         }
       }
-      const customRateLimit = rateLimit.trim() === '' ? undefined : Number(rateLimit);
-      if (
-        customRateLimit !== undefined &&
-        (!Number.isFinite(customRateLimit) || customRateLimit < 1)
-      ) {
+      // Blank means "inherit the capability's limit", so it clears an
+      // override (null) rather than leaving it untouched.
+      const customRateLimit = rateLimit.trim() === '' ? null : Number(rateLimit);
+      if (customRateLimit !== null && (!Number.isFinite(customRateLimit) || customRateLimit < 1)) {
         setError('Rate limit must be a positive number.');
         setSaving(false);
         return;

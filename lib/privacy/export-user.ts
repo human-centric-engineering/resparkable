@@ -28,6 +28,7 @@
 
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
+import { isMultiTenant, runAsSystem } from '@/lib/tenancy/context';
 import { collectAppSubjectData, type AppSubjectData } from '@/lib/app/data-export';
 import {
   SUBJECT_DATA_SOURCES,
@@ -192,6 +193,12 @@ function countAppRows(value: unknown): number {
   return 1;
 }
 
+/** One manifest source and the rows it returned for the subject. */
+interface SourceResult {
+  source: (typeof SUBJECT_DATA_SOURCES)[number];
+  rows: unknown[];
+}
+
 /**
  * Build one data subject's export bundle.
  *
@@ -212,14 +219,58 @@ export async function exportUserData(params: ExportUserParams): Promise<SubjectE
     throw new SubjectNotFoundError(userId);
   }
 
-  const subject: SubjectQuery = { userId, email: account.email };
+  const subject: SubjectQuery = {
+    userId,
+    email: account.email,
+    emailVerified: account.emailVerified,
+  };
 
   // Run every source, then split by disposition. A rejection here propagates:
   // an export that quietly lost a section would be indistinguishable, to the
   // person reading it, from one that had nothing to show.
-  const results = await Promise.all(
-    SUBJECT_DATA_SOURCES.map(async (source) => ({ source, rows: await source.fetch(subject) }))
-  );
+  //
+  // At `multi`, read across every org, as the audited system scope (§107
+  // t-748). A person can belong to several orgs, and leave some, so their
+  // data has no one org to enter. The self-service and admin routes run
+  // inside the session's active org, and the `org_isolation` policy ANDed
+  // every read below with it, so the bundle silently held that org's
+  // conversations, memories and executions and no other's; an admin API key
+  // enters no org, and the reads threw. The bypass is safe here because every
+  // `fetch` in `export-sources.ts` filters on the subject (`userId`,
+  // `createdBy`, `uploadedBy`, `actorId`, the account's email), so it widens
+  // the answer to the person's rows in every org, not to anyone else's. The
+  // app collector runs inside the same scope, for the same reason.
+  //
+  // One source at a time there, as the org export reads (t-735): each read
+  // is its own transaction holding a pooled connection, and starting every
+  // source at once can exhaust the pool. At `single` there is one org and no
+  // policy, so nothing is entered and the sources still run together — a
+  // collector or helper reading the implicit install org keeps working.
+  const multi = isMultiTenant();
+  const readAll = async (): Promise<{ results: SourceResult[]; app: AppSubjectData }> => {
+    const fetchOne = async (source: SourceResult['source']): Promise<SourceResult> => ({
+      source,
+      rows: await source.fetch(subject),
+    });
+    const results: SourceResult[] = [];
+    if (multi) {
+      for (const source of SUBJECT_DATA_SOURCES) results.push(await fetchOne(source));
+    } else {
+      results.push(...(await Promise.all(SUBJECT_DATA_SOURCES.map(fetchOne))));
+    }
+    // The fork's collector gets exactly `AppSubjectQuery` — that type lives in
+    // the fork-owned scaffold, so a field it does not declare stays out.
+    return { results, app: await collectAppSubjectData({ userId, email: account.email }) };
+  };
+  // The reason names whose rows and who asked: it is the audit line for a
+  // read across every org, and it is logged before the work, so it survives
+  // an export that fails.
+  const { results, app } = multi
+    ? await runAsSystem(
+        `subject data export: user ${userId}'s rows in every org, for ${actorUserId}`,
+        readAll
+      )
+    : await readAll();
 
   const personalData: Record<string, unknown[]> = {};
   const attributions: Record<string, unknown[]> = {};
@@ -253,8 +304,6 @@ export async function exportUserData(params: ExportUserParams): Promise<SubjectE
     where: { subjectUserId: userId },
     orderBy: { erasedAt: 'asc' },
   });
-
-  const app = await collectAppSubjectData(subject);
 
   // Hold the collector to what the tier declared. Extra sections are fine — a
   // fork may export a derived view that is not a table — but a declared one

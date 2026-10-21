@@ -120,6 +120,10 @@ export const corePolicies: TransferPolicySet = {
         contextId:
           'Caller-supplied correlation id from the embedding page or inbound ' +
           'adapter. Opaque to us and meaningless outside its origin.',
+        embedVisitorId:
+          'An anonymous embed visitor, not a row. A conversation has either a ' +
+          'user or a visitor, never both, so an account’s own conversations ' +
+          'carry none.',
       },
       jsonOpaque: {
         metadata:
@@ -209,7 +213,9 @@ export const corePolicies: TransferPolicySet = {
       disposition: 'transfer',
       note: 'Agents you configured: their instructions, model settings and tools.',
       ownerColumn: 'createdBy',
-      mergeKeys: [['slug']],
+      // Slugs are unique per org since Sunrise 0.13. The planner sets `orgId`
+      // to the importing org, so this matches within it.
+      mergeKeys: [['orgId', 'slug']],
       jsonOpaque: {
         systemInstructionsHistory: 'Previous instruction texts with timestamps.',
         providerConfig: 'Temperature, token limits, provider-specific switches.',
@@ -736,6 +742,21 @@ export const corePolicies: TransferPolicySet = {
   ],
 
   excluded: [
+    {
+      model: 'Org',
+      owner: 'core',
+      reason:
+        'The organisation itself. An account moves between installations, not ' +
+        'between organisations: rows that name an org are given the importing ' +
+        'one, the way owner columns are given the importing account.',
+    },
+    {
+      model: 'OrgMembership',
+      owner: 'core',
+      reason:
+        'Which organisations a person belongs to. Decided by the installation ' +
+        'the account lands in (sign-up or invitation), not by a file.',
+    },
     {
       model: 'AiWorkflowStepDispatch',
       owner: 'core',

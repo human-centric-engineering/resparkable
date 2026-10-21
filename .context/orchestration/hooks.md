@@ -59,6 +59,8 @@ Defined in `HOOK_EVENT_TYPES` in `lib/orchestration/hooks/types.ts`:
 | `capability.refused_not_advertised` | `lib/orchestration/chat/streaming-handler.ts` (#488) and `lib/orchestration/engine/executors/agent-call.ts` (#559) — the model asked for a tool the agent was never offered this turn; payload: `{ agentId, agentSlug, userId, toolName, advertised }` plus `conversationId` (chat) or `executionId` + `stepId` (workflow)                                                                                                                                                                                    |
 | `chat_budget_exceeded_per_turn`     | `lib/orchestration/chat/streaming-handler.ts` (improvement #39 — webhook system only)                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
+**A widget visitor is not a user** (#705, t-765). On `message.created`, `conversation.started` and `capability.refused_not_advertised` from an embed widget turn, `userId` is `null` and the anonymous visitor id arrives as `embedVisitorId`. A subscriber that looks `userId` up as a `User` never gets a visitor id. See [`embed.md`](./embed.md#a-visitor-is-not-a-user).
+
 `capability.refused_not_advertised` fires when the model emits a tool name that
 was not in the set advertised to it for that turn. The caller refuses the call
 — it never reaches the dispatcher — and this event is how a fork notices.
@@ -282,9 +284,11 @@ Dispatch uses the cached secret — in multi-instance deployments, each instance
 
 ## Cache Behaviour
 
-- Enabled hooks load from the DB into a module-level `Map<eventType, CachedHook[]>`
-- **TTL:** 60 seconds (`CACHE_TTL_MS`)
-- Any hook CRUD operation (POST, PATCH, DELETE) calls `invalidateHookCache()` so admin changes take effect immediately
+- Enabled hooks load from the DB into a module-level `Map<orgId, { byType, loadedAt }>` — **per org**, because `AiEventHook` is tenant-owned and `eventType` is a label two orgs both use (§108 t-712; before it, whichever org refreshed the cache had its hooks dispatched for every org for the next minute)
+- **TTL:** 60 seconds (`CACHE_TTL_MS`), per org partition
+- Any hook CRUD operation (POST, PATCH, DELETE) calls `invalidateHookCache()`, which clears **every** org's partition so admin changes take effect immediately
+- The load runs in the emitting call stack's tenant context. Two stacks are refused, both logging `Hook dispatch error` and dispatching nothing rather than reading wide — an event that cannot say whose it is cannot say whose hooks to fire: one that entered no org (`TENANCY_MODE=multi` only; at `single` the context is the install org, so there is one partition and nothing changes), and one running under `runAsSystem`, where the RLS bypass would otherwise fan a single event out to **every** org's webhook URL, each signed with that org's secret
+- Partitions past their TTL are dropped on the next refresh, so the map does not accumulate one entry per org that has ever emitted — each holds every enabled hook's action, filter and secret
 - The cache is per-process — in a multi-instance deployment each instance independently reloads within 60s of a change
 
 ## Admin API
@@ -376,7 +380,11 @@ template that covers any update event:
   half_open→open transition. The dispatch is guarded against
   duplicates while the breaker stays open; receivers don't get a new
   event from a flapping provider until the breaker actually cycles.
-  Payload: `{ providerSlug, failures, threshold, windowMs, cooldownMs, openedAt }`.
+  Payload: `{ providerSlug, perCredential, failures, threshold, windowMs, cooldownMs, openedAt }`.
+  Breakers are per credential (§120 t-744): `perCredential` is `true` when
+  the breaker that opened belongs to one org's credential from a fork's
+  credential resolver rather than the install's shared one. `providerSlug` is
+  always the plain slug, and the credential's identity is not sent.
 
 ## Entity-Scoped Subscriptions
 

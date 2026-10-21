@@ -23,6 +23,7 @@ import {
   getClientIp,
 } from '@/lib/logging/context';
 import { createMockHeaders } from '@/tests/types/mocks';
+import { runAsOrg } from '@/lib/tenancy/context';
 
 // Mock dependencies
 vi.mock('next/headers', () => ({
@@ -164,7 +165,6 @@ describe('Logging Context Utilities', () => {
       expect(context).toEqual({
         requestId: 'req-123',
         method: 'POST',
-        url: 'http://localhost:3000/api/users',
         userAgent: 'Mozilla/5.0',
       } as any);
     });
@@ -181,8 +181,30 @@ describe('Logging Context Utilities', () => {
       // Assert
       expect(context.requestId).toBe('req-456');
       expect(context.method).toBeUndefined();
-      expect(context.url).toBeUndefined();
+      expect(context).not.toHaveProperty('url');
       expect(context.userAgent).toBeUndefined();
+    });
+
+    // #685: the context is bound to every line a route logs, and redaction is by
+    // key name only — a URL here would carry a query-string token or email, or a
+    // credential in the path, verbatim to stdout and the admin log buffer.
+    it('should carry no url key at all, so neither query nor path reaches the log', async () => {
+      // Arrange
+      const mockRequest = {
+        method: 'GET',
+        url: 'http://localhost:3000/s/Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z?token=live-secret&email=ada%40example.com',
+      } as Request;
+      vi.mocked(headers).mockResolvedValue(new Headers({ 'x-request-id': 'req-q' }));
+
+      // Act
+      const context = await getRequestContext(mockRequest);
+
+      // Assert
+      expect(context).not.toHaveProperty('url');
+      const serialised = JSON.stringify(context);
+      expect(serialised).not.toContain('Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z');
+      expect(serialised).not.toContain('live-secret');
+      expect(serialised).not.toContain('ada%40example.com');
     });
 
     it('should generate request ID if not in headers', async () => {
@@ -333,6 +355,33 @@ describe('Logging Context Utilities', () => {
     });
   });
 
+  describe('the org (§106)', () => {
+    // Inside the tenant scope the guard enters, both helpers carry `orgId`;
+    // outside it — an unguarded path, a platform credential — neither does.
+    // What makes scoping a breach to an org a lookup on the logs rather than
+    // a reconstruction.
+    it('getRequestContext and getFullContext carry orgId inside a tenant scope', async () => {
+      vi.mocked(headers).mockResolvedValue(createMockHeaders({}) as any);
+      vi.mocked(auth.api.getSession).mockResolvedValue(null);
+
+      const seen = await runAsOrg('cmorg000000000000000other', async () => ({
+        request: await getRequestContext(),
+        full: await getFullContext(),
+      }));
+
+      expect(seen.request.orgId).toBe('cmorg000000000000000other');
+      expect(seen.full.orgId).toBe('cmorg000000000000000other');
+    });
+
+    it('neither carries orgId outside a scope', async () => {
+      vi.mocked(headers).mockResolvedValue(createMockHeaders({}) as any);
+      vi.mocked(auth.api.getSession).mockResolvedValue(null);
+
+      expect((await getRequestContext()).orgId).toBeUndefined();
+      expect((await getFullContext()).orgId).toBeUndefined();
+    });
+  });
+
   describe('getFullContext()', () => {
     it('should combine request and user context', async () => {
       // Arrange
@@ -367,7 +416,6 @@ describe('Logging Context Utilities', () => {
       expect(context).toEqual({
         requestId: 'req-789',
         method: 'POST',
-        url: 'http://localhost:3000/api/posts',
         userAgent: 'Chrome',
         userId: 'user-123',
         sessionId: 'session-456',
@@ -518,6 +566,28 @@ describe('Logging Context Utilities', () => {
 
       // Assert
       expect(path).toBe('not-a-valid-url');
+    });
+
+    it('should drop the query string on the unparseable-URL fallback (#685)', () => {
+      const path = getEndpointPath({ url: '/relative/path?q=private#frag' } as Request);
+
+      expect(path).toBe('/relative/path');
+    });
+
+    it('should collapse a credential-shaped path segment (#685)', () => {
+      const path = getEndpointPath({
+        url: 'http://localhost:3000/api/v1/share/public/Ab3dEf6hIj9kLm2nOp5qRs8tUv1wXy4z?x=1',
+      } as Request);
+
+      expect(path).toBe('/api/v1/share/public/[param]');
+    });
+
+    it('should collapse a cuid id but keep readable segments (#685)', () => {
+      const path = getEndpointPath({
+        url: 'http://localhost:3000/api/v1/admin/orchestration/agents/cmtd5heg2001804ky8pgo6odx/capabilities',
+      } as Request);
+
+      expect(path).toBe('/api/v1/admin/orchestration/agents/[param]/capabilities');
     });
 
     it('should handle nested paths', () => {

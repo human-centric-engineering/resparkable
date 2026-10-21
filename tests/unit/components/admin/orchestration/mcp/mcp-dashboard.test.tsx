@@ -42,6 +42,7 @@ vi.mock('@/lib/api/client', () => ({
 
 import { apiClient } from '@/lib/api/client';
 import { McpDashboard } from '@/components/admin/orchestration/mcp/mcp-dashboard';
+import { SharedSettingsAccessProvider } from '@/components/admin/shared-settings-access';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -49,7 +50,6 @@ const ENABLED_SETTINGS = {
   isEnabled: true,
   serverName: 'Resparkable MCP Server',
   serverVersion: '1.0.0',
-  maxSessionsPerKey: 5,
   globalRateLimit: 60,
   auditRetentionDays: 90,
 };
@@ -92,14 +92,33 @@ describe('McpDashboard', () => {
   });
 
   describe('Quick links', () => {
-    it('renders all 6 quick link cards including Sessions', () => {
+    it('renders every quick link card', () => {
       render(<McpDashboard initialSettings={ENABLED_SETTINGS} stats={STATS_WITH_DATA} />);
+      // All six, named: the assertion this replaced listed five of them plus
+      // Sessions, so "all N cards" was never what it checked.
       expect(screen.getByText('Exposed Tools')).toBeInTheDocument();
       expect(screen.getByText('Resources')).toBeInTheDocument();
+      expect(screen.getByText('Prompts')).toBeInTheDocument();
       expect(screen.getByText('API Keys')).toBeInTheDocument();
-      expect(screen.getByText('Sessions')).toBeInTheDocument();
       expect(screen.getByText('Audit Log')).toBeInTheDocument();
       expect(screen.getByText('Settings')).toBeInTheDocument();
+    });
+
+    // The card outlived the page it linked to once already: the assertion above
+    // used to name Sessions, so deleting the page without touching this file
+    // would have left a card that 404s and a test still calling it correct
+    // (§39 t-718).
+    it('links no Sessions page — the stateful transport that had sessions is gone', () => {
+      render(<McpDashboard initialSettings={ENABLED_SETTINGS} stats={STATS_WITH_DATA} />);
+      expect(screen.queryByText('Sessions')).not.toBeInTheDocument();
+      // By href, not by accessible name: the Settings card's own description
+      // says "session limits", so a /sessions/i name match passes for the
+      // wrong reason.
+      const hrefs = screen
+        .getAllByRole('link')
+        .map((a) => a.getAttribute('href'))
+        .filter((h): h is string => h !== null);
+      expect(hrefs).not.toContain('/admin/orchestration/mcp/sessions');
     });
 
     it('shows count badges for tools, resources, and keys', () => {
@@ -167,6 +186,34 @@ describe('McpDashboard', () => {
       await waitFor(() => {
         expect(screen.getByText('Disabled')).toBeInTheDocument();
       });
+    });
+  });
+
+  describe('read-only outside the install org (§107 t-753)', () => {
+    it('disables the enable switch, keeps the status visible, and never writes', async () => {
+      // Contrast: the same fixture without the provider has an enabled switch.
+      const { unmount } = render(
+        <McpDashboard initialSettings={DISABLED_SETTINGS} stats={STATS_WITH_DATA} />
+      );
+      expect(screen.getByRole('switch', { name: /enable mcp server/i })).toBeEnabled();
+      unmount();
+
+      render(
+        <SharedSettingsAccessProvider readOnly canSwitch>
+          <McpDashboard initialSettings={DISABLED_SETTINGS} stats={STATS_WITH_DATA} />
+        </SharedSettingsAccessProvider>
+      );
+      const toggle = screen.getByRole('switch', { name: /enable mcp server/i });
+      expect(toggle).toBeDisabled();
+      // Read-only data survives: the page did render
+      expect(screen.getByText('Server Status')).toBeInTheDocument();
+      expect(screen.getByText('Disabled')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(toggle);
+      });
+      expect(apiClient.patch).not.toHaveBeenCalled();
+      expect(screen.getByText('Disabled')).toBeInTheDocument();
     });
   });
 });

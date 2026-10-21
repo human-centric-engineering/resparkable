@@ -54,16 +54,20 @@ Circuit breaker state is exposed via the admin API:
 - **Dedicated health endpoint** (`GET /providers/:id/health`): detailed breaker status for a single provider.
 - **Manual reset** (`POST /providers/:id/health`): resets the breaker to closed (rate-limited).
 
-Public getters on `CircuitBreaker`: `failureCount` (prunes window first), `currentConfig` (copy), `openedAtTimestamp`. Module-level helpers: `getCircuitBreakerStatus(slug)` → status snapshot or `null`, `getAllBreakerSlugs()` → all registered slugs.
+Public getters on `CircuitBreaker`: `failureCount` (prunes window first), `currentConfig` (copy), `openedAtTimestamp`. Module-level helpers: `getCircuitBreakerStatus(key)` → status snapshot or `null`, `getAllBreakerSlugs()` → every key that has a breaker, `peekBreaker(key)` → a breaker without creating one.
+
+**Breakers are keyed per credential, not per provider (§120 t-744).** A key is `credentialKey(slug, identity)`: the bare slug for the install's shared credential — every key while no credential resolver is registered — and `slug#identity` for a key a fork's resolver gives one org. So `getAllBreakerSlugs()` can return keys that are not slugs and that name an org's credential identity; map them with `slugOfCredentialKey` before treating them as provider slugs, and do not render the identity. For a provider, read `getCircuitBreakerStatusForProvider(slug)` (the worst of its credentials) and reset with `resetBreakersForProvider(slug)`. Callers that pick a provider fetch it through `getProviderIfBreakerClosed`, which checks the right credential's breaker.
 
 ## Provider Fallback Chain
 
-`getProviderWithFallbacks(primarySlug, fallbackSlugs)` resolves a provider by checking circuit breakers in order:
+`getProviderWithFallbacks(primarySlug, fallbackSlugs, provenance?)` resolves a provider by checking circuit breakers in order:
 
 1. Build candidate list: `[primary, ...fallbacks]`
 2. For each: check `getBreaker(slug).canAttempt()`
-3. First passing candidate: resolve via `getProvider(slug)`, return `{ provider, usedSlug }`
+3. First passing candidate: resolve via `getProvider(slug, context)`, return `{ provider, usedSlug }`. `context` comes from `provenance` (the resolved binding's): the primary's for the first candidate, the fallbacks' for the rest, so the call-time provider gate tells the eligibility rule which it is.
 4. All breakers open or providers not found: throw `ProviderError('all_providers_exhausted')`
+
+A call the provider eligibility rule refuses (`ProviderCallRefusedError`, code `provider_not_permitted`) is a request fault, not a provider failure: chat does not fail over from it and no breaker records it. See [`llm-providers.md` → The call-time gate](./llm-providers.md#the-call-time-gate).
 
 Configure via `AiAgent.fallbackProviders` (Prisma `String[]`, max 5 entries, Zod-validated).
 

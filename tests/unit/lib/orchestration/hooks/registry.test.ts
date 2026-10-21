@@ -52,6 +52,7 @@ import {
 
 function makeHook(overrides: Record<string, unknown> = {}) {
   return {
+    orgId: null,
     id: 'hook-1',
     name: 'Test Hook',
     eventType: 'conversation.started',
@@ -68,6 +69,7 @@ function makeHook(overrides: Record<string, unknown> = {}) {
 
 function makeDelivery(overrides: Record<string, unknown> = {}) {
   return {
+    orgId: null,
     id: 'del-1',
     hookId: 'hook-1',
     eventType: 'conversation.started',
@@ -1120,5 +1122,55 @@ describe('HMAC signing (via dispatchWebhook)', () => {
     expect(headers['X-Resparkable-Signature']).toMatch(/^sha256=[0-9a-f]{64}$/);
     expect(headers['X-Resparkable-Signature']).not.toBe('sha256=deadbeef');
     expect(headers['X-Resparkable-Timestamp']).not.toBe('0');
+  });
+});
+
+// ─── Outbound URL redaction (#953) ──────────────────────────────────────
+//
+// A webhook URL can carry its credential in the path or the query. The logger
+// redacts by key name only, so the URL must be reduced before it is logged.
+
+describe('webhook URL in log lines', () => {
+  const SECRET = 'AbCdEfGhIjKlMnOpQrStUvWx';
+  const SECRET_URL = `https://hooks.slack.com/services/T0000/B0000/${SECRET}?token=qs-secret`;
+
+  function loggedText(): string {
+    return JSON.stringify(vi.mocked(logger.warn).mock.calls);
+  }
+
+  it('does not log the credential when a delivery attempt fails', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500 });
+    vi.mocked(prisma.aiEventHook.findMany).mockResolvedValue([
+      makeHook({ action: { type: 'webhook', url: SECRET_URL } }),
+    ] as never);
+
+    emitHookEvent('conversation.started', { conversationId: 'conv-1' });
+
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Hook webhook delivery failed',
+        expect.objectContaining({ url: 'https://hooks.slack.com/services/T0000/B0000/[param]' })
+      );
+    });
+    expect(loggedText()).not.toContain(SECRET);
+    expect(loggedText()).not.toContain('qs-secret');
+  });
+
+  it('does not log the credential when dispatch setup fails', async () => {
+    vi.mocked(prisma.aiEventHookDelivery.create).mockRejectedValue(new Error('db down'));
+    vi.mocked(prisma.aiEventHook.findMany).mockResolvedValue([
+      makeHook({ action: { type: 'webhook', url: SECRET_URL } }),
+    ] as never);
+
+    emitHookEvent('conversation.started', { conversationId: 'conv-1' });
+
+    await vi.waitFor(() => {
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Hook webhook dispatch setup failed',
+        expect.objectContaining({ url: 'https://hooks.slack.com/services/T0000/B0000/[param]' })
+      );
+    });
+    expect(loggedText()).not.toContain(SECRET);
+    expect(loggedText()).not.toContain('qs-secret');
   });
 });

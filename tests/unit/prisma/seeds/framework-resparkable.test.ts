@@ -208,7 +208,7 @@ describe('framework-resparkable/003-agents', () => {
     await agentsSeed.run(ctx);
     const bySlug = new Map(
       (calls.agentUpsert.mock.calls as [UpsertCall][]).map(([arg]) => [
-        (arg.where as { slug: string }).slug,
+        (arg.where as { orgId_slug: { slug: string } }).orgId_slug.slug,
         arg,
       ])
     );
@@ -333,8 +333,8 @@ describe('framework-resparkable/004-agent-capabilities', () => {
       aiCapability: { upsert: vi.fn(), findMany: vi.fn().mockResolvedValue(rows) },
       aiAgent: {
         upsert: vi.fn(),
-        findUnique: vi.fn(({ where }: { where: { slug: string } }) =>
-          Promise.resolve({ id: `agent-${where.slug}` })
+        findUnique: vi.fn(({ where }: { where: { orgId_slug: { slug: string } } }) =>
+          Promise.resolve({ id: `agent-${where.orgId_slug.slug}` })
         ),
       },
     });

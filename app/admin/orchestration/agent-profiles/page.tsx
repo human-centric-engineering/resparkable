@@ -8,6 +8,10 @@ import { API } from '@/lib/api/endpoints';
 import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
 import { logger } from '@/lib/logging';
 import type { AgentProfileRow } from '@/components/admin/orchestration/agent-profile-form';
+import {
+  SharedSettingsEditOnly,
+  SharedSettingsReadOnlyNotice,
+} from '@/components/admin/shared-settings-access';
 
 type ProfileListRow = AgentProfileRow & { agentCount: number; updatedAt: string };
 
@@ -61,13 +65,17 @@ export default async function AgentProfilesListPage() {
             Shared persona / voice / guardrails that agents inherit and override.
           </p>
         </div>
-        <Button asChild>
-          <Link href="/admin/orchestration/agent-profiles/new">
-            <Plus className="mr-2 h-4 w-4" />
-            New profile
-          </Link>
-        </Button>
+        <SharedSettingsEditOnly>
+          <Button asChild>
+            <Link href="/admin/orchestration/agent-profiles/new">
+              <Plus className="mr-2 h-4 w-4" />
+              New profile
+            </Link>
+          </Button>
+        </SharedSettingsEditOnly>
       </header>
+
+      <SharedSettingsReadOnlyNotice />
 
       {profiles.length === 0 ? (
         <div className="bg-card text-muted-foreground rounded-md border border-dashed p-8 text-center text-sm">
