@@ -1022,6 +1022,44 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.15.0 (135 commits, v0.14.0..v0.15.0).** Seventeen
+  migrations, then `npm run db:seed`. Eight take locks that scale with table
+  size (the delivery tables, `ai_cost_log`, `ai_admin_audit_log` and `user`;
+  upstream's 0.15.0 notes list them), so apply them off-peak. `TENANCY_MODE`
+  stays `single`, so the org-admin console, per-org quotas and support access
+  arrive switched off.
+
+  **Account deletion is recorded first and finished in the background.** Both
+  delete routes now call `requestUserErasure()` and may answer `202 pending`
+  or `409`. The new `pendingErasures` job runs before this tier's
+  `transferJobs` and `transferArchiveExpiry`. This tier's erasure hook and the
+  transfer-archive cleanup in `eraseUser()` are both safe to run again on a
+  retried attempt.
+
+  **This tier's user-linked models are classified for the owner layer
+  (§115).** Sunrise's guard now audits fork schema files. It sees three of
+  this tier's models: `TransferJob` is personal (not enforced), and
+  `ResparkableGroupMember` and `ResparkableGroupAuditEntry` are not personal.
+  They are registered from the new `lib/app/owner-classification.ts` seam
+  through `lib/framework/resparkable/owner-classification.ts`. The billing
+  sweep's raw read of `ai_workflow_execution` is in the owner layer's raw-SQL
+  manifest: it runs from the tick, where nobody is narrowed.
+
+  **An account import never writes `User.signupOrgId` or the erasure
+  columns.** Sunrise added both to `User`. They are on the `User` policy's
+  `regenerate` list, so a hand-edited bundle cannot place the importing account
+  in another org or schedule its deletion. `OrgSupportGrant` is excluded from
+  transfer, with `Org` and `OrgMembership`.
+
+  **This tier's 24 capabilities are paired with their classes** in the new
+  `lib/app/capability-seed-pairs.ts` seam, so Sunrise's seed parity test holds
+  each seeded `functionDefinition` to its class's. Seeds 004 and 006 read
+  capabilities and write none, and are listed as unchecked.
+
+  **Two Sunrise asks landed** (#45 and #52 in `sunrise-asks.md`): the
+  heap-size assertions in `chunked-lint.test.ts` and the router-mock scanner.
+  The fork's local copies are gone.
+
 - **Merged Sunrise 0.14.0 (77 commits, v0.12.1..v0.14.0).** Two upstream
   releases, 0.13.0 and 0.14.0, taken in one merge rather than the two stages
   upstream suggests for a large database. Twelve migrations; on this
