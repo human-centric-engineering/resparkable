@@ -629,34 +629,25 @@ into `scopeNote` and shorten the description back to what the section is.
 
 ### Found by Release 2 phase 14 — the erasure hook (2026-08-28)
 
-| #   | Ask                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Priority                                                                                                                                                                                                                                                         | Issue |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| 44  | **`lib/privacy/erasure-hooks.ts` keeps its registry in a plain module-scoped `Map`.** Back it with `globalThis`, exactly as #462 did for the contributor and capability registries | `eraseUser()` runs in the route realm; `instrumentation.ts` is a separate module graph under Next 16 + Turbopack. A hook registered at boot may therefore not be present when erasure actually runs — the same failure #462 fixed twice over and did not reach here. It is worse than the two it did fix, in one specific way: those failed **visibly** (a missing tool, an empty context block), and this one fails **silently and permanently**. The rows the hook was meant to reach are simply still there afterwards, and the erasure request reports success. There is no point in the erasure route's import graph a fork can reach, so this cannot be worked around downstream | Low effort, and the fix is a shape core has already shipped twice. High consequence: the failure mode is retained personal data after a successful-looking Art. 17 request, which is the one class of bug that is a regulatory problem rather than a stack trace | —     |
+| #   | Ask                                                                                                                                                                                | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Priority                                                                                                                                                                                                                                                         | Issue                                                                   |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 44  | **`lib/privacy/erasure-hooks.ts` keeps its registry in a plain module-scoped `Map`.** Back it with `globalThis`, exactly as #462 did for the contributor and capability registries | `eraseUser()` runs in the route realm; `instrumentation.ts` is a separate module graph under Next 16 + Turbopack. A hook registered at boot may therefore not be present when erasure actually runs — the same failure #462 fixed twice over and did not reach here. It is worse than the two it did fix, in one specific way: those failed **visibly** (a missing tool, an empty context block), and this one fails **silently and permanently**. The rows the hook was meant to reach are simply still there afterwards, and the erasure request reports success. There is no point in the erasure route's import graph a fork can reach, so this cannot be worked around downstream | Low effort, and the fix is a shape core has already shipped twice. High consequence: the failure mode is retained personal data after a successful-looking Art. 17 request, which is the one class of bug that is a regulatory problem rather than a stack trace | [#691](https://github.com/human-centric-engineering/sunrise/issues/691) |
 
-**Downstream status (#44):** carried, and the reason it is carried rather than
-worked around is that there is nothing to work around it with. **Phase 48 raised the
-stakes.** Group succession now rides on the same hook: when it is absent, erasing
-a group's only member leaves the group with no members, which no route can open
-and no subject-access request reaches. The person's identity still leaves (their
-membership cascades and `createdByUserId` nulls out, both database constraints),
-but what they wrote stays in a workspace nothing can reach. Succession is the one
-part with a backstop: `settleStrandedGroups` runs hourly as an app job, finds any
-group left with no admin or with nobody, and applies the same rule late. A
-stranded group waits at most an hour rather than forever, and every one it
-settles is logged at `warn`, since it means the hook was missing. Resparkable
-registers from `initResparkable()` — the designed mechanism — and
-`lib/framework/resparkable/privacy/erasure.ts` says at the top of the file that
-it is best-effort, so a reader is not left believing otherwise.
+**Downstream status (#44):** **landed** in Sunrise 0.15.0 as sunrise#691: the
+registry is on `globalThis`, so a hook registered at boot is the one erasure
+reads. Resparkable went one step further after the merge and registers from
+`lib/app/erasure.ts` instead of `initResparkable()`. Core runs that seam itself
+before it first reads the registry, in whatever process is erasing somebody, so
+the hook no longer depends on the app having booted in that process (a smoke
+script calling `eraseUser()` directly, say). The hourly `settleStrandedGroups`
+backstop stays: it is cheap, and a group left with nobody is still worth
+catching if the hook ever throws.
 
-What makes that acceptable rather than alarming is **how little rides on it**.
-Every accepted grant and every comment an erased person wrote is removed by a
-hand-written `ON DELETE CASCADE` (probes B8 and B9), and their whole brain by
-another (B1). Those are database constraints: they cannot fail to run, and
-`db:drift-check` fails if a migration ever recreates one with the wrong action.
-The hook covers exactly two things a cascade cannot reach — an **unaccepted
-invite**, which is addressed by email and has no foreign key to hang off, and
-**stored document originals**, which are object storage. Both are worth having;
-neither is the bulk of Art. 17.
+What rides on the hook is still small. Every accepted grant and every comment
+an erased person wrote is removed by a hand-written `ON DELETE CASCADE` (probes
+B8 and B9), and their whole brain by another (B1). The hook covers the two
+things a cascade cannot reach: an **unaccepted invite**, which has no foreign
+key to hang off, and **stored document originals**, which are object storage.
 
 ### Found by the Sunrise 0.12.1 merge (2026-09-19)
 

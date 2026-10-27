@@ -677,10 +677,15 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/erasure.ts',
     risk: 'a stray hook would run inside every account erasure on every install \u2014 deleting external data, or scrubbing rows, that the install never asked it to touch',
+    // FORK (Resparkable): Sunrise asserts this is empty. Resparkable registers
+    // one hook here, for the unaccepted invites and stored document originals
+    // its cascade cannot reach. It moved here from `initResparkable()` so it is
+    // registered in any process that erases somebody, not only one that booted.
+    // Pinning the exact set keeps the original intent: a stray hook still fails.
     assert: () => {
       __resetErasureCleanupHooksForTests();
       // getErasureCleanupHooks() triggers the lazy init, so this exercises the REAL seam.
-      expect(getErasureCleanupHooks()).toEqual([]);
+      expect(getErasureCleanupHooks().map((hook) => hook.name)).toEqual(['resparkable']);
     },
   },
   {

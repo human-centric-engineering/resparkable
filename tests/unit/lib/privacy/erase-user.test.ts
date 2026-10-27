@@ -184,6 +184,12 @@ vi.mock('@/lib/storage/upload', () => ({
   deleteByPrefix: mockDeleteByPrefix,
 }));
 
+// FORK (Resparkable): Sunrise ships `lib/app/erasure.ts` empty and this file
+// relies on that. Resparkable fills it with its own hook, which would otherwise
+// show up here as an extra entry. The real registration is pinned in
+// tests/unit/lib/app/defaults.test.ts.
+vi.mock('@/lib/app/erasure', () => ({ initAppErasureHooks: () => {} }));
+
 // ---------------------------------------------------------------------------
 // Import under test (AFTER all vi.mock() calls)
 // ---------------------------------------------------------------------------

@@ -37,13 +37,11 @@
  *
  * ## Registration
  *
- * Registered at boot from `initResparkable()`. Before Sunrise 0.15.0 the hook
- * registry was a module-scoped `Map`, and `instrumentation.ts` runs in a
- * separate module graph from the erasure route, so a boot-time hook could be
- * missing when erasure ran. 0.15.0 moved the registry onto `globalThis`
- * (sunrise#691), so the boot registration is the one erasure reads. The
- * braces are still B1, B8 and B9, which are database constraints and cannot
- * fail to run; this hook is the belt.
+ * Registered from `lib/app/erasure.ts`, which core runs itself before it first
+ * reads the hook registry, in whatever process is erasing somebody. It used to
+ * be registered at boot from `initResparkable()`, which only covers a process
+ * that booted the app. The braces are still B1, B8 and B9, which are database
+ * constraints and cannot fail to run; this hook is the belt.
  *
  * **Succession is why the hook matters.** If it were missing when erasure
  * ran, a group whose only member was erased would be left behind with no

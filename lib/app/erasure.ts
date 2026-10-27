@@ -16,6 +16,18 @@
  *
  * Full guide + example: .context/privacy/data-erasure.md · CUSTOMIZATION.md §4
  */
+import { registerResparkableErasureHook } from '@/lib/framework/resparkable/privacy/erasure';
+
 export function initAppErasureHooks(): void {
-  // No app erasure hooks by default.
+  // Resparkable's unaccepted invites and stored document originals: the two
+  // things its cascade cannot reach.
+  //
+  // Registered here rather than at boot because core runs this seam itself,
+  // before the first read, in whatever process is erasing somebody. A boot-time
+  // registration only exists in a process that booted the app, and a smoke
+  // script or worker that calls `eraseUser()` directly would skip the hook with
+  // nothing to say so. Static import for the same reason as `lib/app/jobs.ts`.
+  // A host project adds the same two lines; see
+  // `.context/framework/resparkable/install.md` §2.13.
+  registerResparkableErasureHook();
 }

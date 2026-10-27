@@ -113,6 +113,12 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 // Mock storage — default to disabled; override isStorageEnabled per test when needed.
+// FORK (Resparkable): Sunrise ships `lib/app/erasure.ts` empty and this file
+// relies on that. Resparkable's hook would scrub its own tables, which this
+// test's mocked transaction does not have. The hook is tested on its own in
+// tests/unit/lib/framework/resparkable/privacy/erasure.test.ts.
+vi.mock('@/lib/app/erasure', () => ({ initAppErasureHooks: () => {} }));
+
 vi.mock('@/lib/storage/upload', () => ({
   deleteByPrefix: vi.fn(),
   isStorageEnabled: vi.fn(() => false),

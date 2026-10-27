@@ -1036,6 +1036,14 @@ release process.
   transfer-archive cleanup in `eraseUser()` are both safe to run again on a
   retried attempt.
 
+  **This tier's erasure hook registers from `lib/app/erasure.ts`, not
+  `initResparkable()`.** Core runs that seam itself before it first reads the
+  hook registry, so the hook is in place in any process that erases somebody,
+  not only one that booted the app. A host project must add
+  `registerResparkableErasureHook()` to its own `initAppErasureHooks()`
+  (`install.md` §2.13); without it, erasure still succeeds but leaves
+  unaccepted invites and stored document originals behind.
+
   **This tier's user-linked models are classified for the owner layer
   (§115).** Sunrise's guard now audits fork schema files. It sees three of
   this tier's models: `TransferJob` is personal (not enforced), and

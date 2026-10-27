@@ -18,6 +18,12 @@ import {
   __resetErasureCleanupHooksForTests,
 } from '@/lib/privacy/erasure-hooks';
 
+// FORK (Resparkable): Sunrise ships `lib/app/erasure.ts` empty and this file
+// relies on that. Resparkable fills it with its own hook, which would otherwise
+// show up here as an extra entry. The real registration is pinned in
+// tests/unit/lib/app/defaults.test.ts.
+vi.mock('@/lib/app/erasure', () => ({ initAppErasureHooks: () => {} }));
+
 // ---------------------------------------------------------------------------
 // Reset the module-level Map before and after every test so state never leaks
 // ---------------------------------------------------------------------------
