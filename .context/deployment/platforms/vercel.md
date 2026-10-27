@@ -197,6 +197,72 @@ See [Vercel Project Configuration](https://vercel.com/docs/projects/project-conf
 }
 ```
 
+### Maintenance tick cron
+
+**Required.** Sunrise runs nothing periodic by itself in production: scheduled
+workflows, delivery retries, the stuck-execution reaper, retention and every
+other maintenance task run only when something calls the maintenance tick. Miss
+this and the app still serves traffic and `/api/health` still reports OK, but
+none of that work happens. See
+[Unified Maintenance Tick](../../orchestration/scheduling.md#unified-maintenance-tick-admin-auth-required-preferred).
+
+Vercel Cron only sends a `GET`, with `Authorization: Bearer $CRON_SECRET`. The
+tick route accepts that `GET` when the bearer token is an **admin API key**, so
+the setup is:
+
+1. Sign in as a platform admin and mint an API key with the `admin` scope (see
+   [API Keys](../../orchestration/api-keys.md)). Copy the `sk_...` value.
+2. In Project Settings > Environment Variables, set `CRON_SECRET` to that
+   value, for the Production environment.
+3. Add `vercel.json` at the project root:
+
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/v1/admin/orchestration/maintenance/tick",
+      "schedule": "* * * * *"
+    }
+  ]
+}
+```
+
+4. Redeploy. The job is listed under Settings > Cron Jobs, and each run shows
+   in the runtime logs as `Maintenance tick background tasks completed`.
+
+**Things to know:**
+
+- **Per-minute crons need the Pro plan.** On Hobby, a cron that runs more than
+  once a day fails the deployment. On Hobby, call the tick from an external
+  scheduler that can send a `POST` with the key in the `Authorization` header
+  (cron-job.org, a GitHub Actions `schedule`). The `curl` is in
+  [hosting requirements](../../orchestration/meta/hosting-requirements.md).
+- **The GET refuses a browser session.** Only an admin API key works on it, so
+  opening the URL while signed in returns `403`. That is deliberate: a session
+  cookie travels with a cross-site link, a bearer header does not.
+- **The work after the response is kept alive.** The route returns `202` as
+  soon as due schedules are claimed and passes the rest to Next's `after()`,
+  which Vercel runs under `waitUntil`. The route sets `maxDuration = 300`, the
+  Fluid compute default and the Hobby plan's ceiling. That budget covers the
+  whole invocation, the schedules sweep and the background tasks together.
+  With many orgs, a slow sweep leaves the background tasks less time, and a
+  task cut off mid-run finishes on a later tick. On Pro you can raise it to 800
+  in `app/api/v1/admin/orchestration/maintenance/tick/route.ts`.
+- **The runs a request starts are kept alive too (t-846).** A fired schedule,
+  a recovered or orphaned run, an inbound trigger and a resumed approval each
+  hand their engine drain to `after()`. The schedules tick, the inbound route
+  and the approve routes that resume a run set `maxDuration = 300` as well. A run still going
+  when that ends is recovered by a later tick. A run cut off past its first
+  step uses one of its three recovery attempts each time, so a step that
+  needs longer than the budget fails as recovery exhausted.
+- **A `HEAD` request is refused with `405`**, so an uptime probe that holds the
+  key cannot fire a tick.
+- **Rotating the key.** Mint a new key, update `CRON_SECRET`, redeploy, then
+  revoke the old key. The key stops working if its owner stops being a
+  platform admin.
+- **Crons run on the production deployment only**, not on previews.
+
 ### Preview Deployments
 
 Every pull request gets a unique preview URL automatically.

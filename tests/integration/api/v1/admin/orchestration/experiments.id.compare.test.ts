@@ -31,7 +31,7 @@ vi.mock('next/headers', () => ({
 }));
 
 vi.mock('@/lib/db/client', () => ({
-  prisma: { aiExperiment: { findFirst: vi.fn() } },
+  prisma: { aiExperiment: { findFirst: vi.fn() }, aiDataset: { findFirst: vi.fn() } },
 }));
 
 vi.mock('@/lib/orchestration/audit/admin-audit-logger', () => ({
@@ -54,6 +54,7 @@ import { GET } from '@/app/api/v1/admin/orchestration/experiments/[id]/compare/r
 
 const ADMIN_ID = 'cmjbv4i3x00003wsloputgwul';
 const EXPERIMENT_ID = 'exp-1';
+const DATASET_ID = 'ds-1';
 
 function makeRequest(): NextRequest {
   return new NextRequest(
@@ -102,7 +103,8 @@ function makeExperiment(
     id: EXPERIMENT_ID,
     name: overrides.name ?? 'A/B refund prompts',
     createdBy: 'createdBy' in overrides ? (overrides.createdBy ?? null) : ADMIN_ID,
-    dataset: overrides.dataset ?? null,
+    // The route reads the bound dataset on its own (`compareWith` below).
+    datasetId: overrides.dataset ? DATASET_ID : null,
     variants: overrides.variants ?? [
       {
         id: 'v1',
@@ -418,6 +420,11 @@ describe('the bound dataset', () => {
   async function compareWith(dataset: { caseCount: number; userId: string | null } | null) {
     vi.mocked(prisma.aiExperiment.findFirst).mockImplementation(
       ownerScopedFindFirst([makeExperiment({ createdBy: ADMIN_ID, dataset })]) as never
+    );
+    // Read on its own through the dataset's visibility — not included, where
+    // the owner layer (§115) would refuse it before the route could name it.
+    vi.mocked(prisma.aiDataset.findFirst).mockImplementation(
+      ownerScopedFindFirst(dataset ? [{ id: DATASET_ID, ...dataset }] : []) as never
     );
     return GET(makeRequest(), ctx());
   }

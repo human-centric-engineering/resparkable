@@ -40,6 +40,8 @@ import { pairwiseVerdictLimiter, createRateLimitResponse } from '@/lib/security/
 import { pairwiseJudgeAgentGrader } from '@/lib/orchestration/evaluations/graders/pairwise/judge-agent';
 import type { PairwiseVerdictCase, PairwiseVerdictSummary } from '@/types/orchestration';
 import { platformSlugWhere } from '@/lib/orchestration/agents/platform-agent-guard';
+import { datasetVisibilityWhere } from '@/lib/orchestration/access/dataset-access';
+import { loadScoredCases } from '@/lib/orchestration/evaluations/datasets/scored-cases';
 
 type Params = { id: string };
 
@@ -79,9 +81,6 @@ export const POST = withAdminAuth<Params>(
         variants: {
           select: { id: true, label: true, evaluationRunId: true },
         },
-        // `userId` for the defence-in-depth check below, not for the
-        // experiment's own ownership — the `where` above settled that.
-        dataset: { select: { caseCount: true, userId: true } },
       },
     });
     if (!experiment) {
@@ -109,9 +108,22 @@ export const POST = withAdminAuth<Params>(
       );
     }
 
-    if (!experiment.dataset) {
+    if (!experiment.datasetId) {
       throw new ValidationError(
         'Experiment has no dataset — verdicts need dataset-driven variants'
+      );
+    }
+
+    // Both runs must be the caller's: an orphan experiment can have been run by
+    // another admin, whose results the reads below would not return — judging
+    // nothing and writing an empty verdict over the stored one.
+    const runIds = [...new Set([variantA.evaluationRunId, variantB.evaluationRunId])];
+    const ownRuns = await prisma.aiEvaluationRun.count({
+      where: { id: { in: runIds }, userId: session.user.id },
+    });
+    if (ownRuns !== runIds.length) {
+      throw new ValidationError(
+        'Both variants must have been run by you before verdicts can be computed'
       );
     }
 
@@ -131,17 +143,21 @@ export const POST = withAdminAuth<Params>(
     // `SetNull` too, so an erasure orphans the dataset alongside the experiment
     // and a bare `!== session.user.id` would make a claimed orphan unscoreable
     // (t-678).
-    const datasetOwner = experiment.dataset.userId;
-    const mayUseDataset =
-      datasetOwner === session.user.id ||
-      (datasetOwner === null && session.unattributedReads.dataset);
+    //
+    // Read on its own, through the dataset's visibility, rather than included:
+    // the owner layer (§115) refuses an included dataset that is not the
+    // caller's with a bare 404, before this check could name the dataset.
+    const dataset = await prisma.aiDataset.findFirst({
+      where: { AND: [datasetVisibilityWhere(session), { id: experiment.datasetId }] },
+      select: { caseCount: true },
+    });
     // Names the DATASET, not the experiment — see the same refusal in `run`.
     // Reachable with an experiment that is unambiguously the caller's, once
     // another admin claims an orphan dataset they had legitimately bound.
-    if (!mayUseDataset) throw new NotFoundError(`Experiment ${id} dataset not found`);
-    if (experiment.dataset.caseCount > MAX_CASES_FOR_SYNC) {
+    if (!dataset) throw new NotFoundError(`Experiment ${id} dataset not found`);
+    if (dataset.caseCount > MAX_CASES_FOR_SYNC) {
       throw new ConflictError(
-        `Pairwise verdicts cap at ${MAX_CASES_FOR_SYNC} cases — this dataset has ${experiment.dataset.caseCount}. Use a smaller dataset.`
+        `Pairwise verdicts cap at ${MAX_CASES_FOR_SYNC} cases — this dataset has ${dataset.caseCount}. Use a smaller dataset.`
       );
     }
 
@@ -157,25 +173,31 @@ export const POST = withAdminAuth<Params>(
       throw new ValidationError(`Agent "${body.judgeAgentSlug}" is not an active judge agent`);
     }
 
+    // Each variant's results, from runs the caller may read: the run routes'
+    // rule, and what lets the owner layer (§115) see the reads are confined.
     const [resultsA, resultsB] = await Promise.all([
       prisma.aiEvaluationCaseResult.findMany({
-        where: { runId: variantA.evaluationRunId },
+        where: { runId: variantA.evaluationRunId, run: { userId: session.user.id } },
         select: {
           casePosition: true,
           subjectOutput: true,
-          datasetCase: {
-            select: { input: true, expectedOutput: true },
-          },
+          datasetCaseId: true,
         },
       }),
       prisma.aiEvaluationCaseResult.findMany({
-        where: { runId: variantB.evaluationRunId },
+        where: { runId: variantB.evaluationRunId, run: { userId: session.user.id } },
         select: {
           casePosition: true,
           subjectOutput: true,
         },
       }),
     ]);
+    // The cases variant A scored, through the dataset's visibility — checked
+    // above, so every one is here unless the dataset changed hands since.
+    const casesA = await loadScoredCases(
+      resultsA.map((r) => r.datasetCaseId),
+      datasetVisibilityWhere(session)
+    );
 
     const bByPosition = new Map<number, string>();
     for (const r of resultsB) bByPosition.set(r.casePosition, r.subjectOutput);
@@ -193,10 +215,20 @@ export const POST = withAdminAuth<Params>(
 
     for (const r of resultsA) {
       const outputB = bByPosition.get(r.casePosition);
+      const datasetCase = casesA.get(r.datasetCaseId);
+      if (datasetCase === undefined) {
+        missing.push({
+          casePosition: r.casePosition,
+          verdict: 'tie',
+          reasoning: 'the dataset case is no longer one you may see',
+          error: 'missing_dataset_case',
+        });
+        continue;
+      }
       const userInput =
-        typeof r.datasetCase.input === 'string'
-          ? r.datasetCase.input
-          : JSON.stringify(r.datasetCase.input);
+        typeof datasetCase.input === 'string'
+          ? datasetCase.input
+          : JSON.stringify(datasetCase.input);
       if (outputB === undefined) {
         missing.push({
           casePosition: r.casePosition,
@@ -209,7 +241,7 @@ export const POST = withAdminAuth<Params>(
       pairs.push({
         position: r.casePosition,
         userInput,
-        ...(r.datasetCase.expectedOutput ? { expectedOutput: r.datasetCase.expectedOutput } : {}),
+        ...(datasetCase.expectedOutput ? { expectedOutput: datasetCase.expectedOutput } : {}),
         outputA: r.subjectOutput,
         outputB,
       });
@@ -319,6 +351,7 @@ export const POST = withAdminAuth<Params>(
     return successResponse(summary);
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

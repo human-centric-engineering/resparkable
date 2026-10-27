@@ -102,7 +102,7 @@ PR is exactly the large-diff case (#591).
 
 **`ci-status` fails on anything that is not `success` or `skipped`.** It used to
 test for the literal string `failure`, which let `cancelled` through — a job
-killed by its own `timeout-minutes` (the docker job carries 30), or a run
+killed by its own `timeout-minutes` (docker and the test jobs carry one), or a run
 cancelled while `ci-status`'s `if: always()` still fires, reported "CI passed"
 for gates that never finished.
 
@@ -468,7 +468,8 @@ then stop. Measured on one ~2x-Sunrise fork, lint aborts at 5120 and passes at
 and 8192 was never needed.
 
 **The same wall exists locally, and this variable does not reach it.** `npm run
-lint` therefore runs through `scripts/run-capped.mjs`, which appends a
+lint` and `npm run type-check` therefore run through `scripts/run-capped.mjs`,
+which appends a
 `--max-old-space-size` to `NODE_OPTIONS` — but **only when nothing has set one
 already**, so in CI this variable still wins. A developer hitting exit 134 on a
 laptop is the usual first sighting of a fork outgrowing the default; see
@@ -569,6 +570,11 @@ an untracked one. A CI checkout has nothing untracked, so the two are the same
 run there. Locally, a brand-new file is linted once you `git add` it — and
 `npm run lint` (unchanged) and the pre-commit hook both cover it regardless.
 
+**Reproducing it locally:** `CI_LINT_CHUNKS=4 npm run lint:ci` takes effect, as
+does `LINT_CHUNKS`, the name `ci.yml` passes the repo variable through as (it
+wins if both are set). `NODE_HEAP_MB` sets each chunk's heap cap, the same as
+it does for `npm run lint`.
+
 Measured on a downstream fork of 4,527 lintable files
 (~2× base Sunrise), 4-core runner, cap 6144, cold — these are that fork's
 numbers, not Sunrise's:
@@ -626,6 +632,58 @@ variable and falls back to 1 rather than failing the run — refusing to lint ov
 a malformed unrelated variable trades a small problem for a bigger one. The
 warning matters because the fallback here is the _unchunked_ case: silence would
 let a fork believe it had fixed its OOM and then meet the identical failure.
+
+### Knob 5: `CI_TEST_TIMEOUT_MINUTES`
+
+The ceiling on `test-full` (per shard) and `test-changed`, in minutes. Unset,
+`test-full` gets **30** and `test-changed` **60**: a Sunrise shard takes 2–4
+minutes, and `test-changed` runs the whole suite unsharded when a lockfile or
+vitest-config change makes `--changed` select everything (~14 minutes on
+Sunrise). Both leave room for a much larger fork's suite while turning a
+deadlocked worker into a cancelled job within the hour rather than six hours
+(#843). Setting the variable sets both jobs to the same value, so size it for
+`test-changed`'s worst case. Raise it if a slow suite is cancelled while still
+passing:
+
+```bash
+gh variable set CI_TEST_TIMEOUT_MINUTES --body 90
+```
+
+The value goes through `fromJSON`, so it must be a bare number — anything else
+fails the workflow before any job starts, naming the expression.
+
+### Knob 6: `CI_NEXT_CACHE_MAX_MB`
+
+The Build job restores `.next/cache` through a `restore-keys` chain and saves
+it again under a per-commit key, so each saved cache is the previous one plus
+whatever this build wrote. Nothing trims it until `package-lock.json` changes.
+On Sunrise it grew from ~0.5GB to ~2GB compressed between two lockfile changes;
+a downstream fork's reached 5.5GB and a Build ran 37 minutes before being
+cancelled (#856). `pr-cache-cleanup.yml` deletes a closed PR's caches but does
+nothing about growth on `main`.
+
+Before `npm run build`, the **Bound the Next.js build cache** step measures the
+restored cache on disk. Over the limit, it deletes it and logs a notice with the
+size; the build then starts cold and saves a fresh cache. Under it, it logs the
+size. Defaults to **2048** MB on disk: a fresh Sunrise build writes 674MB (501MB
+compressed), so the cache can roughly triple before it is restarted. **The
+limit is on-disk size, and the sizes GitHub shows are compressed** — the
+Actions cache list and the restore log's `Cache Size:` line both report the
+archive, about three quarters of the on-disk figure here (Sunrise's ~2GB cache
+above is ~2.7GB on disk). Size the variable from the step's own log line, not
+from those.
+
+The cache key ends in `github.run_attempt`, so a re-run saves its own entry; on
+an exact key hit `actions/cache` skips the save, and a re-run would otherwise
+leave the discarded cache unreplaced.
+
+```bash
+gh variable set CI_NEXT_CACHE_MAX_MB --body 4096
+```
+
+Raise it if your fresh cache is already near the limit — the step's log line
+shows the size on every run, and a limit below a fresh cache's size makes every
+build cold. A value that is not a whole number logs a warning and uses 2048.
 
 ## Private-fork correctness (GHAS-dependent jobs)
 
@@ -791,14 +849,18 @@ pattern to copy. Without an explicit block the token defaults to
 whatever the repository setting says, which on an older fork can still be
 read/write across the board.
 
-**`timeout-minutes` on jobs that start containers.** GitHub's default is six
-hours, which a hung health-wait will happily burn. Two jobs carry a cap:
-`ci.yml`'s `docker` job (30) and `fork-sync-integrity` (5). The other jobs run
-processes that terminate on their own, so they are deliberately uncapped — the
-rule is "cap anything that waits on something else's readiness", not "cap
-everything". Note the interaction with `ci-status`: a job killed by its own
-timeout reports `cancelled`, which the gate treats as a failure precisely so a
-timeout cannot pass as a skip.
+**`timeout-minutes` on jobs that can hang.** GitHub's default is six hours,
+which a hung health-wait or a deadlocked process will happily burn. Four jobs
+carry a cap: `ci.yml`'s `docker` job (30), `test-full` (30) and
+`test-changed` (60), both via Knob 5, and `fork-sync-integrity` (5). The rule is "cap anything that can
+wait forever", not "cap everything": `docker` waits on containers it starts
+itself, and a vitest worker can deadlock during module evaluation — an import
+cycle closed through a `vi.mock` async factory hangs it before any test starts,
+where no vitest timeout can fire (#843). `smoke` and `smoke-multi` are not
+capped yet: the runner bounds their Postgres service's start-up with its health
+check, but nothing bounds the scripts that run against it. Note the interaction with
+`ci-status`: a job killed by its own timeout reports `cancelled`, which the gate
+treats as a failure precisely so a timeout cannot pass as a skip.
 
 **Buildx GHA cache, written by exactly one build.** The runtime image build uses
 `cache-from: type=gha` **and** `cache-to: type=gha,mode=max`; the `migrator` and
@@ -872,7 +934,9 @@ NOBYPASSRLS` app role, with `TENANCY_APP_ROLE_PASSWORD` set to a value
    asserting the population is non-empty; `forEachOrg`, the no-context
    throw, the nested create, `runAsSystem`; the three credential resolvers
    and the inbound route called as nobody learn B's org from B's row; the
-   t-708 namespaces. Measured: it fails 5 checks when one policy is widened
+   t-708 namespaces; and two members of one org (§115 t-801), driven as a
+   narrowed principal the real policy answers, each refused the other's
+   memory by the owner layer. Measured: it fails 5 checks when one policy is widened
    to `USING (true)`, and at the first create when one is dropped
    (default-deny under `FORCE`).
 6. The switch round-trips — `--enable` (no change) → `--disable` →

@@ -11,6 +11,7 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { isUniqueViolationOn, UNIQUE_CONSTRAINTS } from '@/lib/db/unique-violation';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { errorResponse, successResponse } from '@/lib/api/responses';
@@ -23,7 +24,21 @@ import {
   type ProviderModelUsage,
 } from '@/lib/orchestration/admin/global-config-usage';
 import { updateProviderModelSchema } from '@/lib/validations/orchestration';
+import {
+  isHalfPrice,
+  missingPriceField,
+  PRICE_PAIR_MESSAGE,
+} from '@/lib/validations/model-pricing';
 import { cuidSchema } from '@/lib/validations/common';
+
+/** The database CHECK that holds the price pair (A10, t-774). */
+const PRICE_PAIR_CONSTRAINT = 'ai_provider_model_price_pair';
+
+function pricePairError(input: number | null | undefined): ValidationError {
+  return new ValidationError(PRICE_PAIR_MESSAGE, {
+    [missingPriceField(input)]: [PRICE_PAIR_MESSAGE],
+  });
+}
 
 export const GET = withAdminAuth<{ id: string }>(async (request, _session, { params }) => {
   const log = await getRouteLogger(request);
@@ -58,6 +73,18 @@ export const PATCH = withAdminAuth<{ id: string }>(
 
     const body = await validateRequestBody(request, updateProviderModelSchema);
 
+    // The split prices are a pair on the row as saved, not just in the body:
+    // half a price records the other half of every turn at $0 (t-774).
+    const nextInput =
+      body.inputCostPerMillionTokens !== undefined
+        ? body.inputCostPerMillionTokens
+        : current.inputCostPerMillionTokens;
+    const nextOutput =
+      body.outputCostPerMillionTokens !== undefined
+        ? body.outputCostPerMillionTokens
+        : current.outputCostPerMillionTokens;
+    if (isHalfPrice(nextInput, nextOutput)) throw pricePairError(nextInput);
+
     const data: Prisma.AiProviderModelUpdateInput = {};
     if (body.name !== undefined) data.name = body.name;
     if (body.slug !== undefined) data.slug = body.slug;
@@ -77,6 +104,10 @@ export const PATCH = withAdminAuth<{ id: string }>(
     if (body.schemaCompatible !== undefined) data.schemaCompatible = body.schemaCompatible;
     if (body.costPerMillionTokens !== undefined)
       data.costPerMillionTokens = body.costPerMillionTokens;
+    if (body.inputCostPerMillionTokens !== undefined)
+      data.inputCostPerMillionTokens = body.inputCostPerMillionTokens;
+    if (body.outputCostPerMillionTokens !== undefined)
+      data.outputCostPerMillionTokens = body.outputCostPerMillionTokens;
     if (body.hasFreeTier !== undefined) data.hasFreeTier = body.hasFreeTier;
     if (body.local !== undefined) data.local = body.local;
     if (body.quality !== undefined) data.quality = body.quality;
@@ -110,9 +141,21 @@ export const PATCH = withAdminAuth<{ id: string }>(
 
       return successResponse(updated);
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      // Two PATCHes can each pass the check above against the same saved row
+      // and together leave half a price; the database refuses the second
+      // (`ai_provider_model_price_pair`, raised as P2039 under the driver
+      // adapter). Same answer as the check gives.
+      if (err instanceof Error && err.message.includes(PRICE_PAIR_CONSTRAINT)) {
+        throw pricePairError(null);
+      }
+      if (isUniqueViolationOn(err, UNIQUE_CONSTRAINTS.providerModelSlug)) {
         throw new ValidationError(`Provider model with slug '${body.slug}' already exists`, {
           slug: ['Slug is already in use'],
+        });
+      }
+      if (isUniqueViolationOn(err, UNIQUE_CONSTRAINTS.providerModelPair)) {
+        throw new ValidationError('This provider already has a model with that model id', {
+          modelId: ['Already in use for this provider'],
         });
       }
       throw err;

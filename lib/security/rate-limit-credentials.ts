@@ -15,6 +15,11 @@
  * (`resolveApiKey`, `authenticateMcpRequest`, `resolveEmbedToken`), which
  * runs after this and still refuses a bad credential.
  *
+ * Each answer also carries the org the row is bound to, read from the same
+ * row, so the middleware can count the request against that org's request cap
+ * (`lib/security/org-request-cap.ts`, §110 t-789) without a header the caller
+ * chose deciding which org that is.
+ *
  * Cost:
  * - A verified credential is cached for {@link VERIFIED_TTL_MS} (never past
  *   its own expiry). In the second half of that window the cached id is still
@@ -45,7 +50,7 @@ import { MCP_API_KEY_PREFIX, hashApiKey as hashMcpApiKey } from '@/lib/orchestra
 import { SECURITY_CONSTANTS } from '@/lib/security/constants';
 import { createRateLimiter } from '@/lib/security/rate-limit';
 import { runAsCredentialLookup } from '@/lib/tenancy/context';
-import { resolveCredentialOrg } from '@/lib/tenancy/entry';
+import { orgOfColumn, resolveCredentialOrg } from '@/lib/tenancy/entry';
 
 /** The two built-in key strategies that identify a caller by a credential. */
 export type RateLimitCredentialKind = 'api-key' | 'embed-token';
@@ -68,10 +73,30 @@ const MAX_VERIFIED_CREDENTIALS = 1000;
 /** Lookups of cold values one client IP may cause per minute. */
 const LOOKUPS_PER_IP_PER_MINUTE = 30;
 
-/** A live credential's bucket id and, when it has one, its expiry. */
+/**
+ * A live credential's bucket id, the org it acts for, and, when it has one,
+ * its expiry. `orgId` is `null` for a credential that enters no org — an
+ * unbound `admin`-scoped API key, or a legacy row with no org at `multi`.
+ */
 interface LiveCredential {
   id: string;
+  orgId: string | null;
+  memberUserId: string | null;
   expiresAt: Date | null;
+}
+
+/** What {@link resolveRateLimitCredential} answers for a live credential. */
+export interface VerifiedRateLimitCredential {
+  /** The stable bucket id: the stored row, never the presented value. */
+  id: string;
+  /** The org the row is bound to, for the org request cap; `null` for none. */
+  orgId: string | null;
+  /**
+   * The user whose membership that org rests on — a user API key's owner, as
+   * `enterApiKeyOrg` verifies it — or `null` for an embed token or MCP key,
+   * whose org's status this lookup already checked.
+   */
+  memberUserId: string | null;
 }
 
 /**
@@ -93,7 +118,7 @@ const verified = new LRUCache<string, CachedEntry>({
 // Lookups in progress, by the same digest, so the requests that check one
 // credential at the same moment share a single query. An entry lives only
 // until its lookup settles.
-const inFlight = new Map<string, Promise<string | null>>();
+const inFlight = new Map<string, Promise<VerifiedRateLimitCredential | null>>();
 
 // The per-IP budget for looking up cold values — separate from the request
 // buckets, and reserved synchronously before the query.
@@ -107,8 +132,15 @@ function cacheKey(kind: RateLimitCredentialKind, value: string): string {
   return createHash('sha256').update(`${kind}:${value}`).digest('hex');
 }
 
-function live(id: string, expiresAt: Date | null): LiveCredential | null {
-  return expiresAt === null || expiresAt > new Date() ? { id, expiresAt } : null;
+function live(
+  id: string,
+  orgId: string | null,
+  expiresAt: Date | null,
+  memberUserId: string | null = null
+): LiveCredential | null {
+  return expiresAt === null || expiresAt > new Date()
+    ? { id, orgId, memberUserId, expiresAt }
+    : null;
 }
 
 async function lookup(
@@ -133,7 +165,7 @@ async function lookup(
       { orgId: row.orgId, orgStatus: row.org?.status ?? null },
       'embed-token'
     );
-    return 'refused' in entry ? null : live(row.id, null);
+    return 'refused' in entry ? null : live(row.id, entry.orgId, null);
   }
 
   // Each key type is hashed by its own resolver's function and recognised by
@@ -142,10 +174,16 @@ async function lookup(
     const row = await runAsCredentialLookup('api-key', () =>
       prisma.aiApiKey.findFirst({
         where: { keyHash: hashApiKey(value), revokedAt: null },
-        select: { id: true, expiresAt: true },
+        select: { id: true, expiresAt: true, orgId: true, userId: true, scopes: true },
       })
     );
-    return row ? live(`sk:${row.id}`, row.expiresAt) : null;
+    // The org as `enterApiKeyOrg` reads it: an `admin`-scoped key enters no
+    // org (and one bound to an org is refused outright), and an unbound key
+    // acts for no org at `multi`. The owner's membership is verified by the
+    // org counter, and only for an org with a cap.
+    if (!row) return null;
+    const orgId = row.scopes.includes('admin') ? null : orgOfColumn(row.orgId);
+    return live(`sk:${row.id}`, orgId, row.expiresAt, row.userId);
   }
   if (value.startsWith(MCP_API_KEY_PREFIX)) {
     const row = await runAsCredentialLookup('mcp-key', () =>
@@ -165,7 +203,7 @@ async function lookup(
       { orgId: row.orgId, orgStatus: row.org?.status ?? null },
       'mcp-key'
     );
-    return 'refused' in entry ? null : live(`mcp:${row.id}`, row.expiresAt);
+    return 'refused' in entry ? null : live(`mcp:${row.id}`, entry.orgId, row.expiresAt);
   }
   // Not a credential format Sunrise issues: nothing to look up.
   return null;
@@ -188,7 +226,7 @@ async function verifyAndCache(
   key: string,
   kind: RateLimitCredentialKind,
   value: string
-): Promise<string | null> {
+): Promise<VerifiedRateLimitCredential | null> {
   let found: LiveCredential | null;
   try {
     found = await lookup(kind, value);
@@ -198,12 +236,16 @@ async function verifyAndCache(
     // credential's expiry, and only while its last good check is recent.
     const cached = verified.get(key);
     if (cached && Date.now() - cached.verifiedAt < MAX_REARM_AGE_MS) {
-      cacheLive(key, live(cached.id, cached.expiresAt), cached.verifiedAt);
+      cacheLive(
+        key,
+        live(cached.id, cached.orgId, cached.expiresAt, cached.memberUserId),
+        cached.verifiedAt
+      );
     }
     throw error;
   }
   cacheLive(key, found, Date.now());
-  return found?.id ?? null;
+  return found ? { id: found.id, orgId: found.orgId, memberUserId: found.memberUserId } : null;
 }
 
 /** Run (or join) the one lookup in flight for this credential. */
@@ -211,7 +253,7 @@ function verifyShared(
   key: string,
   kind: RateLimitCredentialKind,
   value: string
-): Promise<string | null> {
+): Promise<VerifiedRateLimitCredential | null> {
   const pending = inFlight.get(key);
   if (pending) return pending;
   const promise = verifyAndCache(key, kind, value).finally(() => {
@@ -230,16 +272,17 @@ function warnLookupFailed(kind: RateLimitCredentialKind, error: unknown): void {
 }
 
 /**
- * The stable bucket id for the credential a request presents, or `null` to
- * key the request on the client IP. See the module docblock for what this
- * costs and when it falls back. Never throws: a failed lookup is logged and
- * answers `null` (the cached id, when one is being served, is unaffected).
+ * The stable bucket id for the credential a request presents, with the org
+ * the credential is bound to, or `null` to key the request on the client IP.
+ * See the module docblock for what this costs and when it falls back. Never
+ * throws: a failed lookup is logged and answers `null` (the cached answer,
+ * when one is being served, is unaffected).
  */
 export async function resolveRateLimitCredential(
   kind: RateLimitCredentialKind,
   value: string,
   ip: string
-): Promise<string | null> {
+): Promise<VerifiedRateLimitCredential | null> {
   const key = cacheKey(kind, value);
 
   const cached = verified.get(key);
@@ -249,7 +292,7 @@ export async function resolveRateLimitCredential(
     if (!cached.capped && verified.getRemainingTTL(key) < REFRESH_BELOW_MS) {
       verifyShared(key, kind, value).catch((error: unknown) => warnLookupFailed(kind, error));
     }
-    return cached.id;
+    return { id: cached.id, orgId: cached.orgId, memberUserId: cached.memberUserId };
   }
 
   // A lookup already running for this value costs nothing more to join.

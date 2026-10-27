@@ -330,6 +330,7 @@ describe('DELETE /api/v1/admin/orchestration/evaluations/datasets/:id', () => {
       id: 'run-1',
       name: 'blocking run',
       status: 'running',
+      userId: mockAdminUser().user.id,
     } as never);
 
     const response = await DELETE(makeDeleteRequest(DATASET_ID), makeParams(DATASET_ID));
@@ -338,6 +339,25 @@ describe('DELETE /api/v1/admin/orchestration/evaluations/datasets/:id', () => {
     const data = await parseJson<{ error: { code: string; message: string } }>(response);
     expect(data.error.code).toBe('CONFLICT');
     expect(data.error.message).toContain('blocking run');
+    expect(vi.mocked(prisma.aiDataset.delete)).not.toHaveBeenCalled();
+  });
+
+  it("returns 409 for another admin's active run without naming it", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiDataset.findFirst).mockResolvedValue(makeDatasetRow());
+    vi.mocked(prisma.aiEvaluationRun.findFirst).mockResolvedValue({
+      id: 'run-1',
+      name: 'their private run',
+      status: 'queued',
+      userId: 'cmotheradmin00000000000001',
+    } as never);
+
+    const response = await DELETE(makeDeleteRequest(DATASET_ID), makeParams(DATASET_ID));
+
+    expect(response.status).toBe(409);
+    const data = await parseJson<{ error: { message: string } }>(response);
+    expect(data.error.message).toContain('started by another admin');
+    expect(data.error.message).not.toContain('their private run');
     expect(vi.mocked(prisma.aiDataset.delete)).not.toHaveBeenCalled();
   });
 

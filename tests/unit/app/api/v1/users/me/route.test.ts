@@ -4,8 +4,8 @@
  * Covers the DELETE handler's contract:
  *   - Confirmation validation gate
  *   - Last-admin guard (role ADMIN + count <= 1 → 400 LAST_ADMIN)
- *   - Admin but not last → eraseUser called, 200
- *   - Non-admin self-delete → eraseUser called, 200
+ *   - Admin but not last → requestUserErasure called, 200
+ *   - Non-admin self-delete → requestUserErasure called, 200
  *   - Cookie teardown (better-auth + __Secure- cookies cleared after erase)
  *   - Analytics (serverTrack(ACCOUNT_DELETED) fired after success)
  *
@@ -95,10 +95,14 @@ vi.mock('better-auth/crypto', () => ({
   verifyPassword: vi.fn().mockResolvedValue(true),
 }));
 
-// eraseUser — mock so real PII-scrubbing logic is never run in unit tests.
-// Returns a minimal EraseUserResult so callers that await the value don't fail.
-vi.mock('@/lib/privacy/erase-user', () => ({
-  eraseUser: vi.fn().mockResolvedValue({ receiptId: 'receipt-1', erasedAt: new Date() }),
+// requestUserErasure — mock so the claim transaction and the real PII-scrubbing
+// logic are never run in unit tests. Returns a finished erasure by default.
+vi.mock('@/lib/privacy/erasure-requests', () => ({
+  requestUserErasure: vi.fn().mockResolvedValue({
+    status: 'erased',
+    receiptId: 'receipt-1',
+    erasedAt: new Date(),
+  }),
 }));
 
 // serverTrack — mock; assert it is called with the right event
@@ -134,7 +138,7 @@ import { prisma } from '@/lib/db/client';
 import { verifyPassword } from 'better-auth/crypto';
 import { auth } from '@/lib/auth/config';
 import { humanAdminWhere } from '@/lib/auth/account';
-import { eraseUser } from '@/lib/privacy/erase-user';
+import { requestUserErasure } from '@/lib/privacy/erasure-requests';
 import { serverTrack } from '@/lib/analytics/server';
 import { EVENTS } from '@/lib/analytics/events';
 
@@ -179,7 +183,7 @@ describe('DELETE /api/v1/users/me', () => {
 
   // ── Case 1: Missing / invalid confirmation body ─────────────────────────
 
-  it('returns a validation error and does NOT call eraseUser when confirmation is absent', async () => {
+  it('returns a validation error and does NOT call requestUserErasure when confirmation is absent', async () => {
     // Arrange
     const session = buildUserSession('USER');
     const request = createMockRequest({
@@ -197,12 +201,12 @@ describe('DELETE /api/v1/users/me', () => {
     expect(body.success).toBe(false);
     expect((body as ErrorBody).error.code).toBe('VALIDATION_ERROR');
 
-    // Anti-green-bar: eraseUser must NOT have been invoked — confirms the route
+    // Anti-green-bar: requestUserErasure must NOT have been invoked — confirms the route
     // short-circuits before reaching the erasure step
-    expect(eraseUser).not.toHaveBeenCalled();
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
-  it('returns a validation error and does NOT call eraseUser when confirmation value is wrong', async () => {
+  it('returns a validation error and does NOT call requestUserErasure when confirmation value is wrong', async () => {
     // Arrange
     const session = buildUserSession('USER');
     const request = createMockRequest({
@@ -220,13 +224,36 @@ describe('DELETE /api/v1/users/me', () => {
     expect(body.success).toBe(false);
     expect((body as ErrorBody).error.code).toBe('VALIDATION_ERROR');
 
-    // eraseUser not called on validation failure
-    expect(eraseUser).not.toHaveBeenCalled();
+    // requestUserErasure not called on validation failure
+    expect(requestUserErasure).not.toHaveBeenCalled();
+  });
+
+  it('refuses self-deletion inside a support session, before the last-admin check (§121 t-824)', async () => {
+    // The guard presents a supporting platform admin as role USER, so the
+    // last-admin count would never run for them; the route refuses instead.
+    const { runAsOrg } = await import('@/lib/tenancy/context');
+    const session = buildUserSession('USER');
+    const request = createMockRequest({
+      method: 'DELETE',
+      url: 'http://localhost:3000/api/v1/users/me',
+      body: { confirmation: 'DELETE' },
+    });
+
+    const response = await runAsOrg('cmorg00000000000customer1', () => DELETE(request, session), {
+      source: 'support',
+      role: 'ADMIN',
+      support: { grantId: 'grant-1', level: 'ADMIN', expiresAt: new Date(Date.now() + 60_000) },
+    });
+    const body = await parseJSON<ApiBody>(response);
+
+    expect(response.status).toBe(403);
+    expect((body as ErrorBody).error.code).toBe('FORBIDDEN');
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
   // ── Case 2: Last-admin block ─────────────────────────────────────────────
 
-  it('returns 400 LAST_ADMIN and does NOT call eraseUser when the sole admin tries to self-delete', async () => {
+  it('returns 400 LAST_ADMIN and does NOT call requestUserErasure when the sole admin tries to self-delete', async () => {
     // Arrange — ADMIN role, count returns 1 (last admin)
     const session = mockAdminUser();
     vi.mocked(prisma.user.count).mockResolvedValue(1);
@@ -251,10 +278,15 @@ describe('DELETE /api/v1/users/me', () => {
     // config-owner has role ADMIN but is excluded, so it cannot be mistaken for
     // a real operator (issue #278 / security review).
     expect(prisma.user.count).toHaveBeenCalledTimes(1);
-    expect(prisma.user.count).toHaveBeenCalledWith({ where: humanAdminWhere });
+    expect(prisma.user.count).toHaveBeenCalledWith({
+      where: {
+        ...humanAdminWhere,
+        OR: [{ erasureRequestedAt: null }, { id: session.user.id }],
+      },
+    });
 
-    // eraseUser must NOT have been called — confirms the guard short-circuits
-    expect(eraseUser).not.toHaveBeenCalled();
+    // requestUserErasure must NOT have been called — confirms the guard short-circuits
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
   it('counts the lone human admin as the last admin even though a system ADMIN row exists (excludes SERVICE account)', async () => {
@@ -279,21 +311,29 @@ describe('DELETE /api/v1/users/me', () => {
 
     expect(response.status).toBe(400);
     expect((body as ErrorBody).error.code).toBe('LAST_ADMIN');
-    expect(prisma.user.count).toHaveBeenCalledWith({ where: humanAdminWhere });
-    expect(eraseUser).not.toHaveBeenCalled();
+    expect(prisma.user.count).toHaveBeenCalledWith({
+      where: {
+        ...humanAdminWhere,
+        OR: [{ erasureRequestedAt: null }, { id: session.user.id }],
+      },
+    });
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
   // ── Case 3: Admin but not last ──────────────────────────────────────────
 
-  it('calls eraseUser with self_service args and returns { deleted: true } when admin is not the last', async () => {
+  it('calls requestUserErasure with self_service args and returns { deleted: true } when admin is not the last', async () => {
     // Arrange — ADMIN role, count returns 2 (another admin exists)
     const session = mockAdminUser();
     // Override to get stable userId / email from the mock
     const userId = session.user.id;
-    const userEmail = session.user.email;
 
     vi.mocked(prisma.user.count).mockResolvedValue(2);
-    vi.mocked(eraseUser).mockResolvedValue({ receiptId: 'receipt-1', erasedAt: new Date() });
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'erased',
+      receiptId: 'receipt-1',
+      erasedAt: new Date(),
+    });
 
     const request = createMockRequest({
       method: 'DELETE',
@@ -310,13 +350,14 @@ describe('DELETE /api/v1/users/me', () => {
     expect(body.success).toBe(true);
     expect(body.data.deleted).toBe(true);
 
-    // Anti-green-bar: eraseUser called exactly once with the right args —
+    // Anti-green-bar: requestUserErasure called exactly once with the right args —
     // proves the route computed actorUserId === userId (self-service) and
     // reason === 'self_service' rather than forwarding incorrect values
-    expect(eraseUser).toHaveBeenCalledTimes(1);
-    expect(eraseUser).toHaveBeenCalledWith({
+    expect(requestUserErasure).toHaveBeenCalledTimes(1);
+    // No `userEmail`: it is deprecated, and the receipt reads the stored
+    // address instead of the session's possibly stale copy (t-797).
+    expect(requestUserErasure).toHaveBeenCalledWith({
       userId,
-      userEmail,
       actorUserId: userId,
       reason: 'self_service',
     });
@@ -324,13 +365,16 @@ describe('DELETE /api/v1/users/me', () => {
 
   // ── Case 4: Non-admin self-delete ────────────────────────────────────────
 
-  it('calls eraseUser without consulting the count gate and returns { deleted: true } for a USER role', async () => {
+  it('calls requestUserErasure without consulting the count gate and returns { deleted: true } for a USER role', async () => {
     // Arrange — USER role; the admin count gate must NOT be invoked
     const session = buildUserSession('USER');
     const userId = session.user.id;
-    const userEmail = session.user.email;
 
-    vi.mocked(eraseUser).mockResolvedValue({ receiptId: 'receipt-1', erasedAt: new Date() });
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'erased',
+      receiptId: 'receipt-1',
+      erasedAt: new Date(),
+    });
 
     const request = createMockRequest({
       method: 'DELETE',
@@ -350,14 +394,106 @@ describe('DELETE /api/v1/users/me', () => {
     // Count gate skipped for non-admins
     expect(prisma.user.count).not.toHaveBeenCalled();
 
-    // eraseUser called with correct self-service payload
-    expect(eraseUser).toHaveBeenCalledTimes(1);
-    expect(eraseUser).toHaveBeenCalledWith({
+    // requestUserErasure called with correct self-service payload
+    expect(requestUserErasure).toHaveBeenCalledTimes(1);
+    // No `userEmail`: it is deprecated, and the receipt reads the stored
+    // address instead of the session's possibly stale copy (t-797).
+    expect(requestUserErasure).toHaveBeenCalledWith({
       userId,
-      userEmail,
       actorUserId: userId,
       reason: 'self_service',
     });
+  });
+
+  // ── Case 4b: Erasure already in progress ─────────────────────────────────
+
+  it('returns 409 CONFLICT, clears the cookies and tracks nothing when another attempt holds the erasure', async () => {
+    const session = buildUserSession('USER');
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'in_progress',
+      requestedAt: new Date('2026-10-19T10:00:00Z'),
+    });
+
+    const request = createMockRequest({
+      method: 'DELETE',
+      url: 'http://localhost:3000/api/v1/users/me',
+      body: { confirmation: 'DELETE' },
+    });
+
+    const response = await DELETE(request, session);
+    const body = await parseJSON<ApiBody>(response);
+
+    expect(response.status).toBe(409);
+    expect(body.success).toBe(false);
+    expect((body as ErrorBody).error.code).toBe('CONFLICT');
+    expect(requestUserErasure).toHaveBeenCalledTimes(1);
+    // Its sessions are gone either way, so the cookies go too; but the account
+    // is not yet erased, so nothing reports it deleted.
+    expect(mockCookieStore.delete).toHaveBeenCalledWith('better-auth.session_token');
+    expect(mockCookieStore.set).toHaveBeenCalledWith(
+      '__Secure-better-auth.session_data',
+      '',
+      expect.objectContaining({ maxAge: 0 })
+    );
+    expect(serverTrack).not.toHaveBeenCalled();
+  });
+
+  // ── Case 4c: Erasure did not finish within the request budget (t-845) ────
+
+  it('returns 202 { pending: true, requestedAt } instead of the deleted body when the erasure is still pending', async () => {
+    const session = buildUserSession('USER');
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'pending',
+      requestedAt: new Date('2026-10-20T11:59:55.000Z'),
+    });
+
+    const request = createMockRequest({
+      method: 'DELETE',
+      url: 'http://localhost:3000/api/v1/users/me',
+      body: { confirmation: 'DELETE' },
+    });
+
+    const response = await DELETE(request, session);
+    const body = await parseJSON<SuccessBody>(response);
+
+    expect(response.status).toBe(202);
+    expect(body).toEqual({
+      success: true,
+      data: { pending: true, requestedAt: '2026-10-20T11:59:55.000Z' },
+    });
+    // Not reported as done: the client tells the two apart by these keys.
+    expect(body.data).not.toHaveProperty('deleted');
+    expect(requestUserErasure).toHaveBeenCalledTimes(1);
+    expect(mockLog.info).toHaveBeenCalledWith(
+      'User account deletion pending; the maintenance tick finishes it'
+    );
+    expect(mockLog.info).not.toHaveBeenCalledWith('User account deleted successfully');
+  });
+
+  it('still clears all the auth cookies on a pending answer, since the account’s sessions are gone', async () => {
+    const session = buildUserSession('USER');
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'pending',
+      requestedAt: new Date('2026-10-20T11:59:55.000Z'),
+    });
+
+    const request = createMockRequest({
+      method: 'DELETE',
+      url: 'http://localhost:3000/api/v1/users/me',
+      body: { confirmation: 'DELETE' },
+    });
+
+    const response = await DELETE(request, session);
+
+    expect(response.status).toBe(202);
+    expect(mockCookieStore.delete).toHaveBeenCalledTimes(4);
+    expect(mockCookieStore.delete).toHaveBeenCalledWith('better-auth.session_token');
+    expect(mockCookieStore.set).toHaveBeenCalledTimes(4);
+    expect(mockCookieStore.set).toHaveBeenCalledWith(
+      '__Secure-better-auth.session_token',
+      '',
+      expect.objectContaining({ maxAge: 0 })
+    );
   });
 
   // ── Case 5: Cookie teardown ──────────────────────────────────────────────
@@ -365,7 +501,11 @@ describe('DELETE /api/v1/users/me', () => {
   it('deletes and expires all better-auth cookies after a successful erase', async () => {
     // Arrange — USER role for simplicity; cookie teardown is the same for all roles
     const session = buildUserSession('USER');
-    vi.mocked(eraseUser).mockResolvedValue({ receiptId: 'receipt-1', erasedAt: new Date() });
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'erased',
+      receiptId: 'receipt-1',
+      erasedAt: new Date(),
+    });
 
     const request = createMockRequest({
       method: 'DELETE',
@@ -421,7 +561,11 @@ describe('DELETE /api/v1/users/me', () => {
     // Arrange
     const session = buildUserSession('USER');
     const userId = session.user.id;
-    vi.mocked(eraseUser).mockResolvedValue({ receiptId: 'receipt-1', erasedAt: new Date() });
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'erased',
+      receiptId: 'receipt-1',
+      erasedAt: new Date(),
+    });
 
     const request = createMockRequest({
       method: 'DELETE',
@@ -510,6 +654,13 @@ describe('GET /api/v1/users/me', () => {
       timezone: 'UTC',
       location: null,
       preferences: null,
+      signupOrgId: null,
+      signupOrgRole: null,
+      erasureRequestedAt: null,
+      erasureRequestedBy: null,
+      erasureReason: null,
+      erasureAttempts: 0,
+      erasureNextAttemptAt: null,
       createdAt: new Date('2025-01-01'),
       updatedAt: new Date('2025-01-01'),
     };
@@ -562,6 +713,13 @@ describe('PATCH /api/v1/users/me', () => {
       timezone: 'UTC',
       location: null,
       preferences: null,
+      signupOrgId: null,
+      signupOrgRole: null,
+      erasureRequestedAt: null,
+      erasureRequestedBy: null,
+      erasureReason: null,
+      erasureAttempts: 0,
+      erasureNextAttemptAt: null,
       createdAt: new Date('2025-01-01'),
       updatedAt: new Date('2025-06-01'),
     };
@@ -620,6 +778,13 @@ describe('PATCH /api/v1/users/me — email change', () => {
     timezone: 'UTC',
     location: null,
     preferences: null,
+    signupOrgId: null,
+    signupOrgRole: null,
+    erasureRequestedAt: null,
+    erasureRequestedBy: null,
+    erasureReason: null,
+    erasureAttempts: 0,
+    erasureNextAttemptAt: null,
     createdAt: new Date('2025-01-01'),
     updatedAt: new Date('2025-06-01'),
   };

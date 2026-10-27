@@ -22,22 +22,13 @@ import {
   WebhooksTable,
   type WebhookListItem,
 } from '@/components/admin/orchestration/webhooks-table';
-import { WebhookDlqTable } from '@/components/admin/orchestration/webhook-dlq-table';
+import {
+  WebhookDlqTable,
+  type DlqDelivery,
+} from '@/components/admin/orchestration/webhook-dlq-table';
+import { LoadFailedNotice } from '@/components/admin/load-failed-notice';
 import { useUrlTabs } from '@/lib/hooks/use-url-tabs';
 import type { PaginationMeta } from '@/types/api';
-
-interface DlqDelivery {
-  id: string;
-  eventType: string;
-  status: 'exhausted';
-  lastResponseCode: number | null;
-  lastError: string | null;
-  attempts: number;
-  createdAt: string;
-  lastAttemptAt: string | null;
-  subscriptionId: string;
-  subscription: { id: string; url: string; description: string | null };
-}
 
 interface DlqSubscriptionOption {
   id: string;
@@ -48,7 +39,14 @@ interface DlqSubscriptionOption {
 export interface EventSubscriptionsTabsProps {
   webhooks: WebhookListItem[];
   webhooksMeta: PaginationMeta;
-  dlqDeliveries: DlqDelivery[];
+  /**
+   * Dead-letter rows. `null` means they failed to load: the Dead Letter Queue
+   * tab shows a "Couldn't load" notice instead of the table (an empty queue is
+   * the all-clear, so a failure must not look like one), and its tab carries
+   * no count badge. The Subscriptions tab is unaffected.
+   */
+  dlqDeliveries: DlqDelivery[] | null;
+  /** Pagination for `dlqDeliveries`; ignored when that is `null`. */
   dlqMeta: PaginationMeta;
   dlqSubscriptions: DlqSubscriptionOption[];
 }
@@ -85,7 +83,7 @@ export function EventSubscriptionsTabs({
         </TabsTrigger>
         <TabsTrigger value="dlq">
           Dead Letter Queue
-          {dlqMeta.total > 0 && (
+          {dlqDeliveries !== null && dlqMeta.total > 0 && (
             <Badge variant="destructive" className="ml-2 px-1.5 text-[11px]">
               {dlqMeta.total}
             </Badge>
@@ -100,8 +98,9 @@ export function EventSubscriptionsTabs({
       <TabsContent value="dlq">
         <p className="text-muted-foreground mb-4 flex items-center gap-1.5 text-sm">
           <span>
-            Exhausted webhook deliveries across all subscriptions you own. Retry once the receiver
-            is fixed, or discard rows you&apos;ve already reviewed.
+            Exhausted webhook deliveries across all subscriptions you own, and those kept after
+            their subscription was deleted. Retry once the receiver is fixed, or discard rows
+            you&apos;ve already reviewed.
           </span>
           <FieldHelp title="Dead letter queue overview" contentClassName="w-96">
             <p>
@@ -122,16 +121,21 @@ export function EventSubscriptionsTabs({
               </li>
               <li>
                 <span className="font-medium">Bulk replay</span> — re-dispatch every exhausted row
-                for the selected subscription (or every row visible on the current page).
+                for the selected subscription (or every row on the current page whose subscription
+                still exists).
               </li>
             </ul>
           </FieldHelp>
         </p>
-        <WebhookDlqTable
-          initialDeliveries={dlqDeliveries}
-          initialMeta={dlqMeta}
-          subscriptions={dlqSubscriptions}
-        />
+        {dlqDeliveries === null ? (
+          <LoadFailedNotice what="the dead-letter queue" />
+        ) : (
+          <WebhookDlqTable
+            initialDeliveries={dlqDeliveries}
+            initialMeta={dlqMeta}
+            subscriptions={dlqSubscriptions}
+          />
+        )}
       </TabsContent>
     </Tabs>
   );

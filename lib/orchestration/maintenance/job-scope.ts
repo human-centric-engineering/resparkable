@@ -56,6 +56,7 @@
  * {@link forEachOrg}.
  */
 
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 import { logger } from '@/lib/logging';
 import { forEachOrg, runAsOrg, runAsSystem } from '@/lib/tenancy/context';
 
@@ -232,10 +233,21 @@ export interface RunScopedJobOptions<T> {
  *
  * System: once under {@link runAsSystem} with the declared reason; a throw
  * propagates to the caller's existing containment.
+ *
+ * **Across owners, whoever fired the tick** (§115 t-803). A tick fired from an
+ * admin's session would otherwise run every job as that admin, and the owner
+ * layer (`lib/db/owner-extension.ts`) would narrow the pending-run drain, the
+ * evaluation worker and the reaper to that admin's own rows — the same mistake
+ * as inheriting their org, one level down. A job acts for the org, not a
+ * person, so it reads as the cron tick does.
  */
-export async function runScopedJob<T>(
-  options: RunScopedJobOptions<T>
-): Promise<ScopedJobOutcome<T>> {
+export function runScopedJob<T>(options: RunScopedJobOptions<T>): Promise<ScopedJobOutcome<T>> {
+  return runAcrossOwners(`maintenance job ${options.name}: acts for the org, not a person`, () =>
+    runScoped(options)
+  );
+}
+
+async function runScoped<T>(options: RunScopedJobOptions<T>): Promise<ScopedJobOutcome<T>> {
   const { name, scope, run, foundWork, orgIds } = options;
 
   if (isSystemScope(scope)) {

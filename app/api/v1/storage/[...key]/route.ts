@@ -9,12 +9,13 @@
  * any provider declaring the `download` capability.
  *
  * **Authentication is the signed token, and only the signed token.** There is
- * deliberately no session fallback. Storage keys carry no ownership —
- * `agent-uploads/{agentId}/{uuid}` names no user, and `avatars/{userId}/…`
- * only does so by convention — so `withAuth()` here would let *any* logged-in
- * user read *any* private object. That is worse than having no read path at
- * all, which is what this route replaced. The token is minted per key by
- * `getSignedUrl()` and is checked against the key actually requested.
+ * deliberately no session fallback. Storage keys name no user —
+ * `orgs/{orgId}/…` names an org, `avatars/{userId}/…` a user only by
+ * convention — so `withAuth()` here would let *any* logged-in user read *any*
+ * private object. That is worse than having no read path at all, which is
+ * what this route replaced. The token is minted per key by `getSignedUrl()`
+ * and is checked against the key actually requested, then its `org` claim
+ * against the org that key belongs to (§109 t-736).
  *
  * Rate limiting: inherited from the `/api/v1/**` catch-all in
  * `lib/security/rate-limit-policy.ts`. Anonymous callers key on IP.
@@ -25,11 +26,13 @@
 
 import type { NextRequest } from 'next/server';
 import { errorResponse } from '@/lib/api/responses';
+import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { getStorageClient } from '@/lib/storage/client';
 import { getStorageCapabilities } from '@/lib/storage/providers/types';
-import { verifyStorageAccessToken } from '@/lib/storage/access-tokens';
+import { tokenOrgMatchesKey, verifyStorageAccessToken } from '@/lib/storage/access-tokens';
 import { validateStorageKey } from '@/lib/storage/providers/validate-key';
+import { orgOfKey } from '@/lib/storage/org-keys';
 
 export async function GET(
   request: NextRequest,
@@ -47,8 +50,11 @@ export async function GET(
   }
 
   let tokenKey: string;
+  let tokenOrg: string | null;
   try {
-    tokenKey = verifyStorageAccessToken(token).key;
+    const payload = verifyStorageAccessToken(token);
+    tokenKey = payload.key;
+    tokenOrg = payload.org ?? null;
   } catch (err) {
     // The message distinguishes expired from tampered, which is useful to a
     // legitimate caller holding a stale link and tells an attacker nothing
@@ -73,6 +79,44 @@ export async function GET(
     });
   }
 
+  // The token's org claim must name the org the key belongs to — both null
+  // for a key no org owns. Minting already refuses a key outside the org, so
+  // this only refuses a token minted wrongly; it is here so a mistake in that
+  // one function cannot become a cross-org read (`access-tokens.ts` header).
+  if (!tokenOrgMatchesKey(tokenOrg, key)) {
+    logger.warn('Storage token presented with an org claim that does not match the key', {
+      requestedKey: key,
+      keyOrg: orgOfKey(key),
+      tokenOrg,
+    });
+    return errorResponse('This token does not grant access to the requested object', {
+      code: 'TOKEN_ORG_MISMATCH',
+      status: 403,
+    });
+  }
+
+  // An org-claimed token reads only while its org is live. A link minted for
+  // an org that has since been erased (when the post-commit storage sweep
+  // failed, its files are still there) or suspended stops working now, not at
+  // its expiry, which at `multi` is a day by default and up to seven.
+  if (tokenOrg !== null) {
+    const org = await prisma.org.findUnique({
+      where: { id: tokenOrg },
+      select: { status: true },
+    });
+    if (!org || org.status !== 'ACTIVE') {
+      logger.info('Storage token refused: its org is erased or suspended', {
+        requestedKey: key,
+        tokenOrg,
+        orgStatus: org?.status ?? 'erased',
+      });
+      return errorResponse('This link is no longer valid', {
+        code: 'ORG_UNAVAILABLE',
+        status: 403,
+      });
+    }
+  }
+
   try {
     validateStorageKey(key);
   } catch {
@@ -81,7 +125,10 @@ export async function GET(
     return errorResponse('Invalid storage key', { code: 'INVALID_KEY', status: 400 });
   }
 
-  const storage = getStorageClient();
+  // The token's org, now known to match the key's: an org's files are
+  // reachable only through that org's client, and the unbound one refuses
+  // every key under `orgs/`.
+  const storage = getStorageClient(tokenOrg !== null ? { orgId: tokenOrg } : {});
   if (!storage) {
     return errorResponse('Storage is not configured for this deployment', {
       code: 'STORAGE_NOT_CONFIGURED',

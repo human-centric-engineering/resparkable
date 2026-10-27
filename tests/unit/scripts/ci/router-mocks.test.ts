@@ -189,6 +189,20 @@ describe('scanRouterMocks: complete-literal rule', () => {
       expect(literals(source)).toEqual([]);
     });
 
+    it('does not flag all six spies passed to the factory as overrides', () => {
+      // What the CLI tells a test asserting on all six methods to write.
+      const source = `vi.mocked(useRouter).mockReturnValue(createMockRouter({ push, replace, refresh, back, forward, prefetch }));`;
+      expect(literals(source)).toEqual([]);
+    });
+
+    it('recognises the factory through a namespace import', () => {
+      const source = `
+        const router = { ...mocks.createMockRouter(), push, replace, refresh, back, forward, prefetch };
+        const cast = mocks.createMockRouter() as MockRouter;
+      `;
+      expect(scan(source)).toEqual([]);
+    });
+
     it('still flags a literal that only uses the factory for one member', () => {
       const source = `
         const router = {
@@ -272,7 +286,7 @@ describe('scanRouterMocks: cast rule', () => {
   it('flags the form every real violation used, a cast to ReturnType<typeof vi.fn>', () => {
     // The previous rule was a grep for the literal string of the form above, so
     // this (which defeats the type check just as thoroughly) went unseen in
-    // all 17 files that used it.
+    // all 17 files that used it (#936).
     const source = `const mockedRouter = useRouter as unknown as ReturnType<typeof vi.fn>;`;
     expect(casts(source)).toHaveLength(1);
   });
@@ -341,6 +355,37 @@ describe('scanRouterMocks: cast rule', () => {
     expect(casts(source)).toHaveLength(1);
   });
 
+  it('flags one returned from inside a block in the implementation', () => {
+    const source = `vi.mocked(useRouter).mockImplementation(() => { if (x) { return { push } as never; } return createMockRouter(); });`;
+    expect(casts(source)).toHaveLength(1);
+  });
+
+  it('flags one returned as a branch of a conditional or a ?? operand', () => {
+    const source = `
+      vi.mocked(useRouter).mockImplementation(() => { return x ? ({ push } as never) : createMockRouter(); });
+      vi.mocked(useRouter).mockImplementation(() => x ? ({ push } as never) : createMockRouter());
+      vi.mocked(useRouter).mockReturnValue(stub ?? ({ push } as never));
+    `;
+    expect(casts(source)).toHaveLength(3);
+  });
+
+  it('does not flag a cast in a conditional that is not the returned value', () => {
+    const source = `vi.mocked(useRouter).mockImplementation(() => { const n = x ? (1 as never) : 2; return createMockRouter(); });`;
+    expect(casts(source)).toEqual([]);
+  });
+
+  it('stops at the nearest function, not the outermost one', () => {
+    // A `return` inside a nested function's block returns from that function,
+    // not from the implementation, so it is not the router handed out.
+    const source = `vi.mocked(useRouter).mockImplementation(() => { const f = () => { if (y) { return 1 as never; } }; return createMockRouter(); });`;
+    expect(casts(source)).toEqual([]);
+  });
+
+  it('does not flag a cast returned by a function nested inside the implementation', () => {
+    const source = `vi.mocked(useRouter).mockImplementation(() => { const f = () => { return 1 as never; }; return createMockRouter(); });`;
+    expect(casts(source)).toEqual([]);
+  });
+
   it('does not flag a cast inside an implementation that is not its return value', () => {
     const source = `vi.mocked(useRouter).mockImplementation(() => { const n = 1 as never; return createMockRouter(); });`;
     expect(casts(source)).toEqual([]);
@@ -372,7 +417,7 @@ describe('scanRouterMocks: cast rule', () => {
     expect(casts(source)).toHaveLength(1);
   });
 
-  describe('scoped to the router, because a blanket ban would flag 87 innocent casts', () => {
+  describe('scoped to the router, because a blanket ban would flag hundreds of innocent casts', () => {
     it('does not flag an apiClient cast', () => {
       const source = `const mockedPost = apiClient.post as ReturnType<typeof vi.fn>;`;
       expect(casts(source)).toEqual([]);
@@ -416,7 +461,7 @@ describe('scanRouterMocks: wiring', () => {
   it('parses .tsx as TSX, so JSX does not mangle the tree', () => {
     // Read as ScriptKind.TS, `<Thing />` is a type assertion and everything
     // after it is nonsense, silently. Fifteen of the sixteen files this check
-    // was written to catch are .tsx.
+    // was written to catch (#936) are .tsx.
     const source = `
       function Harness() {
         return <div className="x">{'hi'}</div>;
@@ -498,6 +543,14 @@ describe('scanRouterMocks: false positives have a way out', () => {
     expect(literals(source)).toHaveLength(1);
   });
 
+  it('still scans a file whose next/navigation mock names the module in a template literal', () => {
+    const source = [
+      "const pagesFixture = 'next/router';",
+      'vi.mock(`next/navigation`, () => ({ useRouter: () => ({ ' + SIX + ' }) }));',
+    ].join('\n');
+    expect(literals(source)).toHaveLength(1);
+  });
+
   it('skips a literal under an ignore directive that gives a reason', () => {
     const source = `
       // router-mocks-ignore: an it.each row keyed by method name, not a router
@@ -518,6 +571,27 @@ describe('scanRouterMocks: false positives have a way out', () => {
     const source = `
       // router-mocks-ignore: a table of method names
       it.each([{ ${SIX} }])('row', () => {});
+    `;
+    expect(literals(source)).toEqual([]);
+  });
+
+  it('ignores a block-comment directive whose only "reason" is the comment closing', () => {
+    const source = `
+      /* router-mocks-ignore:
+       */
+      const row = { ${SIX} };
+    `;
+    expect(literals(source)).toHaveLength(1);
+  });
+
+  it('accepts a reason that starts with a slash or an asterisk', () => {
+    const source = `
+      // router-mocks-ignore: /api/route keyed table, not a router
+      const a = { ${SIX} };
+      // router-mocks-ignore: *not* a router
+      const b = { ${SIX} };
+      /* router-mocks-ignore: a reason in a block comment */
+      const c = { ${SIX} };
     `;
     expect(literals(source)).toEqual([]);
   });

@@ -4,7 +4,10 @@
  * GET /api/v1/admin/orchestration/webhooks/dlq
  *
  * Lists all `exhausted` deliveries across the calling admin's
- * subscriptions. The single per-subscription delivery view does not
+ * subscriptions, plus those whose subscription was deleted where the
+ * authorization policy permits it (`webhook-delivery-access.ts`). Each row carries its own `destination`, so one
+ * without a subscription still says where it went. The single
+ * per-subscription delivery view does not
  * scale when an operator manages multiple subscriptions — partners
  * need one console to see what failed and why.
  *
@@ -20,9 +23,8 @@ import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { paginatedResponse } from '@/lib/api/responses';
 import { ValidationError } from '@/lib/api/errors';
-import { adminLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
-import { getClientIP } from '@/lib/security/ip';
 import { cuidSchema } from '@/lib/validations/common';
+import { webhookDeliveryVisibilityWhere } from '@/lib/orchestration/access/webhook-delivery-access';
 
 const querySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -34,60 +36,70 @@ const querySchema = z.object({
   until: z.coerce.date().optional(),
 });
 
-export const GET = withAdminAuth(async (request: NextRequest, session) => {
-  const clientIP = getClientIP(request);
-  const rateLimit = adminLimiter.check(clientIP);
-  if (!rateLimit.success) return createRateLimitResponse(rateLimit);
-
-  const url = new URL(request.url);
-  const parsed = querySchema.safeParse({
-    page: url.searchParams.get('page') ?? undefined,
-    pageSize: url.searchParams.get('pageSize') ?? undefined,
-    subscriptionId: url.searchParams.get('subscriptionId') ?? undefined,
-    eventType: url.searchParams.get('eventType') ?? undefined,
-    since: url.searchParams.get('since') ?? undefined,
-    until: url.searchParams.get('until') ?? undefined,
-  });
-  if (!parsed.success) {
-    throw new ValidationError('Invalid query parameters', {
-      fields: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+export const GET = withAdminAuth(
+  async (request: NextRequest, session) => {
+    const url = new URL(request.url);
+    const parsed = querySchema.safeParse({
+      page: url.searchParams.get('page') ?? undefined,
+      pageSize: url.searchParams.get('pageSize') ?? undefined,
+      subscriptionId: url.searchParams.get('subscriptionId') ?? undefined,
+      eventType: url.searchParams.get('eventType') ?? undefined,
+      since: url.searchParams.get('since') ?? undefined,
+      until: url.searchParams.get('until') ?? undefined,
     });
-  }
-  const query = parsed.data;
+    if (!parsed.success) {
+      throw new ValidationError('Invalid query parameters', {
+        fields: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+      });
+    }
+    const query = parsed.data;
 
-  const where = {
-    status: 'exhausted' as const,
-    subscription: { createdBy: session.user.id },
-    ...(query.subscriptionId ? { subscriptionId: query.subscriptionId } : {}),
-    ...(query.eventType ? { eventType: query.eventType } : {}),
-    ...(query.since || query.until
-      ? {
-          createdAt: {
-            ...(query.since ? { gte: query.since } : {}),
-            ...(query.until ? { lt: query.until } : {}),
+    // AND, not a spread: the visibility fragment's key can be `OR`, which a
+    // spread of further filters would replace.
+    const filters = {
+      status: 'exhausted' as const,
+      ...(query.subscriptionId ? { subscriptionId: query.subscriptionId } : {}),
+      ...(query.eventType ? { eventType: query.eventType } : {}),
+      ...(query.since || query.until
+        ? {
+            createdAt: {
+              ...(query.since ? { gte: query.since } : {}),
+              ...(query.until ? { lt: query.until } : {}),
+            },
+          }
+        : {}),
+    };
+    const where = { AND: [webhookDeliveryVisibilityWhere(session), filters] };
+
+    const [deliveries, total] = await Promise.all([
+      prisma.aiWebhookDelivery.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+        include: {
+          // Not `url`: it can carry the subscription's credential, and the row's
+          // own `destination` already says where the delivery went.
+          subscription: {
+            select: { id: true, description: true },
           },
-        }
-      : {}),
-  };
-
-  const [deliveries, total] = await Promise.all([
-    prisma.aiWebhookDelivery.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      skip: (query.page - 1) * query.pageSize,
-      take: query.pageSize,
-      include: {
-        subscription: {
-          select: { id: true, url: true, description: true },
         },
-      },
-    }),
-    prisma.aiWebhookDelivery.count({ where }),
-  ]);
+      }),
+      prisma.aiWebhookDelivery.count({ where }),
+    ]);
 
-  return paginatedResponse(deliveries, {
-    page: query.page,
-    limit: query.pageSize,
-    total,
-  });
-});
+    return paginatedResponse(deliveries, {
+      page: query.page,
+      limit: query.pageSize,
+      total,
+    });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'self',
+      because:
+        "Subscriptions are scoped to the admin who created them (one whose creator was erased only where the policy permits that orphan) and deliveries through their subscription (an orphaned delivery only where the policy permits it), keyed on the caller's id. Never another member's.",
+    },
+  }
+);

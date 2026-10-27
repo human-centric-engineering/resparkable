@@ -18,6 +18,7 @@ import {
   logExperimentAccess,
 } from '@/lib/orchestration/access/experiment-access';
 import { prisma } from '@/lib/db/client';
+import { datasetVisibilityWhere } from '@/lib/orchestration/access/dataset-access';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError } from '@/lib/api/errors';
 import { getRouteLogger } from '@/lib/api/context';
@@ -95,9 +96,6 @@ export const GET = withAdminAuth<Params>(
             },
           },
         },
-        // `userId` gates `caseCount` below — a fact about a dataset row,
-        // not about this experiment.
-        dataset: { select: { caseCount: true, userId: true } },
         creator: { select: { id: true } },
       },
     });
@@ -135,14 +133,20 @@ export const GET = withAdminAuth<Params>(
     // Unreachable today by the same margin as its two siblings: `POST
     // /experiments` is the only path that binds a dataset and it enforces
     // `datasetVisibilityWhere`, and the update schema refuses `datasetId`.
-    const boundDatasetOwner = experiment.dataset?.userId ?? null;
-    const mayReadBoundDataset =
-      // `!experiment.dataset` rather than `=== null`: the field is absent on a
-      // legacy experiment, and "nothing bound" is not "bound but not yours".
-      !experiment.dataset ||
-      boundDatasetOwner === session.user.id ||
-      (boundDatasetOwner === null && session.unattributedReads.dataset);
-    if (!mayReadBoundDataset) throw new NotFoundError(`Experiment ${id} dataset not found`);
+    //
+    // Read on its own, through the dataset's visibility, rather than included:
+    // the owner layer (§115) refuses an included dataset that is not the
+    // caller's with a bare 404, before this check could name the dataset.
+    const dataset = experiment.datasetId
+      ? await prisma.aiDataset.findFirst({
+          where: { AND: [datasetVisibilityWhere(session), { id: experiment.datasetId }] },
+          select: { caseCount: true },
+        })
+      : null;
+    // "Nothing bound" (a legacy experiment) is not "bound but not yours".
+    if (experiment.datasetId && !dataset) {
+      throw new NotFoundError(`Experiment ${id} dataset not found`);
+    }
 
     logExperimentAccess({
       adminUserId: session.user.id,
@@ -185,12 +189,13 @@ export const GET = withAdminAuth<Params>(
       experimentName: experiment.name,
       variants,
       metricSlugs: Array.from(allMetricSlugs).sort(),
-      caseCount: experiment.dataset?.caseCount ?? null,
+      caseCount: dataset?.caseCount ?? null,
       pairwiseVerdict: (experiment.pairwiseVerdict as PairwiseVerdictSummary | null) ?? null,
     };
     return successResponse(payload);
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

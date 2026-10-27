@@ -51,6 +51,7 @@ vi.mock('@/lib/orchestration/evaluations/judge-model', () => ({
 
 import { prisma } from '@/lib/db/client';
 import { getModel, refreshFromOpenRouter } from '@/lib/orchestration/llm/model-registry';
+import type { ModelInfo } from '@/lib/orchestration/llm/types';
 import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import { getDefaultModelForTaskOrNull } from '@/lib/orchestration/llm/settings-resolver';
 import {
@@ -136,7 +137,7 @@ function mockChatDefault(modelId: string | null): void {
   vi.mocked(getDefaultModelForTaskOrNull).mockResolvedValue(modelId);
 }
 
-function mockModelLookup(map: Record<string, typeof CHAT_MODEL | typeof HAIKU>): void {
+function mockModelLookup(map: Record<string, ModelInfo>): void {
   vi.mocked(getModel).mockImplementation((id: string) => map[id]);
 }
 
@@ -696,14 +697,12 @@ describe('estimateWorkflowCost — per-model pricing', () => {
     expect(gpt5Entry?.costUsd).toBe(0);
   });
 
-  it('treats a registry entry with zero pricing as unpriced (matrix row with no cost)', async () => {
+  it('treats a matrix row with no cost as unpriced', async () => {
     // Operator added 'gpt-5' to the matrix but left costPerMillionTokens
-    // NULL. After hydration the registry has a gpt-5 entry with $0 cost —
-    // the conservative `registerModels` merge from earlier in this branch
-    // keeps OR pricing on known models, but a model that's *only* in the
-    // matrix (no OR / fallback entry) still surfaces with both costs at
-    // zero. UI must call this out instead of reading $0 as "free".
-    const ZERO_MODEL = {
+    // NULL, and nothing else priced it: the registry entry carries $0 rates
+    // and `pricingUnknown`. UI must call this out instead of reading $0 as
+    // "free".
+    const UNKNOWN_MODEL = {
       id: 'gpt-5',
       name: 'gpt-5',
       provider: 'openai',
@@ -712,8 +711,9 @@ describe('estimateWorkflowCost — per-model pricing', () => {
       outputCostPerMillion: 0,
       maxContext: 0,
       supportsTools: true,
+      pricingUnknown: true as const,
     };
-    mockModelLookup({ [CHAT_MODEL.id]: CHAT_MODEL, [ZERO_MODEL.id]: ZERO_MODEL });
+    mockModelLookup({ [CHAT_MODEL.id]: CHAT_MODEL, [UNKNOWN_MODEL.id]: UNKNOWN_MODEL });
 
     const def = makeDefinition(['llm_call']);
     def.steps[0].config = { ...def.steps[0].config, modelOverride: 'gpt-5' };
@@ -723,6 +723,35 @@ describe('estimateWorkflowCost — per-model pricing', () => {
 
     const gpt5Entry = estimate.modelMix.find((m) => m.modelId === 'gpt-5');
     expect(gpt5Entry?.pricingKnown).toBe(false);
+    expect(estimate.perStep[0].pricingKnown).toBe(false);
+  });
+
+  it.each([
+    ['a local-tier model', 'local' as const],
+    ['a model priced at an explicit 0', 'budget' as const],
+  ])('reports %s as priced (free), as runtime records it', async (_label, tier) => {
+    const FREE_MODEL = {
+      id: 'free-model',
+      name: 'free',
+      provider: 'ollama',
+      tier,
+      inputCostPerMillion: 0,
+      outputCostPerMillion: 0,
+      maxContext: 0,
+      supportsTools: true,
+    };
+    mockModelLookup({ [CHAT_MODEL.id]: CHAT_MODEL, [FREE_MODEL.id]: FREE_MODEL });
+
+    const def = makeDefinition(['llm_call']);
+    def.steps[0].config = { ...def.steps[0].config, modelOverride: FREE_MODEL.id };
+    mockWorkflow(def);
+
+    const estimate = await estimateWorkflowCost({ workflowId: 'wf-1' });
+
+    const entry = estimate.modelMix.find((m) => m.modelId === FREE_MODEL.id);
+    expect(entry?.costUsd).toBe(0);
+    expect(entry?.pricingKnown).toBe(true);
+    expect(estimate.perStep[0].pricingKnown).toBe(true);
   });
 });
 

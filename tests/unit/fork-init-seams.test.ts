@@ -1,8 +1,8 @@
 /**
  * Every fork init seam runs through the shared gate.
  *
- * `.context/architecture/fork-init-seams.md` carries a roster of the eleven
- * `lib/app/*` seams and states one guarantee for all of them: a throwing
+ * `.context/architecture/fork-init-seams.md` carries a roster of the
+ * `lib/app/*` init seams and states one guarantee for all of them: a throwing
  * `initApp*()` leaves the registry as it was. A roster written in prose is
  * exactly how #633 happened — the issue named four of the seven that were
  * broken, because the list was read rather than derived. So this derives it.
@@ -14,9 +14,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
-
-const APP_DIR = join(process.cwd(), 'lib', 'app');
+import { join, sep } from 'node:path';
+import { APP_DIR, scaffoldSourceFiles } from '@/tests/helpers/app-scaffolds';
 const DOC = join(process.cwd(), '.context', 'architecture', 'fork-init-seams.md');
 
 /**
@@ -57,9 +56,8 @@ function sourceFiles(dir: string, acc: string[] = []): string[] {
 /** `initApp*` functions exported by the fork-owned scaffolds, at column 0. */
 function declaredSeams(): string[] {
   const names = new Set<string>();
-  for (const file of readdirSync(APP_DIR)) {
-    if (!file.endsWith('.ts')) continue;
-    const src = readFileSync(join(APP_DIR, file), 'utf8');
+  for (const file of scaffoldSourceFiles()) {
+    const src = readFileSync(file, 'utf8');
     // Column-anchored: `lib/app/*` scaffolds carry the same signature inside a
     // JSDoc example block, indented. Matching those would double-count.
     //
@@ -94,9 +92,8 @@ function declaredSeams(): string[] {
  */
 function declaredRegistrars(): string[] {
   const names = new Set<string>();
-  for (const file of readdirSync(APP_DIR)) {
-    if (!file.endsWith('.ts')) continue;
-    const src = readFileSync(join(APP_DIR, file), 'utf8');
+  for (const file of scaffoldSourceFiles()) {
+    const src = readFileSync(file, 'utf8');
     for (const m of src.matchAll(/^export (?:async )?function (registerApp\w*)\s*\(/gm)) {
       names.add(m[1]);
     }
@@ -116,11 +113,11 @@ const FILES = [
   // Root-level, and the only consumer of the tenant-resolver registrar (§106).
   // The proxy is invisible to a lib/components/app scan the same way.
   join(process.cwd(), 'proxy.ts'),
-].filter((f) => !f.startsWith(APP_DIR));
+].filter((f) => !f.startsWith(APP_DIR + sep));
 
 /** Everything `FILES` covers, plus `scripts/` — see the registrar check below. */
 const REGISTRAR_FILES = [...FILES, ...sourceFiles(join(process.cwd(), 'scripts'))].filter(
-  (f) => !f.startsWith(APP_DIR)
+  (f) => !f.startsWith(APP_DIR + sep)
 );
 
 describe('fork init seams', () => {
@@ -130,7 +127,7 @@ describe('fork init seams', () => {
     // below the real number lets exactly one seam drop out of the scan
     // undetected, which is the case that matters. Update it deliberately when
     // adding a seam.
-    expect(SEAMS.length).toBe(16);
+    expect(SEAMS.length).toBe(20);
     // Same exact-count discipline for the registrar family, and for the same
     // reason: a floor one below the real number lets exactly one scaffold drop
     // out of the scan undetected.

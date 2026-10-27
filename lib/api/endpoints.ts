@@ -54,6 +54,15 @@ export const API = {
     members: (id: string): string => `/api/v1/orgs/${id}/members`,
     /** One membership (OWNER/ADMIN of that org) */
     member: (id: string, userId: string): string => `/api/v1/orgs/${id}/members/${userId}`,
+    /** Invite someone into the org (OWNER/ADMIN of that org) */
+    invitations: (id: string): string => `/api/v1/orgs/${id}/invitations`,
+    /** The org's support grants (OWNER grants; OWNER/ADMIN or a platform admin reads and revokes) */
+    supportGrants: (id: string): string => `/api/v1/orgs/${id}/support-grants`,
+    /** One support grant (revoke) */
+    supportGrant: (id: string, grantId: string): string =>
+      `/api/v1/orgs/${id}/support-grants/${grantId}`,
+    /** What support did under the org's grants (who reads the grants reads this) */
+    supportActivity: (id: string): string => `/api/v1/orgs/${id}/support-grants/activity`,
   },
 
   /** Admin endpoints */
@@ -267,6 +276,7 @@ export const API = {
       COSTS: '/api/v1/admin/orchestration/costs',
       COSTS_SUMMARY: '/api/v1/admin/orchestration/costs/summary',
       COSTS_ALERTS: '/api/v1/admin/orchestration/costs/alerts',
+      COSTS_ORGS: '/api/v1/admin/orchestration/costs/orgs',
       ANALYTICS_TOPICS: '/api/v1/admin/orchestration/analytics/topics',
       ANALYTICS_UNANSWERED: '/api/v1/admin/orchestration/analytics/unanswered',
       ANALYTICS_ENGAGEMENT: '/api/v1/admin/orchestration/analytics/engagement',

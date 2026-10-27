@@ -6,7 +6,7 @@ Dedicated admin page for global orchestration settings.
 
 ## Page
 
-`app/admin/orchestration/settings/page.tsx` — server component that fetches current settings via `serverFetch(API.ADMIN.ORCHESTRATION.SETTINGS)` and passes them to the client form. Also renders the `BackupPanel` below the form for config export/import.
+`app/admin/orchestration/settings/page.tsx` — server component that fetches current settings via `requireServerData(API.ADMIN.ORCHESTRATION.SETTINGS)` and passes them to the client form. A failed settings load throws to the admin error boundary: the forms are never pre-filled with defaults an admin could save over the real settings (#518). A failed load of a form's option lists (models, providers) shows a "Couldn't load …" notice in that form's place. Also renders the `BackupPanel` below the form for config export/import.
 
 ## Component
 
@@ -44,6 +44,7 @@ Agents can override both guard modes in their own configuration. "None" maps to 
 | Field                               | Type   | Description                                                                                                                    |
 | ----------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | Webhook log retention (days)        | Number | Auto-cleanup webhook delivery logs. Blank = keep forever. Max 365                                                              |
+| Failed webhook retention (days)     | Number | Auto-cleanup deliveries that ran out of retries (the DLQ). Blank = use the webhook log retention. Max 365                      |
 | Cost log retention (days)           | Number | Auto-cleanup cost logs. Blank = keep forever. Max 365                                                                          |
 | Audit log retention (days)          | Number | Auto-cleanup admin audit logs. Blank = keep forever. Max 3650 (10 years)                                                       |
 | Workflow execution retention (days) | Number | Auto-cleanup terminal workflow executions (+ steps, cost logs, inbound payloads). In-flight runs never pruned. Blank = forever |
@@ -66,6 +67,8 @@ Agents can override both guard modes in their own configuration. "None" maps to 
 | Webhook URL (optional) | URL        | Additional HTTP endpoint for Slack/PagerDuty/custom |
 
 Escalation emails are managed via an inline tag-style list (add/remove) outside of react-hook-form. The form tracks email changes separately for dirty-state detection.
+
+With notifications enabled, the form will not save until the list has at least one address: add one, or untick **Enable escalation notifications** to turn escalation off (which saves `escalationConfig: null`, webhook included). A stored list can be empty: erasing a person removes their address, and when they were the only recipient the list is left empty with its webhook and priority kept (t-791). The webhook still fires; no email is sent until an admin adds an address. See [Data erasure, step 8](../privacy/data-erasure.md#what-eraseuser-does-beyond-the-cascade).
 
 #### Knowledge search
 

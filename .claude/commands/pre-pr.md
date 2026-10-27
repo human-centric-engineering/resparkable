@@ -254,9 +254,9 @@ strictly better than one that passes quietly.
 CI, and they differ exactly where it hurts: `compgen` is a bash builtin, and a
 `compgen -G` loop under zsh printed nothing and was very nearly banked as a clean
 tree — that instance is what opened #641. `shopt`, arrays and `[[ ]]` vary too.
-This is why **4m is Python** and 4f is a Node script: neither is at the mercy of
+This is why **4f and 4m are Node scripts** under `scripts/ci/`: neither is at the mercy of
 which shell started. If you find yourself debugging shell quoting, stop and
-rewrite it in Python. And if the check is worth keeping, it belongs in
+rewrite it as a Node script. And if the check is worth keeping, it belongs in
 `scripts/ci/` with tests, not inlined here.
 
 Then, for each changed file, check for these project-specific anti-patterns:
@@ -340,7 +340,7 @@ npm run check:router-mocks
 
 Run by `npm run validate` (Step 1) and by CI, so this is normally already answered by the time you get here. Run it directly only when Step 1 was skipped. It must print `Router mocks OK (N files ... scanned)`; any `file:line` it prints is a finding.
 
-Flags a router built by hand instead of with `createMockRouter()` from `@/tests/types/mocks`. **Repo-wide, not over the diff**: both invariants are meant to hold at zero, so a whole-repo count _is_ the check, and a diff-scoped one is blind to every pre-existing violation until someone happens to re-touch those exact lines. That blindness is not hypothetical twice over: the first version of this check was diff-scoped and could not see the 23 files it was written to catch, and its replacement reported CLEAN over 16 complete literals and 17 casts it could not parse.
+Flags a router built by hand instead of with `createMockRouter()` from `@/tests/types/mocks`. **Repo-wide, not over the diff**: both invariants are meant to hold at zero, so a whole-repo count _is_ the check, and a diff-scoped one is blind to every pre-existing violation until someone happens to re-touch those exact lines. That blindness is not hypothetical twice over: the first version of this check was diff-scoped and could not see the 23 files it was written to catch, and its replacement reported CLEAN over 16 complete literals and 17 casts it could not parse in a fork (#936).
 
 The **cast** is always wrong: `AppRouterInstance` gains required members between Next minors, and a double cast does not satisfy the new member; it hides that the mock is missing it, so the literal keeps compiling while the component receives an incomplete router. `tests/types/mocks.ts` is deliberately **not** exempt from this rule: a real cast added there (say, by a fork extending the factory) is exactly what needs catching.
 

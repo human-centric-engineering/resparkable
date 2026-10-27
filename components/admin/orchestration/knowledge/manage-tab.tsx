@@ -98,6 +98,7 @@ import { DocumentUploadZone } from '@/components/admin/orchestration/knowledge/d
 import type { PdfPreviewData } from '@/components/admin/orchestration/knowledge/document-upload-zone';
 import { EmbeddingStatusBanner } from '@/components/admin/orchestration/knowledge/embedding-status-banner';
 import { PdfPreviewModal } from '@/components/admin/orchestration/knowledge/pdf-preview-modal';
+import { pdfPreviewFromStoredDocument } from '@/components/admin/orchestration/knowledge/stored-pdf-preview';
 
 const STATUS_STYLES: Record<
   string,
@@ -262,6 +263,15 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
   const [lastSeededAt, setLastSeededAt] = useState<string | null>(null);
   const [pdfPreview, setPdfPreview] = useState<PdfPreviewData | null>(null);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
+  // Counts preview opens from any path (Review or upload). A Review response
+  // that arrives after a later open, or after the row was deleted, is dropped
+  // rather than replacing what the admin is now looking at.
+  const previewRequestRef = useRef(0);
+  // Bumped on every open so the modal remounts: reopening the same document
+  // must show its stored text, not edits abandoned in the last session.
+  const [pdfPreviewKey, setPdfPreviewKey] = useState(0);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -292,6 +302,10 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
   }, []);
 
   const fetchLastSeededAt = useCallback(async () => {
+    // The seeded timestamp is in the platform's settings, which a customer
+    // org's admin does not read (§111 t-811); the seed control is hidden for
+    // them too, so there is nothing to show it beside.
+    if (readOnly) return;
     try {
       const res = await fetch(API.ADMIN.ORCHESTRATION.SETTINGS);
       if (!res.ok) return;
@@ -300,7 +314,7 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
     } catch {
       // Silently ignore — supplementary info
     }
-  }, []);
+  }, [readOnly]);
 
   useEffect(() => {
     void fetchEmbeddingStatus();
@@ -376,6 +390,9 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
 
   const handleDelete = useCallback(
     async (docId: string) => {
+      // A Review still loading for any row is dropped, not opened over the list.
+      previewRequestRef.current += 1;
+      setReviewingId(null);
       setDeletingId(docId);
       setDeleteError(null);
       try {
@@ -405,9 +422,48 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
     // Close the upload dialog so the PDF preview gets a single, unstacked
     // modal context. The operator returns to the document list (with the
     // preview overlay) rather than the upload zone behind the preview.
+    previewRequestRef.current += 1;
+    setReviewingId(null);
     setUploadOpen(false);
     setPdfPreview(data);
+    setPdfPreviewKey((k) => k + 1);
     setPdfPreviewOpen(true);
+  }, []);
+
+  // Reopen the preview for a document left in pending_review, rebuilt from the
+  // text the upload already stored (#807).
+  const handleReviewPending = useCallback(async (docId: string) => {
+    const request = ++previewRequestRef.current;
+    const isStale = () => previewRequestRef.current !== request;
+    setReviewingId(docId);
+    setReviewError(null);
+    try {
+      const res = await fetch(API.ADMIN.ORCHESTRATION.knowledgeDocumentById(docId));
+      const body: unknown = await res.json().catch(() => null);
+      if (isStale()) return;
+      if (!res.ok) {
+        const raw = errorBodySchema.safeParse(body);
+        setReviewError(
+          (raw.success ? raw.data?.error?.message : null) ??
+            `Could not open the review (${res.status})`
+        );
+        return;
+      }
+      const data = pdfPreviewFromStoredDocument(body);
+      if (!data) {
+        setReviewError(
+          'The extracted text for this document is not available. Delete it and upload the file again.'
+        );
+        return;
+      }
+      setPdfPreview(data);
+      setPdfPreviewKey((k) => k + 1);
+      setPdfPreviewOpen(true);
+    } catch {
+      if (!isStale()) setReviewError('Network error — could not reach the server.');
+    } finally {
+      if (!isStale()) setReviewingId(null);
+    }
   }, []);
 
   const handleUploadComplete = useCallback(() => {
@@ -750,6 +806,7 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
           <>
             {rechunkError && <p className="text-destructive text-sm">{rechunkError}</p>}
             {deleteError && <p className="text-destructive text-sm">{deleteError}</p>}
+            {reviewError && <p className="text-destructive text-sm">{reviewError}</p>}
             <div
               className={`overflow-x-auto rounded-lg border ${listLoading ? 'bg-card opacity-60' : ''}`}
             >
@@ -1138,10 +1195,8 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
                                   <Button
                                     variant="ghost"
                                     size="sm"
-                                    onClick={() => {
-                                      setViewChunksId(doc.id);
-                                      setViewChunksName(doc.name);
-                                    }}
+                                    disabled={reviewingId === doc.id}
+                                    onClick={() => void handleReviewPending(doc.id)}
                                   >
                                     <Eye className="mr-1 h-3 w-3" />
                                     Review
@@ -1330,10 +1385,15 @@ export function ManageTab({ documents: initialDocuments, onRefresh, scope }: Man
 
       <CompareProvidersModal open={compareOpen} onOpenChange={setCompareOpen} />
       <PdfPreviewModal
+        key={pdfPreviewKey}
         data={pdfPreview}
         open={pdfPreviewOpen}
         onOpenChange={setPdfPreviewOpen}
         onConfirmed={() => {
+          refreshAll();
+          void fetchEmbeddingStatus();
+        }}
+        onDiscarded={() => {
           refreshAll();
           void fetchEmbeddingStatus();
         }}

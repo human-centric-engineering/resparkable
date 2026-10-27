@@ -31,8 +31,11 @@
 
 import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
 
 import {
   BINS,
@@ -44,6 +47,7 @@ import {
   parseRequestedMb,
   resolveBin,
   resolveHeapMb,
+  unaidedLimitMb,
 } from '@/scripts/run-capped.mjs';
 
 const GB = 1024 ** 3;
@@ -109,6 +113,65 @@ describe('resolveHeapMb', () => {
       8192
     );
   });
+
+  it('hands out exactly what was asked for when there is no floor (#711)', () => {
+    // Under an inherited 6144 cap V8 reports 6336, and flooring at that handed
+    // the child 6336. Read through `unaidedLimitMb`, the floor drops out.
+    const defaultLimitMb = unaidedLimitMb({
+      nodeOptions: '--max-old-space-size=6144',
+      heapLimitBytes: 6336 * 1024 ** 2,
+    });
+    expect(resolveHeapMb({ requestedMb: 6144, totalMemBytes: 16 * GB, defaultLimitMb })).toBe(6144);
+  });
+
+  it('never returns more than the machine can back, whatever the floor (#711)', () => {
+    // The clamp is the rule the function exists to enforce, so it holds as a
+    // property: a floor or an ask above 75% of RAM still comes back at 75%.
+    for (const totalGb of [2, 4, 8, 16]) {
+      const affordable = Math.floor((totalGb * GB * MEMORY_FRACTION) / 1024 ** 2);
+      for (const defaultLimitMb of [0, 1024, 4288, 6336, 12288]) {
+        for (const requestedMb of [512, 6144, 9999]) {
+          const resolved = resolveHeapMb({
+            requestedMb,
+            totalMemBytes: totalGb * GB,
+            defaultLimitMb,
+          });
+          expect(resolved).toBeLessThanOrEqual(affordable);
+        }
+      }
+    }
+  });
+});
+
+describe('unaidedLimitMb', () => {
+  const limit = 6336 * 1024 ** 2;
+
+  it("reports V8's limit when nothing capped this process", () => {
+    expect(unaidedLimitMb({ nodeOptions: '--trace-warnings', heapLimitBytes: limit })).toBe(6336);
+  });
+
+  it('reports no floor when NODE_OPTIONS carries a cap (#711)', () => {
+    // The limit V8 reports is then the parent's cap, not Node's default.
+    expect(
+      unaidedLimitMb({
+        nodeOptions: '--max-old-space-size=6144',
+        heapLimitBytes: limit,
+      })
+    ).toBe(0);
+  });
+
+  it('keeps a command-line cap as the floor, since the child does not inherit it', () => {
+    // `node --max-old-space-size=12288 scripts/run-capped.mjs ...`: NODE_OPTIONS
+    // is clean, so the wrapper appends a cap. Dropping the floor here cut the
+    // child back to 6144, half of what the caller asked for.
+    const defaultLimitMb = unaidedLimitMb({
+      nodeOptions: '',
+      heapLimitBytes: 12480 * 1024 ** 2,
+    });
+    expect(resolveHeapMb({ requestedMb: 6144, totalMemBytes: 32 * GB, defaultLimitMb })).toBe(
+      12480
+    );
+  });
 });
 
 describe('buildEnv', () => {
@@ -143,11 +206,11 @@ describe('main', () => {
     const exit = vi.fn();
     const spawnFn = vi.fn();
 
-    await main(['tsc', '--noEmit'], { error, exit, spawnFn });
+    await main(['prettier', '--check', '.'], { error, exit, spawnFn });
 
     expect(spawnFn).not.toHaveBeenCalled();
     expect(exit).toHaveBeenCalledWith(1);
-    expect(error.mock.calls[0][0]).toContain('Unknown command "tsc"');
+    expect(error.mock.calls[0][0]).toContain('Unknown command "prettier"');
   });
 
   it('names the allowed commands so the message is actionable', async () => {
@@ -204,6 +267,7 @@ describe('main', () => {
 
   it('reads NODE_HEAP_MB as the requested cap', async () => {
     const spawnFn = vi.fn().mockReturnValue(fakeChild());
+    const resolveHeap = vi.fn().mockReturnValue(7777);
 
     await main(['eslint', '.'], {
       spawnFn,
@@ -211,13 +275,32 @@ describe('main', () => {
       resolveCommand: () => '/bin/eslint',
       exit: vi.fn(),
       onSignal: vi.fn(),
+      resolveHeap,
     });
 
-    // Clamped by this machine's real memory, so assert it moved off the
-    // default rather than pinning a number the test host decides.
-    const opts = spawnFn.mock.calls[0][2].env.NODE_OPTIONS as string;
-    expect(Number(/--max-old-space-size=(\d+)/.exec(opts)![1])).toBeGreaterThanOrEqual(
-      DEFAULT_HEAP_MB
+    // The resolver is injected because the real one clamps to this machine's
+    // RAM: asserting the applied cap against DEFAULT_HEAP_MB failed on the
+    // ~8GB private runner ci.md tells forks to size for (#700). What `main`
+    // owns is passing the ask in and the answer on, so that is what is pinned.
+    expect(resolveHeap).toHaveBeenCalledWith({ requestedMb: 9999 });
+    expect(spawnFn.mock.calls[0][2].env.NODE_OPTIONS).toBe('--max-old-space-size=7777');
+  });
+
+  it('resolves with the real resolver when none is injected', async () => {
+    const spawnFn = vi.fn().mockReturnValue(fakeChild());
+
+    await main(['eslint', '.'], {
+      spawnFn,
+      env: {},
+      resolveCommand: () => '/bin/eslint',
+      exit: vi.fn(),
+      onSignal: vi.fn(),
+    });
+
+    // Compared with the resolver's own answer on this machine, not a fixed
+    // number, so it holds on any runner.
+    expect(spawnFn.mock.calls[0][2].env.NODE_OPTIONS).toBe(
+      `--max-old-space-size=${resolveHeapMb({ requestedMb: undefined })}`
     );
   });
 
@@ -344,6 +427,22 @@ describe('main', () => {
 
     expect(error.mock.calls[0][0]).toContain('Failed to start "eslint"');
     expect(exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('the bins package.json routes through the wrapper', () => {
+  it.each([
+    ['lint', 'eslint'],
+    ['type-check', 'tsc'],
+  ])('`npm run %s` launches %s through run-capped.mjs, and it is allowed', (script, bin) => {
+    // A cold type-check outgrew Node's default heap on larger forks and took
+    // `validate` down before lint ran (#693). Routing it here only helps if the
+    // allowlist agrees, or the wrapper refuses it with exit 1.
+    const { scripts } = z
+      .object({ scripts: z.record(z.string(), z.string()) })
+      .parse(JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')));
+    expect(scripts[script]).toMatch(new RegExp(`^node scripts/run-capped\\.mjs ${bin}\\b`));
+    expect(BINS).toContain(bin);
   });
 });
 

@@ -212,6 +212,20 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     why: "Each org's approved-provider policy, filled by a `findUnique` on the org id, so a system-scoped fill returns the same row an org scope would; and each provider row's id and jurisdiction, global config keyed by a slug unique install-wide (§120 t-742). A write through the org providers API clears that org's entry and a provider-row write clears the row's; the 60-second TTL is the window in which another process may still answer with a revoked grant. Read only at multi.",
   },
   {
+    file: 'lib/orchestration/llm/spend-caps.ts',
+    holders: ['orgEntries', 'orgCapEntries'],
+    posture: 'row-keyed',
+    keyedBy: 'org id',
+    why: "Each org's month-to-date spend and its monthly cap (§110 t-788), filled by an `aggregate` filtered on `orgId` and a `findUnique` on the org id, so an entry is that org's whatever scope filled it. A caps write through the orgs API clears that org's cap; `logCost` adds this process's rows to its total. The 10-second (spend) and 30-second (cap) TTLs are how long another process's spend or write can go unseen.",
+  },
+  {
+    file: 'lib/security/org-request-cap.ts',
+    holders: ['globalForOrgCaps', 'capEntries', 'memberships', 'windows'],
+    posture: 'row-keyed',
+    keyedBy: 'org id (memberships: user id + org id)',
+    why: "Each org's `quotas.requestsPerMinute` and its request window (§110 t-789), filled by a `findUnique` on the org id, and counted only for the org a verified principal acts for; and whether a user may enter an org, filled by the guards' membership read for that pair. The cap cache is on globalThis so the orgs API, in the server bundle, clears the copy the proxy reads; the 30-second TTLs are how long another process may enforce an old cap, or count a removed member. The windows are per process, like the section tiers.",
+  },
+  {
     file: 'lib/orchestration/llm/budget-mutex.ts',
     holders: ['locks'],
     posture: 'row-keyed',
@@ -255,6 +269,13 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     posture: 'shared-by-decision',
     keyedBy: 'outbound hostname',
     why: "What the limit protects is the third-party host, which every org shares, so one org can spend another's budget against it — revisit if per-org outbound quotas land (§110).",
+  },
+  {
+    file: 'lib/orchestration/llm/spend-caps.ts',
+    holders: ['globalEntry'],
+    posture: 'shared-by-decision',
+    keyedBy: 'nothing — one install-wide total',
+    why: "The global monthly budget is the operator's ceiling on the shared provider keys (§110 t-788), so its spend total sums every org and one org's spend counts against every org's calls. It is compared with the global cap, and shown only in the install org (`getGlobalCapStatus`); a customer org is told only whether the cap is reached. Revisit if the global cap is ever made per org.",
   },
   {
     file: 'lib/orchestration/llm/circuit-breaker.ts',
@@ -394,10 +415,10 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
   // ───────────────────────────────────────────────────────────────────────
   {
     file: 'lib/auth/pending-signup.ts',
-    holders: ['pendingSignupState'],
+    holders: ['pendingSignupState', 'invitationAcceptedState'],
     posture: 'async-local',
     keyedBy: "better-auth's own per-request state",
-    why: 'Carries the membership — and so the org id — a signup will write, between three better-auth hooks on one request; the handle is module-level, the payload is per request, which is the same shape as `invitedSignupContext` beside it.',
+    why: 'Carries the membership — and so the org id — a signup will write, and whether it redeemed an invitation, between three better-auth hooks on one request; the handles are module-level, the payload is per request, which is the same shape as `invitedSignupContext` beside it.',
   },
   {
     file: 'lib/auth/signup-mode.ts',
@@ -410,6 +431,18 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     holders: ['txScope'],
     posture: 'async-local',
     why: 'Marks the call stack that is already inside a transaction so the data layer sets the org GUC once per transaction rather than per operation.',
+  },
+  {
+    file: 'lib/orchestration/llm/spend-caps.ts',
+    holders: ['paidCallHold'],
+    posture: 'async-local',
+    why: "One chat turn's hold on paid calls, set when the turn goes on, on a local model, past its agent's reached budget (§110 t-788); the gate reads it for every paid call that turn makes. The handle is module-level, the hold is per turn, and a nested turn runs under its own.",
+  },
+  {
+    file: 'lib/auth/subject-context.ts',
+    holders: ['subjectContext'],
+    posture: 'async-local',
+    why: "Whose rows one request may read (§115 t-800): the principal a guard entered and that request's memoised policy answer. The handle is module-level; the store is per request, and nothing outside a guarded handler sees one.",
   },
   {
     file: 'lib/tenancy/context.ts',
@@ -438,6 +471,18 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     holders: ['analyticsClient', 'initPromise', 'initWarningLogged'],
     posture: 'no-tenant-data',
     why: 'The configured analytics provider, its one-shot init promise and a warn-once latch.',
+  },
+  {
+    file: 'lib/auth/admin-tier.ts',
+    holders: ['appPages', 'appPagesView'],
+    posture: 'no-tenant-data',
+    why: 'Admin page patterns a fork lists as org-tier from code (t-817), and a frozen copy rebuilt when they change.',
+  },
+  {
+    file: 'lib/auth/org-tier-admin-pages.ts',
+    holders: ['appInit', 'combined'],
+    posture: 'no-tenant-data',
+    why: 'The one-shot latch on the fork’s org-tier page init (t-817), and core’s and the fork’s page patterns combined once.',
   },
   {
     file: 'lib/auth/config.ts',
@@ -688,15 +733,36 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
   },
   {
     file: 'lib/privacy/erasure-hooks.ts',
-    holders: ['hooks'],
+    holders: ['globalForErasureHooks', 'hooks', 'appInit'],
     posture: 'no-tenant-data',
-    why: 'Erasure cleanup callbacks a fork registers from code.',
+    why: 'Erasure cleanup callbacks a fork registers from code, on globalThis because instrumentation.ts and the request path are separate module graphs.',
   },
   {
     file: 'lib/privacy/subject-source-registry.ts',
     holders: ['sources', 'excluded', 'owners', 'appInitFailed', 'appInit'],
     posture: 'no-tenant-data',
     why: "A fork's subject-export dispositions, which say which MODELS a data subject's export reads; the rows themselves are read per request inside the caller's scope.",
+  },
+  {
+    file: 'lib/db/owner-classification.ts',
+    holders: ['appClassifications', 'appOwners', 'appInit'],
+    posture: 'no-tenant-data',
+    why: "A fork's owner classification of its own MODELS — which are personal and enforced — the same for every org; no row data.",
+  },
+  {
+    file: 'lib/privacy/org-source-registry.ts',
+    holders: [
+      'sources',
+      'excluded',
+      'owners',
+      'appInitFailed',
+      'rejectedSources',
+      'rejectedExclusions',
+      'unidentifiedRejection',
+      'appInit',
+    ],
+    posture: 'no-tenant-data',
+    why: "A fork's org-export sources: which MODELS an org's export reads and the function that reads them, registered from code; the rows are read per export as the org being exported.",
   },
   {
     file: 'lib/db/drift-probes.ts',
@@ -717,10 +783,16 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
     why: 'A monotonic counter for correlating Redis calls in the logs.',
   },
   {
-    file: 'lib/storage/client.ts',
-    holders: ['storageClient', 'initWarningLogged'],
+    file: 'lib/security/safe-dispatcher.ts',
+    holders: ['defaultDispatcher'],
     posture: 'no-tenant-data',
-    why: 'The configured storage provider handle and a warn-once latch.',
+    why: 'One undici Agent for the outbound fetches a customer org chooses; it holds sockets keyed by origin and no row of any org, and every new connection is checked against what its host resolved to.',
+  },
+  {
+    file: 'lib/storage/client.ts',
+    holders: ['storageClient', 'unboundClient', 'initWarningLogged'],
+    posture: 'no-tenant-data',
+    why: 'The configured storage provider handle, the same handle behind the guard that refuses every key under the reserved `orgs/` root, and a warn-once latch. The org-bound client `getStorageClient({ orgId })` returns (§109 t-736) is built per call and never stored, so nothing here holds an org.',
   },
   {
     file: 'lib/tenancy/classification.ts',

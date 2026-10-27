@@ -1,34 +1,51 @@
 // @vitest-environment happy-dom
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import React from 'react';
 
-vi.mock('@/lib/api/server-fetch', () => ({
+// Only the network is faked: the real parseApiResponse and server-load run.
+vi.mock('@/lib/api/server-fetch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/server-fetch')>()),
   serverFetch: vi.fn(),
-  parseApiResponse: vi.fn(),
 }));
 
 vi.mock('@/lib/logging', () => ({
   logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
 }));
 
+// Who is viewing (§111 t-812). Every case before the last describe is the
+// platform's view, as it was before the page asked; the org viewer's half is
+// the last describe's.
+const viewer = vi.hoisted(() => ({ tier: 'platform' }));
+vi.mock('@/lib/auth/admin-page-viewer', () => ({
+  adminPageViewerTier: vi.fn(() => Promise.resolve(viewer.tier)),
+}));
+
 vi.mock('@/components/admin/orchestration/mcp/mcp-dashboard', () => ({
   McpDashboard: ({
     initialSettings,
     stats,
+    viewerTier,
   }: {
     initialSettings: unknown;
-    stats: { tools: number; resources: number; prompts: number; keys: number };
+    stats: {
+      tools: number | null;
+      resources: number | null;
+      prompts: number | null;
+      keys: number | null;
+    };
+    viewerTier?: string;
   }) => (
     <div
       data-testid="mcp-dashboard"
+      data-viewer-tier={viewerTier ?? ''}
       data-has-settings={initialSettings === null ? 'false' : 'true'}
       data-settings={initialSettings ? JSON.stringify(initialSettings) : ''}
-      data-tools={stats.tools}
-      data-resources={stats.resources}
-      data-prompts={stats.prompts}
-      data-keys={stats.keys}
+      data-tools={stats.tools === null ? 'failed' : stats.tools}
+      data-resources={stats.resources === null ? 'failed' : stats.resources}
+      data-prompts={stats.prompts === null ? 'failed' : stats.prompts}
+      data-keys={stats.keys === null ? 'failed' : stats.keys}
     />
   ),
 }));
@@ -48,7 +65,9 @@ vi.mock('next/link', () => ({
 }));
 
 import McpDashboardPage, { metadata } from '@/app/admin/orchestration/mcp/page';
-import { serverFetch, parseApiResponse } from '@/lib/api/server-fetch';
+import { serverFetch } from '@/lib/api/server-fetch';
+import { ServerLoadError } from '@/lib/api/server-load';
+import { apiFailure, apiSuccess } from '@/tests/helpers/api';
 import { logger } from '@/lib/logging';
 import { API } from '@/lib/api/endpoints';
 
@@ -65,80 +84,36 @@ const mockSettings = {
 };
 
 // ---------------------------------------------------------------------------
-// URL dispatch helpers
+// URL dispatch helper
 // ---------------------------------------------------------------------------
 
-type FakeResponse = { ok: boolean; _src: string };
+type Endpoint = 'settings' | 'tools' | 'resources' | 'prompts' | 'keys';
 
-function makeOkResponse(src: string): FakeResponse {
-  return { ok: true, _src: src };
-}
-
-function makeNotOkResponse(src: string): FakeResponse {
-  return { ok: false, _src: src };
-}
-
-/** Default serverFetch mock: all endpoints succeed */
-function setupDefaultServerFetch(
-  overrides: Partial<
-    Record<'settings' | 'tools' | 'resources' | 'prompts' | 'keys', FakeResponse>
-  > = {}
-) {
-  vi.mocked(serverFetch).mockImplementation(async (url: string) => {
-    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_SETTINGS))
-      return (overrides.settings ?? makeOkResponse('settings')) as unknown as Response;
-    // Prompts must come before Tools — MCP_PROMPTS substring would otherwise
-    // be shadowed if MCP_TOOLS were checked first against an unrelated URL.
-    // (Defensive: prefer specific routes first.)
-    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_PROMPTS))
-      return (overrides.prompts ?? makeOkResponse('prompts')) as unknown as Response;
-    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_TOOLS))
-      return (overrides.tools ?? makeOkResponse('tools')) as unknown as Response;
-    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_RESOURCES))
-      return (overrides.resources ?? makeOkResponse('resources')) as unknown as Response;
-    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_KEYS))
-      return (overrides.keys ?? makeOkResponse('keys')) as unknown as Response;
-    throw new Error(`Unexpected URL: ${url}`);
-  });
-}
-
-/** Default parseApiResponse mock: returns appropriate data per _src tag */
-function setupDefaultParseApiResponse(
+/**
+ * Answer each endpoint the page reads with a fresh Response per call: the
+ * settings, and each list's total in `meta`. `overrides` replaces one
+ * endpoint's answer (return a failure, or throw to simulate no response).
+ */
+function setupServerFetch(
   statTotals: { tools?: number; resources?: number; prompts?: number; keys?: number } = {},
-  settingsOverride?: unknown
+  overrides: Partial<Record<Endpoint, () => Response>> = {}
 ) {
-  vi.mocked(parseApiResponse).mockImplementation(async (res: Response) => {
-    const src = (res as unknown as { _src?: string })._src;
-    switch (src) {
-      case 'settings':
-        return (settingsOverride ?? { success: true, data: mockSettings }) as never;
-      case 'tools':
-        return {
-          success: true,
-          data: [],
-          meta: { total: statTotals.tools ?? 3 },
-        } as never;
-      case 'resources':
-        return {
-          success: true,
-          data: [],
-          meta: { total: statTotals.resources ?? 5 },
-        } as never;
-      case 'prompts':
-        return {
-          success: true,
-          data: [],
-          meta: { total: statTotals.prompts ?? 4 },
-        } as never;
-      case 'keys':
-        return {
-          success: true,
-          data: [],
-          meta: { total: statTotals.keys ?? 2 },
-        } as never;
-      default:
-        throw new Error(`Unknown _src: ${src}`);
-    }
+  const answers: Record<Endpoint, () => Response> = {
+    settings: () => apiSuccess(mockSettings),
+    tools: () => apiSuccess([], { total: statTotals.tools ?? 3 }),
+    resources: () => apiSuccess([], { total: statTotals.resources ?? 5 }),
+    prompts: () => apiSuccess([], { total: statTotals.prompts ?? 4 }),
+    keys: () => apiSuccess([], { total: statTotals.keys ?? 2 }),
+    ...overrides,
+  };
+  vi.mocked(serverFetch).mockImplementation(async (url: string) => {
+    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_SETTINGS)) return answers.settings();
+    // Specific routes first (defensive against shared substrings).
+    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_PROMPTS)) return answers.prompts();
+    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_TOOLS)) return answers.tools();
+    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_RESOURCES)) return answers.resources();
+    if (url.includes(API.ADMIN.ORCHESTRATION.MCP_KEYS)) return answers.keys();
+    throw new Error(`Unexpected URL: ${url}`);
   });
 }
 
@@ -159,8 +134,7 @@ describe('McpDashboardPage', () => {
 
   // 2. Heading and breadcrumb
   it('renders heading "MCP Server" and breadcrumb link to /admin/orchestration', async () => {
-    setupDefaultServerFetch();
-    setupDefaultParseApiResponse();
+    setupServerFetch();
 
     render(await McpDashboardPage());
 
@@ -172,8 +146,7 @@ describe('McpDashboardPage', () => {
 
   // 3. Settings happy path
   it('passes initialSettings to McpDashboard when settings fetch succeeds', async () => {
-    setupDefaultServerFetch();
-    setupDefaultParseApiResponse();
+    setupServerFetch();
 
     render(await McpDashboardPage());
 
@@ -182,56 +155,53 @@ describe('McpDashboardPage', () => {
     expect(JSON.parse(dashboard.getAttribute('data-settings') ?? '{}')).toEqual(mockSettings);
   });
 
-  // 4. Settings non-ok response
-  it('passes initialSettings=null when settings fetch returns ok=false', async () => {
-    setupDefaultServerFetch({ settings: makeNotOkResponse('settings') });
-    setupDefaultParseApiResponse();
+  // 4–6. A failed settings load throws: the dashboard would otherwise show
+  // the server as "Disabled", a false signal (#518).
+  it('throws to the error boundary when the settings API answers 500', async () => {
+    setupServerFetch({}, { settings: () => apiFailure(500) });
 
-    render(await McpDashboardPage());
-
-    expect(screen.getByTestId('mcp-dashboard')).toHaveAttribute('data-has-settings', 'false');
+    await expect(McpDashboardPage()).rejects.toBeInstanceOf(ServerLoadError);
   });
 
-  // 5. Settings body.success=false
-  it('passes initialSettings=null when parseApiResponse returns success=false for settings', async () => {
-    setupDefaultServerFetch();
-    setupDefaultParseApiResponse(
+  it('throws when the settings API answers success:false', async () => {
+    setupServerFetch({}, { settings: () => apiFailure(200) });
+
+    await expect(McpDashboardPage()).rejects.toBeInstanceOf(ServerLoadError);
+  });
+
+  it('logs and throws when the settings fetch rejects', async () => {
+    const fetchErr = new Error('network failure');
+    setupServerFetch(
       {},
-      { success: false, error: { code: 'NOT_FOUND', message: 'Not found' } }
+      {
+        settings: () => {
+          throw fetchErr;
+        },
+      }
     );
 
-    render(await McpDashboardPage());
-
-    expect(screen.getByTestId('mcp-dashboard')).toHaveAttribute('data-has-settings', 'false');
+    await expect(McpDashboardPage()).rejects.toBeInstanceOf(ServerLoadError);
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.any(String),
+      fetchErr,
+      expect.any(Object)
+    );
   });
 
-  // 6. Settings throws → initialSettings=null AND logger.error called
-  it('passes initialSettings=null and calls logger.error when settings serverFetch throws', async () => {
-    vi.mocked(serverFetch).mockImplementation(async (url: string) => {
-      if (url.includes(API.ADMIN.ORCHESTRATION.MCP_SETTINGS)) throw new Error('network failure');
-      if (url.includes(API.ADMIN.ORCHESTRATION.MCP_TOOLS))
-        return makeOkResponse('tools') as unknown as Response;
-      if (url.includes(API.ADMIN.ORCHESTRATION.MCP_RESOURCES))
-        return makeOkResponse('resources') as unknown as Response;
-      if (url.includes(API.ADMIN.ORCHESTRATION.MCP_KEYS))
-        return makeOkResponse('keys') as unknown as Response;
-      throw new Error(`Unexpected URL: ${url}`);
-    });
-    setupDefaultParseApiResponse();
+  it('logs and throws when the settings do not match the expected shape', async () => {
+    setupServerFetch({}, { settings: () => apiSuccess({ isEnabled: 'yes' }) });
 
-    render(await McpDashboardPage());
-
-    expect(screen.getByTestId('mcp-dashboard')).toHaveAttribute('data-has-settings', 'false');
+    await expect(McpDashboardPage()).rejects.toBeInstanceOf(ServerLoadError);
     expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-      expect.stringContaining('MCP dashboard: settings fetch failed'),
-      expect.any(Error)
+      expect.stringContaining('did not parse'),
+      expect.anything(),
+      expect.any(Object)
     );
   });
 
   // 7. Stats happy path
   it('passes correct stats to McpDashboard when all stat fetches succeed', async () => {
-    setupDefaultServerFetch();
-    setupDefaultParseApiResponse({ tools: 7, resources: 12, keys: 4 });
+    setupServerFetch({ tools: 7, resources: 12, keys: 4 });
 
     render(await McpDashboardPage());
 
@@ -241,39 +211,49 @@ describe('McpDashboardPage', () => {
     expect(dashboard).toHaveAttribute('data-keys', '4');
   });
 
-  // 8. Stats partial failure: tools endpoint returns ok=false
-  it('sets stats.tools=0 when MCP_TOOLS returns ok=false, other stats correct', async () => {
-    setupDefaultServerFetch({ tools: makeNotOkResponse('tools') });
-    setupDefaultParseApiResponse({ tools: 9, resources: 5, keys: 2 });
+  // 8. A failed count is null, never 0 (#518): the dashboard shows "—" and a
+  // notice for it, and zero tools and keys would also show "Getting Started".
+  // The page and the other counts still render.
+  it('renders the page and hands a null tools count when that count fails, rather than 0', async () => {
+    setupServerFetch({}, { tools: () => apiFailure(500) });
+
+    render(await McpDashboardPage());
+
+    expect(screen.getByRole('heading', { name: /MCP Server/i })).toBeInTheDocument();
+    const dashboard = screen.getByTestId('mcp-dashboard');
+    expect(dashboard).toHaveAttribute('data-tools', 'failed');
+    expect(dashboard).toHaveAttribute('data-resources', '5');
+    expect(dashboard).toHaveAttribute('data-prompts', '4');
+    expect(dashboard).toHaveAttribute('data-keys', '2');
+    expect(dashboard).toHaveAttribute('data-has-settings', 'true');
+  });
+
+  it('hands a null keys count, and logs, when the keys count fetch rejects', async () => {
+    const fetchErr = new Error('keys network failure');
+    setupServerFetch(
+      {},
+      {
+        keys: () => {
+          throw fetchErr;
+        },
+      }
+    );
 
     render(await McpDashboardPage());
 
     const dashboard = screen.getByTestId('mcp-dashboard');
-    expect(dashboard).toHaveAttribute('data-tools', '0');
-    expect(dashboard).toHaveAttribute('data-resources', '5');
-    expect(dashboard).toHaveAttribute('data-keys', '2');
+    expect(dashboard).toHaveAttribute('data-keys', 'failed');
+    expect(dashboard).toHaveAttribute('data-tools', '3');
+    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
+      expect.any(String),
+      fetchErr,
+      expect.objectContaining({ path: expect.stringContaining(API.ADMIN.ORCHESTRATION.MCP_KEYS) })
+    );
   });
 
   // 9. Stats non-number meta.total
   it('sets stats.tools=0 when MCP_TOOLS meta.total is non-number, other stats correct', async () => {
-    setupDefaultServerFetch();
-    vi.mocked(parseApiResponse).mockImplementation(async (res: Response) => {
-      const src = (res as unknown as { _src?: string })._src;
-      switch (src) {
-        case 'settings':
-          return { success: true, data: mockSettings } as never;
-        case 'tools':
-          return { success: true, data: [], meta: { total: 'five' } } as never;
-        case 'resources':
-          return { success: true, data: [], meta: { total: 5 } } as never;
-        case 'prompts':
-          return { success: true, data: [], meta: { total: 4 } } as never;
-        case 'keys':
-          return { success: true, data: [], meta: { total: 2 } } as never;
-        default:
-          throw new Error(`Unknown _src: ${src}`);
-      }
-    });
+    setupServerFetch({}, { tools: () => apiSuccess([], { total: 'five' }) });
 
     render(await McpDashboardPage());
 
@@ -284,42 +264,68 @@ describe('McpDashboardPage', () => {
     expect(dashboard).toHaveAttribute('data-keys', '2');
   });
 
-  // 10. Stats all fetches reject → outer catch → zeros; no logger.error (settings succeeds)
-  it('returns stats={tools:0,resources:0,keys:0} and does NOT call logger.error when all stat fetches throw', async () => {
-    vi.mocked(serverFetch).mockImplementation(async (url: string) => {
-      if (url.includes(API.ADMIN.ORCHESTRATION.MCP_SETTINGS))
-        return makeOkResponse('settings') as unknown as Response;
-      // All stat endpoints throw
-      throw new Error('stat fetch network failure');
-    });
-    setupDefaultParseApiResponse();
+  // 10. Genuine zeros are zeros
+  it('passes zero counts through when the lists are genuinely empty', async () => {
+    setupServerFetch({ tools: 0, resources: 0, prompts: 0, keys: 0 });
 
     render(await McpDashboardPage());
 
     const dashboard = screen.getByTestId('mcp-dashboard');
     expect(dashboard).toHaveAttribute('data-tools', '0');
-    expect(dashboard).toHaveAttribute('data-resources', '0');
     expect(dashboard).toHaveAttribute('data-keys', '0');
-    // getStats outer catch does NOT log; settings succeeded so no logger.error either
-    expect(vi.mocked(logger.error)).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+  });
+});
+
+describe('McpDashboardPage — an org admin’s keys (§111 t-812)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    viewer.tier = 'org';
+    setupServerFetch({ tools: 3, resources: 5, prompts: 4, keys: 2 });
   });
 
-  // 11. Full failure: settings throws AND all stat fetches throw
-  it('renders without throwing when both settings and all stat fetches fail', async () => {
-    vi.mocked(serverFetch).mockRejectedValue(new Error('total network failure'));
+  afterEach(() => {
+    viewer.tier = 'platform';
+  });
+
+  it('fetches the keys count alone, and none of the server’s settings or exposed lists', async () => {
+    render(await McpDashboardPage());
+
+    const urls = vi.mocked(serverFetch).mock.calls.map(([url]) => String(url));
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(API.ADMIN.ORCHESTRATION.MCP_KEYS);
+    const dashboard = screen.getByTestId('mcp-dashboard');
+    expect(dashboard).toHaveAttribute('data-viewer-tier', 'org');
+    expect(dashboard).toHaveAttribute('data-has-settings', 'false');
+    expect(dashboard).toHaveAttribute('data-keys', '2');
+    expect(dashboard).toHaveAttribute('data-tools', '0');
+  });
+
+  it('does not tell them they control what the server exposes', async () => {
+    render(await McpDashboardPage());
+
+    expect(screen.queryByText(/You control exactly what is exposed/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/The platform admin decides what the server exposes/)
+    ).toBeInTheDocument();
+  });
+
+  it('hands a null keys count when theirs fails, rather than showing 0 keys', async () => {
+    setupServerFetch({}, { keys: () => apiFailure(500) });
 
     render(await McpDashboardPage());
 
+    expect(screen.getByTestId('mcp-dashboard')).toHaveAttribute('data-keys', 'failed');
+  });
+
+  it('control: the platform’s view fetches all five', async () => {
+    viewer.tier = 'platform';
+
+    render(await McpDashboardPage());
+
+    expect(vi.mocked(serverFetch)).toHaveBeenCalledTimes(5);
     const dashboard = screen.getByTestId('mcp-dashboard');
-    expect(dashboard).toHaveAttribute('data-has-settings', 'false');
-    expect(dashboard).toHaveAttribute('data-tools', '0');
-    expect(dashboard).toHaveAttribute('data-resources', '0');
-    expect(dashboard).toHaveAttribute('data-keys', '0');
-    // Settings threw → logger.error called once for settings
-    expect(vi.mocked(logger.error)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-      expect.stringContaining('MCP dashboard: settings fetch failed'),
-      expect.any(Error)
-    );
+    expect(dashboard).toHaveAttribute('data-viewer-tier', 'platform');
+    expect(dashboard).toHaveAttribute('data-tools', '3');
+    expect(screen.getByText(/You control exactly what is exposed/)).toBeInTheDocument();
   });
 });

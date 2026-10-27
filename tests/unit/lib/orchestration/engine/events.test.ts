@@ -14,6 +14,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
+// `after()` records what it was handed (t-903); the real one throws outside a
+// request scope.
+const mockAfter = vi.hoisted(() => vi.fn());
+vi.mock('next/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/server')>()),
+  after: mockAfter,
+}));
+
 vi.mock('@/lib/orchestration/webhooks/dispatcher', () => ({
   dispatchWebhookEvent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -182,6 +190,33 @@ describe('Event factory helpers', () => {
   });
 
   describe('workflowFailed', () => {
+    it('keeps the workflow_failed dispatch, name lookups included, alive past the response (t-903)', async () => {
+      mockAfter.mockClear();
+      let finishDispatch!: () => void;
+      vi.mocked(dispatchWebhookEvent).mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          finishDispatch = resolve;
+        })
+      );
+
+      workflowFailed('step exploded', 'step-1', { executionId: 'exec-1' });
+
+      // Registered at once, before the lookups, so nothing runs unheld.
+      expect(mockAfter).toHaveBeenCalledTimes(1);
+      const handed = mockAfter.mock.calls[0]?.[0] as Promise<unknown>;
+      let settled = false;
+      void handed.then(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(dispatchWebhookEvent).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(settled).toBe(false);
+
+      finishDispatch();
+      await handed;
+      expect(settled).toBe(true);
+    });
+
     it('returns a workflow_failed event and dispatches webhook', async () => {
       const event = workflowFailed('Budget exceeded', 'step-4');
 
@@ -272,7 +307,7 @@ describe('Event factory helpers', () => {
 
   describe('workflowBudgetExceeded', () => {
     it('returns an event carrying usedUsd, limitUsd, and the failed step id', () => {
-      const event = workflowBudgetExceeded(1.5, 1.0, 'step-llm');
+      const event = workflowBudgetExceeded(1.5, 1.0, 'step-llm', { userId: null });
       expect(event).toEqual({
         type: 'workflow_budget_exceeded',
         usedUsd: 1.5,
@@ -282,21 +317,23 @@ describe('Event factory helpers', () => {
     });
 
     it('dispatches the `workflow_budget_exceeded` webhook with the supplied context', () => {
-      workflowBudgetExceeded(1.5, 1.0, 'step-llm', 'exec-123');
+      workflowBudgetExceeded(1.5, 1.0, 'step-llm', { executionId: 'exec-123', userId: null });
       expect(dispatchWebhookEvent).toHaveBeenCalledWith('workflow_budget_exceeded', {
         usedUsd: 1.5,
         limitUsd: 1.0,
         failedStepId: 'step-llm',
         executionId: 'exec-123',
+        userId: null,
       });
     });
 
     it('omits executionId from the webhook payload when not supplied', () => {
-      workflowBudgetExceeded(1.5, 1.0, 'step-llm');
+      workflowBudgetExceeded(1.5, 1.0, 'step-llm', { userId: null });
       expect(dispatchWebhookEvent).toHaveBeenCalledWith('workflow_budget_exceeded', {
         usedUsd: 1.5,
         limitUsd: 1.0,
         failedStepId: 'step-llm',
+        userId: null,
       });
     });
 
@@ -304,21 +341,53 @@ describe('Event factory helpers', () => {
       // workflow_budget_exceeded is workflow-typed; scoped subs filter on
       // `workflowId` (see lib/orchestration/webhooks/event-entity-keys.ts),
       // so the engine call sites must enrich the payload with it.
-      workflowBudgetExceeded(1.5, 1.0, 'step-llm', 'exec-123', 'wf-1');
+      workflowBudgetExceeded(1.5, 1.0, 'step-llm', {
+        executionId: 'exec-123',
+        workflowId: 'wf-1',
+        userId: null,
+      });
       expect(dispatchWebhookEvent).toHaveBeenCalledWith('workflow_budget_exceeded', {
         usedUsd: 1.5,
         limitUsd: 1.0,
         failedStepId: 'step-llm',
         executionId: 'exec-123',
         workflowId: 'wf-1',
+        userId: null,
       });
+    });
+
+    it("names the run's owner as userId, so erasure finds the delivery after the run is gone (t-792)", () => {
+      workflowBudgetExceeded(1.5, 1.0, 'step-llm', {
+        executionId: 'exec-123',
+        workflowId: 'wf-1',
+        userId: 'user-7',
+      });
+      expect(dispatchWebhookEvent).toHaveBeenCalledWith('workflow_budget_exceeded', {
+        usedUsd: 1.5,
+        limitUsd: 1.0,
+        failedStepId: 'step-llm',
+        executionId: 'exec-123',
+        workflowId: 'wf-1',
+        userId: 'user-7',
+      });
+    });
+
+    it('sends userId null for a system-owned run, as the other run events do', () => {
+      workflowBudgetExceeded(1.5, 1.0, 'step-llm', {
+        executionId: 'exec-123',
+        workflowId: 'wf-1',
+        userId: null,
+      });
+      expect(vi.mocked(dispatchWebhookEvent).mock.calls[0][1]).toHaveProperty('userId', null);
     });
 
     it('does not throw when the webhook dispatch rejects — logs a warning instead', async () => {
       vi.mocked(dispatchWebhookEvent).mockRejectedValueOnce(new Error('Webhook offline'));
 
       // Synchronous call must not throw — return the event for the caller to yield.
-      expect(() => workflowBudgetExceeded(1.5, 1.0, 'step-llm', 'exec-456')).not.toThrow();
+      expect(() =>
+        workflowBudgetExceeded(1.5, 1.0, 'step-llm', { executionId: 'exec-456', userId: null })
+      ).not.toThrow();
 
       await vi.waitFor(() => {
         expect(logger.warn).toHaveBeenCalledWith(

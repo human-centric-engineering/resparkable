@@ -22,7 +22,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { NextRequest, NextResponse } from 'next/server';
-import { proxy } from '@/proxy';
+import { proxy, config } from '@/proxy';
 
 vi.mock('@/lib/logging/context', () => ({
   generateRequestId: vi.fn(() => 'test-request-id-123'),
@@ -199,6 +199,38 @@ describe('proxy (project root)', () => {
     });
   });
 
+  describe('Route matching — whole path segments (#758)', () => {
+    // A public page that only shares a protected route's leading letters is a
+    // different section. Each of these was sent to /login before #758.
+    it.each(['/profiles', '/settings-guide', '/dashboards', '/projectsroadmap'])(
+      'leaves the public sibling %s reachable without a session',
+      async (path) => {
+        const response = await proxy(createMockRequest(path, { cookies: {} }));
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get('location')).toBeNull();
+      }
+    );
+
+    it('still protects a path beneath a core route', async () => {
+      const response = await proxy(createMockRequest('/settings/security', { cookies: {} }));
+
+      expect(response.status).toBe(307);
+      expect(response.headers.get('location')).toContain('/login');
+    });
+
+    it('leaves a signed-in visitor on a page that only shares an auth route prefix', async () => {
+      const response = await proxy(
+        createMockRequest('/login-help', {
+          cookies: { 'better-auth.session_token': 'valid-token' },
+        })
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('location')).toBeNull();
+    });
+  });
+
   describe('Protected routes — fork-registered prefixes (#378)', () => {
     it('redirects a fork-registered prefix (/projects) to /login without a session', async () => {
       const request = createMockRequest('/projects', { cookies: {} });
@@ -350,6 +382,13 @@ describe('proxy (project root)', () => {
 
       expect(response.status).toBe(307);
       expect(landingPathOf(response)).toBe(AUTH_LANDING_ROUTE);
+    });
+
+    it('leaves a page that only shares the /signup prefix reachable (#758)', async () => {
+      const response = await proxy(createMockRequest('/signups-closed'));
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('location')).toBeNull();
     });
 
     it('leaves /login reachable', async () => {
@@ -719,6 +758,30 @@ describe('proxy (project root)', () => {
       const request = createMockRequest('/', { cookies: {} });
       const response = await proxy(request);
       expect(response.headers.get('x-middleware-request-x-surface')).toBe('consumer');
+    });
+  });
+
+  describe('Admin pathname header (§111 t-810)', () => {
+    // The admin layout reads the page's tier from this header, so a client
+    // must not be able to name an org-tier path for a platform page.
+    it('forwards the request pathname', async () => {
+      const response = await proxy(createMockRequest('/admin/users', { cookies: {} }));
+      expect(response.headers.get('x-middleware-request-x-sunrise-pathname')).toBe('/admin/users');
+    });
+
+    it('overwrites a spoofed inbound value (proxy is sole writer)', async () => {
+      const request = createMockRequest('/admin/users', {
+        cookies: {},
+        headers: { 'x-sunrise-pathname': '/admin/orchestration/agents' },
+      });
+      const response = await proxy(request);
+      expect(response.headers.get('x-middleware-request-x-sunrise-pathname')).toBe('/admin/users');
+    });
+
+    it('runs on every admin path, including one the static-asset pattern skips', () => {
+      // `/admin/orchestration/agents/logo.png` is a dynamic page, and without
+      // this entry it would reach the layout with a client-sent header intact.
+      expect(config.matcher).toContain('/admin/:path*');
     });
   });
 });

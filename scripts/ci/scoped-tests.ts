@@ -105,6 +105,21 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'is the class of query only RLS covers under TENANCY_MODE=multi.',
   },
   {
+    path: 'tests/unit/lib/db/owner-raw-sql-manifest.test.ts',
+    reason:
+      'greps lib/** and app/** for raw SQL naming a table the owner layer ' +
+      'enforces. No where reaches a raw read, so a new one in a far-off module ' +
+      'would read every member’s rows for a narrowed caller — and no import ' +
+      'chain connects that module to this test.',
+  },
+  {
+    path: 'tests/unit/lib/orchestration/access/owner-layer-agreement.test.ts',
+    reason:
+      'reads each ownerless-roster file and the callers it names as `via` by path, ' +
+      'to check the crossing or the absent guard its owner-layer disposition claims; ' +
+      'an edit that removes a crossing changes no import this test follows.',
+  },
+  {
     path: 'tests/unit/lib/privacy/export-sources.test.ts',
     reason:
       'parses `prisma/schema/*.prisma` and fails until every model with a ' +
@@ -126,6 +141,13 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'parses `prisma/schema/*.prisma` and fails naming any model that neither ' +
       'carries `orgId` nor sits on a tenancy allowlist. Adding a model is exactly ' +
       'the change no import chain connects to this test.',
+  },
+  {
+    path: 'tests/unit/lib/db/unique-constraints-exist.test.ts',
+    reason:
+      'replays the index DDL in `prisma/migrations/` and fails naming any constraint in ' +
+      '`UNIQUE_CONSTRAINTS` that no longer exists on its columns. A migration that renames ' +
+      'one is the change that breaks P2002 matching, and no import chain reaches this test.',
   },
   {
     path: 'tests/unit/lib/tenancy/org-scoped-slugs.test.ts',
@@ -184,6 +206,14 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       'handler or capability class that changes a shared setting (a GLOBAL_CONFIG_MODELS ' +
       'row) without declaring `writesSharedSettings`. A new route or capability writing ' +
       'one is exactly the change no import chain connects to this test (§107 t-751).',
+  },
+  {
+    path: 'tests/unit/scripts/ci/admin-tier-roster.test.ts',
+    reason:
+      'parses every route under app/ and every module under lib/ and fails naming any `withAdminAuth` call ' +
+      "declared `tier: 'org'` that ORG_TIER_ADMIN_ROUTES does not list (or that has no " +
+      'ownership decision), and any listed admin page that does not exist. A route opened ' +
+      'to org admins is exactly the change no import chain connects to this test (§111 t-810).',
   },
   {
     path: 'tests/unit/scripts/ci/ownerless-surfaces.test.ts',
@@ -246,10 +276,10 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
     path: 'tests/unit/versioning-seam-coverage.test.ts',
     reason:
       "reads `lib/app/*` off disk and checks it against VERSIONING.md's " +
-      'public-surface list. Both of its inputs — a scaffold file and a ' +
-      'markdown document — are outside every module graph, so adding a seam ' +
-      'and forgetting the contract entry is precisely the change no import ' +
-      'chain connects to a test (#732).',
+      "public-surface list and CUSTOMIZATION.md §4's seam table. Its inputs — " +
+      'a scaffold file and two markdown documents — are outside every module ' +
+      'graph, so adding a seam and forgetting the contract or guide entry is ' +
+      'precisely the change no import chain connects to a test (#732, #735).',
   },
   {
     path: 'tests/unit/lib/security/outbound-fetch-redirects.test.ts',
@@ -268,6 +298,12 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
     reason:
       'reads `prisma/seeds/` off disk to pin which units write `isSystem` workflows against ' +
       '`SYSTEM_WORKFLOW_SLUGS`. Nothing imports a seed file, so a new seed never selects it.',
+  },
+  {
+    path: 'tests/unit/prisma/seeds/capability-class-seed-parity.test.ts',
+    reason:
+      'discovers `prisma/seeds/` off disk and runs every unit against a mock client ' +
+      '(#646). A new seed is exactly what it exists to catch, and nothing imports one.',
   },
   {
     path: 'tests/unit/prisma/seeds/provider-models.capabilities.test.ts',
@@ -328,6 +364,15 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
       '#654), and a fourth would be in a file no import chain connects here.',
   },
   {
+    path: 'tests/unit/lib/validations/trim-order.test.ts',
+    reason:
+      'parses every `z.string()` chain under app/, lib/ and components/ and ' +
+      'fails on a length, pattern or refinement check written before ' +
+      '`.trim()`, which accepts whitespace and stores "" (#713). The change ' +
+      'it exists to catch is a NEW schema, in a file no import chain ' +
+      'connects to this test.',
+  },
+  {
     path: 'tests/unit/resparkable-version-disclosure.test.ts',
     reason:
       'walks `app/` and `lib/` for every route whose import graph reaches ' +
@@ -360,8 +405,8 @@ export const ALWAYS_RUN_TESTS: readonly AlwaysRunEntry[] = [
   //
   // Spread rather than left as a second list every caller must remember to
   // union, so every guard already written over `ALWAYS_RUN_TESTS` covers a
-  // fork's entries too: `validateAlwaysRun` below rejects a non-test path or a
-  // bare reason, and `tests/unit/scripts/ci/scoped-tests.test.ts` fails on an
+  // fork's entries too: `validateAlwaysRun` below rejects a non-test path, one
+  // outside the repository, or a bare reason, and `tests/unit/scripts/ci/scoped-tests.test.ts` fails on an
   // entry whose file does not exist, a reason under 20 characters, or a
   // duplicate path. A fork's declaration gets the checks core's gets, in the
   // fork, without a line of its own.
@@ -637,11 +682,30 @@ export function validateAlwaysRun(entries: readonly AlwaysRunEntry[]): string | 
     if (unsafeArgvPaths([entry.path]).length > 0) {
       return `ALWAYS_RUN_TESTS holds "${entry.path}", which cannot be passed as an argument.`;
     }
+    // The prefix also kept every entry inside the repository, and nothing else
+    // does: the CLI keeps an entry when `existsSync(resolve(root, path))`, and
+    // `resolve` happily leaves `root`. So `../other/x.test.ts` or
+    // `/tmp/x.test.ts` passed every check and the scoped run then skipped it,
+    // or ran a file outside the tree (#765). A stale path copied from another
+    // checkout is the ordinary way to write one.
+    if (isOutsideRepo(entry.path)) {
+      return `ALWAYS_RUN_TESTS holds "${entry.path}", which is not a path inside the repository.`;
+    }
     if (entry.reason.trim() === '') {
       return `ALWAYS_RUN_TESTS entry "${entry.path}" has no reason.`;
     }
   }
   return null;
+}
+
+/**
+ * An absolute path (POSIX, a Windows drive, or a backslash root), or one with a
+ * `..` segment. Either can resolve outside the repository; a repo-relative
+ * path with neither cannot.
+ */
+function isOutsideRepo(path: string): boolean {
+  if (path.startsWith('/') || path.startsWith('\\') || /^[A-Za-z]:/.test(path)) return true;
+  return path.split(/[/\\]/).includes('..');
 }
 
 /** The three collaborators {@link selfTestFailure} exercises, injectable for its own test. */

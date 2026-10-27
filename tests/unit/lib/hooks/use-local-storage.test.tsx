@@ -318,4 +318,106 @@ describe('useLocalStorage', () => {
     // Assert: state unchanged — key mismatch filters out the event
     expect(result.current[0]).toBe('initial');
   });
+
+  it('skips the write and same-tab broadcast when an updater returns prev', () => {
+    window.localStorage.setItem('k.noop', JSON.stringify({ open: true }));
+    const { result } = renderHook(() => useLocalStorage('k.noop', { open: false }));
+    const hydrated = result.current[0];
+    expect(hydrated).toEqual({ open: true });
+    const setItem = vi.spyOn(window.localStorage, 'setItem');
+    const dispatch = vi.spyOn(window, 'dispatchEvent');
+
+    try {
+      act(() => {
+        result.current[1]((prev) => prev);
+      });
+
+      expect(setItem).not.toHaveBeenCalled();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(result.current[0]).toBe(hydrated);
+
+      // A real change on the same hook still writes and broadcasts, so the
+      // assertions above are not passing because the spies never see calls.
+      act(() => {
+        result.current[1]((prev) => ({ ...prev, open: false }));
+      });
+
+      expect(setItem).toHaveBeenCalledWith('k.noop', JSON.stringify({ open: false }));
+      expect(dispatch).toHaveBeenCalledTimes(1);
+    } finally {
+      setItem.mockRestore();
+      dispatch.mockRestore();
+    }
+  });
+
+  it('persists and broadcasts the in-memory default when the key was never stored', () => {
+    // Setting the value the hook already shows is not a no-op when storage is
+    // empty: the caller is persisting the choice, and another instance with a
+    // different default must hear about it.
+    const { result: a } = renderHook(() => useLocalStorage('k.default', true));
+    const { result: b } = renderHook(() => useLocalStorage('k.default', false));
+
+    act(() => {
+      a.current[1](true);
+    });
+
+    expect(window.localStorage.getItem('k.default')).toBe('true');
+    expect(b.current[0]).toBe(true);
+  });
+
+  it('retries a value whose earlier write failed', () => {
+    const { result } = renderHook(() => useLocalStorage<number>('k.retry', 0));
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementationOnce(() => {
+      throw new Error('QuotaExceededError');
+    });
+
+    try {
+      act(() => {
+        result.current[1](7);
+      });
+      expect(window.localStorage.getItem('k.retry')).toBeNull();
+
+      act(() => {
+        result.current[1](7);
+      });
+
+      expect(setItem).toHaveBeenCalledTimes(2);
+      expect(window.localStorage.getItem('k.retry')).toBe('7');
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it('persists an updater that mutated prev in place', () => {
+    // Storage only: React bails out on the same reference, as with useState,
+    // so the caller is not re-rendered. The hook doc says to return a new object.
+    const { result } = renderHook(() => useLocalStorage('k.mutate', { open: true }));
+    act(() => {
+      result.current[1]({ open: true });
+    });
+
+    act(() => {
+      result.current[1]((prev) => {
+        prev.open = false;
+        return prev;
+      });
+    });
+
+    expect(window.localStorage.getItem('k.mutate')).toBe(JSON.stringify({ open: false }));
+  });
+
+  it('broadcasts a set this instance was out of step on, even when storage matches', () => {
+    // Code elsewhere wrote storage directly (no event), so storage holds 5 while
+    // both instances still show 3. Setting 5 is a change for them, not a no-op.
+    const { result: a } = renderHook(() => useLocalStorage<number>('k.drift', 3));
+    const { result: b } = renderHook(() => useLocalStorage<number>('k.drift', 3));
+    window.localStorage.setItem('k.drift', '5');
+
+    act(() => {
+      a.current[1](5);
+    });
+
+    expect(a.current[0]).toBe(5);
+    expect(b.current[0]).toBe(5);
+  });
 });

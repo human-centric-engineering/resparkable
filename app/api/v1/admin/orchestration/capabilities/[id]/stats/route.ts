@@ -16,6 +16,7 @@
 import { z } from 'zod';
 
 import { withAdminAuth } from '@/lib/auth/guards';
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ValidationError } from '@/lib/api/errors';
@@ -78,20 +79,23 @@ export const GET = withAdminAuth<{ id: string }>(async (request, _session, { par
       },
       orderBy: { createdAt: 'asc' },
     }),
-    // Evaluation logs with execution times
-    prisma.aiEvaluationLog.findMany({
-      where: {
-        capabilitySlug: capability.slug,
-        eventType: { in: ['capability_call', 'capability_result'] },
-        executionTimeMs: { not: null },
-        createdAt: { gte: since },
-      },
-      select: {
-        executionTimeMs: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'asc' },
-    }),
+    // Evaluation logs with execution times — a capability's timings across
+    // every member's evaluations: two numbers per log, no content.
+    runAcrossOwners('capability stats: execution times across every evaluation', () =>
+      prisma.aiEvaluationLog.findMany({
+        where: {
+          capabilitySlug: capability.slug,
+          eventType: { in: ['capability_call', 'capability_result'] },
+          executionTimeMs: { not: null },
+          createdAt: { gte: since },
+        },
+        select: {
+          executionTimeMs: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+    ),
   ]);
 
   // Aggregate cost log metrics

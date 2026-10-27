@@ -9,6 +9,7 @@ import {
   PausedForApproval,
 } from '@/lib/orchestration/engine/errors';
 import { ProviderCallRefusedError } from '@/lib/orchestration/llm/provider-eligibility';
+import { SpendCapExceededError } from '@/lib/orchestration/llm/spend-caps';
 
 describe('BudgetExceeded', () => {
   it('sets usedUsd, limitUsd, name, and formatted message', () => {
@@ -122,5 +123,32 @@ describe('ExecutorError — a provider-policy refusal in the cause chain', () =>
     const b = new Error('b', { cause: a });
     (a as Error & { cause?: unknown }).cause = b;
     expect(new ExecutorError('s1', 'x_failed', 'x', a).code).toBe('x_failed');
+  });
+});
+
+describe('ExecutorError — a spend-cap refusal in the cause chain (§110 t-788)', () => {
+  it.each([
+    ['org', 'org_budget_exceeded'],
+    ['global', 'global_budget_exceeded'],
+  ] as const)('keeps the %s cap’s code and never retries it', (cap, code) => {
+    // The cap is still reached on the next attempt, whatever executor wrapped it.
+    const wrapped = new Error('planner failed', {
+      cause: new SpendCapExceededError(cap, 'openai'),
+    });
+    const err = new ExecutorError('s1', 'planner_call_failed', 'x', wrapped, true);
+    expect(err.code).toBe(code);
+    expect(err.retriable).toBe(false);
+  });
+
+  it("keeps the engine's executor_threw code but still stops the retry", () => {
+    const err = new ExecutorError(
+      's1',
+      'executor_threw',
+      'raw',
+      new SpendCapExceededError('org', 'openai'),
+      true
+    );
+    expect(err.code).toBe('executor_threw');
+    expect(err.retriable).toBe(false);
   });
 });

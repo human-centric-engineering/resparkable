@@ -500,4 +500,124 @@ describe('AddProviderModelsCapability', () => {
       );
     });
   });
+
+  describe('execute() — chat prices (t-774)', () => {
+    it('writes both prices to prisma.create when set together', async () => {
+      const cap = new AddProviderModelsCapability();
+      const args = cap.validate({
+        newModels: [
+          {
+            ...makeNewModel(),
+            inputCostPerMillionTokens: 3,
+            outputCostPerMillionTokens: 15,
+          },
+        ],
+      });
+
+      const result = await cap.execute(args, context);
+
+      expect(result.data?.created).toBe(1);
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            inputCostPerMillionTokens: 3,
+            outputCostPerMillionTokens: 15,
+          }),
+        })
+      );
+    });
+
+    it('reads numeric-string prices (edited on the approval screen) as numbers', async () => {
+      const cap = new AddProviderModelsCapability();
+      const args = cap.validate({
+        newModels: [
+          {
+            ...makeNewModel(),
+            inputCostPerMillionTokens: '3.5',
+            outputCostPerMillionTokens: ' 16 ',
+          },
+        ],
+      });
+
+      await cap.execute(args, context);
+
+      const data = mockCreate.mock.calls[0][0].data as Record<string, unknown>;
+      expect(data.inputCostPerMillionTokens).toBe(3.5);
+      expect(data.outputCostPerMillionTokens).toBe(16);
+    });
+
+    it('treats null prices as absent and writes null for both', async () => {
+      const cap = new AddProviderModelsCapability();
+      const args = cap.validate({
+        newModels: [
+          { ...makeNewModel(), inputCostPerMillionTokens: null, outputCostPerMillionTokens: null },
+        ],
+      });
+
+      const result = await cap.execute(args, context);
+
+      expect(result.data?.created).toBe(1);
+      const data = mockCreate.mock.calls[0][0].data as Record<string, unknown>;
+      expect(data.inputCostPerMillionTokens).toBeNull();
+      expect(data.outputCostPerMillionTokens).toBeNull();
+    });
+
+    it.each([
+      ['above 10000', 10001],
+      ['negative', -1],
+      ['not a number', '1e'],
+      ['hex', '0x10'],
+    ])(
+      'creates a model with a price %s, without prices, and says why',
+      async (_label, badPrice) => {
+        const cap = new AddProviderModelsCapability();
+        const args = cap.validate({
+          newModels: [
+            {
+              ...makeNewModel({ slug: 'acme-bad', modelId: 'bad' }),
+              inputCostPerMillionTokens: badPrice,
+              outputCostPerMillionTokens: 1,
+            },
+            makeNewModel({ slug: 'acme-good', modelId: 'good' }),
+          ],
+        });
+
+        const result = await cap.execute(args, context);
+
+        const bad = result.data?.models.find((m) => m.slug === 'acme-bad');
+        expect(bad?.status).toBe('created');
+        expect(bad?.reason).toContain('Input price must be a number from 0 to 10000');
+        expect(mockCreate).toHaveBeenCalledTimes(2);
+        const badData = mockCreate.mock.calls.find((c) => c[0].data.slug === 'acme-bad')?.[0]
+          .data as Record<string, unknown>;
+        expect(badData.inputCostPerMillionTokens).toBeNull();
+        expect(badData.outputCostPerMillionTokens).toBeNull();
+      }
+    );
+
+    it('creates a model with only one price, without prices, and says why', async () => {
+      // The admin approved the model; a half-set price must not cost them it.
+      const cap = new AddProviderModelsCapability();
+      const args = cap.validate({
+        newModels: [
+          { ...makeNewModel({ slug: 'half-priced', name: 'Half' }), inputCostPerMillionTokens: 3 },
+          makeNewModel({ slug: 'unpriced', name: 'Unpriced' }),
+        ],
+      });
+
+      const result = await cap.execute(args, context);
+
+      expect(result.data?.created).toBe(2);
+      expect(result.data?.invalid).toBe(0);
+      const half = result.data?.models.find((r) => r.slug === 'half-priced');
+      expect(half?.status).toBe('created');
+      expect(half?.reason).toBe(
+        'Created without prices: Set the input and output prices together, or neither'
+      );
+      const halfData = mockCreate.mock.calls.find((c) => c[0].data.slug === 'half-priced')?.[0]
+        .data as Record<string, unknown>;
+      expect(halfData.inputCostPerMillionTokens).toBeNull();
+      expect(halfData.outputCostPerMillionTokens).toBeNull();
+    });
+  });
 });

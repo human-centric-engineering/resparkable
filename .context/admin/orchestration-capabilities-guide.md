@@ -261,6 +261,8 @@ Flags a conversation for human review when the agent cannot resolve a query. Log
 
 Applies approved field changes to provider model entries. Validates each change against the update schema and invalidates the model cache. Used by the Provider Model Audit workflow.
 
+Each change is drift-checked against the row (its `currentValue` must still match) and written in its own serializable transaction, except the two prices: `inputCostPerMillionTokens` and `outputCostPerMillionTokens` apply as one unit, both or neither (t-774). A price change without its partner is reported `invalid` and not written; if either drifts or fails validation, neither is written. A decimal string (`"3.5"`, as the approval screen sends an edited value, or as a model may write a number) is read as a number for the price fields and `dimensions`, in both the proposed and the current value; hex, binary and exponent forms are not.
+
 | Parameter  | Type   | Required | Description                                                           |
 | ---------- | ------ | -------- | --------------------------------------------------------------------- |
 | `model_id` | string | No       | Model ID (single-model mode)                                          |
@@ -269,7 +271,7 @@ Applies approved field changes to provider model entries. Validates each change 
 
 ### `add_provider_models`
 
-Adds new provider model entries to the registry. Validates against the create schema, skips duplicates, and invalidates the model cache.
+Adds new provider model entries to the registry. Validates against the create schema, skips duplicates, and invalidates the model cache. A model may carry `inputCostPerMillionTokens` and `outputCostPerMillionTokens` (USD per 1M tokens, 0–10,000; a decimal string such as `"3.5"` is read as a number). If they are half-set or invalid, the model is still created, without prices, and its result says why (`Created without prices: …`), so an approved model is never lost to a price typo (t-774).
 
 | Parameter   | Type  | Required | Description                                                                                     |
 | ----------- | ----- | -------- | ----------------------------------------------------------------------------------------------- |

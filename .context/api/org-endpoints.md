@@ -30,6 +30,7 @@ the per-admin export sub-cap noted below.
 | `GET /api/v1/orgs/[id]`                     | `withAuth`      | Any member of that org (keyed on the caller's own membership).                                                                                         |
 | `GET/POST /api/v1/orgs/[id]/members`        | `withAuth`      | The org's OWNER/ADMIN **while acting in it**, or a platform admin — the policy's org arm. Browser session only (`GET` included: the roster is people). |
 | `PATCH/DELETE …/members/[userId]`           | `withAuth`      | As above. Granting `OWNER`, or changing / removing an `OWNER`, needs an OWNER (or platform admin).                                                     |
+| `POST /api/v1/orgs/[id]/invitations`        | `withAuth`      | As above. Inviting as `OWNER` needs an OWNER (or platform admin). Not the install org. Per-IP invite sub-cap.                                          |
 | `GET/POST /api/v1/admin/orgs`               | `withAdminAuth` | Platform admins.                                                                                                                                       |
 | `GET/PATCH/DELETE /api/v1/admin/orgs/[id]`  | `withAdminAuth` | Platform admins.                                                                                                                                       |
 | `GET /api/v1/admin/orgs/[id]/export`        | `withAdminAuth` | Platform admins; per-admin sub-cap.                                                                                                                    |
@@ -213,14 +214,57 @@ POST /api/v1/orgs/[id]/members
 
 Adding by id enrols the user without asking them — it mirrors the platform
 admin naming an owner at creation, and the org's administrators already see
-the roster. The consenting path is an invitation (`POST /api/v1/users/invite`
-with `orgId`), which the invitee accepts. The `404` for an unknown id confirms
+the roster. The consenting path is an invitation, which the invitee accepts:
+`POST /api/v1/orgs/[id]/invitations` below, or the platform's
+`POST /api/v1/users/invite` with `orgId`. The `404` for an unknown id confirms
 only that a cuid — unguessable — does not name a user.
 
 **Response** (201 Created): the membership row.
 
 **Error Responses**: `400` with code `INSTALL_ORG_MEMBERSHIP` (a role on the
 install org) · `403 OWNER_STANDING` · `404 USER_NOT_FOUND` · `409 ALREADY_MEMBER`.
+
+### Invite someone into the org
+
+```
+POST /api/v1/orgs/[id]/invitations
+POST /api/v1/orgs/[id]/invitations?resend=true
+```
+
+The org's own invitation (§111 t-813), behind the Members page. Same admission
+as the members routes. The invitee joins this org on acceptance, as a platform
+`USER`.
+
+**Request Body** (`inviteOrgMemberSchema`):
+
+```json
+{ "name": "Ada", "email": "ada@example.com", "orgRole": "ADMIN" }
+```
+
+- `orgRole`: optional, default `MEMBER` on acceptance. `OWNER` needs OWNER
+  standing.
+- No platform `role` and no `orgId`. A `role` key is dropped.
+- `?resend=true` re-issues this org's pending invitation. It keeps the
+  pending `orgRole` unless the body names one. Replacing a pending `OWNER`
+  invitation needs OWNER standing, whatever role the body sends.
+
+**Response** (201 Created): `{ message, invitation: { email, name, orgId,
+orgRole, invitedAt, expiresAt }, emailStatus }`. That is the platform route's
+shape without `role` and **without `link`**. The token in the link is all
+`accept-invite` asks for before it creates a verified account with a
+password the caller chooses. An inviter who held it could therefore open an
+account for an address they do not own. It goes to the invitee by email only. If
+`emailStatus` is not `sent`, the invitation is stored, and a platform admin
+re-sends it from Users. A platform resend keeps the pending org. If an invitation into this org is already
+pending, the answer is `200` with `emailStatus: "pending"` and no link. Send
+`?resend=true` to issue a new token.
+
+**Error Responses**: `400 INSTALL_ORG_MEMBERSHIP` (invite into the install org
+from Users) · `400 ORG_NOT_ACTIVE` (suspended) · `403 OWNER_STANDING` ·
+`409 EMAIL_TAKEN` (the email has an account; a platform admin adds it by id) ·
+`409 CONFLICT` (an invitation for this email is pending into another org, or
+carries a platform role; it is left untouched and not named) · `429` (invite
+sub-cap).
 
 ### Change a member's role
 
@@ -389,6 +433,11 @@ Which AI providers the org may use at `TENANCY_MODE=multi` (§120 t-742). A
 `PUT` replaces the whole policy, `{ approved: string[], jurisdictions: string[] | null }`
 (`jurisdictions` is required: `null` lifts the restriction, and leaving it out is a 400),
 and writes an `org.providers.replace` audit row. `[]` revokes every grant.
+A `PUT` that changes the policy then reconciles the org's platform agents, so
+a clean-up agent whose provider the platform picks moves at once to what the
+new policy allows (t-798). That is a shortcut: the maintenance job re-picks
+such a binding whenever it drifts, so a reconcile failure, or a suspended org,
+is caught up there, and the `PUT` succeeds either way.
 Both return `{ orgId, unrestricted, enforced, approved, jurisdictions }`, each
 grant in `approved` as `{ id, slug }`: the grant is stored as the provider row's
 id, so it survives a rename, and `slug` is `null` if the row was deleted. See
@@ -409,7 +458,10 @@ DELETE /api/v1/admin/orgs/[id]
 
 Calls `eraseOrg()` — see [Org Erasure](../privacy/org-erasure.md). The org,
 its memberships, its credentials and its pending invitations go; its members'
-accounts stay.
+accounts stay. After the transaction commits, the org's storage prefix
+(`orgs/{id}/`) is deleted, best-effort: `storageSwept` is `true` when that
+worked, `false` when the provider failed (the org is still erased), and `null`
+when no storage is configured.
 
 **Response** (200 OK):
 
@@ -421,7 +473,8 @@ accounts stay.
     "erasedAt": "…",
     "members": 3,
     "pendingInvitations": 0,
-    "sessionsCleared": 2
+    "sessionsCleared": 2,
+    "storageSwept": true
   }
 }
 ```

@@ -8,11 +8,27 @@
  * - Cap set, spend meets cap → exceeded: true
  * - Cap set, spend exceeds cap → exceeded: true
  * - Prisma error → safe fallback { cap: null, spent: 0, exceeded: false }
+ * - At multi, the every-org spend goes only to the install org (§110 t-788)
  *
  * @see lib/orchestration/llm/cost-reports.ts
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { forgetSpendCaps } from '@/lib/orchestration/llm/spend-caps';
+import { runAsOrg } from '@/lib/tenancy/context';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+
+const mockMode = vi.hoisted(() => ({ value: 'single' }));
+vi.mock('@/lib/env', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/env')>();
+  return {
+    ...actual,
+    env: new Proxy(actual.env, {
+      get: (target, key) =>
+        key === 'TENANCY_MODE' ? mockMode.value : (Reflect.get(target, key) as unknown),
+    }),
+  };
+});
 
 vi.mock('@/lib/db/client', () => ({
   prisma: {
@@ -25,6 +41,7 @@ vi.mock('@/lib/db/client', () => ({
     },
     aiOrchestrationSettings: {
       findUnique: vi.fn(),
+      upsert: vi.fn(),
     },
     $queryRawUnsafe: vi.fn(),
   },
@@ -43,12 +60,19 @@ const mockedSettingsFindUnique = prisma.aiOrchestrationSettings.findUnique as un
 const mockedAggregate = prisma.aiCostLog.aggregate as unknown as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  // The month-to-date totals are cached across calls; each test starts cold.
+  forgetSpendCaps();
   vi.resetAllMocks();
+  mockMode.value = 'single';
 });
 
 describe('getGlobalCapStatus', () => {
   it('returns safe default when no settings row exists', async () => {
     mockedSettingsFindUnique.mockResolvedValueOnce(null);
+    // The settings reader creates the singleton with no cap.
+    vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValueOnce({
+      globalMonthlyBudgetUsd: null,
+    } as never);
 
     const result = await getGlobalCapStatus();
 
@@ -116,5 +140,27 @@ describe('getGlobalCapStatus', () => {
     const result = await getGlobalCapStatus();
 
     expect(result).toEqual({ cap: null, spent: 0, exceeded: false });
+  });
+});
+
+describe('getGlobalCapStatus at multi', () => {
+  beforeEach(() => {
+    mockMode.value = 'multi';
+    mockedSettingsFindUnique.mockResolvedValue({ globalMonthlyBudgetUsd: 100 });
+    mockedAggregate.mockResolvedValue({ _sum: { totalCostUsd: 120 } });
+    // The every-org total is read across orgs at multi.
+    vi.mocked(prisma.$queryRawUnsafe).mockResolvedValue([{ total: 120 }]);
+  });
+
+  it("shows a customer org whether the cap is reached, but not every org's spend", async () => {
+    const result = await runAsOrg('cmorg0000000000000000orgb', () => getGlobalCapStatus());
+
+    expect(result).toEqual({ cap: 100, spent: null, exceeded: true });
+  });
+
+  it('shows the install org the spend, where the cap is set', async () => {
+    const result = await runAsOrg(INSTALL_ORG_ID, () => getGlobalCapStatus());
+
+    expect(result).toEqual({ cap: 100, spent: 120, exceeded: true });
   });
 });

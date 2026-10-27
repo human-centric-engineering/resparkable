@@ -12,7 +12,9 @@
  *   - `keyPrefix?` — optional path prefix. Defaults to
  *     `agent-uploads/<agentId>/`. Forced through `validateStorageKey`
  *     and required to end with `/`. The capability appends a
- *     `<uuid>.<ext>` segment so the LLM never controls the path.
+ *     `<uuid>.<ext>` segment so the LLM never controls the path. At
+ *     `TENANCY_MODE=multi` it is wrapped in the org's prefix:
+ *     `orgs/<orgId>/<keyPrefix><uuid>.<ext>`.
  *   - `allowedContentTypes?` — optional MIME allowlist (e.g.
  *     `['application/pdf']`). When set, an upload with a non-matching
  *     contentType fails closed. Recommended for narrow bindings.
@@ -22,9 +24,25 @@
  *     URL instead of a public one. Requires a provider that declares
  *     `signedUrls` and `privateObjects`; fail-closed otherwise.
  *     Implies `public: false` at upload time.
- *   - `public?` — defaults true. Ignored when `signedUrlTtlSeconds` is
- *     set (signed implies private). Setting it false requires a provider
- *     that declares `privateObjects` — see `getStorageCapabilities()`.
+ *   - `public?` — defaults true at `single`. Ignored when
+ *     `signedUrlTtlSeconds` is set (signed implies private). Setting it
+ *     false requires a provider that declares `privateObjects` — see
+ *     `getStorageCapabilities()`.
+ *
+ * **At `TENANCY_MODE=multi` (§109 t-736, owner ruling 2026-10-08):**
+ *   - The upload goes through the org-bound client
+ *     (`getStorageClient({ orgId })`), which refuses any key outside
+ *     `orgs/<orgId>/`. The org comes from the tenant context the dispatch
+ *     already runs in (`requireOrgId()`), not from `CapabilityContext`: the
+ *     same scope every database read in this call is filtered by, so there
+ *     is one answer to "which org" rather than two that could disagree.
+ *   - A binding that sets neither `public` nor `signedUrlTtlSeconds`
+ *     uploads privately and returns a signed URL valid for
+ *     {@link DEFAULT_MULTI_SIGNED_URL_TTL_SECONDS}. A public URL carries no
+ *     token, so no org check can protect it; `public: true` is the explicit
+ *     opt-out for a link that must outlive a TTL. On Vercel Blob, which has
+ *     no signed URLs, such a binding is refused with
+ *     `signed_url_not_supported` until it opts into public.
  *
  * Security posture:
  * - The LLM cannot influence the storage path: prefix is admin-set,
@@ -51,6 +69,8 @@ import type {
   CapabilityResult,
 } from '@/lib/orchestration/capabilities/types';
 import { getStorageClient } from '@/lib/storage/client';
+import { isUnderOrgRoot, ORG_KEY_ROOT, orgKeyPrefix } from '@/lib/storage/org-keys';
+import { isMultiTenant, requireOrgId } from '@/lib/tenancy/context';
 import { getStorageCapabilities } from '@/lib/storage/providers/types';
 import { validateStorageKey } from '@/lib/storage/providers/validate-key';
 import { getMaxFileSizeBytes } from '@/lib/validations/storage';
@@ -70,9 +90,36 @@ const CONTENT_TYPE_RE = /^[a-z0-9]+\/[a-zA-Z0-9.+\-_]+$/;
  */
 const ABSOLUTE_MAX_BASE64_LENGTH = 8 * 1024 * 1024;
 
+/**
+ * Signed-URL lifetime for a binding that chose neither public nor a TTL, at
+ * `multi`. A day, because the agent hands the link on in conversation: the
+ * person reads it some time after the turn that produced it, often after a
+ * break, and an hour would expire links people have not opened yet. Longer
+ * makes a leaked link live longer. A binding that needs something else sets
+ * `signedUrlTtlSeconds` (60 s to 7 days).
+ */
+export const DEFAULT_MULTI_SIGNED_URL_TTL_SECONDS = 24 * 60 * 60;
+
 const customConfigSchema = z
   .object({
-    keyPrefix: z.string().min(1).max(200).regex(/\/$/, 'keyPrefix must end with /').optional(),
+    keyPrefix: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/\/$/, 'keyPrefix must end with /')
+      // No `.`, `..` or empty segments: the local provider resolves keys as
+      // paths, so `./orgs/x/` or `a//b/` would land somewhere other than the
+      // string says, and every prefix rule here (the reserved `orgs/` root,
+      // `orgOfKey`) reads the string.
+      .refine(
+        (p) =>
+          p
+            .slice(0, -1)
+            .split('/')
+            .every((seg) => seg !== '' && seg !== '.' && seg !== '..'),
+        'keyPrefix must not contain empty, "." or ".." segments'
+      )
+      .optional(),
     allowedContentTypes: z.array(z.string().regex(CONTENT_TYPE_RE)).min(1).max(20).optional(),
     maxFileSizeBytes: z
       .number()
@@ -218,7 +265,39 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
     }
     const customConfig = loaded.config;
 
-    const storage = getStorageClient();
+    // At `multi` the upload is the org's, so it needs the org. A dispatch with
+    // no org in its context (a system scope) has nowhere to put the file.
+    const multi = isMultiTenant();
+    let orgId: string | undefined;
+    if (multi) {
+      try {
+        orgId = requireOrgId();
+      } catch {
+        logger.error('upload_to_storage: refusing call — no org in the tenant context', {
+          agentId: context.agentId,
+        });
+        return this.error(
+          'Uploads need an organisation to belong to, and this call is not running as one',
+          'no_org_context'
+        );
+      }
+    }
+
+    let storage: ReturnType<typeof getStorageClient>;
+    try {
+      storage = getStorageClient({ orgId });
+    } catch (err) {
+      // Binding the client validates the org id as a path segment.
+      logger.error('upload_to_storage: refusing call — org id is not usable as a storage prefix', {
+        agentId: context.agentId,
+        orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return this.error(
+        'This organisation cannot be given a storage location — contact the platform operator',
+        'invalid_org'
+      );
+    }
     if (!storage) {
       return this.error(
         'Storage is not configured for this deployment — set STORAGE_PROVIDER and credentials',
@@ -226,13 +305,26 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
       );
     }
 
-    const signedRequested = customConfig?.signedUrlTtlSeconds !== undefined;
+    // Signed by default at `multi` when the binding chose neither way; see
+    // the module header. `single` keeps the public default.
+    const signedByDefault =
+      multi &&
+      customConfig?.signedUrlTtlSeconds === undefined &&
+      customConfig?.public === undefined;
+    const signedTtl = signedByDefault
+      ? DEFAULT_MULTI_SIGNED_URL_TTL_SECONDS
+      : customConfig?.signedUrlTtlSeconds;
+    const signedRequested = signedTtl !== undefined;
     const isPublic = signedRequested ? false : (customConfig?.public ?? true);
     const caps = getStorageCapabilities(storage);
 
     if (signedRequested && !caps.signedUrls) {
       return this.error(
-        `Signed URLs are not supported by the configured storage provider (${storage.name})`,
+        `Signed URLs are not supported by the configured storage provider (${storage.name})` +
+          (signedByDefault
+            ? '. Uploads are private by default when the deployment runs several organisations; ' +
+              'set public: true on the binding to publish the file instead.'
+            : ''),
         'signed_url_not_supported'
       );
     }
@@ -242,9 +334,18 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
     // whole point of the capability contract: the alternative is an upload
     // that succeeds and hands the user a world-readable URL.
     if (!isPublic && !caps.privateObjects) {
+      // A binding that chose nothing is private only because of the `multi`
+      // default, so the generic remedy ("remove signedUrlTtlSeconds and
+      // public:false") would name settings it never had. S3 without
+      // S3_OBJECTS_PRIVATE_BY_DEFAULT or S3_USE_ACL lands here.
       return this.error(
         `The configured storage provider (${storage.name}) cannot store private objects, ` +
-          `so this binding would publish the file. ${privateObjectsRemedy(storage.name)}`,
+          `so this binding would publish the file. ` +
+          (signedByDefault
+            ? `Uploads are private by default when the deployment runs several organisations. ` +
+              `${privateObjectsDeploymentRemedy(storage.name)}Or set public: true on the binding ` +
+              `to publish the file instead.`
+            : privateObjectsRemedy(storage.name)),
         'private_objects_not_supported'
       );
     }
@@ -291,11 +392,32 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
       );
     }
 
-    const prefix = customConfig?.keyPrefix ?? `agent-uploads/${context.agentId}/`;
+    // The org prefix wraps the admin's rather than replacing it, so a binding's
+    // own layout survives the move to `multi`.
+    const bindingPrefix = customConfig?.keyPrefix ?? `agent-uploads/${context.agentId}/`;
+    // `orgs/` is where org-owned keys live, and the unbound client refuses any
+    // key under it, in any case. At `single` nothing names an org, so such a
+    // binding could never upload; say so as a binding error, before decoding
+    // anything, rather than as a failed upload.
+    if (orgId === undefined && isUnderOrgRoot(bindingPrefix)) {
+      logger.error('upload_to_storage: keyPrefix uses the reserved orgs/ root', {
+        agentId: context.agentId,
+        keyPrefix: bindingPrefix,
+      });
+      return this.error(
+        `keyPrefix must not start with "${ORG_KEY_ROOT}" — that root is reserved for organisation-owned files`,
+        'invalid_binding'
+      );
+    }
     const extension = deriveExtension(args.filename, args.contentType);
-    const key = `${prefix}${randomUUID()}${extension}`;
+    let prefix = bindingPrefix;
+    let key = '';
 
     try {
+      // Inside the try: `orgKeyPrefix` throws for an org id it cannot use as a
+      // path segment, and that must come back as a result, not an exception.
+      prefix = orgId !== undefined ? `${orgKeyPrefix(orgId)}${bindingPrefix}` : bindingPrefix;
+      key = `${prefix}${randomUUID()}${extension}`;
       validateStorageKey(prefix);
       validateStorageKey(key);
     } catch (err) {
@@ -319,7 +441,7 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
         key,
         contentType: args.contentType,
         public: isPublic,
-        metadata: buildMetadata(context, args),
+        metadata: buildMetadata(context, args, orgId),
       });
     } catch (err) {
       logger.error('upload_to_storage: storage upload failed', {
@@ -334,8 +456,7 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
       );
     }
 
-    if (signedRequested && customConfig?.signedUrlTtlSeconds) {
-      const expiresIn = customConfig.signedUrlTtlSeconds;
+    if (signedTtl !== undefined) {
       // The capability check above already passed, so a missing method means
       // the provider declares `signedUrls` without implementing it. Fail
       // rather than fall through to the public-URL return below, which would
@@ -351,8 +472,8 @@ export class UploadToStorageCapability extends BaseCapability<Args, Data> {
         );
       }
       try {
-        const signedUrl = await storage.getSignedUrl(upload.key, expiresIn);
-        const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString();
+        const signedUrl = await storage.getSignedUrl(upload.key, signedTtl);
+        const expiresAt = new Date(Date.now() + signedTtl * 1000).toISOString();
         return this.success({
           key: upload.key,
           url: signedUrl,
@@ -419,6 +540,14 @@ function privateObjectsRemedy(providerName: string): string {
 }
 
 /**
+ * The deployment-side fix for a provider that cannot store privately, for a
+ * binding that set nothing: only the provider can change, so only S3 has one.
+ */
+function privateObjectsDeploymentRemedy(providerName: string): string {
+  return providerName === 's3' ? `${privateObjectsRemedy('s3')} ` : '';
+}
+
+/**
  * Pull an extension from the supplied filename if present and safe;
  * fall back to a contentType-based lookup; finally return empty
  * string. Never returns a path separator or relative-path token.
@@ -450,12 +579,17 @@ const CONTENT_TYPE_TO_EXT: Record<string, string> = {
   'image/svg+xml': '.svg',
 };
 
-function buildMetadata(context: CapabilityContext, args: Args): Record<string, string> {
+function buildMetadata(
+  context: CapabilityContext,
+  args: Args,
+  orgId: string | undefined
+): Record<string, string> {
   const meta: Record<string, string> = {
     agentId: context.agentId,
     userId: context.userId ?? '',
     uploadedAt: new Date().toISOString(),
   };
+  if (orgId !== undefined) meta.orgId = orgId;
   if (context.conversationId) meta.conversationId = context.conversationId;
   if (args.description) meta.description = args.description;
   if (args.filename) meta.originalFilename = args.filename.slice(0, 200);

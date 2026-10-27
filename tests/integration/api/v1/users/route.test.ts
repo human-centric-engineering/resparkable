@@ -150,6 +150,13 @@ describe('GET /api/v1/users', () => {
           timezone: 'UTC',
           location: null,
           preferences: {},
+          signupOrgId: null,
+          signupOrgRole: null,
+          erasureRequestedAt: null,
+          erasureRequestedBy: null,
+          erasureReason: null,
+          erasureAttempts: 0,
+          erasureNextAttemptAt: null,
         },
         {
           id: 'user-2',
@@ -166,6 +173,13 @@ describe('GET /api/v1/users', () => {
           timezone: 'UTC',
           location: null,
           preferences: {},
+          signupOrgId: null,
+          signupOrgRole: null,
+          erasureRequestedAt: null,
+          erasureRequestedBy: null,
+          erasureReason: null,
+          erasureAttempts: 0,
+          erasureNextAttemptAt: null,
         },
       ];
 
@@ -222,6 +236,13 @@ describe('GET /api/v1/users', () => {
           timezone: 'UTC',
           location: null,
           preferences: {},
+          signupOrgId: null,
+          signupOrgRole: null,
+          erasureRequestedAt: null,
+          erasureRequestedBy: null,
+          erasureReason: null,
+          erasureAttempts: 0,
+          erasureNextAttemptAt: null,
         },
       ];
 
@@ -247,6 +268,7 @@ describe('GET /api/v1/users', () => {
           role: true,
           emailVerified: true,
           createdAt: true,
+          erasureRequestedAt: true,
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -292,6 +314,7 @@ describe('GET /api/v1/users', () => {
           role: true,
           emailVerified: true,
           createdAt: true,
+          erasureRequestedAt: true,
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -322,6 +345,7 @@ describe('GET /api/v1/users', () => {
           role: true,
           emailVerified: true,
           createdAt: true,
+          erasureRequestedAt: true,
         },
         orderBy: { email: 'asc' },
       });

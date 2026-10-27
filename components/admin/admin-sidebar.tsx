@@ -37,6 +37,8 @@ import {
   PlayCircle,
   MessagesSquare,
   UserCog,
+  UsersRound,
+  LifeBuoy,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { API } from '@/lib/api/endpoints';
@@ -48,6 +50,7 @@ import {
   type NavSubgroup,
 } from '@/lib/admin-nav/registry';
 import { initAppNav } from '@/lib/app/admin-nav';
+import { viewerReaches, type AdminViewerTier } from '@/lib/auth/admin-tier';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AUTH_LANDING_LABEL, AUTH_LANDING_ROUTE } from '@/lib/auth-landing/route';
 
@@ -60,7 +63,8 @@ import { AUTH_LANDING_LABEL, AUTH_LANDING_ROUTE } from '@/lib/auth-landing/route
 // is wired here rather than in a shared server bootstrap. Idempotent by title.
 initAppNav();
 
-const coreNavSections: NavSection[] = [
+/** Exported for the admin-tier roster test, which holds each core item's `tier` to the page roster. */
+export const coreNavSections: NavSection[] = [
   {
     title: 'Overview',
     items: [
@@ -80,6 +84,20 @@ const coreNavSections: NavSection[] = [
         label: 'Users',
         icon: Users,
         description: 'Manage user accounts',
+      },
+      {
+        href: '/admin/members',
+        tier: 'org',
+        label: 'Members',
+        icon: UsersRound,
+        description: 'People in this organisation',
+      },
+      {
+        href: '/admin/support-access',
+        tier: 'org',
+        label: 'Support access',
+        icon: LifeBuoy,
+        description: 'Let platform support into this organisation',
       },
       {
         href: '/admin/orgs',
@@ -103,6 +121,7 @@ const coreNavSections: NavSection[] = [
         items: [
           {
             href: '/admin/orchestration',
+            tier: 'org',
             label: 'Dashboard',
             icon: Bot,
             description: 'Overview and setup',
@@ -116,6 +135,7 @@ const coreNavSections: NavSection[] = [
         items: [
           {
             href: '/admin/orchestration/agents',
+            tier: 'org',
             label: 'Agents',
             icon: Users,
             description: 'Manage AI agents',
@@ -140,12 +160,14 @@ const coreNavSections: NavSection[] = [
           },
           {
             href: '/admin/orchestration/workflows',
+            tier: 'org',
             label: 'Workflows',
             icon: GitBranch,
             description: 'Multi-step flows',
           },
           {
             href: '/admin/orchestration/mcp',
+            tier: 'org',
             label: 'MCP Server',
             icon: Plug,
             description: 'External tool access',
@@ -158,54 +180,63 @@ const coreNavSections: NavSection[] = [
         items: [
           {
             href: '/admin/orchestration/knowledge',
+            tier: 'org',
             label: 'Knowledge Base',
             icon: BookOpen,
             description: 'Docs and patterns',
           },
           {
             href: '/admin/orchestration/executions',
+            tier: 'org',
             label: 'Executions',
             icon: PlayCircle,
             description: 'Live engine state and runtime history',
           },
           {
             href: '/admin/orchestration/conversations',
+            tier: 'org',
             label: 'Conversations',
             icon: MessagesSquare,
             description: 'Chat history + audit',
           },
           {
             href: '/admin/orchestration/approvals',
+            tier: 'org',
             label: 'Approval Queue',
             icon: ShieldCheck,
             description: 'Pending approvals',
           },
           {
             href: '/admin/orchestration/triggers',
+            tier: 'org',
             label: 'Inbound Triggers',
             icon: Webhook,
             description: 'Webhook URLs that fire workflows',
           },
           {
             href: '/admin/orchestration/event-subscriptions',
+            tier: 'org',
             label: 'Event Subscriptions',
             icon: Webhook,
             description: 'Outbound webhook notifications',
           },
           {
             href: '/admin/orchestration/evaluations',
+            tier: 'org',
             label: 'Testing',
             icon: ClipboardCheck,
             description: 'Evaluations & experiments',
           },
           {
             href: '/admin/orchestration/analytics',
+            tier: 'org',
             label: 'Analytics',
             icon: BarChart3,
             description: 'Usage and insights',
           },
           {
             href: '/admin/orchestration/costs',
+            tier: 'org',
             label: 'Costs & Budget',
             icon: DollarSign,
             description: 'Spend and alerts',
@@ -398,6 +429,40 @@ function CollapsibleSubgroup({
 
 interface AdminSidebarProps {
   className?: string;
+  /**
+   * Who the layout worked out this viewer is to the console (§111 t-810). A
+   * platform viewer sees every item; an org viewer only the items marked
+   * `tier: 'org'`. Required, so no render site can forget it and show an org
+   * admin the platform's nav.
+   */
+  viewerTier: AdminViewerTier;
+  /**
+   * The install runs `TENANCY_MODE=multi`. Items that only mean something
+   * with more than one org (`MULTI_TENANT_ONLY`) are hidden otherwise, so the
+   * console at `single` is what it was before them.
+   */
+  multiTenant?: boolean;
+}
+
+/**
+ * Items shown at `multi` only. Members (§111 t-813) manages one org's roster,
+ * and at `single` the only org is the install org, whose roles follow the
+ * platform role and are managed on Users. Support access (§121 t-823) is
+ * one org consenting to the vendor, and at `single` there is no other org.
+ */
+const MULTI_TENANT_ONLY: ReadonlySet<string> = new Set(['/admin/members', '/admin/support-access']);
+
+/** The sections without the `multi`-only items, when the install is not `multi`. */
+export function sectionsForMode(sections: NavSection[], multiTenant: boolean): NavSection[] {
+  if (multiTenant) return sections;
+  const kept = (items: NavItem[]) => items.filter((item) => !MULTI_TENANT_ONLY.has(item.href));
+  return sections.map((section) => ({
+    ...section,
+    ...(section.items ? { items: kept(section.items) } : {}),
+    ...(section.subgroups
+      ? { subgroups: section.subgroups.map((group) => ({ ...group, items: kept(group.items) })) }
+      : {}),
+  }));
 }
 
 const EXECUTION_BADGE_POLL_MS = 15_000;
@@ -411,11 +476,18 @@ const EXECUTION_BADGE_POLL_MS = 15_000;
  * visibilitychange listener already cover refresh; refetching on every
  * admin nav click amplified the request burst that motivated this hook.
  */
-function useExecutionCounts(statuses: readonly string[]): Record<string, number> | undefined {
+function useExecutionCounts(
+  statuses: readonly string[],
+  enabled: boolean
+): Record<string, number> | undefined {
   const [counts, setCounts] = useState<Record<string, number> | undefined>();
   const key = statuses.join(',');
 
   useEffect(() => {
+    // The counts endpoint is a platform surface. An org viewer would be
+    // refused it every poll, logging a 403 each time, for badges on items
+    // they are not shown.
+    if (!enabled) return;
     let cancelled = false;
     let controller: AbortController | null = null;
 
@@ -455,7 +527,7 @@ function useExecutionCounts(statuses: readonly string[]): Record<string, number>
       clearInterval(intervalId);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [key]);
+  }, [key, enabled]);
 
   return counts;
 }
@@ -491,10 +563,38 @@ function injectBadges(
   });
 }
 
-export function AdminSidebar({ className }: AdminSidebarProps) {
+/**
+ * The sections an org viewer may see: the items marked `tier: 'org'`, and the
+ * subgroups and sections that still hold one. A platform viewer gets the same
+ * array back, untouched.
+ */
+export function sectionsForViewer(
+  sections: NavSection[],
+  viewerTier: AdminViewerTier
+): NavSection[] {
+  if (viewerTier === 'platform') return sections;
+  const reachable = (items: NavItem[]) =>
+    items.filter((item) => viewerReaches(viewerTier, item.tier));
+  return sections.flatMap((section) => {
+    const items = section.items ? reachable(section.items) : undefined;
+    const subgroups = section.subgroups
+      ?.map((group) => ({ ...group, items: reachable(group.items) }))
+      .filter((group) => group.items.length > 0);
+    if (!items?.length && !subgroups?.length) return [];
+    return [
+      {
+        ...section,
+        items: items?.length ? items : undefined,
+        subgroups: subgroups?.length ? subgroups : undefined,
+      },
+    ];
+  });
+}
+
+export function AdminSidebar({ className, viewerTier, multiTenant = false }: AdminSidebarProps) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
-  const counts = useExecutionCounts(BADGE_STATUSES);
+  const counts = useExecutionCounts(BADGE_STATUSES, viewerTier === 'platform');
   const approvalCount = sumCounts(counts, APPROVAL_STATUSES);
   const inProgressCount = sumCounts(counts, IN_PROGRESS_STATUSES);
   const sections = useMemo(
@@ -502,11 +602,17 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
       // Core sections first, then any app-registered sections. Registration
       // is module-import-time and synchronous, so reading it during render is
       // safe — see lib/admin-nav/registry.ts.
-      injectBadges([...coreNavSections, ...getRegisteredNavSections()], {
-        '/admin/orchestration/approvals': approvalCount,
-        '/admin/orchestration/executions': inProgressCount,
-      }),
-    [approvalCount, inProgressCount]
+      injectBadges(
+        sectionsForViewer(
+          sectionsForMode([...coreNavSections, ...getRegisteredNavSections()], multiTenant),
+          viewerTier
+        ),
+        {
+          '/admin/orchestration/approvals': approvalCount,
+          '/admin/orchestration/executions': inProgressCount,
+        }
+      ),
+    [approvalCount, inProgressCount, viewerTier, multiTenant]
   );
 
   return (

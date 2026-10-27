@@ -3,7 +3,7 @@
 Consumer-focused HTTP reference for every admin orchestration endpoint, consolidated across Phase 3 sessions 3.1 – 3.4. For architecture and design rationale see the per-domain docs under `.context/orchestration/`.
 
 **Base path:** `/api/v1/admin/orchestration`
-**Authentication:** Every endpoint requires a session with the `ADMIN` role (`withAdminAuth` in `lib/auth/guards.ts`). Non-admins get `403`, unauthenticated callers get `401`.
+**Authentication:** Every route goes through `withAdminAuth` (`lib/auth/guards.ts`). A platform admin (the `ADMIN` role) reaches all of them. At `multi`, an org OWNER/ADMIN also reaches the routes behind the customer's sections, which are the ones listed in `ORG_TIER_ADMIN_ROUTES` (`lib/auth/admin-tier.ts`), and only in their own org; see [Authorization → Admin tiers](../auth/authorization.md#admin-tiers). Anyone else gets 403, and unauthenticated callers get 401.
 **Rate limiting:** Every mutating handler (`POST`, `PATCH`, `DELETE`) is gated by `adminLimiter` (30 req/min per IP, see `lib/security/rate-limit.ts`). Most `GET` routes are unlimited; some sub-resource GETs (capabilities list, capabilities usage, embed-tokens list, invite-tokens list, compare) are also rate-limited.
 **Response envelope:**
 
@@ -102,6 +102,7 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/costs`                                  | GET                | Breakdown by day / agent / model                                                                                                                                                                                           | 3.4     |
 | `/costs/summary`                          | GET                | Today / week / month + per-agent + trend                                                                                                                                                                                   | 3.4     |
 | `/costs/alerts`                           | GET                | Agents ≥ 80% of their budget                                                                                                                                                                                               | 3.4     |
+| `/costs/orgs`                             | GET                | Each org's month spend vs its cap (install org only at multi)                                                                                                                                                              | §110    |
 | `/settings`                               | GET, PATCH         | Task-type defaults + global monthly budget cap                                                                                                                                                                             | 4.4     |
 | `/agents/:id/budget`                      | GET                | Read-only budget status                                                                                                                                                                                                    | 3.4     |
 | `/agents/:id/evaluation-trend`            | GET                | Per-agent F/G/R quality trend across completed sessions                                                                                                                                                                    | 7.6     |
@@ -116,14 +117,16 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/observability/dashboard-stats`          | GET                | Aggregated observability metrics                                                                                                                                                                                           | 5.1     |
 | `/webhooks/:id/test`                      | POST               | Send test ping (requires signing secret)                                                                                                                                                                                   | 5.1     |
 | `/webhooks/:id/deliveries`                | GET                | List delivery history (owner-scoped)                                                                                                                                                                                       | 5.1     |
-| `/webhooks/deliveries/:id/retry`          | POST               | Retry a failed delivery (owner-scoped)                                                                                                                                                                                     | 5.1     |
+| `/webhooks/deliveries/:id/retry`          | POST               | Retry a failed delivery (owner-scoped). 409 when its subscription was deleted, an erasure stopped it, or it changed mid-retry                                                                                              | 5.1     |
 | `/webhooks/deliveries/:id`                | DELETE             | Discard a single delivery row from the DLQ (owner-scoped)                                                                                                                                                                  | 5.1     |
 | `/webhooks/dlq`                           | GET                | Cross-subscription dead-letter list (owner-scoped, `status=exhausted`); filters: `subscriptionId?`, `eventType?`, `since?`, `until?`                                                                                       | 5.1     |
 | `/webhooks/dlq/stats`                     | GET                | DLQ depth signal: `exhausted24h`, `exhaustedTotal`, `oldestExhaustedAt`                                                                                                                                                    | 5.1     |
 | `/webhooks/dlq/replay`                    | POST               | Bulk re-dispatch: `{ deliveryIds[] }` (max 500) OR `{ subscriptionId, before? }`. Non-owned ids are silently skipped                                                                                                       | 5.1     |
 | `/hooks/:id/deliveries`                   | GET                | Paginated delivery history for an event hook                                                                                                                                                                               | 5.1     |
 | `/hooks/:id/rotate-secret`                | POST, DELETE       | Rotate or clear event hook HMAC signing secret                                                                                                                                                                             | 5.1     |
-| `/hooks/deliveries/:id/retry`             | POST               | Retry a failed / exhausted event-hook delivery                                                                                                                                                                             | 5.1     |
+| `/webhooks/deliveries`                    | GET                | Webhook deliveries in any status across the subscriptions the admin may see, including deleted subscriptions' where the policy permits (`?status`, `?subscriptionId`, `?orphaned=true`)                                    | 5.1     |
+| `/hooks/deliveries`                       | GET                | Event-hook deliveries across every hook, including those whose hook was deleted (`?status`, `?hookId`, `?orphaned=true`)                                                                                                   | 5.1     |
+| `/hooks/deliveries/:id/retry`             | POST               | Retry a failed / exhausted event-hook delivery. 409 when its hook was deleted or disabled, an erasure stopped it, or it changed mid-retry                                                                                  | 5.1     |
 | `/analytics/engagement`                   | GET                | Conversation volume, avg length, retention                                                                                                                                                                                 | 6       |
 | `/analytics/topics`                       | GET                | Popular topics grouped by frequency                                                                                                                                                                                        | 6       |
 | `/analytics/unanswered`                   | GET                | Messages with hedging phrases / low confidence                                                                                                                                                                             | 6       |
@@ -152,7 +155,7 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/knowledge/documents/:id/confirm` | POST | Confirm a PDF preview and proceed with chunking | 5.1 |
 | `/hooks` | GET, POST | List / create event hooks | 5.1 |
 | `/hooks/:id` | GET, PATCH, DELETE | Read / update / delete an event hook | 5.1 |
-| `/maintenance/tick` | POST | Trigger maintenance (retention, retries, schedules) | 5.1 |
+| `/maintenance/tick` | POST, GET | Trigger maintenance (retention, retries, schedules); GET takes an admin API key only, for Vercel Cron | 5.1 |
 | `/mcp/settings` | GET, PATCH | MCP server configuration | 6 |
 | `/mcp/tools` | GET | List MCP-exposed tools | 6 |
 | `/mcp/tools/:id` | PATCH | Toggle / configure MCP tool exposure | 6 |
@@ -198,7 +201,7 @@ The rest are admin-global: every admin sees the same data.
 
 **Rows nobody owns are visible to every admin on a default install.** Schedule- and inbound-triggered runs, and the conversations inbound messages create, carry `userId = null` — the data on them belongs to a third party with no account here, not to the operator who configured the schedule or channel ([#502](https://github.com/human-centric-engineering/sunrise/issues/502)). Access to them is granted on a `'system'` basis by [`lib/orchestration/access/execution-access.ts`](../../lib/orchestration/access/execution-access.ts) and [`conversation-access.ts`](../../lib/orchestration/access/conversation-access.ts). Without it a scheduled run would be invisible in the executions list and a run paused at an approval gate could never be cleared. Conversation accesses on this basis are audit-logged.
 
-For executions that grant is the **authorization policy's** answer, not a fixed rule: a fork registering a `canRead` that refuses `'unattributed'` reads narrows every execution read surface that goes through the helper, and its admins see only runs they started. (`/approvals/history` does **not** go through it — it hard-codes `userId = caller`, so system-owned runs are absent from approval history on every install, including decisions the caller made themselves — [#773](https://github.com/human-centric-engineering/sunrise/issues/773).) Conversations ask the same question through `conversationVisibilityWhere` and `adminCanViewConversation`, so the list, search and detail routes narrow together. **Only their ownerless arm asks** — an active share still admits its holder whatever the policy says, because a share is consent about one row rather than a rule about a class of them. See [`.context/auth/authorization.md`](../auth/authorization.md).
+For executions that grant is the **authorization policy's** answer, not a fixed rule: a fork registering a `canRead` that refuses `'unattributed'` reads narrows every execution read surface that goes through the helper, and its admins see only runs they started. `/approvals/history` is one of them since [#773](https://github.com/human-centric-engineering/sunrise/issues/773): it lists decisions on the runs the executions list would show. Conversations ask the same question through `conversationVisibilityWhere` and `adminCanViewConversation`, so the list, search and detail routes narrow together. **Only their ownerless arm asks** — an active share still admits its holder whatever the policy says, because a share is consent about one row rather than a rule about a class of them. See [`.context/auth/authorization.md`](../auth/authorization.md).
 
 **One exception, and it is act-only.** `approve`, `reject` and `cancel` still admit an admin the run's own trace names in `approverUserIds` — a per-run nomination, not an answer to the ownerless question (`cancel` only while the run is `paused_for_approval`). The read surfaces have no such arm, on any install: a delegated approver who is neither the owner nor admitted by the policy can clear a gate but cannot **find** it in the queue (`GET /executions?status=paused_for_approval`), the badge (`/executions/counts`) or the detail route — the notification link the engine emits is their route, as [`orchestration-approvals.md`](../admin/orchestration-approvals.md#what-admins-cannot-do-from-the-ui-api-only) has always said. Under a narrowing policy that extends to system-owned runs, and it is settled rather than pending (t-690): the read routes keep no approver arm, and **a fork's policy must admit some principal to ownerless `execution` rows** or its scheduled workflows' approval gates wait for the 7-day reap. `checkOwnerlessReachability` in `lib/auth/orphan-reads.ts` is the test that says so before the policy ships; the operator principal that should hold that reach under a customer tier is the identity work's (§106) to define.
 
@@ -250,9 +253,9 @@ Optional body: `{ name?: string, slug?: string }`. Defaults: name = `"{source.na
 
 ### `POST /agents/bulk`
 
-Bulk agent operations. Body: `{ action: 'activate' | 'deactivate' | 'delete', agentIds: string[] }`. System agents (`isSystem = true`) are excluded from all mutations. Delete is a soft delete (sets `isActive = false`).
+Bulk agent operations. Body: `{ action: 'activate' | 'deactivate' | 'delete', agentIds: string[] }`. System agents (`isSystem = true`) and agents deleted through `DELETE /agents/:id` (`deletedAt` set) are excluded from all mutations and get no version. Delete is a soft delete (sets `isActive = false`).
 
-Response: `{ action, requested, affected }` — `affected` may be less than `requested` when system agents are filtered out. `isActive` is versioned, so each agent the action changes gets a new agent version in the same transaction; a concurrent edit that takes a version number returns a retryable `409`.
+Response: `{ action, requested, affected, skipped }` — `skipped` lists the requested ids the action cannot reach: system agents, deleted agents, and ids that match no agent. `affected` counts the agents actually changed, so it is also lower than `requested` when an agent was already in the requested state. `isActive` is versioned, so each agent the action changes gets a new agent version in the same transaction; a concurrent edit that takes a version number, or a delete that lands after an agent was selected, returns a retryable `409`.
 
 ### `GET /agents/compare`
 
@@ -269,6 +272,8 @@ Response: `{ usage: { "search_knowledge_base": 12, "get_pattern_detail": 3 } }`
 ### `POST /agents/export` / `POST /agents/import`
 
 Versioned bundle format. Import runs in a single transaction with `conflictMode: 'skip' | 'overwrite'`. Cross-environment relations travel by stable slug: capabilities (warn-skip on miss), and profile / knowledge tags / knowledge documents (fail-clear on miss — a missing reference fails the whole import with an actionable message). Document grants use `AiKnowledgeDocument.slug` (#338).
+
+The export leaves out system agents (`isSystem: true`), as the backup export does: every install has its own, and their empty `provider`/`model` would fail the bundle schema on import (#721). A selection of only system agents returns `400`; a mixed one sends the number it left out in `X-Skipped-System-Agents`.
 
 ---
 
@@ -344,6 +349,8 @@ Standard CRUD. `PATCH` merges the update and re-runs the SSRF guard in `buildPro
 
 Runs a live `testConnection()`. The response **strips raw SDK / fetch error messages** — success returns the reported models; failure returns a generic `connection_failed` error. The real error is logged server-side only to prevent using the endpoint as a blind-SSRF port scanner.
 
+Org-tier (§111 t-811). An org OWNER/ADMIN who is not a platform admin may test only a provider their org is approved for. Any other provider returns `{ ok: false, models: [], error: 'provider_not_approved' }` with no vendor call.
+
 ### `POST /providers/:id/test-model`
 
 Sends a trivial prompt to a specific provider + model combination and reports round-trip latency.
@@ -355,6 +362,8 @@ Body: `{ model: string, capability?: 'chat' | 'reasoning' | 'embedding' | 'image
 - **`reasoning` / `image` / `audio` / `moderation` / `unknown`** — refused without an SDK call; returns `{ ok: false, error: 'unsupported_test_capability', message: <human-readable reason> }`
 
 Response: HTTP 200 with `{ ok: true, latencyMs: 246, model, capability }` on success. On model failure: `{ ok: false, latencyMs: null, model, capability, error: 'model_test_failed' }`. Raw SDK errors are logged server-side but never forwarded — the panel keys off the stable `error` string to distinguish failure modes from unsupported capabilities.
+
+Org-tier (§111 t-811). For a platform admin the vendor call runs as the install org, so a provider can be tested before any org is granted it. For an org OWNER/ADMIN it runs in their own org, where the call-time provider gate applies. A provider their org is not approved for returns `{ ok: false, latencyMs: null, model, capability, error: 'provider_not_approved', message }` with no vendor call.
 
 ### `GET / POST /providers/:id/health`
 
@@ -386,6 +395,8 @@ Body: `{ providerIds: string[] }` (1–50 cuids). Loads every requested provider
 ### `GET /models`
 
 Aggregated registry across all configured providers. Query: `?refresh=true` to bypass the in-process cache.
+
+Org-tier (§111 t-812): an org OWNER/ADMIN reads it, for the costs page's pricing and the dashboard's trend chart. `?refresh=true` makes an outbound call on the install's behalf, so it returns `403` to anyone who does not administer the platform.
 
 ---
 
@@ -587,7 +598,7 @@ Past approval decisions, flattened from `human_approval` trace entries to one ro
 
 Query parameters: `page`, `limit`, `decision`, `medium`, `q` (text search over workflow / step / approver), `dateFrom`, `dateTo`, and `format=csv` for CSV export (otherwise JSON).
 
-CSV mode streams `text/csv` with a date-stamped filename header — the admin UI's history table consumes it via `URL.createObjectURL` for download. Scoped to `session.user.id` — cross-user rows are filtered out.
+CSV mode streams `text/csv` with a date-stamped filename header — the admin UI's history table consumes it via `URL.createObjectURL` for download. Scoped by `executionVisibilityWhere`, like the executions list: decisions on the caller's own runs and, where the policy permits ownerless reads (every admin, on a default install), on scheduled and inbound runs nobody owns. Decisions on another admin's run stay out, including one the caller was named as approver on. A named approver can act on such a run but not find it on the read surfaces (see above). The query reads only runs whose trace holds a `human_approval` step, newest first, up to 1000.
 
 ---
 
@@ -1119,6 +1130,16 @@ Returns every agent with a `monthlyBudgetUsd` at or above 80% utilisation. Sever
 
 Agents without a budget, or with `monthlyBudgetUsd <= 0`, are filtered out.
 
+Also returns `globalCap: { cap, spent, exceeded }`, the install-wide monthly cap. `spent` is every org's spend, so it is `null` outside the install org. Org-tier (§111 t-812): an org OWNER/ADMIN gets their own org's agents and, of the cap, only `exceeded`; `cap` is `null` for them too, since it is the platform's budget setting.
+
+### `GET /costs/orgs`
+
+Each org's AI usage for one UTC calendar month (§110 t-790). Query: `period?` (`YYYY-MM`, year 1000 or later, defaults to the current month; any other shape → `400`) and `orgId?` (narrow to one org).
+
+Returns `{ period, periodStart, periodEnd, orgs: [{ orgId, name, slug, status, totalCostUsd, inputTokens, outputTokens, count, monthlyBudgetUsd, utilisation }], detached, totals }`. `orgs` lists every org, highest spend first, zero-spend orgs included. `monthlyBudgetUsd` is the org's `quotas.monthlyBudgetUsd` (`null` when unset). `utilisation` is spend / cap, `null` with no cap or a cap of `0`. `detached` is `{ totalCostUsd, inputTokens, outputTokens, count }` for rows with no org, or `null` at `single` and when `orgId` is given. `totals` is every row in the month.
+
+At `TENANCY_MODE=multi` only the install org, or an unbound admin API key, may call it: anyone else gets `403` with `details.reason: shared_settings_install_org_only`, because the answer is every tenant's spend. At `single` it returns one install-org row. See [`../admin/orchestration-costs.md` § Per-org usage](../admin/orchestration-costs.md#per-org-usage).
+
 ### `GET /agents/:id/budget`
 
 Read-only budget status for a single agent: `{ withinBudget, spent, limit, remaining }`. Missing agent → `404`. Malformed id → `400`.
@@ -1336,23 +1357,23 @@ Create an event subscription. Channel-discriminated body:
 
 ### `GET / PATCH / DELETE /webhooks/:id`
 
-Standard CRUD for a single event subscription. Scoped to `session.user.id` — cross-user returns 404. `PATCH` body: `{ channel?, url?, secret?, emailAddress?, events?, description?, isActive?, maxAttempts?, retryBackoffMs? }`. Channel coherence is enforced: if the patch flips the row's channel, the destination field for the new channel must be present (either in the patch or already on the row). `DELETE` is a hard delete.
+Standard CRUD for a single event subscription. Scoped to `session.user.id` — cross-user returns 404. `PATCH` body: `{ channel?, url?, secret?, emailAddress?, events?, description?, isActive?, maxAttempts?, retryBackoffMs? }`. Channel coherence is enforced: if the patch flips the row's channel, the destination field for the new channel must be present (either in the patch or already on the row). `DELETE` is a hard delete of the subscription; its deliveries are kept, with `subscriptionId` set to null, as the record of where its events went (see [Where a delivery went](../admin/orchestration-webhooks.md#where-a-delivery-went)).
 
 ### `DELETE /webhooks/deliveries/:id`
 
-Permanently delete a single webhook delivery row (typically used from the DLQ to discard a reviewed failure). Verifies the calling admin owns the parent subscription; audit-logged as `webhook_delivery.delete`.
+Permanently delete a single webhook delivery row (typically used from the DLQ to discard a reviewed failure). Verifies the calling admin owns the parent subscription, or — when the subscription was deleted — that the authorization policy permits them an unattributed read (`webhookDelivery` kind; platform admins by default). Audit-logged as `webhook_delivery.delete`, naming the delivery's origin; an email-channel delivery's address is not written to the audit log.
 
 ### `GET /webhooks/dlq`
 
-List exhausted deliveries across all subscriptions the calling admin owns. Query: `page`, `pageSize`, `subscriptionId?`, `eventType?`, `since?` (ISO date), `until?` (ISO date). Always filtered to `status=exhausted` + the caller's subscriptions.
+List exhausted deliveries across all subscriptions the calling admin owns, plus deliveries whose subscription was deleted where the authorization policy permits an unattributed read. Query: `page`, `pageSize`, `subscriptionId?`, `eventType?`, `since?` (ISO date), `until?` (ISO date). Always filtered to `status=exhausted` + that scope. Each row carries `destination` and `destinationFingerprint`; `subscription` is `{ id, description }`, or null for an orphan (it no longer includes the subscription's `url`, which can carry a credential).
 
 ### `GET /webhooks/dlq/stats`
 
-Lightweight depth signal for the health dashboard. Returns `{ exhausted24h, exhaustedTotal, oldestExhaustedAt }` scoped to the caller's subscriptions. Improvement #41 (health dashboard) will surface this.
+Lightweight depth signal for the health dashboard. Returns `{ exhausted24h, exhaustedTotal, oldestExhaustedAt }` scoped to the caller's subscriptions and orphaned deliveries. Improvement #41 (health dashboard) will surface this.
 
 ### `POST /webhooks/dlq/replay`
 
-Bulk re-dispatch of exhausted deliveries. Body is either `{ deliveryIds: string[] }` (max 500 entries) or `{ subscriptionId, before?: ISO date }` (replay all exhausted rows for a single subscription, optionally capped by `createdAt < before`). Loops the per-row `retryDelivery()` with concurrency cap 5. Rows not owned by the caller are silently skipped (a partial selection doesn't 403 the batch). Returns `{ replayed, skipped, deliveryIds }`. Audit-logged as `webhook_delivery.replay_batch`.
+Bulk re-dispatch of exhausted deliveries. Body is either `{ deliveryIds: string[] }` (max 500 entries) or `{ subscriptionId, before?: ISO date }` (replay all exhausted rows for a single subscription, optionally capped by `createdAt < before`). Loops the per-row `retryDelivery()` with concurrency cap 5. Rows not owned by the caller are silently skipped (a partial selection doesn't 403 the batch), and so are orphaned rows, which have nowhere to be sent, and rows an erasure stopped (t-793). Returns `{ replayed, skipped, deliveryIds }`. Audit-logged as `webhook_delivery.replay_batch`.
 
 ---
 

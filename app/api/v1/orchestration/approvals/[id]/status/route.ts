@@ -30,6 +30,7 @@ import { runAsExecutionOrg } from '@/lib/orchestration/approval-route-helpers';
 import { prisma } from '@/lib/db/client';
 import { cuidSchema } from '@/lib/validations/common';
 import { executionTraceSchema } from '@/lib/validations/orchestration';
+import { withDisplayUrls } from '@/lib/orchestration/trace/display-urls';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -95,7 +96,13 @@ export async function GET(
     return withCors(errorResponse('Execution not found', { code: 'NOT_FOUND', status: 404 }));
   }
 
-  const trace = executionTraceSchema.parse(execution.executionTrace);
+  // Each step's config (`input`, where a webhook URL is configured) is shown
+  // reduced (t-777). Step outputs are not: the chat approval cards build the
+  // agent's "Workflow approved. Result: …" follow-up from the last output, so
+  // a reduced URL there would hand the user a dead link.
+  const trace = executionTraceSchema
+    .parse(execution.executionTrace)
+    .map((entry) => ({ ...entry, input: withDisplayUrls(entry.input) }));
 
   return withCors(
     successResponse({

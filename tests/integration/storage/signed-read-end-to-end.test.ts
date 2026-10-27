@@ -31,6 +31,12 @@ vi.mock('@/lib/env', () => ({
   },
 }));
 
+// The read route checks an org-claimed token's org is live; there is no DB here.
+const mockOrgFindUnique = vi.fn();
+vi.mock('@/lib/db/client', () => ({
+  prisma: { org: { findUnique: (args: unknown) => mockOrgFindUnique(args) } },
+}));
+
 let provider: import('@/lib/storage/providers/local').LocalProvider | null = null;
 
 vi.mock('@/lib/storage/client', () => ({
@@ -38,11 +44,13 @@ vi.mock('@/lib/storage/client', () => ({
 }));
 
 const { LocalProvider } = await import('@/lib/storage/providers/local');
+const { scopeStorageToOrg } = await import('@/lib/storage/org-scoped');
 const { GET } = await import('@/app/api/v1/storage/[...key]/route');
 
 let root: string;
 
 beforeEach(async () => {
+  mockOrgFindUnique.mockResolvedValue({ status: 'ACTIVE' });
   await mkdir(SCRATCH_PARENT, { recursive: true });
   root = await mkdtemp(join(SCRATCH_PARENT, 'signed-read-'));
   provider = new LocalProvider({
@@ -154,5 +162,69 @@ describe('signed read, end to end', () => {
 
     expect(response.status).toBe(200);
     expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('image bytes');
+  });
+
+  describe('org-owned private objects', () => {
+    const KEY_A = 'orgs/org-a/reports/q3.pdf';
+
+    async function uploadPrivate(key: string, body: string): Promise<void> {
+      await provider!.upload(Buffer.from(body), {
+        key,
+        contentType: 'application/pdf',
+        public: false,
+      });
+    }
+
+    it('serves an org-owned object through a URL signed by the org-scoped client', async () => {
+      await uploadPrivate(KEY_A, 'org a secrets');
+      const orgA = scopeStorageToOrg(provider!, 'org-a');
+
+      const signedUrl = await orgA.getSignedUrl!(KEY_A, 300);
+      const response = await fetchSignedUrl(signedUrl);
+
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('org a secrets');
+    });
+
+    it('carries the org in the token the scoped client signed', async () => {
+      await uploadPrivate(KEY_A, 'org a secrets');
+      const orgA = scopeStorageToOrg(provider!, 'org-a');
+
+      const signedUrl = await orgA.getSignedUrl!(KEY_A, 300);
+      const { verifyStorageAccessToken } = await import('@/lib/storage/access-tokens');
+      const token = decodeURIComponent(signedUrl.split('token=')[1]);
+
+      expect(verifyStorageAccessToken(token).org).toBe('org-a');
+    });
+
+    it("cannot obtain a signed URL for another org's key from the scoped client", async () => {
+      await uploadPrivate('orgs/org-b/reports/q3.pdf', 'org b secrets');
+      const orgA = scopeStorageToOrg(provider!, 'org-a');
+
+      await expect(orgA.getSignedUrl!('orgs/org-b/reports/q3.pdf', 300)).rejects.toThrow(
+        /outside this org/i
+      );
+    });
+
+    it("cannot mint a token for another org's key at the provider either", async () => {
+      await uploadPrivate('orgs/org-b/reports/q3.pdf', 'org b secrets');
+
+      await expect(
+        provider!.getSignedUrl('orgs/org-b/reports/q3.pdf', 300, { orgId: 'org-a' })
+      ).rejects.toThrow(/outside the org/i);
+    });
+
+    it('refuses an org A token replayed against org B key', async () => {
+      await uploadPrivate(KEY_A, 'org a secrets');
+      await uploadPrivate('orgs/org-b/reports/q3.pdf', 'org b secrets');
+      const orgA = scopeStorageToOrg(provider!, 'org-a');
+
+      const token = (await orgA.getSignedUrl!(KEY_A, 300)).split('token=')[1];
+      const response = await fetchSignedUrl(
+        `/api/v1/storage/orgs/org-b/reports/q3.pdf?token=${token}`
+      );
+
+      expect(response.status).toBe(403);
+    });
   });
 });

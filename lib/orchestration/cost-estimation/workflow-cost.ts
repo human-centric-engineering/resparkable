@@ -37,10 +37,12 @@
  * shapes anyway.
  */
 
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { getModel, refreshFromOpenRouter } from '@/lib/orchestration/llm/model-registry';
 import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
+import { isModelPriced } from '@/lib/orchestration/cost-estimation/model-pricing';
 import { getDefaultModelForTaskOrNull } from '@/lib/orchestration/llm/settings-resolver';
 import { JUDGE_MODEL } from '@/lib/orchestration/evaluations/judge-model';
 import { workflowDefinitionSchema } from '@/lib/validations/orchestration';
@@ -126,10 +128,12 @@ export interface WorkflowCostEstimateModel {
   /** USD cost contribution at the current model rates. */
   costUsd: number;
   /**
-   * Whether the registry has pricing data for `modelId`. False when
-   * `getModel(modelId)` returns undefined — typically a model id that
-   * isn't in the static fallback, isn't in the OpenRouter catalogue,
-   * and has no matrix row supplying `costPerMillionTokens`. The cost
+   * Whether the registry has pricing data for `modelId` (`isModelPriced`).
+   * False when `getModel(modelId)` returns undefined — typically a model id
+   * that isn't in the static fallback, isn't in the OpenRouter catalogue,
+   * and has no matrix row — or when its matrix row has no price for input
+   * or output (`pricingUnknown`). A free model (local tier, or
+   * a rate set to 0) is priced, at $0. When unpriced, the cost
    * contribution is $0 in that case; the UI should surface it as
    * "pricing unknown" so the operator knows the overall estimate is
    * missing a slice rather than reading $0 as "free".
@@ -750,19 +754,6 @@ function scalePerStep(steps: PerStepTokens[], ratio: number): PerStepTokens[] {
   }));
 }
 
-/**
- * A model is "priced" when the registry has a row for it AND that row
- * carries non-zero pricing. A zero-cost registry entry (e.g. a local
- * provider with no operator-supplied rate) is still treated as unknown
- * for UI purposes — a $0 estimate masquerading as accurate is worse
- * than an explicit "pricing unknown" callout.
- */
-function isModelPriced(modelId: string): boolean {
-  const m = getModel(modelId);
-  if (!m) return false;
-  return m.inputCostPerMillion > 0 || m.outputCostPerMillion > 0;
-}
-
 function cloneTokenMap(src: Map<string, PerModelTokens>): Map<string, PerModelTokens> {
   const dst = new Map<string, PerModelTokens>();
   for (const [k, v] of src) dst.set(k, { ...v });
@@ -931,12 +922,17 @@ async function loadPastRuns(
   workflowId: string,
   supervisorStepIds: ReadonlySet<string>
 ): Promise<PastRunSummary[]> {
-  const executions = await prisma.aiWorkflowExecution.findMany({
-    where: { workflowId, status: 'completed' },
-    select: { id: true, inputData: true },
-    orderBy: { completedAt: 'desc' },
-    take: 100,
-  });
+  // Every member's runs of this workflow, whoever asks: the estimate is a
+  // figure for the workflow, and nothing of a run leaves this module but the
+  // numbers below.
+  const executions = await runAcrossOwners('cost estimate: past runs of a workflow', () =>
+    prisma.aiWorkflowExecution.findMany({
+      where: { workflowId, status: 'completed' },
+      select: { id: true, inputData: true },
+      orderBy: { completedAt: 'desc' },
+      take: 100,
+    })
+  );
 
   if (executions.length === 0) return [];
 

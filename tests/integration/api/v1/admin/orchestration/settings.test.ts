@@ -16,6 +16,7 @@
  *   - PATCH invalidates the settings cache
  */
 
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { GET, PATCH } from '@/app/api/v1/admin/orchestration/settings/route';
@@ -36,12 +37,18 @@ vi.mock('next/headers', () => ({
   headers: vi.fn(() => Promise.resolve(new Headers())),
 }));
 
-vi.mock('@/lib/db/client', () => ({
-  prisma: {
+vi.mock('@/lib/db/client', () => {
+  const prisma = {
     aiOrchestrationSettings: {
       findUnique: vi.fn(),
       upsert: vi.fn(),
     },
+    // The erased-person check runs in the write's transaction (t-805)
+    $executeRaw: vi.fn(async () => 1),
+    dataErasureReceipt: { findMany: vi.fn(async () => []) },
+    user: { findMany: vi.fn(async () => []) },
+    $transaction: vi.fn(),
+
     aiProviderModel: {
       // Registry hydration: PATCH calls hydrateFromDb() before validating.
       // These fixtures carry no DB-managed rows, so return an empty matrix —
@@ -61,8 +68,10 @@ vi.mock('@/lib/db/client', () => ({
         dimensions: 1536,
       })),
     },
-  },
-}));
+  };
+  prisma.$transaction.mockImplementation((cb: (tx: typeof prisma) => unknown) => cb(prisma));
+  return { prisma };
+});
 
 vi.mock('@/lib/orchestration/llm/model-registry', async (importOriginal) => {
   const actual = await importOriginal<object>();
@@ -134,6 +143,7 @@ function makeSettingsRow(
     outputGuardMode: string | null;
     citationGuardMode: string | null;
     webhookRetentionDays: number | null;
+    webhookDlqRetentionDays: number | null;
     costLogRetentionDays: number | null;
     auditLogRetentionDays: number | null;
     executionRetentionDays: number | null;
@@ -162,6 +172,7 @@ function makeSettingsRow(
     outputGuardMode: 'log_only' as string | null,
     citationGuardMode: 'log_only' as string | null,
     webhookRetentionDays: null as number | null,
+    webhookDlqRetentionDays: null as number | null,
     costLogRetentionDays: null as number | null,
     auditLogRetentionDays: null as number | null,
     executionRetentionDays: null as number | null,
@@ -196,6 +207,9 @@ async function parseJson<T>(res: Response): Promise<T> {
 describe('Admin Orchestration — /settings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prisma.$executeRaw).mockResolvedValue(1);
+    vi.mocked(prisma.dataErasureReceipt.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.user.findMany).mockResolvedValue([]);
     // The settings singleton is cached for 30s (#442) — module state that
     // outlives a test, so without this each GET would serve the row the
     // previous test mocked.
@@ -523,7 +537,43 @@ describe('Admin Orchestration — /settings', () => {
       expect(body.data.webhookRetentionDays).toBe(30);
     });
 
+    it('writes webhookDlqRetentionDays and returns it (#838)', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow({ webhookDlqRetentionDays: 90 }) as never
+      );
+
+      const res = await PATCH(makePatch({ webhookDlqRetentionDays: 90 }));
+
+      expect(res.status).toBe(200);
+      const call = vi.mocked(prisma.aiOrchestrationSettings.upsert).mock.calls[0][0];
+      expect(call.update).toEqual({ webhookDlqRetentionDays: 90 });
+      const body = await parseJson<{ data: { webhookDlqRetentionDays: number | null } }>(res);
+      expect(body.data.webhookDlqRetentionDays).toBe(90);
+    });
+
+    it('clears webhookDlqRetentionDays back to the webhook window with null', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow({ webhookDlqRetentionDays: null }) as never
+      );
+
+      const res = await PATCH(makePatch({ webhookDlqRetentionDays: null }));
+
+      expect(res.status).toBe(200);
+      const call = vi.mocked(prisma.aiOrchestrationSettings.upsert).mock.calls[0][0];
+      expect(call.update).toEqual({ webhookDlqRetentionDays: null });
+    });
+
+    it('rejects webhookDlqRetentionDays above 365 (400)', async () => {
+      const res = await PATCH(makePatch({ webhookDlqRetentionDays: 366 }));
+      expect(res.status).toBe(400);
+      expect(prisma.aiOrchestrationSettings.upsert).not.toHaveBeenCalled();
+    });
+
     it('updates costLogRetentionDays', async () => {
+      // A finite cost-log window needs a finite execution window under it (#839).
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow({ executionRetentionDays: 90 }) as never
+      );
       vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
         makeSettingsRow({ costLogRetentionDays: 90 }) as never
       );
@@ -698,6 +748,63 @@ describe('Admin Orchestration — /settings', () => {
       );
 
       const res = await PATCH(makePatch({ executionRetentionDays: 3650 }));
+
+      expect(res.status).toBe(200);
+    });
+
+    // #839: null is "keep for ever", so executions kept for ever outlive any
+    // finite cost-log window. The old check skipped the pair when either side
+    // was null, which let exactly this through.
+    it('rejects keeping executions for ever against a PERSISTED finite cost-log window (400)', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow({ costLogRetentionDays: 90, executionRetentionDays: 90 }) as never
+      );
+
+      const res = await PATCH(makePatch({ executionRetentionDays: null }));
+
+      expect(res.status).toBe(400);
+      const body = await parseJson<{ error: { message: string } }>(res);
+      expect(body.error.message).toContain('executions you are keeping for ever');
+      expect(body.error.message).toContain('set it to null to keep cost logs for ever');
+      expect(prisma.aiOrchestrationSettings.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a finite cost-log window when executions are PERSISTED as kept for ever (400)', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow({ costLogRetentionDays: null, executionRetentionDays: null }) as never
+      );
+
+      const res = await PATCH(makePatch({ costLogRetentionDays: 90 }));
+
+      expect(res.status).toBe(400);
+      expect(prisma.aiOrchestrationSettings.upsert).not.toHaveBeenCalled();
+    });
+
+    it('does not refuse an unrelated PATCH over a persisted pre-#839 incoherent pair', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow({ costLogRetentionDays: 90, executionRetentionDays: null }) as never
+      );
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow({ globalMonthlyBudgetUsd: 500 }) as never
+      );
+
+      const res = await PATCH(makePatch({ globalMonthlyBudgetUsd: 500 }));
+
+      expect(res.status).toBe(200);
+      expect(prisma.aiOrchestrationSettings.upsert).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts keeping both for ever', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow({ costLogRetentionDays: 90, executionRetentionDays: 90 }) as never
+      );
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow({ costLogRetentionDays: null, executionRetentionDays: null }) as never
+      );
+
+      const res = await PATCH(
+        makePatch({ costLogRetentionDays: null, executionRetentionDays: null })
+      );
 
       expect(res.status).toBe(200);
     });
@@ -1083,6 +1190,73 @@ describe('Admin Orchestration — /settings', () => {
       const res = await PATCH(makePatch({ activeEmbeddingModelId: 'cm_missing' }));
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('PATCH — erased escalation recipients (t-805)', () => {
+    const erasedReceipt = {
+      subjectUserId: 'gone-user',
+      subjectEmailHash: createHash('sha256').update('gone@example.com').digest('hex'),
+      metadata: { addressVerified: true },
+    };
+
+    beforeEach(() => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+        makeSettingsRow() as never
+      );
+    });
+
+    it('refuses a list naming an erased address: 400 on the field, nothing upserted', async () => {
+      vi.mocked(prisma.dataErasureReceipt.findMany).mockResolvedValue([erasedReceipt] as never);
+
+      const res = await PATCH(
+        makePatch({
+          escalationConfig: {
+            emailAddresses: ['keep@example.com', 'Gone@Example.com'],
+            notifyOnPriority: 'all',
+          },
+        })
+      );
+      const body = await parseJson<{
+        success: boolean;
+        error: { code: string; details: Record<string, string[]> };
+      }>(res);
+
+      expect(res.status).toBe(400);
+      expect(body.error.code).toBe('VALIDATION_ERROR');
+      expect(body.error.details['escalationConfig.emailAddresses']).toEqual([
+        expect.stringMatching(/erased/i),
+      ]);
+      expect(prisma.aiOrchestrationSettings.upsert).not.toHaveBeenCalled();
+      expect(vi.mocked(invalidateSettingsCache)).not.toHaveBeenCalled();
+    });
+
+    it('saves a list whose addresses belong to nobody erased', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow() as never
+      );
+
+      const res = await PATCH(
+        makePatch({
+          escalationConfig: { emailAddresses: ['keep@example.com'], notifyOnPriority: 'all' },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      expect(prisma.dataErasureReceipt.findMany).toHaveBeenCalledOnce();
+      expect(prisma.aiOrchestrationSettings.upsert).toHaveBeenCalledOnce();
+    });
+
+    it('does not ask about receipts when the save carries no escalation list', async () => {
+      vi.mocked(prisma.aiOrchestrationSettings.upsert).mockResolvedValue(
+        makeSettingsRow({ globalMonthlyBudgetUsd: 5 }) as never
+      );
+
+      const res = await PATCH(makePatch({ globalMonthlyBudgetUsd: 5 }));
+
+      expect(res.status).toBe(200);
+      expect(prisma.dataErasureReceipt.findMany).not.toHaveBeenCalled();
     });
   });
 

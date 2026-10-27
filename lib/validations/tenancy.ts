@@ -6,8 +6,9 @@
  * `invitationMetadataSchema` in `lib/validations/admin.ts`.
  */
 import { z } from 'zod';
-import { cuidSchema, slugSchema } from '@/lib/validations/common';
-import { ORG_ROLES, ORG_STATUSES } from '@/lib/tenancy/roles';
+import { cuidSchema, paginationQuerySchema, slugSchema } from '@/lib/validations/common';
+import { emailSchema } from '@/lib/validations/auth';
+import { ORG_ROLES, ORG_STATUSES, SUPPORT_GRANT_LEVELS } from '@/lib/tenancy/roles';
 import { ORG_ID_SHAPE } from '@/lib/tenancy/resolver';
 
 /**
@@ -79,13 +80,7 @@ export const ORG_RETENTION_KEYS = [
 /**
  * The retention windows an org may set for itself (§108 t-713), and the
  * bounds each one is held to — the same bounds the global settings schema
- * applies to its own column, because these values overlay those — with one
- * exception, which is the one sentence here a reader could otherwise
- * disprove. `webhookDlqRetentionDays` has **no** field in the global settings
- * schema and no form control: the column exists and the prune reads it, but
- * nothing writes it. So that bound is not mirroring a global one, and this
- * slice is currently the only way to set that window at all. Filed against the
- * global surface rather than widened here.
+ * applies to its own column, because these values overlay those.
  *
  * **Five keys, not the six on `AiOrchestrationSettings`.** The sixth,
  * `auditLogRetentionDays`, prunes `AiAdminAuditLog` — a system model with no
@@ -217,16 +212,62 @@ export const orgProviderPolicyInputSchema = z
 export type OrgProviderPolicyInput = z.infer<typeof orgProviderPolicyInputSchema>;
 
 /**
+ * One org's caps as STORED in `Org.settings.quotas` (§110 t-788).
+ *
+ * `monthlyBudgetUsd` is the most the org's AI calls may cost in a UTC
+ * calendar month, checked by `checkBudget()` beside the agent's own budget and
+ * the global cap — which stays install-wide and sits above every org's.
+ * Absent means no org cap. Zero is allowed and blocks every paid call, as it
+ * does for the global cap, whose bounds these mirror.
+ *
+ * `requestsPerMinute` is how many API requests the org's callers may make
+ * between them in a minute, counted by the rate-limit middleware on top of
+ * each caller's own limit (`lib/security/org-request-cap.ts`, §110 t-789).
+ * Absent means no org cap. At least 1: an org that should make no requests is
+ * suspended, not capped. The upper bound is a sanity limit on a typo, not a
+ * cost: the window is two counters whatever the cap.
+ *
+ * Every key optional, so the slice can take more caps without a stored value
+ * going stale. `.strict()` on write: an unknown key is
+ * a typo that would be stored and never enforced. The read in
+ * `lib/tenancy/org-settings.ts` goes key by key instead, so one unreadable key
+ * does not discard the rest.
+ */
+export const orgQuotasSchema = z
+  .object({
+    monthlyBudgetUsd: z
+      .number()
+      .nonnegative('Monthly budget must be zero or positive')
+      .max(1_000_000, 'Monthly budget must be at most $1,000,000')
+      .optional(),
+    requestsPerMinute: z
+      .number()
+      .int('Requests per minute must be a whole number')
+      .min(1, 'Requests per minute must be at least 1')
+      .max(100_000, 'Requests per minute must be at most 100,000')
+      .optional(),
+  })
+  .strict();
+
+export type OrgQuotas = z.infer<typeof orgQuotasSchema>;
+
+/** The caps an org's `quotas` slice may name, for the per-key read. */
+export const ORG_QUOTA_KEYS = ['monthlyBudgetUsd', 'requestsPerMinute'] as const;
+
+/**
  * The platform-owned slices of `Org.settings` a PATCH may write.
  *
  * `retention: null` removes the slice, so the org inherits every global
  * window again. Omitting `retention` leaves the stored slice alone, and any
  * other key a fork keeps in `settings` is preserved either way — the write
- * replaces this slice rather than merging into unknown JSON.
+ * replaces this slice rather than merging into unknown JSON. `quotas` follows
+ * the same rules; at `multi` only the install org may write it (the route
+ * enforces that), so an org's own admins cannot raise their own cap.
  */
 export const orgSettingsPatchSchema = z
   .object({
     retention: orgRetentionSchema.nullable().optional(),
+    quotas: orgQuotasSchema.nullable().optional(),
   })
   .strict()
   .refine((settings) => Object.keys(settings).length > 0, {
@@ -237,7 +278,7 @@ export type OrgSettingsPatch = z.infer<typeof orgSettingsPatchSchema>;
 
 /**
  * `PATCH /api/v1/admin/orgs/[id]` body — rename, re-slug, suspend, reinstate,
- * or set the org's own retention windows. At least one key; the route refuses
+ * or set the org's own retention windows or caps. At least one key; the route refuses
  * an empty object.
  */
 export const updateOrgSchema = z
@@ -268,3 +309,64 @@ export const updateOrgMemberSchema = z.object({
 });
 
 export type UpdateOrgMemberInput = z.infer<typeof updateOrgMemberSchema>;
+
+/**
+ * `POST /api/v1/orgs/[id]/invitations` body (§111 t-813). No platform role and
+ * no org: the invitee joins the org the URL names, as a platform USER. Keys
+ * outside the schema are dropped, so a `role` sent here sets nothing.
+ */
+export const inviteOrgMemberSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, 'Name is required')
+    .max(100, 'Name must be less than 100 characters'),
+  email: emailSchema,
+  /** Absent ⇒ MEMBER on acceptance. OWNER needs the inviter's owner standing. */
+  orgRole: z.enum(ORG_ROLES).optional(),
+});
+
+export type InviteOrgMemberInput = z.infer<typeof inviteOrgMemberSchema>;
+
+/**
+ * How long a support grant runs when the OWNER names no duration, and the
+ * longest it may run (§121 t-823). Bounded so consent stays fresh: a longer
+ * need is a new grant with a new reason, not one open-ended one.
+ */
+export const SUPPORT_GRANT_DEFAULT_HOURS = 24;
+export const SUPPORT_GRANT_MAX_HOURS = 7 * 24;
+
+/**
+ * `POST /api/v1/orgs/[id]/support-grants` body — the org's OWNER consenting
+ * to vendor support acting inside the org. The reason is required: it is the
+ * record of what the org agreed to, and the vendor reads it on entry.
+ */
+export const createSupportGrantSchema = z.object({
+  /** Absent ⇒ ADMIN (ruling 2): the OWNER restricts by choosing READ_ONLY. */
+  level: z.enum(SUPPORT_GRANT_LEVELS).optional(),
+  reason: z
+    .string()
+    .trim()
+    .min(1, 'Say why support needs access')
+    .max(1000, 'Reason must be 1000 characters or fewer'),
+  durationHours: z
+    .number()
+    .int('Duration must be a whole number of hours')
+    .min(1, 'Duration must be at least 1 hour')
+    .max(SUPPORT_GRANT_MAX_HOURS, `Duration must be at most ${SUPPORT_GRANT_MAX_HOURS} hours`)
+    .optional(),
+});
+
+export type CreateSupportGrantInput = z.infer<typeof createSupportGrantSchema>;
+
+/** `[id]/support-grants/[grantId]` segments. */
+export const supportGrantParamsSchema = z.object({ id: orgIdSchema, grantId: cuidSchema });
+
+/**
+ * `GET /api/v1/orgs/[id]/support-grants/activity` query (§121 t-825): the
+ * audit rows made under the org's grants, newest first, optionally one grant's.
+ */
+export const listSupportActivityQuerySchema = paginationQuerySchema.extend({
+  limit: z.coerce.number().int().positive().max(100).default(50),
+  grantId: cuidSchema.optional(),
+});

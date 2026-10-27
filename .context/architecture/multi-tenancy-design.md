@@ -367,8 +367,17 @@ BY`; a role is removed by revoking those grants explicitly first.
    tenancy layer — both hooks fire, scoping intact, outside a transaction
    _and_ on the `tx` client inside one, the latter only because the
    `$transaction` override delegates with the outermost client as `this`
-   (item 1). That is §115's starting point; its per-read cost was not
-   measured separately (one object walk per read).
+   (item 1). That is §115's starting point. **Its per-read cost, measured
+   on §115 t-801** (`lib/db/owner-extension.ts`): 0.3–3 µs per read, below
+   the ±3 µs run-to-run noise of the same reads without it. Real Prisma
+   runtime on a no-I/O recording adapter, a fresh request per read so the
+   subject lookup is never memoised, median of 15 rounds × 5,000 reads,
+   Apple M1, Node 24: a narrowed `findMany` on an enforced model +1.7 µs,
+   a result-checked `findUnique` +1.6 µs, a read of a model that is not
+   enforced +0.3 µs, and one with a two-level `include` +3.0 µs (the walk of
+   its selection). A pass-through `$extends` layer alone costs nothing
+   measurable at this resolution, so the cost is the analysis, not Prisma's
+   layering.
    Prisma types the **top-level** `$allOperations` hook's `args` and `query`
    as `any` (the per-model hooks are typed): 3.2 owes a typed boundary at
    that one point rather than a lint exemption. The generated client's
@@ -480,8 +489,12 @@ A fork owns:
 ## Explicitly out of scope (v1)
 
 Per-tenant provider credentials held by Sunrise (declined as policy) ·
-per-tenant default models, budgets-as-settings, or embedding models (singleton
-and vector-dimension consequences, research §5C B3) · per-tenant storage
+per-tenant default models, per-tenant copies of the budget settings, or
+embedding models (singleton and vector-dimension consequences, research §5C
+B3) — the `AiOrchestrationSettings` singleton, `globalMonthlyBudgetUsd`
+included, stays global. A per-org monthly budget cap held in `Org.settings`
+(`quotas`) is a different thing and **is** in scope: §110 t-788 shipped it,
+beneath the global cap · per-tenant storage
 backends or databases (rungs 4/6 — a dedicated deployment is the answer) ·
 plans, invoicing, payments (fork product) · schema-per-tenant and cell
 tooling.

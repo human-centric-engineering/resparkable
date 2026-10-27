@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
+import { OwnerReadRefusedError } from '@/lib/db/owner-extension';
 import {
   APIError,
   ValidationError,
@@ -58,6 +59,7 @@ vi.mock('@/lib/env', () => ({
 // Import mocked modules
 import { logger } from '@/lib/logging';
 import { env } from '@/lib/env';
+import { uniqueViolationError } from '@/tests/helpers/prisma-errors';
 
 /**
  * Test Suite: Custom Error Classes
@@ -286,6 +288,18 @@ describe('handleAPIError', () => {
   async function parseResponse(response: Response): Promise<ErrorResponse> {
     return (await response.json()) as ErrorResponse;
   }
+
+  describe('OwnerReadRefusedError handling (§115 t-801)', () => {
+    it('answers a narrowed read of another member’s row as the 404 a missing row gets', async () => {
+      const response = handleAPIError(
+        new OwnerReadRefusedError('AiUserMemory', 'findUnique', 'foreign-row', 'detail.')
+      );
+      expect(response.status).toBe(404);
+      const body = await parseResponse(response);
+      // The same body as a row that does not exist: nothing confirms the row is there.
+      expect(body.error).toEqual({ message: 'Resource not found', code: 'NOT_FOUND' });
+    });
+  });
 
   describe('APIError handling', () => {
     it('should handle APIError with all properties', async () => {
@@ -557,14 +571,19 @@ describe('handleAPIError', () => {
 
   describe('Prisma error handling', () => {
     describe('P2002 - Unique constraint violation', () => {
-      it('should handle unique constraint on email field', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: ['email'] },
-        });
+      // The driver adapter's P2002 names the index and has no meta.target (t-796).
+      const TAKEN_BODY = {
+        success: false,
+        error: {
+          message: 'A record with that value already exists',
+          code: ErrorCodes.VALIDATION_ERROR,
+        },
+      };
 
-        const response = handleAPIError(prismaError);
+      it('answers EMAIL_TAKEN for a driver-adapter collision on user_email_key', async () => {
+        const response = handleAPIError(
+          uniqueViolationError({ index: 'user_email_key', modelName: 'User', table: 'user' })
+        );
         const body = await parseResponse(response);
 
         expect(response.status).toBe(400);
@@ -573,141 +592,32 @@ describe('handleAPIError', () => {
           error: {
             message: 'Email already exists',
             code: ErrorCodes.EMAIL_TAKEN,
-            details: {
-              field: 'email',
-              constraint: 'unique',
-            },
+            details: { field: 'email', constraint: 'unique' },
           },
         });
       });
 
-      it('should handle unique constraint on username field', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: ['username'] },
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
+      it('answers 400 VALIDATION_ERROR, not EMAIL_TAKEN, for a collision on any other constraint', async () => {
+        const response = handleAPIError(
+          uniqueViolationError({ index: 'ai_agent_orgId_slug_key', modelName: 'AiAgent' })
+        );
 
         expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Username already exists');
-        expect(body.error.details).toEqual({
-          field: 'username',
-          constraint: 'unique',
-        });
+        expect(await parseResponse(response)).toEqual(TAKEN_BODY);
       });
 
-      it('should handle unique constraint with no target field', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: [] },
-        });
+      it('answers 400 VALIDATION_ERROR when the P2002 names no constraint', async () => {
+        for (const meta of [undefined, { target: [] }, { target: 123 }, { target: null }]) {
+          const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+            code: 'P2002',
+            clientVersion: '7.0.0',
+            meta,
+          });
+          const response = handleAPIError(prismaError);
 
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Field already exists');
-        expect(body.error.code).toBe(ErrorCodes.EMAIL_TAKEN);
-        expect(body.error.details).toEqual({
-          field: 'field',
-          constraint: 'unique',
-        });
-      });
-
-      it('should handle unique constraint with missing meta', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: undefined,
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        const error = body.error as Record<string, unknown>;
-        const details = error.details as Record<string, unknown>;
-        expect(details.field).toBe('field');
-      });
-
-      it('should handle unique constraint when target is a number instead of array', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: 123 as unknown as string[] },
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Field already exists');
-        expect(body.error.code).toBe(ErrorCodes.EMAIL_TAKEN);
-        expect(body.error.details).toEqual({
-          field: 'field',
-          constraint: 'unique',
-        });
-      });
-
-      it('should handle unique constraint when target is a string instead of array', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: 'email' as unknown as string[] },
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Field already exists');
-        expect(body.error.code).toBe(ErrorCodes.EMAIL_TAKEN);
-        expect(body.error.details).toEqual({
-          field: 'field',
-          constraint: 'unique',
-        });
-      });
-
-      it('should handle unique constraint when target array contains non-strings', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: [123, 456] as unknown as string[] },
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Field already exists');
-        expect(body.error.code).toBe(ErrorCodes.EMAIL_TAKEN);
-        expect(body.error.details).toEqual({
-          field: 'field',
-          constraint: 'unique',
-        });
-      });
-
-      it('should handle unique constraint when target is null', async () => {
-        const prismaError = new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: '5.0.0',
-          meta: { target: null as unknown as string[] },
-        });
-
-        const response = handleAPIError(prismaError);
-        const body = await parseResponse(response);
-
-        expect(response.status).toBe(400);
-        expect(body.error.message).toBe('Field already exists');
-        expect(body.error.code).toBe(ErrorCodes.EMAIL_TAKEN);
-        expect(body.error.details).toEqual({
-          field: 'field',
-          constraint: 'unique',
-        });
+          expect(response.status).toBe(400);
+          expect(await parseResponse(response)).toEqual(TAKEN_BODY);
+        }
       });
     });
 

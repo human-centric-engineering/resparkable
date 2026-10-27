@@ -124,8 +124,14 @@ Per-tick lifecycle:
    total judge spend, mark `completed` — or `failed` when **every** case
    errored (`errorCode` set on all rows), with `summary.note = 'all_cases_failed'`,
    `summary.casesFailed` and `summary.dominantErrorCode` (the most frequent
-   case `errorCode`). Partial failure stays
-   `completed`; read `progress.casesFailed` and the per-case `errorCode`.
+   case `errorCode`). It is also `failed` when no metric scored a single
+   case, which is what happens when every grader or judge throws or skips:
+   `summary.note = 'no_scores_recorded'`, with `casesFailed` and
+   `dominantErrorCode` when some cases also errored. Each case's
+   `metricScores` carries the reasoning (`Grader threw: …`, or the grader's
+   own skip reason). Partial failure
+   stays `completed`; read `progress.casesFailed` and the per-case
+   `errorCode`.
 
 Subject chat cost is **not** re-logged by the worker — `streamChat`
 already writes `CostOperation.CHAT` rows for the underlying agent
@@ -312,20 +318,20 @@ All routes guarded by `withAdminAuth` (admin role required). Mutating
 routes inherit the default 100/min rate-limit cap from
 `lib/security/rate-limit-policy.ts`.
 
-| Method | Path                  | Purpose                                                  |
-| ------ | --------------------- | -------------------------------------------------------- |
-| GET    | `/datasets`           | Paginated list (q, tag filters)                          |
-| POST   | `/datasets`           | Multipart upload OR JSON body                            |
-| GET    | `/datasets/:id`       | Detail + first 50 cases                                  |
-| PATCH  | `/datasets/:id`       | Rename / re-tag (no hash change)                         |
-| DELETE | `/datasets/:id`       | Refuses if a non-terminal run references it              |
-| GET    | `/datasets/:id/cases` | Cursor-paginated cases                                   |
-| GET    | `/runs`               | Paginated list (status, subject, dataset, agent filters) |
-| POST   | `/runs`               | Queue a run after full pre-flight                        |
-| GET    | `/runs/:id`           | Detail + summary (UI polls every 3s while active)        |
-| GET    | `/runs/:id/cases`     | Per-case results, cursor-paginated                       |
-| POST   | `/runs/:id/cancel`    | Queued/running → cancelled                               |
-| GET    | `/graders`            | Registry contents — drives the metric picker             |
+| Method | Path                  | Purpose                                                                                                               |
+| ------ | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/datasets`           | Paginated list (q, tag filters)                                                                                       |
+| POST   | `/datasets`           | Multipart upload OR JSON body                                                                                         |
+| GET    | `/datasets/:id`       | Detail + first 50 cases                                                                                               |
+| PATCH  | `/datasets/:id`       | Rename / re-tag (no hash change)                                                                                      |
+| DELETE | `/datasets/:id`       | Refuses if a non-terminal run references it                                                                           |
+| GET    | `/datasets/:id/cases` | Cursor-paginated cases                                                                                                |
+| GET    | `/runs`               | Paginated list (status, subject, dataset, agent filters)                                                              |
+| POST   | `/runs`               | Queue a run after full pre-flight                                                                                     |
+| GET    | `/runs/:id`           | Detail + summary (UI polls every 3s while active)                                                                     |
+| GET    | `/runs/:id/cases`     | Per-case results, cursor-paginated; `datasetCase` is `null` when the run's dataset is no longer visible to the caller |
+| POST   | `/runs/:id/cancel`    | Queued/running → cancelled                                                                                            |
+| GET    | `/graders`            | Registry contents — drives the metric picker                                                                          |
 
 All under `/api/v1/admin/orchestration/evaluations/`.
 

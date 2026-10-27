@@ -302,6 +302,12 @@ describe('isRequestFaultCode', () => {
     // ProviderError itself does not survive (§77 t-747).
     expect(isRequestFaultCode('truncated_no_output')).toBe(true);
     expect(isRequestFaultCode('provider_not_permitted')).toBe(true);
+    // A reached spend cap is still reached on a retry or another paid provider
+    // (§110 t-788), the agent's own cap included: the gate refuses it for a
+    // chat turn holding paid calls.
+    expect(isRequestFaultCode('org_budget_exceeded')).toBe(true);
+    expect(isRequestFaultCode('global_budget_exceeded')).toBe(true);
+    expect(isRequestFaultCode('budget_exceeded')).toBe(true);
     expect(isRequestFaultCode('provider_error')).toBe(false);
     expect(isRequestFaultCode('rate_limited')).toBe(false);
   });

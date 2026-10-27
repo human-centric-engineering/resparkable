@@ -17,6 +17,8 @@ Admin page at `/admin/orchestration/costs`. Surfaces every spend / budget signal
 ├──────────────────────────────┬──────────────────────────────────┤
 │ Per-agent spend table        │ Per-model breakdown table        │
 ├──────────────────────────────┴──────────────────────────────────┤
+│ Per-org usage table  (more than one org, or detached spend)     │
+├─────────────────────────────────────────────────────────────────┤
 │ Local vs cloud panel  (pie + savings callout)                   │
 ├─────────────────────────────────────────────────────────────────┤
 │ Pricing reference  (collapsible — model rates, source, synced)  │
@@ -31,7 +33,7 @@ The default-models form and global monthly cap used to live on this page; they w
 
 ## Data sources
 
-The server shell fires four parallel null-safe fetches via `serverFetch()`. Any upstream failure renders an empty state in its section — the page never throws.
+The server shell fires five parallel fetches through `lib/api/server-load.ts`, and a failed load never renders as an empty state (#518). `/costs/summary` is required: it feeds the summary cards, the trend, both breakdown tables and the local-vs-cloud panel, and `<CostsView>` would render it missing as "no spend", so its failure throws to the admin error boundary, whose **Try again** re-fetches. A failed `/costs/alerts` shows a "Couldn't load budget alerts" notice in the alerts panel's place — never "No agents are currently over 80% of their monthly budget" — and the rest of the page renders. The per-model breakdown, `/models` and `/costs/orgs` are optional: a failure shows a "Couldn't load …" notice above the view and the rest of the page renders. A 403 from `/costs/orgs` is the expected refusal outside the install org and hides that table without a notice.
 
 | Section                | Endpoint                                                    | Notes                                                  |
 | ---------------------- | ----------------------------------------------------------- | ------------------------------------------------------ |
@@ -42,6 +44,7 @@ The server shell fires four parallel null-safe fetches via `serverFetch()`. Any 
 | Per-model table        | `GET /costs/summary` (`byModel[]`) + `GET /models`          | Keyed `provider::modelId` — see below                  |
 | Local vs cloud panel   | `GET /costs/summary.localSavings` + `byModel[]` + `/models` | `localSavings: null` → muted placeholder, never throws |
 | Budget alerts list     | `GET /costs/alerts`                                         | Returns `{ alerts, globalCap }` — sorted by severity   |
+| Per-org usage table    | `GET /costs/orgs`                                           | Install org only at `multi`; see Per-org usage         |
 
 ### Per-model rows carry their provider
 
@@ -108,11 +111,50 @@ At runtime, values resolve via `getDefaultModelForTask(task)` in `lib/orchestrat
 
 ### Global monthly budget cap — enforcement
 
-When the cap is set on the Settings page, `cost-tracker.ts#checkBudget()` additionally computes the month-to-date spend _across all agents_ via `getMonthToDateGlobalSpend()` and flips `globalCapExceeded: true` when the cumulative total is at or above the cap.
+When the cap is set on the Settings page, the month-to-date spend _across every org_ (`getMonthToDateGlobalSpend()`) is checked against it, and `globalCapExceeded: true` is reported when the cumulative total is at or above the cap. The cap is the operator's ceiling on the shared provider keys, so at `TENANCY_MODE=multi` the total is summed in the system scope (`globalSpendSince()` in `lib/orchestration/admin/global-config-usage.ts`). Otherwise the `org_isolation` policy would show it only the acting org's rows, and the cap would act as a per-org cap. Detached `NULL`-org rows count too. `getGlobalCapState()` in `lib/orchestration/llm/spend-caps.ts` is the one place that reads the cap and the total. `checkBudget()`, the provider manager's spend gate, the agents list's budget column and `getGlobalCapStatus()` (behind `GET /costs/alerts`) all call it. Because the total includes every org's spend, `GET /costs/alerts` returns it only to a caller in the install org; in a customer org at `multi` `globalCap.spent` is `null`, and the caller is told only whether the cap is reached.
 
-The streaming chat handler treats this the same as a per-agent budget breach: it emits the shared `budget_exceeded` SSE error code (`lib/orchestration/chat/streaming-handler.ts:396-399`) with a generic "monthly budget reached" message, and dispatches the `budget_exceeded` webhook. There is **no distinct error code for the global cap** — the UI's red "Global monthly budget exceeded" banner is driven by `GET /costs/alerts → globalCap.exceeded`, not by SSE frame discrimination.
+**It holds every paid AI call, not only chat.** The provider manager runs the spend gate (`assertWithinSpendCaps`) before every vendor call, so a workflow step, the orchestrator, an evaluation, a judge, knowledge ingestion and a scheduled or webhook run are refused with `global_budget_exceeded` once the cap is reached. A local provider is never refused, because it costs nothing. See [LLM providers → The spend gate](../orchestration/llm-providers.md#the-spend-gate).
 
-The global cap enforcement is wrapped in try/catch so a transient settings fetch failure degrades gracefully to the per-agent path — it never blocks chat globally because Prisma hiccuped.
+**The total is cached for 10 seconds per process.** Summing a month of every org's cost rows on every call would make the check cost more as tenants are added. `logCost` adds each row it writes to the cached total at once, so a process sees its own spend immediately and another process's within 10 seconds. That window, plus one turn per agent under the per-agent lock, is how far the cap can be overrun. The cap's value is read from the settings singleton, which is cached for 30 seconds. Saving it on the Settings page, or restoring a backup that includes settings, clears that cache in the process that did it; other processes pick it up within 30 seconds.
+
+A cap that cannot be read is logged and skipped (`globalCapStateOrSkip()`), so a transient settings fetch failure degrades to the other caps. It never blocks AI calls globally because Prisma hiccuped, and in the agents list it never drops the other budget figures.
+
+### Per-org monthly budget cap
+
+An org can have a cap of its own: `monthlyBudgetUsd` under the `quotas` key of `Org.settings` (§110 t-788). `checkBudget()` reads it for the agent's org and sums the org's month-to-date spend with an explicit `orgId` filter, over the same UTC calendar month as the agent and global checks. When that spend is at or above the cap it sets `orgCapExceeded: true` and reports `org: { limit, spent }`. The global cap still sits above every org's cap.
+
+- **Unset means no org cap.** With no `quotas` slice, `checkBudget()` returns exactly what it did before org caps existed, and the org's spend is never summed.
+- **It holds every paid AI call in the org, not only chat.** The provider manager's spend gate checks it before every vendor call made in the org's scope (the install org at `single`), so workflows, evaluations, ingestion and jobs stop at the cap too, with `org_budget_exceeded`.
+- **Local models are never stopped.** A local provider costs nothing, so a reached cap does not refuse it, and a cap of `0` means "no paid calls". A paid primary the cap refuses fails over to a local fallback if the agent has one. A chat agent whose primary is local keeps answering on it, and every paid call that turn would make is refused, including a paid fallback, embeddings and tools. The same holds for the agent's own cap.
+- **Who sets it.** A platform admin sets it with `PATCH /api/v1/admin/orgs/[id]` `{ settings: { quotas: { monthlyBudgetUsd } } }`. `quotas: null` removes it. At `multi` the write is refused (403, `details.reason: shared_settings_install_org_only`) unless it comes from the install org or an unbound admin API key, so a platform admin switched into a customer org cannot raise that org's cap. A fork's billing or plan code calls `writeOrgQuotas(orgId, quotas)` from `lib/tenancy/org-settings.ts` instead; that helper validates but does not check who is calling. The slice also holds the org's request cap, `requestsPerMinute` ([Rate limiting → Per-org request cap](../security/rate-limiting.md#per-org-request-cap)), and a write replaces the whole slice, so send both caps to keep both.
+- **A malformed stored value fails open.** An unreadable cap is dropped with a warning and the org is limited only by its agents' budgets and the global cap. A failed org lookup is logged and skipped the same way.
+- **A change takes effect at once in the process that made it.** The spend gate caches each org's cap for 30 seconds; the PATCH clears that org's entry, and other processes see the change within the 30 seconds. Code calling `writeOrgQuotas()` directly calls `forgetOrgCap(orgId)` from `lib/orchestration/llm/spend-caps.ts` afterwards for the same effect.
+- **Every change is audited.** A caps write through `PATCH /api/v1/admin/orgs/[id]` records an `org.quotas.update` entry in the admin audit log (entity type `org`), with the caps it replaced and the caps it stored. `writeOrgQuotas()` called from a fork's own code writes no audit entry; that code owns its own record.
+- **The agents list agrees.** Each agent's `_budget` in `GET /api/v1/admin/orchestration/agents` applies its org's cap as `checkBudget()` does, and carries `orgCapExceeded: true` when the org is over it.
+- **Known limit: it can be overrun a little.** `withAgentBudgetLock` is keyed by agent, so two agents in one org can both pass the org check at the same time and each go over by up to one turn. The org's month-to-date total is also cached for 10 seconds per process, as the global one is, so spend made by another process is seen within that window. The global cap has the same bounds.
+
+### Per-org usage
+
+`GET /api/v1/admin/orchestration/costs/orgs?period=YYYY-MM` returns each org's spend, call count and tokens for one UTC calendar month, with its `quotas.monthlyBudgetUsd` and `utilisation` beside them (§110 t-790). It is the data a fork builds plans and invoices from. Plans, pricing and invoices stay the fork's. `period` defaults to the current month, the same period `checkBudget()` and the org cap use. `orgId` narrows the answer to one org.
+
+- **It reads every tenant's spend, so at `multi` only the install org may ask.** A platform admin switched into a customer org gets 403 (`details.reason: shared_settings_install_org_only`), even when asking only for that org. An unbound admin API key is allowed, as the install org. This is the same rule the caps are written under.
+- **The rollup runs in the system scope.** `getOrgUsage()` in `lib/orchestration/llm/cost-reports.ts` groups `AiCostLog` by `orgId` under `runAsSystem`, using the `(orgId, createdAt)` index. Inside the caller's org the `org_isolation` policy would hide every other org's rows. Orgs with no spend are listed with zeros.
+- **Detached spend has its own bucket.** Rows with no org (an erased org's spend is kept and its `orgId` set to `NULL`) come back as `detached`, shown on the table as **No org**. They still count towards the global cap.
+- **At `single` it is one install-org row**, totalling every row in the month, `NULL`-org rows included, and `detached` is `null`. The page hides the table then, since the summary cards already show that total.
+- **Where it shows.** The costs page shows the per-org table when the endpoint returns more than one org, or any detached spend. If the endpoint refuses the caller, the table is not shown. The org detail page (`/admin/orgs/[id]`) asks for its own org (`?orgId=`) and shows month-to-date spend against the cap. In a customer org it says that usage can only be viewed from the install org.
+- **A cap of `0` has no utilisation.** It means "no paid calls", so `utilisation` is `null`, and both the table and the org page say **Paid calls off**.
+
+### What the chat user sees
+
+The streaming handler names the cap that stopped the turn, checking the widest first:
+
+| Code                     | Cap                                    |
+| ------------------------ | -------------------------------------- |
+| `global_budget_exceeded` | `globalMonthlyBudgetUsd`               |
+| `org_budget_exceeded`    | `Org.settings.quotas.monthlyBudgetUsd` |
+| `budget_exceeded`        | `AiAgent.monthlyBudgetUsd`             |
+
+The words are the error registry's message and action for the code (`lib/orchestration/chat/error-messages.ts`), whether the turn was refused before it started or stopped part way by the provider gate. None names an amount, because the reader may be an embed visitor. Either way the `budget_exceeded` webhook fires, with `cap: 'agent' | 'org' | 'global'` in its payload; its `usedUsd` / `limitUsd` are still the agent's. A turn stopped part way also gets an error marker, so a reload shows the turn ended rather than an unanswered question. The red "Global monthly budget exceeded" banner on this page is driven by `GET /costs/alerts → globalCap.exceeded`.
 
 ### Per-turn cost cap
 
@@ -125,7 +167,7 @@ When the accumulating turn cost crosses the resolved cap mid-loop, the streaming
 
 ## Global cap exceeded banner
 
-When the platform-wide monthly budget cap is exceeded, `BudgetAlertsList` renders a prominent red banner at the top of the alerts section showing the current spend vs cap (e.g. "$542.00 of $500.00") with a link to `/admin/orchestration/settings`. This is driven by `globalCap: GlobalCapStatus` returned alongside per-agent alerts from `GET /costs/alerts`. The `GlobalCapStatus` shape is `{ cap: number | null, spent: number, exceeded: boolean }`, produced by `getGlobalCapStatus()` in `cost-reports.ts`.
+When the platform-wide monthly budget cap is exceeded, `BudgetAlertsList` renders a prominent red banner at the top of the alerts section. In the install org it shows the current spend against the cap (e.g. "$542.00 of $500.00") and links to `/admin/orchestration/settings`. In a customer org at `multi` it says only that the platform has reached its budget, with no figures and no link, since every org's spend is not that org's to see and only the install org can change the cap. This is driven by `globalCap: GlobalCapStatus` returned alongside per-agent alerts from `GET /costs/alerts`. The `GlobalCapStatus` shape is `{ cap: number | null, spent: number | null, exceeded: boolean }`, produced by `getGlobalCapStatus()` in `cost-reports.ts`.
 
 ## Pause-agent flow
 

@@ -16,6 +16,7 @@ same discipline with an org as the subject.
 | The vendor exports for a client | `GET /api/v1/admin/orgs/[id]/export` (platform admin, download)      |
 | What counts as the org's data   | `ORG_DATA_SOURCES` — `lib/privacy/org-sources.ts`                    |
 | What is deliberately left out   | `ORG_EXCLUDED_SOURCES` — same file, with the reason shown            |
+| A fork's own org tables         | `initAppOrgSources()` — `lib/app/org-export.ts` (see Fork tables)    |
 | The guard on the manifest       | `tests/unit/lib/privacy/org-sources.test.ts` (scans `orgId`)         |
 | Proving it against a database   | `npm run smoke:tenancy` (creates, exports, erases a fixture org)     |
 | …at `multi`, across two orgs    | `scripts/smoke/tenancy-isolation.ts` section [19] (CI `smoke-multi`) |
@@ -44,12 +45,87 @@ each had a disposition, and a fork adding `orgId` to its own model meets the
 same test. That is the point: a column can join an org, but an export cannot
 silently omit it.
 
+A fork's models are not added to that list — it is core's, and a fork editing
+it conflicts on every upgrade. They are registered from `lib/app/org-export.ts`
+(below), and the test unions the registry into its accounted set, so a fork's
+`orgId` model passes once registered and still fails by name when it is not.
+
 The scan matches the column name `orgId` exactly. `Session.activeOrgId` is a
 pointer to the org a session acts in, not the org's data, and does not match.
 
 The test is also run against a synthetic schema with an undeclared `orgId`
 model, so the rule is shown to fire — in vanilla Sunrise every such model is
 declared, and a rule with nothing to catch would pass while protecting nothing.
+
+The same test holds every `orgId` model to an `Org` relation with
+`onDelete: Cascade` or `SetNull`. [Org erasure](./org-erasure.md) deletes the
+`Org` row and lets the database cascade; it does not walk this manifest. A
+model with no relation outlives the org's erasure with an id nothing resolves,
+and one with the default `Restrict` makes erasure fail. The rule cannot judge
+retention: `SetNull` keeps the rows, which is right for a record that must
+outlive the org (the `AiCostLog` billing precedent) and wrong for the org's own
+data. That choice belongs to the model's author.
+
+## Fork tables
+
+A fork registers its own org-owned models from `initAppOrgSources()` in
+`lib/app/org-export.ts`, a scaffold Sunrise ships empty and does not change
+after release:
+
+```typescript
+import { prisma } from '@/lib/db/client';
+import { ownedBy } from '@/lib/privacy/org-sources';
+import { registerAppOrgSources } from '@/lib/privacy/org-source-registry';
+
+export function initAppOrgSources(): void {
+  registerAppOrgSources({
+    tier: 'app',
+    sources: [
+      {
+        model: 'AppContract',
+        section: 'contracts',
+        disposition: 'export',
+        description: 'Contracts the organisation holds with its clients.',
+        fetch: ({ orgId }) =>
+          prisma.appContract.findMany({ where: ownedBy(orgId), orderBy: { createdAt: 'asc' } }),
+      },
+    ],
+    excluded: [
+      {
+        model: 'AppContractIndex',
+        reason: 'Search index rebuilt from contracts the export already carries.',
+      },
+    ],
+  });
+}
+```
+
+- **Each source carries its own `fetch`**, the shape of a core manifest row.
+  The subject seam splits declarations from a static collector and then has to
+  check at runtime that every declared section came back; here, registering a
+  source is what puts it in the bundle, so that state cannot arise.
+- **Fork rows land under the bundle's `app` key** with a summary per source in
+  `meta.app`, never beside core's sections, so a section core adds later cannot
+  overwrite one of yours. Fork exclusions are appended to `meta.excluded`.
+- **`fetch` runs as the org**, after core's sources and one at a time. Filter by
+  the org yourself — the `org_isolation` policy applies only at `multi` — with
+  `ownedBy(orgId)`, as core does. At `single` it also returns the install org's
+  rows whose `orgId` is `NULL` (written under `runAsSystem`, which stamps
+  nothing), which `where: { orgId }` would leave out.
+- **It must resolve to an array** — `[]` for none — or the export fails with
+  `AppOrgSourceInvalidError`.
+- **If `initAppOrgSources()` throws, or registers a row the registry
+  rejects and no other declaration covers that model**, the registry logs, and `exportOrgData()` throws
+  `AppOrgDeclarationsUnavailableError` for every org until it is fixed. A
+  bundle without the fork's tables would read as complete, and the coverage
+  test catches a dropped row only when its model carries `orgId`.
+- **`disposition` is the fork's label.** Core cannot see what a fork's `fetch`
+  returns, so `attribution` there is a statement of intent, not a guarantee.
+- **A framework tier** registers with `tier: 'framework'`, from a function the
+  leaf's `initAppOrgSources()` calls — not from boot, which a registry reset
+  loses.
+
+With nothing registered the bundle is unchanged: no `app` key, no `meta.app`.
 
 ## The two dispositions
 
@@ -114,12 +190,12 @@ The bundle is assembled in memory and returned as one JSON body. With every
 tenant-owned table in it — messages, chunk text, document content twice
 (original and processed), step results, delivery payloads — a modest install
 produces megabytes, and a hosted function's response limit (Vercel: 4.5 MB)
-is the ceiling. The sources also run concurrently through one `Promise.all`,
-so on a pool of ten connections with a ten-second connect timeout, a scan slow
-enough to hold the pool fails the queued sources and with them the whole
-export. Both are acceptable for the installs this ships to today and are
-recorded on the §107 feature as follow-up work (bounded concurrency; streaming
-to a stored file), not something this endpoint will grow into silently.
+is the ceiling. The sources run one at a time (since #901), so the export
+holds one pooled connection rather than queueing 42 reads behind a pool of ten,
+and its duration is the sum of the reads. The size ceiling is acceptable for
+the installs this ships to today and is recorded on the §107 feature as
+follow-up work (streaming to a stored file), not something this endpoint will
+grow into silently.
 
 ## The one source listed by hand
 
@@ -148,7 +224,16 @@ offboarded is exactly the reader who cannot check.
     "orgId": "cmorg…",
     "exported": [{ "model": "OrgMembership", "section": "members", "description": "…", "rows": 2 }],
     "attribution": [{ "model": "AiApiKey", "section": "apiKeys", "description": "…", "rows": 0 }],
-    "excluded": []
+    "excluded": [],
+    "app": [
+      {
+        "model": "AppContract",
+        "section": "contracts",
+        "description": "…",
+        "disposition": "export",
+        "rows": 0
+      }
+    ]
   },
   "org": { "id": "cmorg…", "slug": "acme", "name": "Acme", "status": "ACTIVE", "…": "…" },
   "data": { "members": [], "pendingInvitations": [] },
@@ -157,9 +242,12 @@ offboarded is exactly the reader who cannot check.
     "agentEmbedTokens": [],
     "agentInviteTokens": [],
     "mcpApiKeys": []
-  }
+  },
+  "app": { "contracts": [] }
 }
 ```
+
+`app` and `meta.app` appear only when a fork registered a source.
 
 `meta` describes exactly what was delivered — every section with its row
 count, and every withheld table with its reason — so the reader can see the
@@ -169,11 +257,18 @@ the subject bundle's version because the two bundles have different readers.
 No receipt is written and no `reason` is required: the org is not a data
 subject. The acting admin is logged.
 
+## Stored files are not in the bundle
+
+The bundle carries rows, not the bytes of files the org's agents uploaded. An
+upload's key and URL appear wherever a row recorded them (a conversation's tool
+result, for instance), but the file itself does not. `StorageProvider` has no
+list operation, so there is no way to enumerate an org's files to put them in;
+at `multi` they all sit under `orgs/{orgId}/`
+([Storage and Tenancy](../storage/tenancy.md)), so an operator with access to
+the bucket can copy that prefix by hand. Org erasure does delete that prefix.
+
 ## What is deliberately not here yet
 
-- **A fork seam.** A fork's own org-owned tables are §109's tenant-data
-  dimension. The shape is the subject manifest's, which grew
-  `registerAppSubjectSources()` the same way, so that lands without a redesign.
 - **Self-service.** An org OWNER downloading their own export is §111's page,
   on top of the same service; today the vendor answers the request.
 

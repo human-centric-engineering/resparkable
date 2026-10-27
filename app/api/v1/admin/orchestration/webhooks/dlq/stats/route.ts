@@ -17,17 +17,11 @@ import type { NextRequest } from 'next/server';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
-import { adminLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
-import { getClientIP } from '@/lib/security/ip';
+import { webhookDeliveryVisibilityWhere } from '@/lib/orchestration/access/webhook-delivery-access';
 
-export const GET = withAdminAuth(async (request: NextRequest, session) => {
-  const clientIP = getClientIP(request);
-  const rateLimit = adminLimiter.check(clientIP);
-  if (!rateLimit.success) return createRateLimitResponse(rateLimit);
-
+export const GET = withAdminAuth(async (_request: NextRequest, session) => {
   const scope = {
-    status: 'exhausted' as const,
-    subscription: { createdBy: session.user.id },
+    AND: [webhookDeliveryVisibilityWhere(session), { status: 'exhausted' as const }],
   };
   const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
 

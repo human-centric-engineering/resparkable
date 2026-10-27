@@ -21,6 +21,7 @@
 import type { AiProviderModel } from '@/types/prisma';
 import type { ModelInfo, ModelTier, ParamProfile } from '@/lib/orchestration/llm/types';
 import { isMatrixOwnedFigure } from '@/lib/orchestration/llm/model-registry';
+import { hasSplitPricing } from '@/lib/validations/model-pricing';
 
 /**
  * Map the DB row's `tierRole` (admin matrix vocabulary) and
@@ -92,17 +93,54 @@ export function narrowParamProfile(raw: string | null | undefined): ParamProfile
   return undefined;
 }
 
+/**
+ * A row's input and output rates per 1M tokens (t-774). The split columns
+ * are read as a pair: when both are set on a chat or reasoning row
+ * (`hasSplitPricing`) they win, otherwise both rates are
+ * the blended `costPerMillionTokens`, which an embedding model and a row
+ * written before the split carry. The row's own rates never mix one split
+ * rate with the blended one. The database holds the pair
+ * (`ai_provider_model_price_pair`); this keeps a row from before that
+ * constraint, or a mock, from being priced half one way and half the other.
+ * `null` means no rate is known.
+ *
+ * What a turn is charged can still combine sources: `registerModels` (and
+ * `keepRegistryFigures` below) settle input and output separately, so a
+ * registry entry with one positive rate keeps it and the row fills the
+ * other (t-769).
+ */
+function rowRates(
+  row: Pick<
+    AiProviderModel,
+    | 'capabilities'
+    | 'costPerMillionTokens'
+    | 'inputCostPerMillionTokens'
+    | 'outputCostPerMillionTokens'
+  >
+): { input: number | null; output: number | null } {
+  const input = row.inputCostPerMillionTokens;
+  const output = row.outputCostPerMillionTokens;
+  // Only a chat or reasoning row is priced by its split: embedding cost reads
+  // the input rate, so a split left on an embedding row (one whose chat
+  // capability was removed) would otherwise replace its embedding price.
+  if (input != null && output != null && hasSplitPricing(row.capabilities ?? [])) {
+    return { input, output };
+  }
+  const blended = row.costPerMillionTokens ?? null;
+  return { input: blended, output: blended };
+}
+
 /** Convert a single DB row into a `ModelInfo`. Always marks `available: true`. */
 export function dbModelToModelInfo(row: AiProviderModel): ModelInfo {
-  const cost = row.costPerMillionTokens ?? 0;
+  const rates = rowRates(row);
   const paramProfile = narrowParamProfile(row.paramProfile);
   return {
     id: row.modelId,
     name: row.name,
     provider: row.providerSlug,
     tier: mapTierRoleToTier(row.tierRole, row.deploymentProfiles),
-    inputCostPerMillion: cost,
-    outputCostPerMillion: cost,
+    inputCostPerMillion: rates.input ?? 0,
+    outputCostPerMillion: rates.output ?? 0,
     maxContext: mapContextLengthToMax(row.contextLength),
     supportsTools: row.toolUse !== 'none',
     available: true,
@@ -113,7 +151,9 @@ export function dbModelToModelInfo(row: AiProviderModel): ModelInfo {
     capabilities: row.capabilities,
     ...(paramProfile ? { paramProfile } : {}),
     // A null cost is "not priced", not "free" — an explicit 0 stays free.
-    ...(row.costPerMillionTokens === null ? { pricingUnknown: true as const } : {}),
+    // Either rate missing leaves the row unpriced: half a price would
+    // record the other half of every turn at $0.
+    ...(rates.input === null || rates.output === null ? { pricingUnknown: true as const } : {}),
   };
 }
 

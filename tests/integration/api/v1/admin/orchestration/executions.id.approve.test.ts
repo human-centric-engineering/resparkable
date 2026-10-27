@@ -20,6 +20,14 @@ import {
 
 // ─── Mock dependencies ───────────────────────────────────────────────────────
 
+// `after()` records what it was handed (t-846); the real one throws outside a
+// request scope.
+const mockAfter = vi.hoisted(() => vi.fn());
+vi.mock('next/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/server')>()),
+  after: mockAfter,
+}));
+
 vi.mock('@/lib/auth/config', () => ({
   auth: { api: { getSession: vi.fn() } },
 }));
@@ -205,6 +213,33 @@ describe('POST /api/v1/admin/orchestration/executions/:id/approve', () => {
     // Channel routes already do this; the admin route used to skip it,
     // which left runs sitting in PENDING after approval.
     expect(resumeApprovedExecution).toHaveBeenCalledWith(EXECUTION_ID);
+  });
+
+  it('keeps the resume alive past the response: after() holds it until it settles (t-846)', async () => {
+    let finishResume!: () => void;
+    vi.mocked(resumeApprovedExecution).mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishResume = resolve;
+      })
+    );
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(makeExecution() as never);
+
+    const response = await POST(makePostRequest(), makeParams(EXECUTION_ID));
+
+    expect(response.status).toBe(200);
+    expect(mockAfter).toHaveBeenCalledTimes(1);
+    const handed = mockAfter.mock.calls[0]?.[0] as Promise<unknown>;
+    let settled = false;
+    void handed.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+
+    finishResume();
+    await handed;
+    expect(settled).toBe(true);
   });
 
   it('swallows resumeApprovedExecution rejections — 200 response + logged error, no unhandled promise', async () => {

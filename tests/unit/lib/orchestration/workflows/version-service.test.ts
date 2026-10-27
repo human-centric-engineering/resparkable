@@ -18,6 +18,7 @@
  * @see lib/orchestration/workflows/version-service.ts
  */
 
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest';
 
 // ─── Mocks (must come before module imports) ───────────────────────────────
@@ -26,6 +27,9 @@ const txState = {
   versionFindFirst: vi.fn(),
   versionCreate: vi.fn(),
   workflowUpdate: vi.fn(),
+  executeRaw: vi.fn(),
+  receiptFindMany: vi.fn(),
+  userFindMany: vi.fn(),
 };
 
 vi.mock('@/lib/db/client', () => ({
@@ -42,6 +46,9 @@ vi.mock('@/lib/db/client', () => ({
     },
     $transaction: vi.fn(async (cb: (tx: unknown) => unknown) =>
       cb({
+        $executeRaw: txState.executeRaw,
+        dataErasureReceipt: { findMany: txState.receiptFindMany },
+        user: { findMany: txState.userFindMany },
         aiWorkflow: { update: txState.workflowUpdate },
         aiWorkflowVersion: {
           findFirst: txState.versionFindFirst,
@@ -140,6 +147,9 @@ function makeVersion(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  txState.executeRaw.mockResolvedValue(1);
+  txState.receiptFindMany.mockResolvedValue([]);
+  txState.userFindMany.mockResolvedValue([]);
   vi.mocked(semanticValidateWorkflow).mockResolvedValue({ ok: true, errors: [] });
 });
 
@@ -148,9 +158,7 @@ beforeEach(() => {
 describe('saveDraft', () => {
   it('writes draftDefinition without touching publishedVersionId', async () => {
     vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(makeWorkflow() as never);
-    vi.mocked(prisma.aiWorkflow.update).mockResolvedValue(
-      makeWorkflow({ draftDefinition: ALT_DEF }) as never
-    );
+    txState.workflowUpdate.mockResolvedValue(makeWorkflow({ draftDefinition: ALT_DEF }));
 
     await saveDraft({
       workflowId: WORKFLOW_ID,
@@ -159,7 +167,10 @@ describe('saveDraft', () => {
       clientIp: '127.0.0.1',
     });
 
-    const updateArgs = vi.mocked(prisma.aiWorkflow.update).mock.calls[0]?.[0];
+    // Written through the transaction client, not the bare one (t-805)
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(prisma.aiWorkflow.update).not.toHaveBeenCalled();
+    const updateArgs = txState.workflowUpdate.mock.calls[0]?.[0];
     expect(updateArgs?.where).toEqual({ id: WORKFLOW_ID });
     expect(updateArgs?.data).toEqual({ draftDefinition: ALT_DEF });
     expect(updateArgs?.data).not.toHaveProperty('publishedVersionId');
@@ -174,7 +185,7 @@ describe('saveDraft', () => {
 
   it('emits a workflow.draft.save audit log', async () => {
     vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(makeWorkflow() as never);
-    vi.mocked(prisma.aiWorkflow.update).mockResolvedValue(makeWorkflow() as never);
+    txState.workflowUpdate.mockResolvedValue(makeWorkflow());
 
     await saveDraft({ workflowId: WORKFLOW_ID, definition: VALID_DEF, userId: ADMIN_ID });
 
@@ -592,6 +603,158 @@ describe('createInitialVersion', () => {
     );
     // Top-level prisma must NOT have been called — the caller owns the tx
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+// ─── erased recipients (t-805) ─────────────────────────────────────────────
+
+describe('a definition that names an erased person (t-805)', () => {
+  const ERASED_ID = 'cmjbv4i3x00003wsloputgone';
+  const ERASED_ADDRESS = 'gone@example.com';
+  const ERASED_DEF: WorkflowDefinition = {
+    steps: [
+      {
+        id: 'approve',
+        name: 'Approve',
+        type: 'human_approval',
+        config: { prompt: 'OK?', approverUserIds: [ERASED_ID] },
+        nextSteps: [],
+      },
+    ],
+    entryStepId: 'approve',
+    errorStrategy: 'fail',
+  };
+  const ADDRESSED_DEF: WorkflowDefinition = {
+    steps: [
+      {
+        id: 'notify',
+        name: 'Notify',
+        type: 'send_notification',
+        config: { channel: 'email', to: ' Gone@Example.com ', subject: 'Hi', bodyTemplate: 'x' },
+        nextSteps: [],
+      },
+    ],
+    entryStepId: 'notify',
+    errorStrategy: 'fail',
+  };
+  const addressReceipt = {
+    subjectUserId: 'cmjbv4i3x00003wsloputaddr',
+    subjectEmailHash: createHash('sha256').update(ERASED_ADDRESS).digest('hex'),
+    metadata: { addressVerified: true },
+  };
+
+  beforeEach(() => {
+    // A receipt exists for the approver the definition names
+    txState.receiptFindMany.mockResolvedValue([
+      { subjectUserId: ERASED_ID, subjectEmailHash: null, metadata: null },
+    ]);
+  });
+
+  it('saveDraft strips an erased approver id and saves the rest (review round 2)', async () => {
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(makeWorkflow() as never);
+
+    await saveDraft({ workflowId: WORKFLOW_ID, definition: ERASED_DEF, userId: ADMIN_ID });
+
+    expect(txState.workflowUpdate).toHaveBeenCalledTimes(1);
+    const [{ data }] = txState.workflowUpdate.mock.calls[0] as [
+      { data: { draftDefinition: WorkflowDefinition } },
+    ];
+    expect(data.draftDefinition.steps[0].config).toEqual({ prompt: 'OK?', approverUserIds: [] });
+    // The lock for the approver was taken before the check
+    expect(txState.executeRaw).toHaveBeenCalled();
+  });
+
+  it('saveDraft refuses an erased address with a ValidationError on draftDefinition and writes nothing', async () => {
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(makeWorkflow() as never);
+    txState.receiptFindMany.mockResolvedValue([addressReceipt]);
+
+    const error = await saveDraft({
+      workflowId: WORKFLOW_ID,
+      definition: ADDRESSED_DEF,
+      userId: ADMIN_ID,
+    }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as ValidationError).details).toHaveProperty('draftDefinition');
+    expect(txState.workflowUpdate).not.toHaveBeenCalled();
+    expect(logAdminAction).not.toHaveBeenCalled();
+  });
+
+  it('publishDraft publishes without an erased approver id', async () => {
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(
+      makeWorkflow({ draftDefinition: ERASED_DEF }) as never
+    );
+    vi.mocked(prisma.aiWorkflowVersion.findUnique).mockResolvedValue(makeVersion() as never);
+    txState.versionCreate.mockResolvedValue(makeVersion({ id: VERSION_ID_NEW, version: 5 }));
+
+    await publishDraft({ workflowId: WORKFLOW_ID, userId: ADMIN_ID });
+
+    const [{ data }] = txState.versionCreate.mock.calls[0] as [
+      { data: { snapshot: WorkflowDefinition } },
+    ];
+    expect(data.snapshot.steps[0].config).toEqual({ prompt: 'OK?', approverUserIds: [] });
+  });
+
+  it('publishDraft refuses an erased address and creates no version', async () => {
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(
+      makeWorkflow({ draftDefinition: ADDRESSED_DEF }) as never
+    );
+    vi.mocked(prisma.aiWorkflowVersion.findUnique).mockResolvedValue(makeVersion() as never);
+    txState.receiptFindMany.mockResolvedValue([addressReceipt]);
+
+    await expect(
+      publishDraft({ workflowId: WORKFLOW_ID, userId: ADMIN_ID })
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    expect(txState.versionCreate).not.toHaveBeenCalled();
+    expect(txState.workflowUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rollback copies the version without the erased approver, and says so in the audit row', async () => {
+    // A snapshot cannot be edited, so a refusal would block this rollback for
+    // good (t-805 review): the copy leaves the person out instead.
+    vi.mocked(prisma.aiWorkflow.findUnique).mockResolvedValue(makeWorkflow() as never);
+    vi.mocked(prisma.aiWorkflowVersion.findUnique).mockResolvedValue(
+      makeVersion({ snapshot: ERASED_DEF }) as never
+    );
+    txState.versionCreate.mockResolvedValue(makeVersion({ id: VERSION_ID_NEW, version: 5 }));
+
+    await rollback({ workflowId: WORKFLOW_ID, targetVersionId: VERSION_ID_V1, userId: ADMIN_ID });
+
+    expect(txState.versionCreate).toHaveBeenCalledTimes(1);
+    const [{ data }] = txState.versionCreate.mock.calls[0] as [
+      { data: { snapshot: WorkflowDefinition } },
+    ];
+    expect(data.snapshot.steps[0].config).toEqual({ prompt: 'OK?', approverUserIds: [] });
+    expect(logAdminAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'workflow.rollback',
+        metadata: expect.objectContaining({ erasedRecipientsRemoved: true }),
+      })
+    );
+  });
+
+  it('createInitialVersion checks on the passed transaction and refuses an erased address', async () => {
+    const tx = {
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      dataErasureReceipt: { findMany: vi.fn().mockResolvedValue([addressReceipt]) },
+      user: { findMany: vi.fn().mockResolvedValue([]) },
+      aiWorkflow: { update: vi.fn() },
+      aiWorkflowVersion: { create: vi.fn() },
+    };
+
+    await expect(
+      createInitialVersion({
+        tx: tx as never,
+        workflowId: WORKFLOW_ID,
+        definition: ADDRESSED_DEF,
+        userId: ADMIN_ID,
+      })
+    ).rejects.toBeInstanceOf(ValidationError);
+
+    expect(tx.dataErasureReceipt.findMany).toHaveBeenCalledOnce();
+    expect(tx.aiWorkflowVersion.create).not.toHaveBeenCalled();
+    expect(tx.aiWorkflow.update).not.toHaveBeenCalled();
   });
 });
 

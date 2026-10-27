@@ -17,6 +17,14 @@ import {
   singleOriginCorsHeaders,
 } from '@/lib/orchestration/approval-route-helpers';
 
+/**
+ * The invocation's budget, including the run drained after the response
+ * (t-846). 300 s as on the maintenance tick. A run cut off by it is recovered
+ * by a later tick: a `pending` row by the pending sweep, a `running` one by the
+ * orphan sweep once its lease lapses, which uses one of its recovery attempts.
+ */
+export const maxDuration = 300;
+
 export function OPTIONS(request: NextRequest): Response {
   const origin = request.headers.get('origin');
   const headers = singleOriginCorsHeaders(origin, env.NEXT_PUBLIC_APP_URL, 'POST');

@@ -62,17 +62,46 @@ vi.mock('@/lib/auth/config', () => ({
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     $transaction: vi.fn(),
+    // The delivery-payload redaction (t-783) goes through raw SQL on the tx client.
+    $queryRaw: vi.fn(),
+    $executeRaw: vi.fn(),
     user: {
       findUnique: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
       findUniqueOrThrow: vi.fn(),
+      // requestUserErasure's claim transaction.
+      updateMany: vi.fn(),
     },
+    session: { deleteMany: vi.fn() },
+    aiApiKey: { updateMany: vi.fn() },
     aiAdminAuditLog: {
       updateMany: vi.fn(),
+      createMany: vi.fn(),
     },
     contactSubmission: {
       deleteMany: vi.fn(),
+      count: vi.fn(),
+    },
+    // eraseUser's colleague-subscription clear (t-786).
+    aiWebhookSubscription: {
+      findMany: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    // eraseUser's config-recipient clear (t-791).
+    aiOrchestrationSettings: {
+      update: vi.fn(),
+    },
+    aiWorkflow: {
+      update: vi.fn(),
+    },
+    aiWorkflowVersion: {
+      update: vi.fn(),
+    },
+    aiWebhookDelivery: {
+      updateMany: vi.fn(),
+      findMany: vi.fn(),
+      update: vi.fn(),
     },
     orgMembership: {
       upsert: vi.fn(),
@@ -106,6 +135,20 @@ const TARGET_USER_ID = 'clzx9k8p40000x8c2g3h5m7b1';
 
 /** ID used by the default admin session from mockAdminUser() */
 const ADMIN_USER_ID = 'cmjbv4i3x00003wsloputgwul';
+
+/**
+ * `user.findUniqueOrThrow` is read twice on the real chain: the claim reads the
+ * intent columns it just wrote, and eraseUser reads the stored address. Answer
+ * each with its own shape, keyed on what the caller selects.
+ */
+function mockStoredUser(stored: { email: string; emailVerified: boolean }) {
+  vi.mocked(prisma.user.findUniqueOrThrow).mockImplementation((async (args: {
+    select?: Record<string, boolean>;
+  }) =>
+    args.select?.erasureAttempts
+      ? { erasureRequestedBy: ADMIN_USER_ID, erasureReason: 'admin_action', erasureAttempts: 1 }
+      : stored) as never);
+}
 
 /**
  * Build a context object for the route handler with async params (Next.js 16 requirement).
@@ -160,6 +203,13 @@ function makeUserFixture(overrides: Record<string, unknown> = {}) {
     timezone: 'UTC',
     location: null,
     preferences: {},
+    signupOrgId: null,
+    signupOrgRole: null,
+    erasureRequestedAt: null,
+    erasureRequestedBy: null,
+    erasureReason: null,
+    erasureAttempts: 0,
+    erasureNextAttemptAt: null,
     createdAt: new Date('2025-01-01T00:00:00.000Z'),
     updatedAt: new Date('2025-01-01T00:00:00.000Z'),
     ...overrides,
@@ -646,13 +696,28 @@ describe('DELETE /api/v1/users/:id', () => {
     // Default sub-transaction collaborators — each test can override per-case.
     vi.mocked(prisma.aiAdminAuditLog.updateMany).mockResolvedValue({ count: 1 });
     vi.mocked(prisma.contactSubmission.deleteMany).mockResolvedValue({ count: 0 });
+    vi.mocked(prisma.aiWebhookDelivery.updateMany).mockResolvedValue({ count: 0 });
+    vi.mocked(prisma.aiWebhookDelivery.findMany).mockResolvedValue([]);
+    // No colleague subscription matches and no delivery payload names the user.
+    vi.mocked(prisma.aiWebhookSubscription.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.aiWebhookSubscription.updateMany).mockResolvedValue({ count: 0 });
+    // Every lock erasure tries is free (t-840); every other raw read finds nothing.
+    vi.mocked(prisma.$queryRaw).mockImplementation(((strings: TemplateStringsArray) =>
+      Promise.resolve(
+        strings.join('').includes('pg_try_advisory_xact_lock') ? [{ locked: true }] : []
+      )) as never);
+    vi.mocked(prisma.$executeRaw).mockResolvedValue(0);
+    vi.mocked(prisma.aiAdminAuditLog.createMany).mockResolvedValue({ count: 0 });
     // eraseUser reads the stored address for the contact delete. Deliberately
     // NOT the address the route passes in, so the assertion below can tell the
     // two apart: a stale session address must never be the one matched.
-    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
-      email: 'stored-target@example.com',
-      emailVerified: true,
-    } as never);
+    mockStoredUser({ email: 'stored-target@example.com', emailVerified: true });
+    // requestUserErasure's claim: the conditional update takes the row, and the
+    // account's sessions and API keys are cleared. (The claim's own
+    // `user.findUnique` read is answered by the target fixture each test sets.)
+    vi.mocked(prisma.user.updateMany).mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.session.deleteMany).mockResolvedValue({ count: 0 });
+    vi.mocked(prisma.aiApiKey.updateMany).mockResolvedValue({ count: 0 });
     vi.mocked(prisma.dataErasureReceipt.create).mockResolvedValue(RECEIPT_FIXTURE as never);
     vi.mocked(prisma.user.delete).mockResolvedValue(undefined as never);
   });
@@ -736,8 +801,33 @@ describe('DELETE /api/v1/users/:id', () => {
 
       // ---- DB-state readback: prove the real eraseUser ran its $transaction flow ----
 
-      // 1. $transaction was invoked (i.e. eraseUser reached the atomic-commit step)
-      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      // 1. Four transactions: requestUserErasure's claim, the two delivery
+      // pre-pass matches (each in a transaction of its own under the
+      // request's deadline, t-845), then eraseUser's atomic commit. Its run
+      // pass after the commit (t-843) lists no run here, so opens none.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(4);
+
+      // The claim recorded the ADMIN as the actor and the reason, conditional on
+      // the values it read, and disabled the target's sessions and API keys
+      // before the user row was deleted.
+      expect(prisma.user.updateMany).toHaveBeenCalledWith({
+        where: { id: TARGET_USER_ID, erasureRequestedAt: null, erasureNextAttemptAt: null },
+        data: expect.objectContaining({
+          erasureRequestedBy: ADMIN_USER_ID,
+          erasureReason: 'admin_action',
+          erasureAttempts: { increment: 1 },
+        }),
+      });
+      expect(prisma.session.deleteMany).toHaveBeenCalledWith({
+        where: { userId: TARGET_USER_ID },
+      });
+      expect(prisma.aiApiKey.updateMany).toHaveBeenCalledWith({
+        where: { userId: TARGET_USER_ID, revokedAt: null },
+        data: { revokedAt: expect.any(Date) },
+      });
+      expect(vi.mocked(prisma.session.deleteMany).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(prisma.user.delete).mock.invocationCallOrder[0]
+      );
 
       // 2. Residual-PII scrub: clientIp nulled on retained audit rows for this user
       expect(prisma.aiAdminAuditLog.updateMany).toHaveBeenCalledWith({
@@ -766,10 +856,195 @@ describe('DELETE /api/v1/users/:id', () => {
       expect(prisma.user.delete).toHaveBeenCalledWith({
         where: { id: TARGET_USER_ID },
       });
+      // The config-recipient clear (t-791) ran on the real chain: the escalation
+      // list (verified address), the drafts and the versions were all asked.
+      const rawSql = vi
+        .mocked(prisma.$queryRaw)
+        .mock.calls.map((call) => (call[0] as unknown as TemplateStringsArray).join('?'));
+      for (const table of [
+        /FROM ai_orchestration_settings\s/,
+        /FROM ai_workflow\s/,
+        /FROM ai_workflow_version\s/,
+      ]) {
+        expect(rawSql.some((sql) => table.test(sql))).toBe(true);
+      }
     });
-  });
 
-  describe('Business rules', () => {
+    it('redacts the stored address on deliveries sent to it, from the user row rather than the session, before deleting the user', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.user.findUnique).mockResolvedValue(makeUserFixture({ role: 'USER' }));
+      // Pass (a) reads retrying rows; pass (c) reads history-only rows.
+      vi.mocked(prisma.aiWebhookDelivery.findMany).mockImplementation((async (args: {
+        where: Record<string, unknown>;
+      }) =>
+        'AND' in args.where
+          ? [
+              {
+                id: 'del-1',
+                destination: 'stored-target@example.com',
+                previousDestinations: null,
+                lastError: 'SMTP 550',
+              },
+            ]
+          : []) as never);
+      vi.mocked(prisma.aiWebhookDelivery.updateMany).mockResolvedValue({ count: 4 });
+
+      const response = await DELETE(makeDeleteRequest(TARGET_USER_ID), makeContext(TARGET_USER_ID));
+
+      expect(response.status).toBe(200);
+      expect(prisma.aiWebhookDelivery.findMany).toHaveBeenCalledTimes(2);
+      expect(prisma.aiWebhookDelivery.findMany).toHaveBeenNthCalledWith(1, {
+        where: {
+          AND: [
+            {
+              OR: [
+                { destination: 'stored-target@example.com' },
+                {
+                  previousDestinations: {
+                    array_contains: [{ destination: 'stored-target@example.com' }],
+                  },
+                },
+              ],
+            },
+            { status: { in: ['pending', 'failed'] } },
+          ],
+        },
+        select: { id: true, destination: true, previousDestinations: true, lastError: true },
+      });
+      // The retrying row is stopped, keeping its real error, and its address
+      // erased, only if it is still retrying when written (t-793).
+      expect(prisma.aiWebhookDelivery.updateMany).toHaveBeenCalledWith({
+        where: { id: 'del-1', status: { in: ['pending', 'failed'] } },
+        data: {
+          status: 'exhausted',
+          nextRetryAt: null,
+          lastError: 'SMTP 550 (not retried: recipient erased)',
+          stoppedByErasure: true,
+          destination: '[erased]',
+          destinationFingerprint: null,
+        },
+      });
+      // Every other row sent to the address is redacted in one statement.
+      expect(prisma.aiWebhookDelivery.updateMany).toHaveBeenCalledWith({
+        where: { destination: 'stored-target@example.com' },
+        data: { destination: '[erased]', destinationFingerprint: null },
+      });
+      const deleteOrder = vi.mocked(prisma.user.delete).mock.invocationCallOrder[0];
+      for (const fn of [
+        prisma.aiWebhookDelivery.findMany,
+        prisma.aiWebhookDelivery.update,
+        prisma.aiWebhookDelivery.updateMany,
+      ]) {
+        for (const order of vi.mocked(fn).mock.invocationCallOrder) {
+          expect(order).toBeLessThan(deleteOrder);
+        }
+      }
+    });
+
+    it('returns 409 CONFLICT and disables nothing when the real claim finds another attempt holding the lease', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      // A deletion already requested; its lease runs for another ten minutes.
+      vi.mocked(prisma.user.findUnique).mockResolvedValue(
+        makeUserFixture({
+          role: 'USER',
+          erasureRequestedAt: new Date(Date.now() - 60_000),
+          erasureNextAttemptAt: new Date(Date.now() + 10 * 60_000),
+        })
+      );
+
+      const response = await DELETE(makeDeleteRequest(TARGET_USER_ID), makeContext(TARGET_USER_ID));
+
+      expect(response.status).toBe(409);
+      const body = await parseResponse<{ success: boolean; error: { code: string } }>(response);
+      expect(body.success).toBe(false);
+      expect(body.error.code).toBe('CONFLICT');
+      // Population: the claim transaction did open, and then declined.
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.user.updateMany).not.toHaveBeenCalled();
+      expect(prisma.session.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.user.delete).not.toHaveBeenCalled();
+      expect(prisma.dataErasureReceipt.create).not.toHaveBeenCalled();
+    });
+
+    it('touches no deliveries when the stored address is unverified', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.user.findUnique).mockResolvedValue(makeUserFixture({ role: 'USER' }));
+      mockStoredUser({ email: 'stored-target@example.com', emailVerified: false });
+      // An unverified address skips the delete and only counts what it left behind.
+      vi.mocked(prisma.contactSubmission.count).mockResolvedValue(0);
+
+      const response = await DELETE(makeDeleteRequest(TARGET_USER_ID), makeContext(TARGET_USER_ID));
+
+      // Population: the erasure ran.
+      expect(response.status).toBe(200);
+      expect(prisma.user.delete).toHaveBeenCalledTimes(1);
+      expect(prisma.aiWebhookDelivery.findMany).not.toHaveBeenCalled();
+      expect(prisma.aiWebhookDelivery.update).not.toHaveBeenCalled();
+      expect(prisma.aiWebhookDelivery.updateMany).not.toHaveBeenCalled();
+      // ...nor any colleague's subscription: an unproven address may be a stranger's.
+      // Only their own are read, to stop one that emails themselves (t-782).
+      expect(prisma.aiWebhookSubscription.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({ createdBy: expect.any(String) }),
+        })
+      );
+      expect(prisma.aiWebhookSubscription.updateMany).not.toHaveBeenCalled();
+      expect(prisma.aiAdminAuditLog.createMany).not.toHaveBeenCalled();
+    });
+
+    it('clears every email subscription to the STORED address, the erased user’s own included (t-782), before the delivery passes and the user delete', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.user.findUnique).mockResolvedValue(makeUserFixture({ role: 'USER' }));
+      const mk = (id: string, emailAddress: string | null) => ({
+        id,
+        emailAddress,
+        isActive: true,
+        orgId: 'org-a',
+        createdBy: 'cmcolleague000000000000001',
+      });
+      vi.mocked(prisma.aiWebhookSubscription.findMany).mockResolvedValue([
+        mk('sub-exact', 'stored-target@example.com'),
+        mk('sub-typed', '\tSTORED-TARGET@EXAMPLE.COM '),
+        mk('sub-other', 'someone-else@example.com'),
+        mk('sub-session', 'session-copy@example.com'),
+      ] as never);
+      vi.mocked(prisma.aiWebhookSubscription.updateMany).mockResolvedValue({ count: 2 });
+      vi.mocked(prisma.aiAdminAuditLog.createMany).mockResolvedValue({ count: 2 });
+
+      const response = await DELETE(makeDeleteRequest(TARGET_USER_ID), makeContext(TARGET_USER_ID));
+
+      expect(response.status).toBe(200);
+      // The owner is excluded by the where; the address is never in the query.
+      expect(prisma.aiWebhookSubscription.findMany).toHaveBeenCalledWith({
+        where: {
+          channel: 'email',
+          emailAddress: { not: null },
+        },
+        select: { id: true, emailAddress: true, isActive: true, orgId: true, createdBy: true },
+      });
+      // Matched in code on the user row's address (any case or whitespace),
+      // not the session's copy, and not an unrelated address.
+      expect(prisma.aiWebhookSubscription.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['sub-exact', 'sub-typed'] } },
+        data: { emailAddress: null, isActive: false },
+      });
+      const audit = vi.mocked(prisma.aiAdminAuditLog.createMany).mock.calls[0]?.[0];
+      expect(audit?.data).toEqual([
+        expect.objectContaining({ entityId: 'sub-exact' }),
+        expect.objectContaining({ entityId: 'sub-typed' }),
+      ]);
+      expect(JSON.stringify(audit).toLowerCase()).not.toContain('stored-target@example.com');
+      // Cleared first: before the delivery-address passes, and before the user goes.
+      const cleared = vi.mocked(prisma.aiWebhookSubscription.updateMany).mock
+        .invocationCallOrder[0];
+      const deliveryReads = vi.mocked(prisma.aiWebhookDelivery.findMany).mock.invocationCallOrder;
+      const deliveryWrites = vi.mocked(prisma.aiWebhookDelivery.updateMany).mock
+        .invocationCallOrder;
+      expect(cleared).toBeLessThan(deliveryReads[0]);
+      expect(cleared).toBeLessThan(deliveryWrites[0]);
+      expect(cleared).toBeLessThan(vi.mocked(prisma.user.delete).mock.invocationCallOrder[0]);
+    });
+
     it('should return 400 CANNOT_DELETE_SELF when admin deletes their own account, and not run erase', async () => {
       // Arrange — session admin and target are the SAME id (self-deletion).
       // mockAdminUser() returns a session with user.id === ADMIN_USER_ID.

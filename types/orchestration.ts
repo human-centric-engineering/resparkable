@@ -1308,6 +1308,8 @@ export interface BudgetSummary {
   limit: number | null;
   remaining: number | null;
   globalCapExceeded?: boolean;
+  /** Set when the agent's org has reached its own monthly cap (§110 t-788). */
+  orgCapExceeded?: boolean;
 }
 
 /** Enriched agent row returned by the list endpoint. */
@@ -1550,6 +1552,11 @@ export interface OrchestrationSettings {
   citationGuardMode: OutputGuardMode | null;
   /** Days to retain webhook delivery logs, or `null` for no auto-cleanup. */
   webhookRetentionDays: number | null;
+  /**
+   * Days to retain dead-lettered (`exhausted`) webhook deliveries, or `null`
+   * to prune them on `webhookRetentionDays` like any other delivery.
+   */
+  webhookDlqRetentionDays: number | null;
   /** Days to retain cost logs, or `null` for no auto-cleanup. */
   costLogRetentionDays: number | null;
   /** Days to retain admin audit log rows, or `null` for no auto-cleanup. */

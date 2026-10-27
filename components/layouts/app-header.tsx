@@ -62,17 +62,24 @@ export function AppHeader({
     <header className="border-border/60 lattice-chrome sticky top-0 z-40 border-b">
       <div
         className={cn(
-          'flex items-center justify-between py-3.5',
+          'flex items-center justify-between gap-4 py-3.5',
           fullWidth ? 'app-shell' : 'container mx-auto px-4'
         )}
       >
-        <div className="flex items-center gap-8">
-          <Link href={logoHref} className="text-lg transition-opacity hover:opacity-75">
+        {/* `min-w-0` lets the brand truncate rather than push the actions off a
+            small screen; the nav folds into a menu below `md` (HeaderNav). */}
+        <div className="flex min-w-0 items-center gap-4 md:gap-8">
+          <Link
+            href={logoHref}
+            className="min-w-0 truncate text-lg transition-opacity hover:opacity-75"
+          >
             {logoText ?? <BrandMark />}
           </Link>
           {navigation}
         </div>
-        <HeaderActions />
+        <div className="shrink-0">
+          <HeaderActions />
+        </div>
       </div>
     </header>
   );

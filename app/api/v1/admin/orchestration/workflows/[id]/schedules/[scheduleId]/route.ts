@@ -13,6 +13,11 @@ import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { getClientIP } from '@/lib/security/ip';
+import {
+  refuseErasedSubjects,
+  stringsIn,
+  WRITER_TRANSACTION_OPTIONS,
+} from '@/lib/privacy/erased-subjects';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
 import { cuidSchema } from '@/lib/validations/common';
 import { updateScheduleSchema } from '@/lib/validations/orchestration';
@@ -46,77 +51,108 @@ export const GET = withAdminAuth<Params>(async (_request, _session, { params }) 
   return successResponse({ schedule });
 });
 
-export const PATCH = withAdminAuth<Params>(async (request, session, { params }) => {
-  const clientIP = getClientIP(request);
+export const PATCH = withAdminAuth<Params>(
+  async (request, session, { params }) => {
+    const clientIP = getClientIP(request);
 
-  const { id, scheduleId } = await params;
-  const existing = await resolveSchedule(id, scheduleId);
+    const { id, scheduleId } = await params;
+    const existing = await resolveSchedule(id, scheduleId);
 
-  const body = await validateRequestBody(request, updateScheduleSchema);
+    const body = await validateRequestBody(request, updateScheduleSchema);
 
-  if (body.cronExpression && !isValidCron(body.cronExpression)) {
-    throw new ValidationError('Invalid cron expression', {
-      cronExpression: ['Must be a valid cron expression (e.g. "0 9 * * 1-5")'],
+    if (body.cronExpression && !isValidCron(body.cronExpression)) {
+      throw new ValidationError('Invalid cron expression', {
+        cronExpression: ['Must be a valid cron expression (e.g. "0 9 * * 1-5")'],
+      });
+    }
+
+    // Recompute nextRunAt if cron or enabled status changed
+    const cronExpr = body.cronExpression ?? existing.cronExpression;
+    const isEnabled = body.isEnabled ?? existing.isEnabled;
+    const nextRunAt = isEnabled ? getNextRunAt(cronExpr) : null;
+
+    // The edit form sends the whole template it loaded, so one opened before a
+    // person was erased would write their address back (t-805).
+    const updated = await prisma.$transaction(async (tx) => {
+      if (body.inputTemplate !== undefined) {
+        await refuseErasedSubjects(
+          tx,
+          { addresses: stringsIn(body.inputTemplate) },
+          'inputTemplate'
+        );
+      }
+      return tx.aiWorkflowSchedule.update({
+        where: { id: existing.id },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.cronExpression !== undefined ? { cronExpression: body.cronExpression } : {}),
+          ...(body.inputTemplate !== undefined
+            ? { inputTemplate: body.inputTemplate as Prisma.InputJsonValue }
+            : {}),
+          ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
+          // `scope` is a `Json?` column: JS `null` can't clear it (Prisma needs the
+          // `DbNull` sentinel), and `undefined` leaves it untouched.
+          ...(body.scope !== undefined
+            ? { scope: body.scope === null ? Prisma.DbNull : body.scope }
+            : {}),
+          nextRunAt,
+        },
+      });
+    }, WRITER_TRANSACTION_OPTIONS);
+
+    // The edited schedule can be due sooner than an already-armed idle gate would
+    // next sweep, so disarm it and let the next tick recompute the horizon (#442).
+    if (nextRunAt) noteMaintenanceWork('schedule-updated');
+
+    logAdminAction({
+      userId: session.user.id,
+      action: 'workflow_schedule.update',
+      entityType: 'workflow_schedule',
+      entityId: existing.id,
+      entityName: updated.name,
+      metadata: { workflowId: id },
+      clientIp: clientIP,
     });
-  }
 
-  // Recompute nextRunAt if cron or enabled status changed
-  const cronExpr = body.cronExpression ?? existing.cronExpression;
-  const isEnabled = body.isEnabled ?? existing.isEnabled;
-  const nextRunAt = isEnabled ? getNextRunAt(cronExpr) : null;
-
-  const updated = await prisma.aiWorkflowSchedule.update({
-    where: { id: existing.id },
-    data: {
-      ...(body.name !== undefined ? { name: body.name } : {}),
-      ...(body.cronExpression !== undefined ? { cronExpression: body.cronExpression } : {}),
-      ...(body.inputTemplate !== undefined
-        ? { inputTemplate: body.inputTemplate as Prisma.InputJsonValue }
-        : {}),
-      ...(body.isEnabled !== undefined ? { isEnabled: body.isEnabled } : {}),
-      // `scope` is a `Json?` column: JS `null` can't clear it (Prisma needs the
-      // `DbNull` sentinel), and `undefined` leaves it untouched.
-      ...(body.scope !== undefined
-        ? { scope: body.scope === null ? Prisma.DbNull : body.scope }
-        : {}),
-      nextRunAt,
+    return successResponse({ schedule: updated });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'nothing',
+      because:
+        'Workflows, their versions, schedules and templates are the org’s configuration, not anyone’s personal rows; row isolation bounds them to the entered org.',
     },
-  });
+  }
+);
 
-  // The edited schedule can be due sooner than an already-armed idle gate would
-  // next sweep, so disarm it and let the next tick recompute the horizon (#442).
-  if (nextRunAt) noteMaintenanceWork('schedule-updated');
+export const DELETE = withAdminAuth<Params>(
+  async (request, session, { params }) => {
+    const clientIP = getClientIP(request);
 
-  logAdminAction({
-    userId: session.user.id,
-    action: 'workflow_schedule.update',
-    entityType: 'workflow_schedule',
-    entityId: existing.id,
-    entityName: updated.name,
-    metadata: { workflowId: id },
-    clientIp: clientIP,
-  });
+    const { id, scheduleId } = await params;
+    const existing = await resolveSchedule(id, scheduleId);
 
-  return successResponse({ schedule: updated });
-});
+    await prisma.aiWorkflowSchedule.delete({ where: { id: existing.id } });
 
-export const DELETE = withAdminAuth<Params>(async (request, session, { params }) => {
-  const clientIP = getClientIP(request);
+    logAdminAction({
+      userId: session.user.id,
+      action: 'workflow_schedule.delete',
+      entityType: 'workflow_schedule',
+      entityId: existing.id,
+      entityName: existing.name,
+      metadata: { workflowId: id },
+      clientIp: clientIP,
+    });
 
-  const { id, scheduleId } = await params;
-  const existing = await resolveSchedule(id, scheduleId);
-
-  await prisma.aiWorkflowSchedule.delete({ where: { id: existing.id } });
-
-  logAdminAction({
-    userId: session.user.id,
-    action: 'workflow_schedule.delete',
-    entityType: 'workflow_schedule',
-    entityId: existing.id,
-    entityName: existing.name,
-    metadata: { workflowId: id },
-    clientIp: clientIP,
-  });
-
-  return successResponse({ deleted: true });
-});
+    return successResponse({ deleted: true });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'nothing',
+      because:
+        'Workflows, their versions, schedules and templates are the org’s configuration, not anyone’s personal rows; row isolation bounds them to the entered org.',
+    },
+  }
+);

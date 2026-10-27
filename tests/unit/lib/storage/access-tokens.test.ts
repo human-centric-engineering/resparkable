@@ -31,6 +31,7 @@ import {
   generateStorageAccessToken,
   verifyStorageAccessToken,
   buildStorageAccessUrl,
+  tokenOrgMatchesKey,
   MAX_EXPIRY_SECONDS,
 } from '@/lib/storage/access-tokens';
 
@@ -256,7 +257,159 @@ describe('storage access tokens', () => {
     });
   });
 
+  // §109 t-736: the `org` claim. Minting is the one rule that decides whose
+  // key a token may name; the read route re-checks it (route test).
+  describe('org claim', () => {
+    const ORG_KEY = 'orgs/org-a/reports/q3.pdf';
+
+    /** Decode the payload a token carries, without verifying it. */
+    function decodePayload(token: string): Record<string, unknown> {
+      const parsed: unknown = JSON.parse(
+        Buffer.from(token.slice(0, token.indexOf('.')), 'base64url').toString('utf8')
+      );
+      if (typeof parsed !== 'object' || parsed === null) throw new Error('payload not an object');
+      return Object.fromEntries(Object.entries(parsed));
+    }
+
+    it('writes the org into the payload for an org-owned key minted for that org', () => {
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      expect(decodePayload(token)).toMatchObject({ key: ORG_KEY, org: 'org-a' });
+    });
+
+    it('refuses an org-owned key minted for a different org', () => {
+      expect(() => generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-b' })).toThrow(
+        /outside the org/i
+      );
+    });
+
+    it('refuses an org-owned key minted with no org', () => {
+      expect(() => generateStorageAccessToken(ORG_KEY, 300)).toThrow(
+        /only be signed for its own org/i
+      );
+    });
+
+    it('refuses a sibling org whose id merely starts the same way', () => {
+      expect(() =>
+        generateStorageAccessToken('orgs/org-ab/x.pdf', 300, { orgId: 'org-a' })
+      ).toThrow(/outside the org/i);
+    });
+
+    it('refuses a legacy (non-org) key minted for an org', () => {
+      expect(() => generateStorageAccessToken(KEY, 300, { orgId: 'org-a' })).toThrow(
+        /outside the org/i
+      );
+    });
+
+    it('leaves the org property off entirely for a legacy key with no org', () => {
+      const { token } = generateStorageAccessToken(KEY, 300);
+
+      // Pre-claim shape preserved: absent, not `org: undefined`.
+      expect('org' in decodePayload(token)).toBe(false);
+    });
+
+    it('round-trips the org claim through verify', () => {
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      expect(verifyStorageAccessToken(token)).toMatchObject({ key: ORG_KEY, org: 'org-a' });
+    });
+
+    it('still verifies a token minted before the claim existed, with no org', () => {
+      const token = signPayload({
+        typ: 'storage-read',
+        key: KEY,
+        expiresAt: '2026-07-30T12:05:00.000Z',
+      });
+
+      const payload = verifyStorageAccessToken(token);
+
+      expect(payload.key).toBe(KEY);
+      expect(payload.org).toBeUndefined();
+    });
+
+    it('covers the org claim with the signature, so it cannot be swapped', () => {
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+      const signature = token.slice(token.indexOf('.') + 1);
+      const swapped = { ...decodePayload(token), org: 'org-b' };
+      const forged = Buffer.from(JSON.stringify(swapped), 'utf8').toString('base64url');
+
+      expect(() => verifyStorageAccessToken(`${forged}.${signature}`)).toThrow(/signature/i);
+    });
+  });
+
+  describe('tokenOrgMatchesKey', () => {
+    const ORG_KEY = 'orgs/org-a/reports/q3.pdf';
+
+    it('matches an org-owned key against the org it belongs to', () => {
+      expect(tokenOrgMatchesKey('org-a', ORG_KEY)).toBe(true);
+    });
+
+    it('does not match an org-owned key against a different org', () => {
+      expect(tokenOrgMatchesKey('org-b', ORG_KEY)).toBe(false);
+    });
+
+    it('does not match a sibling org whose id merely starts the same way', () => {
+      expect(tokenOrgMatchesKey('org-a', 'orgs/org-ab/x.pdf')).toBe(false);
+    });
+
+    it('does not match an org-owned key when the token carries no org (undefined)', () => {
+      expect(tokenOrgMatchesKey(undefined, ORG_KEY)).toBe(false);
+    });
+
+    it('does not match an org-owned key when the token carries no org (null)', () => {
+      expect(tokenOrgMatchesKey(null, ORG_KEY)).toBe(false);
+    });
+
+    it('does not match a legacy key against any org', () => {
+      expect(tokenOrgMatchesKey('org-a', KEY)).toBe(false);
+    });
+
+    it.each(['orgs//orgB/f', 'Orgs/orgB/f'])(
+      'never matches the malformed reserved-root key %s, whatever the claim',
+      (key) => {
+        expect(tokenOrgMatchesKey(undefined, key)).toBe(false);
+        expect(tokenOrgMatchesKey(null, key)).toBe(false);
+        expect(tokenOrgMatchesKey('orgB', key)).toBe(false);
+        expect(tokenOrgMatchesKey('', key)).toBe(false);
+      }
+    );
+
+    it('refuses to mint a token for a malformed reserved-root key without an org', () => {
+      expect(() => generateStorageAccessToken('orgs//orgB/f')).toThrow(
+        /only be signed for its own org/i
+      );
+    });
+
+    it('refuses to mint a token for a malformed reserved-root key even with an org', () => {
+      expect(() => generateStorageAccessToken('orgs//orgB/f', 300, { orgId: 'orgB' })).toThrow();
+    });
+
+    it('refuses to mint for a malformed org key whose segment is no valid org id', () => {
+      expect(() => generateStorageAccessToken('orgs/a b/x', 60, { orgId: 'a b' })).toThrow();
+    });
+
+    it('matches a legacy key only when the token carries no org', () => {
+      expect(tokenOrgMatchesKey(undefined, KEY)).toBe(true);
+      expect(tokenOrgMatchesKey(null, KEY)).toBe(true);
+    });
+  });
+
   describe('buildStorageAccessUrl', () => {
+    it('passes the org option through to the minted token', () => {
+      const { url } = buildStorageAccessUrl('orgs/org-a/x.pdf', 300, undefined, {
+        orgId: 'org-a',
+      });
+      const token = decodeURIComponent(url.split('token=')[1]);
+
+      expect(verifyStorageAccessToken(token).org).toBe('org-a');
+    });
+
+    it('refuses an org-owned key for another org rather than building a URL', () => {
+      expect(() =>
+        buildStorageAccessUrl('orgs/org-a/x.pdf', 300, undefined, { orgId: 'org-b' })
+      ).toThrow(/outside the org/i);
+    });
+
     it('builds a relative URL the read route can serve', () => {
       const { url } = buildStorageAccessUrl(KEY, 300);
 

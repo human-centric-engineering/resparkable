@@ -624,6 +624,8 @@ describe('the handler receives the ownerless-read answer, already decided', () =
       dataset: true,
       execution: true,
       experiment: true,
+      webhookDelivery: true,
+      webhookSubscription: true,
     });
   });
 
@@ -645,6 +647,8 @@ describe('the handler receives the ownerless-read answer, already decided', () =
       dataset: false,
       execution: false,
       experiment: false,
+      webhookDelivery: false,
+      webhookSubscription: false,
     });
   });
 
@@ -674,6 +678,8 @@ describe('the handler receives the ownerless-read answer, already decided', () =
       dataset: true,
       execution: false,
       experiment: false,
+      webhookDelivery: false,
+      webhookSubscription: false,
     });
   });
 
@@ -706,6 +712,8 @@ describe('the handler receives the ownerless-read answer, already decided', () =
       dataset: true,
       execution: true,
       experiment: true,
+      webhookDelivery: true,
+      webhookSubscription: true,
     });
 
     const probes = read.filter(
@@ -740,10 +748,12 @@ describe('the handler receives the ownerless-read answer, already decided', () =
       dataset: true,
       execution: true,
       experiment: true,
+      webhookDelivery: true,
+      webhookSubscription: true,
     });
   });
 
-  it('does not log the resolver diagnostic while asking — on any of the four kinds', async () => {
+  it('does not log the resolver diagnostic while asking — on any kind', async () => {
     // The regression this task closes. The `'unattributed'` arm serves two
     // questions, and the default policy's warning is written for the other one:
     // "a route named a resource with no ownerId — give the resolver one". Asking

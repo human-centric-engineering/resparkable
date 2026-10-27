@@ -125,11 +125,37 @@ export const MAX_TOOL_ITERATIONS = 5;
 
 /**
  * Fallback message count limit when token-based truncation is not active
- * (i.e., no model context window information is available). Also serves
- * as a hard upper-bound on the number of history messages to load from
- * the database, even when token-based truncation is in use.
+ * (i.e., no model context window information is available). It is the
+ * default for `AiAgent.maxHistoryMessages`; how many rows one history read
+ * returns is {@link HISTORY_LOAD_LIMIT}.
  */
 export const MAX_HISTORY_MESSAGES = 50;
+
+/**
+ * The most messages one history read returns. It reads from the stored
+ * summary's pin onward (or the newest rows when there is no pin), so every row
+ * after the point the summary covers is seen — and a conversation that has
+ * more than this after the pin is folded forward in catch-up passes rather
+ * than cut off (#655).
+ */
+export const HISTORY_LOAD_LIMIT = 200;
+
+/**
+ * How many messages one catch-up summarisation folds forward when more than
+ * {@link HISTORY_LOAD_LIMIT} rows sit after the stored summary's pin (a long
+ * summariser outage, or a turn that wrote a great many rows). Half the load
+ * window: enough to clear the overflow in one pass in practice, while leaving
+ * about as many rows verbatim afterwards. (#655)
+ */
+export const SUMMARY_CATCHUP_MESSAGES = HISTORY_LOAD_LIMIT / 2;
+
+/**
+ * Summariser calls one turn may make in total — catch-up passes and the
+ * ordinary summarisation together. Each is a call the user waits behind and
+ * pays for; what is done is persisted per call, so the next turn resumes where
+ * this one stopped. (#655)
+ */
+export const SUMMARY_MAX_CALLS_PER_TURN = 3;
 
 /**
  * How far **past** the current drop boundary a summarisation run extends.

@@ -29,7 +29,7 @@ vi.mock('@/lib/db/client', () => ({
 const mockUpdateOrg = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/tenancy/lifecycle', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/tenancy/lifecycle')>()),
-  updateOrg: mockUpdateOrg,
+  updateOrgReportingPrevious: mockUpdateOrg,
 }));
 const mockEraseOrg = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/privacy/erase-org', () => ({ eraseOrg: mockEraseOrg }));
@@ -106,7 +106,10 @@ beforeEach(() => {
       },
     ],
   } as never);
-  mockUpdateOrg.mockResolvedValue({ ...orgRow, name: 'Renamed' });
+  mockUpdateOrg.mockResolvedValue({
+    org: { ...orgRow, name: 'Renamed' },
+    previousSettings: null,
+  });
   mockLoadRetentionWindows.mockResolvedValue({
     webhookRetentionDays: 30,
     webhookDlqRetentionDays: null,

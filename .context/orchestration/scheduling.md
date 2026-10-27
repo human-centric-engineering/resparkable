@@ -61,10 +61,10 @@ Called every ~60 seconds by an external cron job hitting `POST /api/v1/admin/orc
 
 1. Queries enabled schedules where `nextRunAt <= now` (max 50 per tick)
 2. Skips schedules whose workflow is inactive
-3. Claims the schedule via **optimistic lock**: `updateMany WHERE id = :id AND nextRunAt = :originalNextRunAt` — if `count === 0`, another tick already claimed it (prevents double-fire in multi-instance deployments)
-4. Creates `AiWorkflowExecution` with status `pending`, `inputTemplate` as `inputData`, `triggerSource: 'schedule'`, and **`userId: null`** — see [Attribution](#attribution) below
-5. Validates the workflow definition via `workflowDefinitionSchema.safeParse()` — marks execution as `failed` if invalid
-6. **Invokes the orchestration engine** via `drainEngine()` (fire-and-forget) with `resumeFromExecutionId` so the engine picks up the `pending` row and transitions it through `running` to `completed`/`failed`
+3. Skips, as a failure, a workflow with no published version, claiming the firing so it is not retried every tick
+4. In one transaction (t-839): tries the locks erasure takes for the addresses in `inputTemplate` and the recipients and approvers in the published version — if one is held (an erasure or a backup import in progress), the schedule is left unclaimed for the next tick, with a warning (still counted as processed, so the maintenance tick does not read the sweep as idle); otherwise checks them against the erasure receipts; creates `AiWorkflowExecution` with status `pending`, `inputTemplate` as `inputData` (an erased address blanked), `triggerSource: 'schedule'`, and **`userId: null`** — see [Attribution](#attribution) below; then claims the schedule via **optimistic lock**: `updateMany WHERE id = :id AND nextRunAt = :originalNextRunAt`. If `count === 0`, another tick already claimed it (prevents double-fire in multi-instance deployments), and the run is rolled back. The tick read its schedules at step 1, and an erasure can commit in between; see [`privacy/data-erasure.md`](../privacy/data-erasure.md). A run that cannot be created for any other reason still claims the firing, on its own, so a broken schedule fails once per firing rather than every tick; if another tick had already claimed it, no failure is counted. The claim comes after the insert so a concurrent workflow delete cannot deadlock with it. The claim can wait for an erasure rewriting the schedule, bounded by Postgres's `lock_timeout` inside the transaction's 70 s (`WRITER_TRANSACTION_OPTIONS`)
+5. Validates the workflow definition via `workflowDefinitionSchema.safeParse()` — marks execution as `failed` if invalid. An erased person found in step 4 is left out of the definition the engine runs
+6. **Invokes the orchestration engine** via `drainEngine()`, in the background and kept alive past the response (below), with `resumeFromExecutionId` so the engine picks up the `pending` row and transitions it through `running` to `completed`/`failed`
 
 Returns `{ processed, succeeded, failed, errors }`.
 
@@ -103,7 +103,7 @@ Recovery sweep that picks up `AiWorkflowExecution` rows stuck in `pending` statu
 
 1. Queries executions where `status = 'pending' AND createdAt < (now - staleThresholdMs)` (default: 2 minutes, max 20 per sweep)
 2. Marks `failed` if the linked workflow is inactive or has an invalid definition
-3. Otherwise invokes `drainEngine()` fire-and-forget
+3. Otherwise invokes `drainEngine()` in the background, kept alive past the response
 
 Called automatically by the unified maintenance tick.
 
@@ -114,7 +114,7 @@ Lease-aware recovery sweep that picks up `AiWorkflowExecution` rows stuck in `ru
 1. Queries executions where `status = 'running' AND leaseExpiresAt < now()` (max 20 per sweep)
 2. Marks `failed` with `errorMessage = "Recovery exhausted after N attempts"` if `recoveryAttempts >= MAX_RECOVERY_ATTEMPTS` (= 3); also emits `workflow.execution.failed` hook + `execution_crashed` webhook
 3. Marks `failed` if the workflow has been deactivated, has no published version, or has an invalid definition
-4. Otherwise invokes `drainEngine()` fire-and-forget; the engine's `initRun` claims the lease atomically via `claimLease(executionId, 'orphan-resume')` (the `'orphan-resume'` reason increments `recoveryAttempts` in the same UPDATE — `'fresh-resume'` is the approval-pause variant that does NOT consume a recovery slot) and resumes from `row.currentStep`
+4. Otherwise invokes `drainEngine()` in the background, kept alive past the response; the engine's `initRun` claims the lease atomically via `claimLease(executionId, 'orphan-resume')` (the `'orphan-resume'` reason increments `recoveryAttempts` in the same UPDATE — `'fresh-resume'` is the approval-pause variant that does NOT consume a recovery slot) and resumes from `row.currentStep`
 
 Detection latency is `LEASE_DURATION_MS + tick cadence` — typically under 4 minutes after a crash. Returns `{ recovered, exhausted, errors }`.
 
@@ -140,7 +140,29 @@ Called automatically by the unified maintenance tick **before** `reapZombieExecu
 
 ### Unified Maintenance Tick (admin-auth required, **preferred**)
 
-`POST /api/v1/admin/orchestration/maintenance/tick` — runs all periodic maintenance tasks in one call. **Returns `202 Accepted`** as soon as `processDueSchedules()` has claimed and fired any due schedules; the remaining ten tasks run as a fire-and-forget background chain inside the same overlap guard and log per-task results when they settle. Each background task also has a minimum interval, so most ticks run only a subset — see the table below.
+`POST /api/v1/admin/orchestration/maintenance/tick` — runs all periodic maintenance tasks in one call. **Returns `202 Accepted`** as soon as `processDueSchedules()` has claimed and fired any due schedules; the remaining ten tasks run as a background chain inside the same overlap guard and log per-task results when they settle. Each background task also has a minimum interval, so most ticks run only a subset — see the table below.
+
+`GET` on the same path does the same, but accepts **an admin API key only** and refuses a browser session with `403`. It exists for Vercel Cron, which can send nothing but a `GET` with `Authorization: Bearer $CRON_SECRET`. A session is refused because a session cookie travels with a cross-site link, so a `GET` that accepted one would let any page make a signed-in admin's browser fire a tick.
+
+**The background chain runs under `after()` (t-844).** On a serverless host the invocation can be frozen as soon as the response is sent, which would silently stop every task below. `runMaintenanceTick()` returns the chain as `background`, and the route passes it to Next's `after()`, which keeps the invocation alive until it settles (Vercel runs it under `waitUntil`). The route sets `maxDuration = 300` (Vercel's Fluid default and the Hobby ceiling). That is the whole invocation's budget, sweep and chain together, whereas the watchdog gives each of them five minutes, so on a host that enforces `maxDuration` a slow sweep shortens the chain. `HEAD` answers `405`, because Next would otherwise run the `GET` handler for it. `after()` is not called inside `run-tick.ts` because the dev ticker in `instrumentation.ts` runs outside any request, where `after()` throws; there the chain runs on the long-lived process. A caller of `runMaintenanceTick()` from a request handler must hand `background` to `after()` the same way. The chain never rejects.
+
+**Every engine drain is kept alive the same way (t-846).** `drainEngine` hands its own run to `keepRunningAfterResponse` (`lib/api/after-response.ts`), which passes it to `after()`. So the runs the tick starts (a fired schedule, a recovered `pending` row, a re-driven orphan) and the inbound trigger's run are held past the response, and a caller may still write `void drainEngine(...)`. `resumeApprovedExecution` awaits its drain, and the approve routes that resume a run hand that whole promise to the helper. Next allows nested `after()` calls, so a drain registered from inside the background chain is held too. Where there is no request scope (the dev ticker, scripts, unit tests), `after()` throws and the drain runs on the long-lived process as before. The schedules tick, inbound and resuming approve routes set `maxDuration = 300`, as the maintenance tick does. A run still going when the budget ends is cut off and recovered by a later tick: a `pending` row by the pending sweep, a `running` one by the orphan sweep once its lease lapses. Each orphan re-drive uses one of `MAX_RECOVERY_ATTEMPTS`, so a step that needs longer than the budget ends as recovery exhausted.
+
+**What a run detaches is held too (t-903).** The engine and the scheduler start some work without awaiting it. `dispatchWebhookEvent`, `emitHookEvent`, `logCost` and the lease-event writes (`recordReleaseEvent` and the rest in `engine/lease.ts`) each register their own work with `keepRunningAfterResponse`. So a caller that does not await them is covered wherever it is, provided it calls them while a request, or an enclosing `after()` task such as a drain, is still open. A call made from a timer after everything has settled is not held, because there is nothing left to hold it open. `emitHookEvent`'s dispatch settles once each hook's first attempt has, so its one hold covers the deliveries. The `approval_required` and `execution_crashed` dispatches, which read display names first, are wrapped where they are started. In-process retry timers are not held: a frozen process loses them, and the tick's retry sweeps (`processPendingRetries`, `processPendingHookRetries`) send them instead.
+
+#### Every production host needs an external cron
+
+The in-process ticker in `instrumentation.ts` runs **only in development**. In production nothing calls the tick unless something outside the app does, on every host: Vercel, a container, or a VPS. Without it the app serves traffic and `/api/health` reports OK, but schedules never fire, retries never drain, stuck runs are never reaped and retention never runs.
+
+Call it every minute with an admin API key (`admin` scope, minted by a platform admin — see [API Keys](./api-keys.md)):
+
+```bash
+# crontab on a VPS or container host, or any external scheduler that can POST
+* * * * * curl -fsS -X POST -H "Authorization: Bearer sk_..." \
+  https://yourdomain/api/v1/admin/orchestration/maintenance/tick
+```
+
+On Vercel, set `CRON_SECRET` to the key and add the cron to `vercel.json` — see [Vercel: Maintenance tick cron](../deployment/platforms/vercel.md#maintenance-tick-cron), which also covers the Hobby plan's once-a-day limit. Per-platform notes are in [hosting requirements](./meta/hosting-requirements.md).
 
 1. `processDueSchedules()` — workflow cron schedules **(awaited synchronously)**
 2. `processPendingRetries()` — webhook subscription delivery retry queue _(background)_
@@ -168,6 +190,7 @@ Called automatically by the unified maintenance tick **before** `reapZombieExecu
 | `evaluationRuns`           | every tick | per-org | the worker drives one time-slice per tick, so cadence is throughput |
 | `auditLogRetention`        | 1 hour     | system  | the two audit tables have no org column — once, not once per org    |
 | `platformAgents`           | 15 min     | per-org | catches up an org behind the running code or missing a declared row |
+| `pendingErasures`          | every tick | system  | a throttled run reports no work, and the idle gate must not skip it |
 | `transferJobs`             | every tick | system  | one transfer per tick, run as the install org so writes get its org |
 | `transferArchiveExpiry`    | 1 hour     | system  | the stored-archive TTL is measured in days                          |
 
@@ -189,7 +212,7 @@ enters `runAsOrg` per row), and the `scope` field is where that change lands.
 A deployment approaching it should watch the `totalDurationMs` in the
 completion log line against its cron interval.
 
-**Scope.** A `per-org` task runs once per active org through `forEachOrg`, each run inside that org's tenant context (`source: 'job'`): its creates are stamped with the org and, at `TENANCY_MODE=multi`, the `org_isolation` policies confine its reads and writes to that org — so a `take: 50` in the task body is a per-org cap. A `{ system: reason }` task runs once under `runAsSystem`, the audited bypass, and the reason is logged on every entry. Every task that touches a tenant-owned table is per-org, including the ones that look like global queue drains: the reaper writes lease events, recovery and the scheduler start the engine, the evaluation worker writes cases, and under the system scope nothing is stamped, so each would have written a `NULL`-org row. The schedules sweep runs per org the same way (a due schedule's execution, and everything the engine writes for it, carries the schedule's org — the `void drainEngine` continuation keeps the scope it was started in), and the idle gate's horizon read (`getNextScheduleRunAt`, the earliest next run across every org) is the one system-scoped read in the tick. At `single` the one org is the install org, every per-org task runs exactly once, and the completion line keeps the shape it always had; at `multi` a per-org task's entry in that line is the fold across orgs — numeric fields summed, arrays concatenated, plus `orgs` (how many ran) and `orgErrors` (which failed, each contained so the next org still runs). A tick fired from an admin's browser session does not run inside that admin's org: every task enters its own scope. The runner is `lib/orchestration/maintenance/job-scope.ts`; see [`tenancy/context.md`](../tenancy/context.md).
+**Scope.** A `per-org` task runs once per active org through `forEachOrg`, each run inside that org's tenant context (`source: 'job'`): its creates are stamped with the org and, at `TENANCY_MODE=multi`, the `org_isolation` policies confine its reads and writes to that org — so a `take: 50` in the task body is a per-org cap. A `{ system: reason }` task runs once under `runAsSystem`, the audited bypass, and the reason is logged on every entry. Every task that touches a tenant-owned table is per-org, including the ones that look like global queue drains: the reaper writes lease events, recovery and the scheduler start the engine, the evaluation worker writes cases, and under the system scope nothing is stamped, so each would have written a `NULL`-org row. The schedules sweep runs per org the same way (a due schedule's execution, and everything the engine writes for it, carries the schedule's org — the background drain keeps the scope it was started in), and the idle gate's horizon read (`getNextScheduleRunAt`, the earliest next run across every org) is the one system-scoped read in the tick. At `single` the one org is the install org, every per-org task runs exactly once, and the completion line keeps the shape it always had; at `multi` a per-org task's entry in that line is the fold across orgs — numeric fields summed, arrays concatenated, plus `orgs` (how many ran) and `orgErrors` (which failed, each contained so the next org still runs). A tick fired from an admin's browser session does not run inside that admin's org: every task enters its own scope. The runner is `lib/orchestration/maintenance/job-scope.ts`; see [`tenancy/context.md`](../tenancy/context.md).
 
 A task held back by its interval reports the string `'skipped'` under its own key in the completion log line — reported rather than omitted, so "did the sweep run?" is answerable from the logs. Intervals are **start-to-start** and held **in process memory**: persisting them would cost a DB round-trip per task per tick, which is the cost the throttle exists to remove. Consequences, both benign because every throttled task is idempotent: each instance in a multi-instance deployment keeps its own clock (so a task runs roughly once per instance per interval), and a restart re-arms everything immediately.
 
@@ -215,6 +238,7 @@ Forks add their own recurring work through `registerAppJob`, which shares the th
       "evaluationRuns",
       "auditLogRetention",
       "platformAgents",
+      "pendingErasures",
       "transferJobs",
       "transferArchiveExpiry",
     ],
@@ -227,7 +251,7 @@ A tick the idle gate skipped returns **200** with `{ skipped: true, reason: 'idl
 
 At `TENANCY_MODE=multi` with more than one active org, `schedules` is the fold across orgs rather than one sweep's counters — `{ "orgs": 2, "processed": 4, "succeeded": 3, "failed": 1, "errors": [...] }`, plus `orgErrors: [{ orgId, error }]` for any org whose sweep threw. A `single` install (one org) sees the shape above unchanged.
 
-The schedules result is concretely reported. Per-task background results are NOT in the response — they are written to the application logger as `Maintenance tick background tasks completed` once the chain settles. This decouples HTTP duration from retention-sweep / embedding-backfill runtime so external cron callers can use a short HTTP timeout (e.g. 30s) without ever cutting off mid-task. Engine work inside `processDueSchedules` was already detached via `void drainEngine`, so the synchronous portion only includes DB-claim work.
+The schedules result is concretely reported. Per-task background results are NOT in the response — they are written to the application logger as `Maintenance tick background tasks completed` once the chain settles. This decouples HTTP duration from retention-sweep / embedding-backfill runtime so external cron callers can use a short HTTP timeout (e.g. 30s) without ever cutting off mid-task. Engine work inside `processDueSchedules` runs in the background (each drain handed to `after()`), so the synchronous portion only includes DB-claim work.
 
 ### The idle gate — a tick that does no database work at all
 

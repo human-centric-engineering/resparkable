@@ -83,7 +83,7 @@ does **not** emit this event — that one is the breaker doing its job, and it i
 already in the logs. Both refusals do emit a `warning` SSE frame carrying the
 same code.
 
-`execution.force_failed` fires from the admin force-fail route (live-engine surface) **in addition to** `workflow.failed`, not in place of it. Existing Slack / PagerDuty integrations subscribed to `workflow.failed` keep firing unchanged; subscribers that want to distinguish admin-driven termination from a natural engine failure should also subscribe to `execution.force_failed`. The dual emit is intentional — see `.context/admin/orchestration-executions-live-engine.md`. Payload: `{ executionId, workflowId, actorUserId, reason, previousStatus }`. The `workflow.failed` payload emitted alongside includes `source: 'admin-force-fail'` so a single subscriber can detect the case from either event.
+`execution.force_failed` fires from the admin force-fail route (live-engine surface) **in addition to** `workflow.failed`, not in place of it. Existing Slack / PagerDuty integrations subscribed to `workflow.failed` keep firing unchanged; subscribers that want to distinguish admin-driven termination from a natural engine failure should also subscribe to `execution.force_failed`. The dual emit is intentional — see `.context/admin/orchestration-executions-live-engine.md`. Payload: `{ executionId, workflowId, userId, actorUserId, reason, previousStatus }`, where `userId` is the run's owner (`null` for a system-owned run) and `actorUserId` the admin who force-failed it. The `workflow.failed` payload emitted alongside includes `source: 'admin-force-fail'` so a single subscriber can detect the case from either event, and carries the owner's `userId` too.
 
 `workflow.failed` and `workflow.execution.failed` are not the same event:
 
@@ -92,7 +92,7 @@ same code.
 
 Use `workflow.execution.failed` for "background workflow crashed entirely" alerts; use `workflow.failed` for normal step-level failure handling.
 
-**Cost-cap events (improvement #39 runaway-loop guard).** `workflow_budget_exceeded` and `chat_budget_exceeded_per_turn` are dispatched through the [Webhook Subscriptions](../admin/orchestration-webhooks.md) subsystem only — they do NOT appear in the in-process `HookEventType` union. Ordering for the per-execution case: `workflow_budget_exceeded` fires BEFORE the engine's terminal `workflow.failed` so subscribers wanting only one notification can listen to the specific event and ignore the generic one (the generic still fires for trace-consumer compatibility). The per-turn variant fires from the chat handler alongside the SSE `budget_exceeded_per_turn` event, with no companion terminal event since chat turns don't have a workflow-level lifecycle. Payloads include `usedUsd`, `limitUsd`, and (for the per-execution case) `failedStepId` + `executionId`.
+**Cost-cap events (improvement #39 runaway-loop guard).** `workflow_budget_exceeded` and `chat_budget_exceeded_per_turn` are dispatched through the [Webhook Subscriptions](../admin/orchestration-webhooks.md) subsystem only — they do NOT appear in the in-process `HookEventType` union. Ordering for the per-execution case: `workflow_budget_exceeded` fires BEFORE the engine's terminal `workflow.failed` so subscribers wanting only one notification can listen to the specific event and ignore the generic one (the generic still fires for trace-consumer compatibility). The per-turn variant fires from the chat handler alongside the SSE `budget_exceeded_per_turn` event, with no companion terminal event since chat turns don't have a workflow-level lifecycle. Payloads include `usedUsd`, `limitUsd`, and (for the per-execution case) `failedStepId` + `executionId`. Both name the person whose turn or run it was: the per-execution case carries the run owner's `userId` (`null` for a system-owned run); the per-turn case carries `userId`, or `userId: null` plus `embedVisitorId` for an embed visitor, as the chat hook events do. That lets erasure and subject access find the delivery after the conversation or run is gone (t-792).
 
 The `error` field in the `workflow.execution.failed` payload is sanitised before dispatch — absolute filesystem paths (POSIX and Windows) are replaced with `<path>` and the message is truncated to 200 characters. Webhook receivers are admin-trusted but may forward to broader-audience destinations; the unsanitised message is still persisted to `AiWorkflowExecution.errorMessage` and visible to admins via `/executions/:id` and `/executions/:id/status`. See `sanitiseHookErrorMessage` in `lib/orchestration/scheduling/scheduler.ts`.
 
@@ -198,7 +198,7 @@ emitHookEvent('workflow.completed', {
 });
 ```
 
-`emitHookEvent` is **fire-and-forget**. It returns `void` immediately and swallows all dispatch errors with a `logger.warn`. Callers never await hook dispatch.
+`emitHookEvent` is **fire-and-forget**. It returns `void` immediately and swallows all dispatch errors with a `logger.warn`. Callers never await hook dispatch. The dispatch, and each hook's first delivery attempt, is still held past the response by Next's `after()` (`keepRunningAfterResponse`, t-903), so on a serverless host it is not frozen part-way. Outside a request it runs on the process as before.
 
 ## Webhook Action
 
@@ -216,7 +216,7 @@ Dispatch behaviour (`dispatchWebhook`):
 - Creates an `AiEventHookDelivery` record per dispatch (status `pending` → `delivered` / `failed` / `exhausted`)
 - `POST` with `Content-Type: application/json`, `X-Hook-Event: <eventType>`, plus any user-supplied headers
 - Body is the full `HookEventPayload`
-- 10-second timeout via `AbortSignal.timeout(10_000)`
+- 10-second timeout (`DISPATCH_TIMEOUT_MS.hook` in `lib/orchestration/webhooks/not-retried.ts`, kept below the retry claim lease by a test, t-808)
 - **Optional HMAC-SHA256 signing** when the hook has a `secret` — see [Signing](#signing) below
 - On non-2xx / network error: updates the delivery row with `lastResponseCode` / `lastError` and schedules an in-process retry (up to 3 attempts at 10s / 60s / 300s). If the process restarts mid-backoff, `processPendingHookRetries()` picks stale rows up on the next maintenance tick.
 - URLs are SSRF-validated via `isSafeProviderUrl` in the Zod schema on create/update (blocks RFC1918, metadata endpoints, etc.)
@@ -295,17 +295,18 @@ Dispatch uses the cached secret — in multi-instance deployments, each instance
 
 All routes require admin auth (`withAdminAuth`). Mutations are rate-limited via `adminLimiter`.
 
-| Method   | Path                                                     | Description                                                                        |
-| -------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `GET`    | `/api/v1/admin/orchestration/hooks`                      | Paginated list (`?page`, `?limit`, `?eventType`). Returns `hasSecret` flag.        |
-| `POST`   | `/api/v1/admin/orchestration/hooks`                      | Create a hook (any `secret` field in the body is silently dropped)                 |
-| `GET`    | `/api/v1/admin/orchestration/hooks/:id`                  | Fetch one hook. Returns `hasSecret` flag; never the secret itself.                 |
-| `PATCH`  | `/api/v1/admin/orchestration/hooks/:id`                  | Update (all fields optional; `secret` field is silently dropped)                   |
-| `DELETE` | `/api/v1/admin/orchestration/hooks/:id`                  | Hard delete                                                                        |
-| `GET`    | `/api/v1/admin/orchestration/hooks/:id/deliveries`       | Paginated delivery history (`?page`, `?pageSize`, `?status`)                       |
-| `POST`   | `/api/v1/admin/orchestration/hooks/deliveries/:id/retry` | Manually re-dispatch a `failed` / `exhausted` delivery                             |
-| `POST`   | `/api/v1/admin/orchestration/hooks/:id/rotate-secret`    | Generate a fresh HMAC secret; returns the plaintext once. See [Signing](#signing). |
-| `DELETE` | `/api/v1/admin/orchestration/hooks/:id/rotate-secret`    | Clear the stored secret so dispatches go out unsigned                              |
+| Method   | Path                                                     | Description                                                                            |
+| -------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `GET`    | `/api/v1/admin/orchestration/hooks`                      | Paginated list (`?page`, `?limit`, `?eventType`). Returns `hasSecret` flag.            |
+| `POST`   | `/api/v1/admin/orchestration/hooks`                      | Create a hook (any `secret` field in the body is silently dropped)                     |
+| `GET`    | `/api/v1/admin/orchestration/hooks/:id`                  | Fetch one hook. Returns `hasSecret` flag; never the secret itself.                     |
+| `PATCH`  | `/api/v1/admin/orchestration/hooks/:id`                  | Update (all fields optional; `secret` field is silently dropped)                       |
+| `DELETE` | `/api/v1/admin/orchestration/hooks/:id`                  | Hard delete                                                                            |
+| `GET`    | `/api/v1/admin/orchestration/hooks/:id/deliveries`       | Paginated delivery history (`?page`, `?pageSize`, `?status`)                           |
+| `GET`    | `/api/v1/admin/orchestration/hooks/deliveries`           | Deliveries across every hook, incl. deleted hooks' (`?status`, `?hookId`, `?orphaned`) |
+| `POST`   | `/api/v1/admin/orchestration/hooks/deliveries/:id/retry` | Manually re-dispatch a `failed` / `exhausted` delivery                                 |
+| `POST`   | `/api/v1/admin/orchestration/hooks/:id/rotate-secret`    | Generate a fresh HMAC secret; returns the plaintext once. See [Signing](#signing).     |
+| `DELETE` | `/api/v1/admin/orchestration/hooks/:id/rotate-secret`    | Clear the stored secret so dispatches go out unsigned                                  |
 
 Validation: `createHookSchema` / `updateHookSchema` in the route files enforce `action.type === 'webhook'`. Webhook URLs pass through `isSafeProviderUrl`; the `id` path param must be a CUID.
 
@@ -316,9 +317,12 @@ Event hooks currently have no dedicated admin UI — manage them via the API abo
 Every dispatch attempt creates an `AiEventHookDelivery` row (see [Webhook Action](#webhook-action) above for the lifecycle). The two delivery routes make that history queryable:
 
 - **List** (`GET /hooks/:id/deliveries`) — ordered by `createdAt desc`. The `?status` filter accepts `pending`, `delivered`, `failed`, or `exhausted`. Returns 404 if the parent hook doesn't exist.
+- **List across hooks** (`GET /hooks/deliveries`) — the same rows for every hook, and the only route that reaches a delivery whose hook was deleted: `?orphaned=true` selects those, `?hookId` narrows to one hook, `?status` as above. Hooks are admin-global, so there is no owner clause.
 - **Retry** (`POST /hooks/deliveries/:id/retry`) — calls `retryHookDelivery()`, which resets `attempts` to 0 and re-dispatches. Only retriable deliveries (`failed` / `exhausted`) are accepted; `pending` / `delivered` rows return 404 with "no longer retriable".
 
 ## Retention
+
+Each row records where it was sent (`destination`, the URL's origin, and `destinationFingerprint`, a keyed HMAC of the full URL), and outlives its hook: deleting a hook sets `hookId` to null rather than deleting its history. A retry follows the hook's current URL and keeps the previous destination in `previousDestinations`; a retry of a delivery whose hook was deleted, or that an erasure stopped (t-793), is refused (the retry route answers `409`) and the maintenance tick marks it `exhausted`, appending `(not retried: hook deleted)` to its last real error. The rules are the webhook subscriptions' — see [Where a delivery went](../admin/orchestration-webhooks.md#where-a-delivery-went).
 
 Delivery rows persist across process restarts so admins can audit failures and manually retry. They are pruned by `pruneHookDeliveries()` in `lib/orchestration/retention.ts`, invoked from the unified maintenance tick alongside the other retention sweeps.
 

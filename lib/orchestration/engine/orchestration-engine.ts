@@ -43,8 +43,20 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { z } from 'zod';
 import { createLogger, type Logger } from '@/lib/logging';
+import { keepRunningAfterResponse } from '@/lib/api/after-response';
 import { prisma } from '@/lib/db/client';
+import { approvalRecipients } from '@/lib/privacy/config-recipients';
+import { findErasedSinceRunStarted, redactErased } from '@/lib/privacy/run-recipients';
+import { isRecord } from '@/lib/utils';
+import {
+  boundLockWaits,
+  findErasedSubjects,
+  SUBJECT_LOCK_WAIT_MS,
+  WRITER_TRANSACTION_OPTIONS,
+  type ErasedSubjects,
+} from '@/lib/privacy/erased-subjects';
 import {
   executionTraceEntrySchema,
   stepErrorConfigSchema,
@@ -637,13 +649,11 @@ export class OrchestrationEngine {
           // attribution point; fall back to the workflow's entry step
           // if the batch yielded no step ids (degenerate empty batch).
           const attribStep = batchResult.nextIds[0] ?? workflow.definition.entryStepId;
-          yield workflowBudgetExceeded(
-            ctx.totalCostUsd,
-            budgetLimitUsd,
-            attribStep,
+          yield workflowBudgetExceeded(ctx.totalCostUsd, budgetLimitUsd, attribStep, {
             executionId,
-            ctx.workflowId
-          );
+            workflowId: ctx.workflowId,
+            userId: ctx.userId,
+          });
           yield workflowFailed(failureReason, undefined, ctx);
           failed = true;
           break;
@@ -673,9 +683,21 @@ export class OrchestrationEngine {
       // the orphan-handoff race the lease design exists to close.
       // --------------------------------------------------------------
       if (!failed) {
-        const wrote = await this.finalize(lease, ctx, trace, WorkflowStatus.COMPLETED, null);
+        const wrote = await this.finalize(
+          lease,
+          ctx,
+          trace,
+          WorkflowStatus.COMPLETED,
+          null,
+          finalOutput
+        );
         if (wrote) {
-          yield workflowCompleted(finalOutput, ctx.totalTokensUsed, ctx.totalCostUsd);
+          // Without anyone the final write left out (t-843): the event reaches
+          // callers and subscribers after the erasure committed.
+          const output = wrote.erased
+            ? redactErased(toJson(finalOutput), wrote.erased)
+            : finalOutput;
+          yield workflowCompleted(output, ctx.totalTokensUsed, ctx.totalCostUsd);
           emitHookEvent('workflow.completed', {
             executionId,
             workflowId: workflow.id,
@@ -685,19 +707,15 @@ export class OrchestrationEngine {
           });
         }
       } else {
-        const wrote = await this.finalize(
-          lease,
-          ctx,
-          trace,
-          WorkflowStatus.FAILED,
-          failureReason ?? 'Execution did not complete'
-        );
+        const reason = failureReason ?? 'Execution did not complete';
+        const wrote = await this.finalize(lease, ctx, trace, WorkflowStatus.FAILED, reason);
         if (wrote) {
+          const left = wrote.erased ? redactErased(reason, wrote.erased) : reason;
           emitHookEvent('workflow.failed', {
             executionId,
             workflowId: workflow.id,
             userId: options.userId,
-            reason: failureReason ?? 'Execution did not complete',
+            reason: typeof left === 'string' ? left : reason,
           });
         }
       }
@@ -1165,7 +1183,7 @@ export class OrchestrationEngine {
             : undefined;
         const paused = await this.pauseForApproval(lease, ctx, trace, step.id, approvalData);
         if (paused) {
-          yield approvalRequired(step.id, err.payload);
+          yield approvalRequired(step.id, paused.approvalPayload ?? err.payload);
         }
         return { failed: false, paused: true, terminal: true, nextIds: [] };
       }
@@ -1176,13 +1194,11 @@ export class OrchestrationEngine {
         // the webhook subscriber path is identical regardless of which
         // of the four cap-check sites triggered the breach.
         const reason = formatBudgetExceededReason(err.usedUsd, err.limitUsd);
-        yield workflowBudgetExceeded(
-          err.usedUsd,
-          err.limitUsd,
-          step.id,
-          lease.executionId,
-          ctx.workflowId
-        );
+        yield workflowBudgetExceeded(err.usedUsd, err.limitUsd, step.id, {
+          executionId: lease.executionId,
+          workflowId: ctx.workflowId,
+          userId: ctx.userId,
+        });
         yield workflowFailed(reason, step.id, ctx);
         return {
           failed: true,
@@ -1286,13 +1302,11 @@ export class OrchestrationEngine {
     // intact.
     if (budgetLimitUsd && ctx.totalCostUsd > budgetLimitUsd) {
       const reason = formatBudgetExceededReason(ctx.totalCostUsd, budgetLimitUsd);
-      yield workflowBudgetExceeded(
-        ctx.totalCostUsd,
-        budgetLimitUsd,
-        step.id,
-        lease.executionId,
-        ctx.workflowId
-      );
+      yield workflowBudgetExceeded(ctx.totalCostUsd, budgetLimitUsd, step.id, {
+        executionId: lease.executionId,
+        workflowId: ctx.workflowId,
+        userId: ctx.userId,
+      });
       yield workflowFailed(reason, step.id, ctx);
       return {
         failed: true,
@@ -1545,7 +1559,9 @@ export class OrchestrationEngine {
           batchApprovalData
         );
         if (batchPausedOk) {
-          allEvents.push(approvalRequired(step.id, outcome.value.payload));
+          allEvents.push(
+            approvalRequired(step.id, batchPausedOk.approvalPayload ?? outcome.value.payload)
+          );
         }
         batchPaused = true;
         continue;
@@ -1664,13 +1680,11 @@ export class OrchestrationEngine {
           'during parallel batch'
         );
         allEvents.push(
-          workflowBudgetExceeded(
-            ctx.totalCostUsd,
-            budgetLimitUsd,
-            step.id,
+          workflowBudgetExceeded(ctx.totalCostUsd, budgetLimitUsd, step.id, {
             executionId,
-            ctx.workflowId
-          )
+            workflowId: ctx.workflowId,
+            userId: ctx.userId,
+          })
         );
         allEvents.push(workflowFailed(reason, step.id, ctx));
         batchFailed = true;
@@ -2239,17 +2253,21 @@ export class OrchestrationEngine {
     const { executionId, token } = lease;
     const contextPatchData = drainContextPatch(ctx);
     try {
-      const result = await prisma.aiWorkflowExecution.updateMany({
-        where: { id: executionId, leaseToken: token },
-        data: {
-          executionTrace: trace as unknown as Prisma.InputJsonValue,
-          totalTokensUsed: ctx.totalTokensUsed,
-          totalCostUsd: ctx.totalCostUsd,
-          leaseExpiresAt: leaseExpiry(),
-          lastHeartbeatAt: new Date(),
-          ...contextPatchData,
-        },
-      });
+      const result = await prisma.$transaction(async (tx) => {
+        const written = await tx.aiWorkflowExecution.updateMany({
+          where: { id: executionId, leaseToken: token },
+          data: {
+            executionTrace: trace as unknown as Prisma.InputJsonValue,
+            totalTokensUsed: ctx.totalTokensUsed,
+            totalCostUsd: ctx.totalCostUsd,
+            leaseExpiresAt: leaseExpiry(),
+            lastHeartbeatAt: new Date(),
+            ...contextPatchData,
+          },
+        });
+        if (written.count > 0) await leaveOutErasedSinceStart(tx, executionId, ctx, trace, null);
+        return written;
+      }, RUN_WRITE_TRANSACTION_OPTIONS);
       if (result.count === 0) {
         // Lease lost — another host has claimed this run. The orphan sweep handed it off
         // because our heartbeat lapsed. Future writes from this run will keep no-opping;
@@ -2267,37 +2285,91 @@ export class OrchestrationEngine {
   }
 
   /**
-   * Apply the paused-state write atomically with the lease clear. Returns `true` when the
-   * UPDATE landed (we owned the lease and the row tipped to PAUSED_FOR_APPROVAL) and `false`
+   * Apply the paused-state write atomically with the lease clear. Returns the approval
+   * payload as written — without anyone erased since the run started (t-841) — when the
+   * UPDATE landed (we owned the lease and the row tipped to PAUSED_FOR_APPROVAL), and `null`
    * when `updateMany` returned `count: 0` (orphan handoff) or the write threw. Callers MUST
-   * honour the return value: yielding `approvalRequired` on a `false` return would surface a
+   * honour the return value: yielding `approvalRequired` on a `null` return would surface a
    * second SSE event for a row another host is driving — same single-owner-event contract as
-   * `finalize`.
+   * `finalize` — and should yield the returned payload, not the one they passed in.
    */
   private async pauseForApproval(
     lease: LeaseHandle,
     ctx: ExecutionContext,
     trace: ExecutionTraceEntry[],
     stepId: string,
-    approvalPayload?: Record<string, unknown>
-  ): Promise<boolean> {
+    payload?: Record<string, unknown>
+  ): Promise<{ approvalPayload?: Record<string, unknown> } | null> {
     const { executionId, token } = lease;
+    let approvalPayload = payload;
     try {
       // Atomic terminal-state-and-lease-clear: the row stops being driven the moment its
       // status flips, so a separate clear UPDATE would leave a brief window where the
       // orphan sweep could mistake a paused row for a stuck-running one.
-      const result = await prisma.aiWorkflowExecution.updateMany({
-        where: { id: executionId, leaseToken: token },
-        data: {
-          status: WorkflowStatus.PAUSED_FOR_APPROVAL,
-          currentStep: stepId,
-          executionTrace: trace as unknown as Prisma.InputJsonValue,
-          totalTokensUsed: ctx.totalTokensUsed,
-          totalCostUsd: ctx.totalCostUsd,
-          leaseToken: null,
-          leaseExpiresAt: null,
+      const pause = (client: Pick<Prisma.TransactionClient, 'aiWorkflowExecution'>) =>
+        client.aiWorkflowExecution.updateMany({
+          where: { id: executionId, leaseToken: token },
+          data: {
+            status: WorkflowStatus.PAUSED_FOR_APPROVAL,
+            currentStep: stepId,
+            executionTrace: trace as unknown as Prisma.InputJsonValue,
+            totalTokensUsed: ctx.totalTokensUsed,
+            totalCostUsd: ctx.totalCostUsd,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+
+      // A run holds its definition from the moment it starts, so an approver or
+      // notification target erased since then is still in this step's config
+      // (t-841). The pause writes them into the run and sends them on in the
+      // events below, so it is a writer like any other (t-805): under erasure's
+      // lock, anyone with a receipt is taken out of the payload and the trace
+      // entry, by the rule erasure applies to a run (`redactErased`), before the
+      // paused row is written.
+      //
+      // The subject locks come before the row, the order erasure takes them in,
+      // so the two cannot deadlock. The rest of the trace is then checked as
+      // every write of the run is (t-843, `leaveOutErasedSinceStart`).
+      const named = approvalPayload ? approvalRecipients(approvalPayload) : null;
+      const namesAnyone =
+        named !== null && (named.addresses.length > 0 || named.userIds.length > 0);
+      const result = await prisma.$transaction(
+        async (tx) => {
+          if (named && namesAnyone) {
+            await boundLockWaits(tx, SUBJECT_LOCK_WAIT_MS);
+            // Shared: other pauses and sends naming the same people need not
+            // wait for this one; only an erasure must.
+            const erased = await findErasedSubjects(tx, named, { shared: true });
+            // The bound is for the subject locks only; the row write below
+            // waits as it always has (review round 3).
+            await boundLockWaits(tx, 0);
+            if (erased.addresses.length > 0 || erased.userIds.length > 0) {
+              approvalPayload = withoutErasedInPause(trace, stepId, approvalPayload, erased);
+              // Never the address or the id: they are what was erased.
+              ctx.logger.warn('pauseForApproval: left out people whose data was erased', {
+                executionId,
+                stepId,
+                addresses: erased.addresses.length,
+                userIds: erased.userIds.length,
+              });
+            }
+          }
+          const written = await pause(tx);
+          if (written.count > 0) {
+            const erased = await leaveOutErasedSinceStart(tx, executionId, ctx, trace, null);
+            // The trace entry is already redacted; the events carry the payload.
+            if (erased && approvalPayload) {
+              const redacted = redactErased(toJson(approvalPayload), erased.erased);
+              if (isRecord(redacted)) approvalPayload = redacted;
+            }
+          }
+          return written;
         },
-      });
+        namesAnyone
+          ? { timeout: SUBJECT_LOCK_WAIT_MS + 10_000, maxWait: 10_000 }
+          : RUN_WRITE_TRANSACTION_OPTIONS
+      );
       if (result.count === 0) {
         // Lease lost — the orphan sweep handed this row to a new owner who is now the
         // source of truth. Suppress notification + hook + webhook + approvalRequired event
@@ -2308,11 +2380,11 @@ export class OrchestrationEngine {
           executionId,
           stepId,
         });
-        return false;
+        return null;
       }
     } catch (err) {
       ctx.logger.error('pauseForApproval: DB update failed', err, { executionId });
-      return false; // Don't emit events if DB update failed
+      return null; // Don't emit events if DB update failed
     }
 
     const rawTimeout = approvalPayload?.timeoutMinutes;
@@ -2355,26 +2427,34 @@ export class OrchestrationEngine {
     // Webhook subscribers get the same event-hook payload plus human-readable
     // display names so receivers (Slack / email templates / Zapier) can
     // render a sentence without resolving IDs server-side. Threaded through
-    // a fire-and-forget IIFE so the DB reads can't block the engine.
-    void (async () => {
-      const [actorUserName, workflowDisplay] = await Promise.all([
-        resolveUserDisplayName(ctx.userId),
-        resolveWorkflowDisplay(ctx.workflowId),
-      ]);
-      await dispatchWebhookEvent('approval_required', {
-        ...eventData,
-        actorUserId: ctx.userId,
-        actorUserName,
-        workflowSlug: workflowDisplay.slug,
-        workflowName: workflowDisplay.name,
-      });
-    })();
-    return true;
+    // a background IIFE so the DB reads can't block the engine, and kept alive
+    // past the response (t-903): the run pauses here, so its drain settles
+    // next, and the approver's notification must not be frozen with it.
+    keepRunningAfterResponse(
+      (async () => {
+        const [actorUserName, workflowDisplay] = await Promise.all([
+          resolveUserDisplayName(ctx.userId),
+          resolveWorkflowDisplay(ctx.workflowId),
+        ]);
+        await dispatchWebhookEvent('approval_required', {
+          ...eventData,
+          actorUserId: ctx.userId,
+          actorUserName,
+          workflowSlug: workflowDisplay.slug,
+          workflowName: workflowDisplay.name,
+        });
+      })(),
+      'Webhook dispatch for approval_required',
+      { executionId: ctx.executionId }
+    );
+    return { approvalPayload };
   }
 
   /**
-   * Apply the terminal-state write atomically with the lease clear. Returns `true` when the
-   * UPDATE landed (we owned the lease and the row tipped to its terminal state) and `false`
+   * Apply the terminal-state write atomically with the lease clear. Returns the people the
+   * write left out because they were erased since the run started (t-843; `erased: null`
+   * when nobody was) when the UPDATE landed (we owned the lease and the row tipped to its
+   * terminal state) — the terminal event and hook must leave them out too — and `false`
    * when `updateMany` returned `count: 0` — i.e. the orphan sweep handed this row to a new
    * owner before we got here. Callers MUST honour the return value: yielding the terminal
    * event or emitting the completion hook on a `false` return would produce duplicate
@@ -2385,27 +2465,46 @@ export class OrchestrationEngine {
     ctx: ExecutionContext,
     trace: ExecutionTraceEntry[],
     status: WorkflowStatus,
-    errorMessage: string | null
-  ): Promise<boolean> {
+    errorMessage: string | null,
+    /** What the terminal event will carry, checked with the row (t-843). */
+    finalOutput?: unknown
+  ): Promise<false | { erased: ErasedSubjects | null }> {
     const { executionId, token } = lease;
     const contextPatchData = drainContextPatch(ctx);
+    let erased: ErasedSubjects | null = null;
+    const outputData = () =>
+      status === WorkflowStatus.COMPLETED ? (ctx.stepOutputs as object) : Prisma.DbNull;
     try {
-      const result = await prisma.aiWorkflowExecution.updateMany({
-        where: { id: executionId, leaseToken: token },
-        data: {
-          status,
-          executionTrace: trace as unknown as Prisma.InputJsonValue,
-          totalTokensUsed: ctx.totalTokensUsed,
-          totalCostUsd: ctx.totalCostUsd,
-          completedAt: new Date(),
-          errorMessage,
-          outputData:
-            status === WorkflowStatus.COMPLETED ? (ctx.stepOutputs as object) : Prisma.DbNull,
-          ...contextPatchData,
-          leaseToken: null,
-          leaseExpiresAt: null,
-        },
-      });
+      const result = await prisma.$transaction(async (tx) => {
+        const written = await tx.aiWorkflowExecution.updateMany({
+          where: { id: executionId, leaseToken: token },
+          data: {
+            status,
+            executionTrace: trace as unknown as Prisma.InputJsonValue,
+            totalTokensUsed: ctx.totalTokensUsed,
+            totalCostUsd: ctx.totalCostUsd,
+            completedAt: new Date(),
+            errorMessage,
+            outputData: outputData(),
+            ...contextPatchData,
+            leaseToken: null,
+            leaseExpiresAt: null,
+          },
+        });
+        if (written.count > 0) {
+          const left = await leaveOutErasedSinceStart(
+            tx,
+            executionId,
+            ctx,
+            trace,
+            errorMessage,
+            outputData,
+            [finalOutput]
+          );
+          erased = left?.erased ?? null;
+        }
+        return written;
+      }, RUN_WRITE_TRANSACTION_OPTIONS);
       if (result.count === 0) {
         ctx.logger.warn('finalize: lease lost before terminal write — another host owns this run', {
           executionId,
@@ -2431,7 +2530,7 @@ export class OrchestrationEngine {
       // every normal terminal. Fire-and-forget; failures logged inside
       // the helper, never block the engine.
       void recordReleaseEvent(executionId, token, 'engine-terminal', { status });
-      return true;
+      return { erased };
     } catch (err) {
       ctx.logger.error('finalize: DB update failed — execution row is stale', err, {
         executionId,
@@ -2510,4 +2609,112 @@ function attachRetryToTrace(
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The approval payload without the people in `erased`, and the paused step's
+ * trace entry — its config (`input`) and its payload (`output`), which the
+ * approval routes read approvers from — rewritten to match, in place, by the
+ * rule erasure applies to a run (t-841).
+ */
+function withoutErasedInPause(
+  trace: ExecutionTraceEntry[],
+  stepId: string,
+  payload: Record<string, unknown> | undefined,
+  erased: ErasedSubjects
+): Record<string, unknown> | undefined {
+  const entry = trace.findLast((e) => e.stepId === stepId && e.status === 'awaiting_approval');
+  if (entry) {
+    if (entry.input !== undefined) entry.input = redactErased(toJson(entry.input), erased);
+    entry.output = redactErased(toJson(entry.output), erased);
+  }
+  if (!payload) return payload;
+  const redacted = redactErased(toJson(payload), erased);
+  return isRecord(redacted) ? redacted : payload;
+}
+
+/**
+ * How a write of a run waits. Its row may be held by an erasure redacting it,
+ * for up to that erasure's 60 s, and the plain write this replaced (t-843)
+ * waited that long without a bound: Prisma's 5 s default would fail it
+ * instead. Waits for a connection as a plain query does.
+ */
+const RUN_WRITE_TRANSACTION_OPTIONS = { ...WRITER_TRANSACTION_OPTIONS, maxWait: 10_000 } as const;
+
+/**
+ * Take anyone erased since the run started out of what it holds, and out of
+ * the row just written, in the transaction that wrote it (t-843).
+ *
+ * A run holds its input, step outputs and trace in memory and writes the trace
+ * whole at every step, so a write after an erasure would restore what the
+ * erasure removed. Call it after the write: the write has locked the row, so
+ * an erasure that held the row first has committed and its receipt is seen,
+ * and one that comes after waits for this transaction and reads what it wrote.
+ * When anyone is found the trace, `ctx.inputData` and `ctx.stepOutputs` are
+ * redacted in place by the rule erasure applies to a run (`redactErased`), so
+ * later steps and writes carry the redacted values, and the row is written
+ * again with them. Null when nobody was erased: the one indexed query in
+ * `findErasedSinceRunStarted` is then the whole cost.
+ */
+async function leaveOutErasedSinceStart(
+  tx: Prisma.TransactionClient,
+  executionId: string,
+  ctx: ExecutionContext,
+  trace: ExecutionTraceEntry[],
+  errorMessage: string | null,
+  outputData?: () => object,
+  /**
+   * Values the caller sends on after the write and redacts itself from the
+   * result — the completion event's output, which holds the last step's
+   * output as it was before any redaction.
+   */
+  alsoSent: unknown[] = []
+): Promise<{ erased: ErasedSubjects } | null> {
+  const erased = await findErasedSinceRunStarted(tx, executionId, [
+    ctx.inputData,
+    ctx.stepOutputs,
+    trace,
+    errorMessage,
+    ...alsoSent,
+  ]);
+  if (!erased) return null;
+
+  for (const entry of trace) {
+    const redacted = redactErased(toJson(entry), erased);
+    if (isRecord(redacted)) Object.assign(entry, redacted);
+  }
+  const outputs = redactErased(toJson(ctx.stepOutputs), erased);
+  if (isRecord(outputs)) Object.assign(ctx.stepOutputs, outputs);
+  const input = redactErased(toJson(ctx.inputData), erased);
+  if (isRecord(input)) ctx.inputData = input;
+  const error = errorMessage === null ? null : redactErased(errorMessage, erased);
+
+  await tx.aiWorkflowExecution.updateMany({
+    where: { id: executionId },
+    data: {
+      executionTrace: trace as unknown as Prisma.InputJsonValue,
+      inputData: ctx.inputData as Prisma.InputJsonValue,
+      ...(typeof error === 'string' ? { errorMessage: error } : {}),
+      ...(outputData ? { outputData: outputData() } : {}),
+    },
+  });
+  // Never the address or the id: they are what was erased.
+  ctx.logger.warn('Run write: left out people whose data was erased', {
+    executionId,
+    addresses: erased.addresses.length,
+    userIds: erased.userIds.length,
+  });
+  return { erased };
+}
+
+const jsonValueSchema = z.json();
+
+/**
+ * `value` as the JSON it is persisted as: the trace and the payload are
+ * written to a JSON column, so this is the value erasure later reads.
+ */
+function toJson(value: unknown): Prisma.JsonValue {
+  if (value === undefined) return null;
+  const parsed: unknown = JSON.parse(JSON.stringify(value));
+  return jsonValueSchema.parse(parsed);
 }

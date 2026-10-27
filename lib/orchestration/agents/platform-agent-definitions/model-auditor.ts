@@ -31,6 +31,7 @@ For each model entry, assess:
 6. **Context length** — Current window size classification
 7. **Tool use** — Actual function-calling capability level
 8. **Best role** — One-line summary of optimal use case
+9. **Prices** — Published USD input and output price per 1M tokens, proposed as a pair and only from a source you can cite with a URL (the provider's pricing page). Never from memory alone: a wrong price mis-records the cost of every turn.
 
 For embedding models, also evaluate dimensions, quality rating, and schema compatibility.
 
@@ -88,12 +89,15 @@ export const PROVIDER_MODEL_AUDITOR_AGENT: PlatformAgentDefinition = {
   },
   // No search_knowledge_base: the auditor has no knowledge to ground in, and
   // the unused tool gave the model a tool decision it should not be making.
-  capabilities: [
-    'apply_audit_changes',
-    'add_provider_models',
-    'deactivate_provider_models',
-    'estimate_workflow_cost',
-  ],
+  //
+  // No write capabilities (t-774). The auditor proposes; the audit workflow's
+  // own `tool_call` steps write, after its human_approval step, and those run
+  // under the workflow, not this binding. Bound here, `apply_audit_changes`,
+  // `add_provider_models` and `deactivate_provider_models` let the
+  // `discover_new_models` agent turn — whose prompt carries web search
+  // results — change the Model Matrix, prices included, before any admin
+  // saw it. The reconcile removes the bindings from existing instances.
+  capabilities: ['estimate_workflow_cost'],
   knowledgeTags: [],
   defaults: { monthlyBudgetUsd: 25 },
 };

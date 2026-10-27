@@ -22,9 +22,11 @@
  *     returns whatever the DB has (capped to a sensible max each side).
  */
 
+import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { resolveAgentDocumentAccess } from '@/lib/orchestration/knowledge/resolveAgentDocumentAccess';
+import { loadScoredCases } from '@/lib/orchestration/evaluations/datasets/scored-cases';
 
 const MAX_KB_CHUNKS = 12;
 const MAX_KB_CHUNK_CHARS = 800;
@@ -145,6 +147,12 @@ export async function loadFailureSeed(params: {
    * (and their case content) into this caller's generator prompt.
    */
   userId: string;
+  /**
+   * The datasets whose cases may be quoted — the caller's dataset visibility.
+   * A run made from a dataset another member has since claimed contributes
+   * no seeds (`scored-cases.ts`).
+   */
+  datasetWhere: Prisma.AiDatasetWhereInput;
   limit?: number;
 }): Promise<FailureSeed[]> {
   const limit = Math.min(params.limit ?? MAX_FAILURE_SEEDS, MAX_FAILURE_SEEDS);
@@ -171,31 +179,39 @@ export async function loadFailureSeed(params: {
     if (recentRuns.length === 0) return [];
 
     const candidates = await prisma.aiEvaluationCaseResult.findMany({
-      where: { runId: { in: recentRuns.map((r) => r.id) } },
+      where: {
+        runId: { in: recentRuns.map((r) => r.id) },
+        // The same owner as the runs above, named so the owner layer (§115)
+        // sees the read is confined.
+        run: { userId: params.userId },
+      },
       select: {
         datasetCaseId: true,
         metricScores: true,
-        datasetCase: {
-          select: { input: true, expectedOutput: true },
-        },
       },
       take: 200, // cap fetch breadth; we'll filter to N failures below
       orderBy: { id: 'desc' },
     });
+    const cases = await loadScoredCases(
+      candidates.map((r) => r.datasetCaseId),
+      params.datasetWhere
+    );
 
     const failures: FailureSeed[] = [];
     const seenCaseIds = new Set<string>();
     for (const row of candidates) {
       if (seenCaseIds.has(row.datasetCaseId)) continue;
+      const datasetCase = cases.get(row.datasetCaseId);
+      if (datasetCase === undefined) continue;
       const { meanScore, worstReasoning } = readScoreSummary(row.metricScores);
       if (meanScore === null || meanScore >= FAILURE_SCORE_THRESHOLD) continue;
 
       seenCaseIds.add(row.datasetCaseId);
       failures.push({
         caseId: row.datasetCaseId,
-        input: truncate(stringifyInput(row.datasetCase.input), MAX_FAILURE_INPUT_CHARS),
-        expectedOutput: row.datasetCase.expectedOutput
-          ? truncate(row.datasetCase.expectedOutput, MAX_FAILURE_OUTPUT_CHARS)
+        input: truncate(stringifyInput(datasetCase.input), MAX_FAILURE_INPUT_CHARS),
+        expectedOutput: datasetCase.expectedOutput
+          ? truncate(datasetCase.expectedOutput, MAX_FAILURE_OUTPUT_CHARS)
           : null,
         score: meanScore,
         reasoning: worstReasoning ? truncate(worstReasoning, MAX_FAILURE_REASONING_CHARS) : null,

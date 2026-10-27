@@ -1,6 +1,6 @@
 /**
  * `Org.settings` — the platform's own slices of it (§108 t-713, §116 t-724,
- * §120 t-742).
+ * §120 t-742, §110 t-788).
  *
  * The column has existed since §106 and nothing read or wrote it. This module
  * is the whole of what the platform keeps there: a `retention` slice naming
@@ -8,7 +8,8 @@
  * marker recording which platform-agent definitions the org was last
  * reconciled against (see {@link readPlatformAgentsMarker}), and a `providers`
  * slice naming the providers a platform admin approved the org for (see
- * {@link readOrgProviderPolicy}). Everything else in that JSON belongs to
+ * {@link readOrgProviderPolicy}), and a `quotas` slice holding the org's own
+ * caps (see {@link readOrgQuotas}). Everything else in that JSON belongs to
  * whoever put it there — a fork's own org-level config — and every write path
  * below preserves it rather than replacing the object.
  *
@@ -49,13 +50,18 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '@/lib/db/client';
+import { isSerializableConflict } from '@/lib/db/serializable-conflict';
 import { logger as defaultLogger, type Logger } from '@/lib/logging';
 import {
+  ORG_QUOTA_KEYS,
   ORG_RETENTION_KEYS,
   orgProviderPolicySchema,
+  orgQuotasSchema,
   orgRetentionSchema,
   type OrgProviderPolicy,
+  type OrgQuotas,
   type OrgRetentionSlice,
+  type OrgSettingsPatch,
 } from '@/lib/validations/tenancy';
 
 /** The key the platform owns inside `Org.settings`. */
@@ -139,41 +145,60 @@ export async function loadOrgRetention(
 }
 
 /**
- * Apply a retention patch to an org's stored `settings`, returning the value
+ * A slice with its `undefined` keys dropped, or `null` when that leaves
+ * nothing — the one spelling of "this slice names nothing", for `null`, `{}`
+ * and `{ key: undefined }` alike. The last is what a caller produces by
+ * forwarding an unset value (`{ monthlyBudgetUsd: plan.cap }` for a plan with
+ * no cap), and Zod keeps the key, so counting keys would store it as `{}`.
+ */
+export function definedEntries<T extends Record<string, unknown>>(
+  slice: T | null
+): Partial<T> | null {
+  if (slice === null) return null;
+  const defined = Object.fromEntries(
+    Object.entries(slice).filter(([, value]) => value !== undefined)
+  ) as Partial<T>;
+  return Object.keys(defined).length === 0 ? null : defined;
+}
+
+/**
+ * Apply a settings patch to an org's stored `settings`, returning the value
  * to write.
  *
- * Replaces the `retention` slice outright — a PATCH states the org's whole
- * set of windows, so merging key-by-key would leave no way to stop overriding
- * one. Every other key in `settings` is carried across untouched, which is
- * the half that matters to a fork keeping its own org config there.
+ * Each slice the patch names is replaced outright — a PATCH states the org's
+ * whole set of windows, or of caps, so merging key-by-key would leave no way
+ * to stop setting one. Every other key in `settings` is carried across
+ * untouched, which is the half that matters to a fork keeping its own org
+ * config there.
  *
- * `null` — and an empty `{}`, which names no window and therefore says the
- * same thing — removes the slice. When nothing is left the column is set back
- * to SQL `NULL` rather than `{}`, so "this org has never set anything" has one
- * representation instead of two. `undefined` leaves the slice alone: that is a
+ * `null` — and an empty `{}`, which names nothing and therefore says the same
+ * thing — removes the slice. When nothing is left the column is set back to
+ * SQL `NULL` rather than `{}`, so "this org has never set anything" has one
+ * representation instead of two. An `undefined` slice is left alone: that is a
  * patch naming some other slice of the column, not this one.
  *
  * A `settings` column holding something that is not an object — a string, an
  * array — cannot hold slices at all, so it is replaced rather than preserved.
  * Nothing the platform writes can produce that state.
  */
-export function applyRetentionPatch(
+export function applyOrgSettingsPatch(
   current: unknown,
-  slice: OrgRetentionSlice | null | undefined
+  patch: OrgSettingsPatch
 ): Prisma.InputJsonValue | typeof Prisma.DbNull {
   const base: Record<string, unknown> = isJsonObject(current) ? { ...current } : {};
+  const slices: Array<[string, Record<string, unknown> | null | undefined]> = [
+    [ORG_RETENTION_KEY, patch.retention],
+    [ORG_QUOTAS_KEY, patch.quotas],
+  ];
 
-  if (slice === undefined) {
-    // A patch that names other slices and not this one. Nothing to do here;
-    // the column is written back as it stands, so the caller's log line is
-    // true about what it changed.
-  } else if (slice === null || Object.keys(slice).length === 0) {
-    // `{}` names no window, so it says exactly what `null` says. Storing it
-    // would leave the column non-NULL for ever and give "this org has set
-    // nothing" a second spelling.
-    delete base[ORG_RETENTION_KEY];
-  } else {
-    base[ORG_RETENTION_KEY] = slice;
+  for (const [key, slice] of slices) {
+    if (slice === undefined) continue;
+    const stored = definedEntries(slice);
+    if (stored === null) {
+      delete base[key];
+    } else {
+      base[key] = stored;
+    }
   }
 
   if (Object.keys(base).length === 0) return Prisma.DbNull;
@@ -302,6 +327,106 @@ export async function writeOrgProviderPolicy(
   return { previous: readOrgProviderPolicy(replaced.settings, { orgId }), stored };
 }
 
+/** The key the org's own caps live under inside `Org.settings` (§110 t-788). */
+export const ORG_QUOTAS_KEY = 'quotas';
+
+/**
+ * Read an org's caps out of its `settings` (§110 t-788).
+ *
+ * **Per key, and fails open to "no org cap".** A cap that cannot be read is
+ * dropped with a warning, as an unreadable retention window is, and an org
+ * with no readable cap is limited only by its agents' budgets and the global
+ * cap, which still applies to it. The other direction — refusing every turn
+ * for an org whose stored JSON is malformed — would take a tenant offline for
+ * a bad write, and every writer validates with `orgQuotasSchema` first.
+ *
+ * @returns the caps this org has readably set; `{}` when it has none.
+ */
+export function readOrgQuotas(
+  settings: unknown,
+  context: Record<string, unknown> = {},
+  log: Logger = defaultLogger
+): OrgQuotas {
+  if (!isJsonObject(settings)) return {};
+  const slice = settings[ORG_QUOTAS_KEY];
+  if (slice === null || slice === undefined) return {};
+  if (!isJsonObject(slice)) {
+    log.warn('Org quotas slice is not an object; the org has no cap of its own', context);
+    return {};
+  }
+
+  const quotas: Record<string, number> = {};
+  const dropped: string[] = [];
+  for (const key of ORG_QUOTA_KEYS) {
+    const stored = slice[key];
+    if (stored === undefined) continue;
+    const parsed = orgQuotasSchema.shape[key].safeParse(stored);
+    if (parsed.success && parsed.data !== undefined) quotas[key] = parsed.data;
+    else dropped.push(key);
+  }
+
+  if (dropped.length > 0) {
+    log.warn('Dropped malformed org caps; the org is not capped by them', {
+      ...context,
+      keys: dropped,
+    });
+  }
+  return quotas;
+}
+
+/**
+ * Read one org's caps. `Org` is a system model, so this read needs no tenant
+ * scope; `checkBudget()` calls it once per chat turn.
+ *
+ * @returns `{}` when the org does not exist or has set no cap.
+ */
+export async function loadOrgQuotas(
+  orgId: string,
+  db: Pick<PrismaClient, 'org'> = prisma,
+  log: Logger = defaultLogger
+): Promise<OrgQuotas> {
+  const org = await db.org.findUnique({ where: { id: orgId }, select: { settings: true } });
+  if (!org) return {};
+  return readOrgQuotas(org.settings, { orgId }, log);
+}
+
+/**
+ * Replace an org's caps, preserving every other key in `settings` — the
+ * helper a fork's billing or plan code calls to map a plan onto its caps.
+ *
+ * `quotas` is validated with `orgQuotasSchema`, so an out-of-range or unknown
+ * key throws a `ZodError` and nothing is written. `null`, or `{}`, removes the
+ * slice and leaves the org with no cap of its own. The slice is replaced
+ * whole: a key the call leaves out is removed.
+ *
+ * **It decides nothing about who may.** It writes whatever it is given;
+ * `PATCH /api/v1/admin/orgs/[id]` is where an org's own admins are refused.
+ * A fork exposing caps through a surface of its own owns the same check.
+ *
+ * Through {@link writeSettingsSlice}: a clash with a concurrent settings write
+ * throws `P2034` ({@link isSettingsWriteConflict}).
+ *
+ * **The spend gate and the request counter cache each org's caps**
+ * (`spend-caps.ts`, `lib/security/org-request-cap.ts`). Call
+ * `forgetOrgCap(orgId)` and `forgetOrgRequestCap(orgId)` after this write so
+ * this process enforces the new caps at once; otherwise they take effect
+ * within each cache's TTL, as they do in every other process. It does not
+ * call them itself, because both modules read their caps through this one.
+ *
+ * @returns the previous and the stored caps, or `null` when the org does not
+ *   exist.
+ */
+export async function writeOrgQuotas(
+  orgId: string,
+  quotas: OrgQuotas | null,
+  db: Pick<PrismaClient, '$transaction'> = prisma
+): Promise<{ previous: OrgQuotas; stored: OrgQuotas } | null> {
+  const stored = definedEntries(quotas === null ? null : orgQuotasSchema.parse(quotas));
+  const replaced = await writeSettingsSlice(orgId, ORG_QUOTAS_KEY, stored, db);
+  if (replaced === null) return null;
+  return { previous: readOrgQuotas(replaced.settings, { orgId }), stored: stored ?? {} };
+}
+
 /**
  * Replace one platform-owned key in an org's `settings`, preserving every
  * other key — a fork's included.
@@ -310,6 +435,9 @@ export async function writeOrgProviderPolicy(
  * the object before the other wrote would drop one slice. A clash fails the
  * later writer with Prisma's `P2034` rather than losing either; a route maps
  * it to a 409 with {@link isSettingsWriteConflict}.
+ *
+ * A `null` value removes the key, and a column left with no keys is set back
+ * to SQL `NULL`, as {@link applyOrgSettingsPatch} does.
  *
  * @returns the column as it stood before the write, so a caller can say what
  *   it replaced; `null` when the org does not exist, and nothing was written.
@@ -325,10 +453,14 @@ async function writeSettingsSlice(
       const row = await tx.org.findUnique({ where: { id: orgId }, select: { settings: true } });
       if (!row) return null;
       const base: Record<string, unknown> = isJsonObject(row.settings) ? { ...row.settings } : {};
-      base[key] = value;
+      if (value === null) delete base[key];
+      else base[key] = value;
       await tx.org.update({
         where: { id: orgId },
-        data: { settings: base as Prisma.InputJsonObject },
+        data: {
+          settings:
+            Object.keys(base).length === 0 ? Prisma.DbNull : (base as Prisma.InputJsonObject),
+        },
       });
       return { settings: row.settings };
     },
@@ -338,7 +470,7 @@ async function writeSettingsSlice(
 
 /** Whether `error` is a SERIALIZABLE clash from {@link writeSettingsSlice}. */
 export function isSettingsWriteConflict(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
+  return isSerializableConflict(error);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

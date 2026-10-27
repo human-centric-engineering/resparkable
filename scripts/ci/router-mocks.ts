@@ -23,9 +23,9 @@
  * ## Why this parses instead of pattern-matching
  *
  * The previous implementation was a regex-and-brace-matching scanner embedded
- * in `.claude/commands/pre-pr.md`, and it reported CLEAN on a suite holding 16
- * complete literals and 17 casts. Every one of its blind spots came from not
- * having a parser:
+ * in `.claude/commands/pre-pr.md`, and in a fork it reported CLEAN on a suite
+ * holding 16 complete literals and 17 casts (#936). Every one of its blind spots
+ * came from not having a parser:
  *
  * - It collected members with `/([A-Za-z_$][\w$]*)\s*:/`, so a **shorthand**
  *   member (`refresh,`, no colon) was never counted. Ten files wrote `refresh`
@@ -33,9 +33,9 @@
  * - It **anchored** on `prefetch\s*:` to find a literal at all, so a literal
  *   whose `prefetch` was shorthand would not even have been located.
  * - Its cast rule was a `grep` for the literal string
- *   `as unknown as ReturnType<typeof useRouter>`. Every real offender writes
- *   `as unknown as ReturnType<typeof vi.fn>` instead, which defeats the type
- *   check just as thoroughly.
+ *   `as unknown as ReturnType<typeof useRouter>`. Every real offender there
+ *   wrote `as unknown as ReturnType<typeof vi.fn>` instead, which defeats the
+ *   type check just as thoroughly.
  * - It needed a comment filter, because a JSDoc line mentioning the cast
  *   matched it.
  *
@@ -92,7 +92,10 @@ export interface ScanOptions {
  * `// router-mocks-ignore:` with nothing after it does not count, so every
  * exemption in the suite says why it is one.
  */
-const IGNORE_DIRECTIVE = /router-mocks-ignore:\s*\S/;
+// `[ \t]*`, not `\s*`: the reason must be on the directive's own line, so a
+// block comment's line break cannot carry it onto the closing `*/`, which is
+// stripped before testing so it cannot stand in for one either.
+const IGNORE_DIRECTIVE = /router-mocks-ignore:[ \t]*\S/;
 
 function isIgnored(node: ts.Node, sourceFile: ts.SourceFile): boolean {
   const text = sourceFile.text;
@@ -111,7 +114,8 @@ function isIgnored(node: ts.Node, sourceFile: ts.SourceFile): boolean {
     const ranges = ts.getLeadingCommentRanges(text, current.getFullStart()) ?? [];
     const directive = ranges.some(
       (range) =>
-        lineOf(range.end) === targetLine && IGNORE_DIRECTIVE.test(text.slice(range.pos, range.end))
+        lineOf(range.end) === targetLine &&
+        IGNORE_DIRECTIVE.test(text.slice(range.pos, range.end).replace(/\*\/$/, ''))
     );
     if (directive) return true;
     if (ts.isStatement(current)) break;
@@ -123,17 +127,18 @@ function isIgnored(node: ts.Node, sourceFile: ts.SourceFile): boolean {
  * Whether the file is about the *pages* router (`next/router`) and not the App
  * Router at all. Its router mock has the same six method names, but it is a
  * different type that `createMockRouter()` does not build, so neither rule
- * applies to it. Read from string-literal nodes, so a module name quoted in a
- * template-literal fixture does not count.
+ * applies to it. `next/router` is read from plain string nodes only, so a
+ * module name quoted in a template-literal fixture cannot switch the scan off.
  */
 function mocksOnlyPagesRouter(sourceFile: ts.SourceFile): boolean {
   let pages = false;
   let navigation = false;
   const visit = (node: ts.Node): void => {
-    if (ts.isStringLiteral(node)) {
-      if (node.text === 'next/router') pages = true;
-      if (node.text === 'next/navigation') navigation = true;
-    }
+    // Asymmetric on purpose. Only a plain string counts as evidence for the
+    // skip, but a template literal counts against it: `vi.mock(\`next/navigation\`)`
+    // is still the App Router, and erring here means scanning, not a silent pass.
+    if (ts.isStringLiteral(node) && node.text === 'next/router') pages = true;
+    if (ts.isStringLiteralLike(node) && node.text === 'next/navigation') navigation = true;
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
@@ -145,8 +150,8 @@ function mocksOnlyPagesRouter(sourceFile: ts.SourceFile): boolean {
  *
  * Read as `ScriptKind.TS`, a JSX tag is a type assertion and the tree from
  * there on is nonsense, silently, with no error surfaced. Fifteen of the
- * sixteen files this check was written to catch are `.tsx`, so getting this
- * wrong would have reproduced the CLEAN it replaces.
+ * sixteen files this check was written to catch (#936) are `.tsx`, so getting
+ * this wrong would have reproduced the CLEAN it replaces.
  */
 function scriptKindFor(file: string): ts.ScriptKind {
   return file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
@@ -185,12 +190,23 @@ function usesFactory(literal: ts.ObjectLiteralExpression): boolean {
   );
 }
 
+/** `createMockRouter(...)`, or the same through a namespace import (`mocks.createMockRouter(...)`). */
 function isFactoryCall(node: ts.Expression): boolean {
-  return (
-    ts.isCallExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    node.expression.text === FACTORY
-  );
+  if (!ts.isCallExpression(node)) return false;
+  const callee = node.expression;
+  if (ts.isIdentifier(callee)) return callee.text === FACTORY;
+  return ts.isPropertyAccessExpression(callee) && callee.name.text === FACTORY;
+}
+
+/**
+ * Whether this literal is the overrides argument of a factory call:
+ * `createMockRouter({ push, replace, ... })`. Supplying all six spies there is
+ * what the CLI's own advice tells a test asserting on all six to do, and the
+ * factory still fills in every member Next adds.
+ */
+function isFactoryArgument(literal: ts.ObjectLiteralExpression): boolean {
+  const call = outsideParens(literal).parent;
+  return call !== undefined && ts.isCallExpression(call) && isFactoryCall(call);
 }
 
 function skipParens(node: ts.Expression): ts.Expression {
@@ -256,6 +272,32 @@ function isMockedUseRouter(expression: ts.Expression, sourceFile: ts.SourceFile)
   );
 }
 
+/**
+ * Climbs from `node` to the outermost expression whose value it can become:
+ * through parentheses, either branch of `c ? X : Y`, and either operand of
+ * `??`, `||` and `&&`. `x ? ({ push } as never) : createMockRouter()` hands
+ * out the cast just as surely as a bare `{ push } as never` does.
+ */
+function asReturnedValue(node: ts.Node): ts.Node {
+  let current = outsideParens(node);
+  for (;;) {
+    const parent = current.parent;
+    if (parent === undefined) return current;
+    const isBranch =
+      ts.isConditionalExpression(parent) &&
+      (parent.whenTrue === current || parent.whenFalse === current);
+    const isOperand =
+      ts.isBinaryExpression(parent) &&
+      [
+        ts.SyntaxKind.QuestionQuestionToken,
+        ts.SyntaxKind.BarBarToken,
+        ts.SyntaxKind.AmpersandAmpersandToken,
+      ].includes(parent.operatorToken.kind);
+    if (!isBranch && !isOperand) return current;
+    current = outsideParens(parent);
+  }
+}
+
 function outsideParens(node: ts.Node): ts.Node {
   let current = node;
   while (current.parent !== undefined && ts.isParenthesizedExpression(current.parent)) {
@@ -267,10 +309,11 @@ function outsideParens(node: ts.Node): ts.Node {
 /**
  * Whether `node` is the router a mocked `useRouter` hands out: the argument of
  * `.mockReturnValue(...)`, or what an implementation passed to
- * `.mockImplementation(...)` returns (`() => X` or `() => { return X; }`).
+ * `.mockImplementation(...)` returns (`() => X`, or any `return X` in its body),
+ * including as one branch of a conditional or a `??`/`||`/`&&` operand.
  */
 function isReturnedFromMockedUseRouter(node: ts.Expression, sourceFile: ts.SourceFile): boolean {
-  let current = outsideParens(node);
+  let current = asReturnedValue(node);
   let setter = RETURN_SETTER;
 
   const parent = current.parent;
@@ -278,7 +321,11 @@ function isReturnedFromMockedUseRouter(node: ts.Expression, sourceFile: ts.Sourc
     current = outsideParens(parent);
     setter = IMPLEMENTATION_SETTER;
   } else if (parent !== undefined && ts.isReturnStatement(parent)) {
-    const fn = parent.parent?.parent;
+    // The nearest enclosing function, however deep the `return` sits in it:
+    // `() => { if (x) { return X; } ... }` returns X as surely as a top-level
+    // `return` does.
+    let fn: ts.Node | undefined = parent.parent;
+    while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
     if (fn === undefined || !(ts.isArrowFunction(fn) || ts.isFunctionExpression(fn))) return false;
     current = outsideParens(fn);
     setter = IMPLEMENTATION_SETTER;
@@ -324,9 +371,10 @@ function chainTargetsRouter(node: CastExpression, sourceFile: ts.SourceFile): bo
  *   what catches `{} as unknown as ReturnType<typeof useRouter>`.
  *
  * Scoping to `useRouter` rather than banning `as unknown as ReturnType<typeof
- * vi.fn>` outright is not politeness. The suite has 104 of those casts and 87
- * are on something else entirely: `apiClient.post`, `useSearchParams`,
- * `headers`. A rule broad enough to catch the router ones flags all 87.
+ * vi.fn>` outright is not politeness. Sunrise's suite has over 800 of those
+ * casts and none is on the router: they are on `apiClient.post`,
+ * `useSearchParams`, `headers`. A rule broad enough to catch a router one flags
+ * every one of them.
  */
 function castTargetsRouter(node: CastExpression, sourceFile: ts.SourceFile): boolean {
   const operand = innermostOperand(node.expression).getText(sourceFile);
@@ -380,6 +428,7 @@ export function scanRouterMocks(
       if (
         ROUTER_METHODS.every((method) => names.has(method)) &&
         !usesFactory(node) &&
+        !isFactoryArgument(node) &&
         !isIgnored(node, sourceFile)
       ) {
         violations.push({

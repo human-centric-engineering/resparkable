@@ -187,12 +187,27 @@ DELETE /api/v1/users/me
 }
 ```
 
+**Response** (202 Accepted) — the erasure did not finish within the request's budget (about 8 s; `ERASURE_REQUEST_BUDGET_MS`):
+
+```json
+{
+  "success": true,
+  "data": {
+    "pending": true,
+    "requestedAt": "2026-10-20T09:15:00.000Z"
+  }
+}
+```
+
+The account is already disabled and the person signed out. The maintenance tick finishes the erasure, usually within a few minutes; nothing more is needed from the caller.
+
 **Error Responses**:
 
 - **401 Unauthorized**: No valid session
 - **400 Validation Error**: Missing or incorrect confirmation
+- **409 Conflict**: The account is already being deleted
 
-**Note**: Deletion cascades to sessions and accounts. Session cookie is cleared automatically.
+**Note**: The deletion is recorded and the account disabled (sessions, API keys, sign-in) before the erasure starts. If the erasure fails, the request returns the error, but the maintenance tick finishes the deletion. See [Pending erasures](../privacy/data-erasure.md#pending-erasures). Session cookie is cleared automatically on a 200, a 202 or a 409.
 
 ## Export Current User's Data (Subject Access)
 
@@ -597,7 +612,8 @@ GET /api/v1/users?page=1&limit=20&search=john&sortBy=createdAt&sortOrder=desc
       "name": "John Doe",
       "email": "john@example.com",
       "role": "USER",
-      "createdAt": "2025-01-01T08:00:00.000Z"
+      "createdAt": "2025-01-01T08:00:00.000Z",
+      "erasureRequestedAt": null
     }
   ],
   "meta": {
@@ -715,12 +731,18 @@ PATCH /api/v1/users/:id
 
 - **401 Unauthorized**: No valid session
 - **403 Forbidden**: User does not have ADMIN role
+- **403 Forbidden**: The body changes `role` and the caller is not a platform admin
 - **404 Not Found**: User ID does not exist
 - **400 Validation Error**: Invalid input data or no fields provided
 - **400 SELF_ROLE_CHANGE**: Admin attempting to change their own role
 
 **Security Notes**:
 
+- Only a platform admin can change `role`, whatever the authorization policy
+  admits (t-837). A fork whose `canAdminister` lets an org's OWNER/ADMIN reach
+  this route lets them edit `name` and `emailVerified`, but not promote anyone.
+  A support session counts as not a platform admin. Sending the role the user
+  already has is not a change.
 - Admins cannot change their own role (prevents accidental self-lockout)
 - All role changes are logged with admin ID and changes made
 
@@ -750,6 +772,21 @@ DELETE /api/v1/users/:id
 }
 ```
 
+**Response** (202 Accepted) — the erasure did not finish within the request's budget (about 8 s; `ERASURE_REQUEST_BUDGET_MS`):
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "clxxxx",
+    "pending": true,
+    "requestedAt": "2026-10-20T09:15:00.000Z"
+  }
+}
+```
+
+The account is already disabled. The maintenance tick finishes the erasure; until then the user list shows the user with `erasureRequestedAt` set.
+
 **Error Responses**:
 
 - **401 Unauthorized**: No valid session
@@ -757,8 +794,9 @@ DELETE /api/v1/users/:id
 - **400 Bad Request**: Attempting to delete own account
 - **400 Bad Request**: Attempting to delete another admin account
 - **404 Not Found**: User ID does not exist
+- **409 Conflict**: The user is already being deleted
 
-**Note**: Deletion cascades to related records (sessions, accounts) as configured in Prisma schema.
+**Note**: The deletion is recorded and the account disabled before the erasure starts; if the erasure fails, the maintenance tick finishes it. See [Pending erasures](../privacy/data-erasure.md#pending-erasures).
 
 **Admin Protection**: Admins cannot delete other admin accounts. To delete an admin, first demote them to USER role using the PATCH endpoint, then delete.
 

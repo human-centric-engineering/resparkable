@@ -26,6 +26,11 @@ vi.mock('@/lib/logging', () => ({
 import { logger } from '@/lib/logging';
 import { getTenantContext, runAsOrg } from '@/lib/tenancy/context';
 import {
+  getSubjectReadScope,
+  runAsSubject,
+  type SubjectReadScope,
+} from '@/lib/auth/subject-context';
+import {
   foldOrgResults,
   noOrgSucceeded,
   runScopedJob,
@@ -91,6 +96,52 @@ describe('runScopedJob — per-org at single', () => {
     );
 
     expect(seen).toEqual([{ orgId: INSTALL_ORG_ID, source: 'job' }]);
+  });
+});
+
+describe('runScopedJob — whoever fired the tick (§115 t-803)', () => {
+  it('runs a job across owners, not narrowed to the admin whose request fired it', async () => {
+    const seen: SubjectReadScope[] = [];
+    const run = vi.fn(async () => {
+      seen.push(await getSubjectReadScope());
+      return 0;
+    });
+
+    for (const scope of ['per-org', { system: 'demo across every org' }] as const) {
+      await runAsSubject(
+        {
+          principal: { userId: 'admin', credential: 'session' },
+          filter: { userId: 'admin' },
+          resolveFilter: () => Promise.resolve({ userId: 'admin' }),
+          unattributedReads: {
+            conversation: false,
+            dataset: false,
+            execution: false,
+            experiment: false,
+            webhookDelivery: false,
+            webhookSubscription: false,
+          },
+        },
+        () => runScopedJob({ name: 'demo', scope, run, foundWork: () => false })
+      );
+    }
+
+    expect(seen).toHaveLength(2);
+    for (const scope of seen) expect(scope).toMatchObject({ kind: 'admitted' });
+  });
+
+  it('changes nothing for a job with no subject, as from the cron tick', async () => {
+    const seen: SubjectReadScope[] = [];
+    await runScopedJob({
+      name: 'demo',
+      scope: 'per-org',
+      run: async () => {
+        seen.push(await getSubjectReadScope());
+        return 0;
+      },
+      foundWork: () => false,
+    });
+    expect(seen).toEqual([{ kind: 'none' }]);
   });
 });
 

@@ -50,7 +50,7 @@ vi.mock('@/lib/db/client', () => ({
       count: vi.fn(),
       create: vi.fn(),
     },
-    aiDataset: { findFirst: vi.fn() },
+    aiDataset: { findFirst: vi.fn(), findMany: vi.fn() },
     aiDatasetCase: { count: vi.fn() },
     // The subject is read by id (findUnique); the judge by slug, which is a
     // findFirst within the org since §107 t-708. The judge lookups below
@@ -174,6 +174,7 @@ function validRunBody(overrides: Record<string, unknown> = {}) {
 describe('GET /api/v1/admin/orchestration/evaluations/runs', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(prisma.aiDataset.findMany).mockResolvedValue([]);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -220,6 +221,44 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs', () => {
     expect(data.data).toHaveLength(1);
     expect(data.data[0].id).toBe(RUN_ID);
     expect(data.meta.total).toBe(1);
+  });
+
+  it("attaches each run's dataset from one read through the dataset's visibility", async () => {
+    const OTHER_RUN_ID = 'cmjbv4i3x00003wsloputgwu8';
+    const CLAIMED_DATASET_ID = 'cmjbv4i3x00003wsloputgwu9';
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiEvaluationRun.findMany).mockResolvedValue([
+      makeRunRow(),
+      // Its dataset was an orphan, since claimed by another admin.
+      makeRunRow({ id: OTHER_RUN_ID, datasetId: CLAIMED_DATASET_ID }),
+    ] as never);
+    vi.mocked(prisma.aiEvaluationRun.count).mockResolvedValue(2);
+    vi.mocked(prisma.aiDataset.findMany).mockResolvedValue([
+      { id: DATASET_ID, name: 'Mine', caseCount: 3 },
+    ] as never);
+
+    const response = await GET(makeGetRequest());
+
+    // One foreign dataset does not cost the caller their list.
+    expect(response.status).toBe(200);
+    const data = await parseJson<{ data: Array<{ id: string; dataset: unknown }> }>(response);
+    expect(data.data.map((r) => [r.id, r.dataset])).toEqual([
+      [RUN_ID, { id: DATASET_ID, name: 'Mine', caseCount: 3 }],
+      [OTHER_RUN_ID, null],
+    ]);
+    const runArgs = vi.mocked(prisma.aiEvaluationRun.findMany).mock.calls[0][0];
+    expect(runArgs?.include).not.toHaveProperty('dataset');
+    expect(vi.mocked(prisma.aiDataset.findMany)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(prisma.aiDataset.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { OR: [{ userId: ADMIN_ID }, { userId: null }] },
+            { id: { in: [DATASET_ID, CLAIMED_DATASET_ID] } },
+          ],
+        },
+      })
+    );
   });
 
   it('applies status, subjectKind, datasetId, agentId filters', async () => {

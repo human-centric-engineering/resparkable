@@ -72,7 +72,7 @@ function makeCandidate(overrides: Record<string, unknown> = {}) {
       toolUse: 'strong',
       bestRole: 'Quick worker for tool calls',
       inputCostPerMillion: 0.15,
-      outputCostPerMillion: 0.6,
+      outputCostPerMillion: 0.6 as number | null,
       maxContext: 128000,
       slug: 'openai-gpt-4o-mini',
     },
@@ -341,6 +341,88 @@ describe('DiscoverModelsDialog', () => {
       // Result step shows count.
       await waitFor(() => {
         expect(screen.getByText(/1 model added/i)).toBeInTheDocument();
+      });
+    });
+
+    describe('catalogue prices (t-774)', () => {
+      async function submitOne(candidate: ReturnType<typeof makeCandidate>) {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.get).mockResolvedValueOnce({
+          providerSlug: 'openai',
+          candidates: [candidate],
+        });
+        vi.mocked(apiClient.post).mockResolvedValue({ created: 1, skipped: 0, conflicts: [] });
+
+        const user = userEvent.setup();
+        render(<DiscoverModelsDialog open onOpenChange={() => {}} providerSlug="openai" />);
+        await waitFor(() => expect(screen.getByText(candidate.modelId)).toBeInTheDocument());
+        await user.click(
+          screen.getByRole('checkbox', { name: new RegExp(`select ${candidate.modelId}`, 'i') })
+        );
+        await user.click(screen.getByRole('button', { name: /continue/i }));
+        await user.click(await screen.findByRole('button', { name: /add 1 model/i }));
+        await waitFor(() => expect(apiClient.post).toHaveBeenCalled());
+
+        const [, options] = vi.mocked(apiClient.post).mock.calls[0];
+        return (options as { body: { models: Array<Record<string, unknown>> } }).body.models[0];
+      }
+
+      it("sends a chat candidate's catalogue prices as the input/output pair", async () => {
+        const row = await submitOne(makeCandidate());
+
+        expect(row.inputCostPerMillionTokens).toBe(0.15);
+        expect(row.outputCostPerMillionTokens).toBe(0.6);
+      });
+
+      it('sends no prices when the catalogue gave only one of the two', async () => {
+        const base = makeCandidate();
+        const row = await submitOne({
+          ...base,
+          suggested: { ...base.suggested, outputCostPerMillion: null },
+        });
+
+        expect(row).not.toHaveProperty('inputCostPerMillionTokens');
+        expect(row).not.toHaveProperty('outputCostPerMillionTokens');
+      });
+
+      it("sends a reasoning candidate's catalogue prices", async () => {
+        const base = makeCandidate({ modelId: 'o3-mini-2026-09-01' });
+        const row = await submitOne({
+          ...base,
+          inferredCapability: 'reasoning',
+          suggested: {
+            ...base.suggested,
+            capabilities: ['reasoning'],
+            inputCostPerMillion: 1.1,
+            outputCostPerMillion: 4.4,
+          },
+        });
+
+        expect(row.inputCostPerMillionTokens).toBe(1.1);
+        expect(row.outputCostPerMillionTokens).toBe(4.4);
+      });
+
+      it('drops a sentinel catalogue price instead of failing the batch', async () => {
+        // OpenRouter lists router entries at -1 per token.
+        const base = makeCandidate({ modelId: 'auto' });
+        const row = await submitOne({
+          ...base,
+          suggested: { ...base.suggested, inputCostPerMillion: -1_000_000 },
+        });
+
+        expect(row).not.toHaveProperty('inputCostPerMillionTokens');
+        expect(row).not.toHaveProperty('outputCostPerMillionTokens');
+      });
+
+      it('sends no chat prices for a candidate without the chat capability', async () => {
+        const base = makeCandidate({ modelId: 'text-embedding-3-small' });
+        const row = await submitOne({
+          ...base,
+          inferredCapability: 'embedding',
+          suggested: { ...base.suggested, capabilities: ['embedding'] },
+        });
+
+        expect(row).not.toHaveProperty('inputCostPerMillionTokens');
       });
     });
 

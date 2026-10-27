@@ -13,6 +13,7 @@
  * Phase 2.0 added for subject + judge calls in eval runs.
  */
 
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { logger } from '@/lib/logging';
 import { ValidationError } from '@/lib/api/errors';
@@ -56,6 +57,11 @@ export interface GenerateCasesParams {
   /** Subject agent the proposed cases will eventually be evaluated against. */
   agentId: string;
   userId: string;
+  /**
+   * The datasets whose cases failure mining may quote — the caller's
+   * `datasetVisibilityWhere(session)`. Defaults to the caller's own datasets.
+   */
+  datasetWhere?: Prisma.AiDatasetWhereInput;
   mode: SynthesisMode;
   /** How many cases to propose (1–25). */
   count: number;
@@ -118,6 +124,7 @@ export async function generateCases(params: GenerateCasesParams): Promise<Genera
     const failures = await loadFailureSeed({
       agentId: params.agentId,
       userId: params.userId,
+      datasetWhere: params.datasetWhere ?? { userId: params.userId },
     });
     if (failures.length === 0) {
       throw new ValidationError(

@@ -144,6 +144,14 @@ export interface BuildMessagesArgs {
    * omitted instead, which is true.
    */
   conversationSummaryCovers?: number;
+  /**
+   * Messages older than the first row of `history` that nothing describes — the
+   * loaded window did not reach back to the summary's pin (or to the start of
+   * the conversation). Announced to the model as omitted, so that a gap is never
+   * silent. An upper bound: it counts every row, including the error markers a
+   * read never shows. Defaults to none.
+   */
+  omittedBeforeHistory?: number;
 }
 
 /**
@@ -270,7 +278,12 @@ export function buildMessagesAndBreakdown(args: BuildMessagesArgs): BuildMessage
     }
   }
 
-  if (droppedCount > 0) {
+  // A summary the caller passes is rendered whether or not any loaded row is
+  // dropped: the handler loads from the summary's pin onward, so a summary can
+  // describe rows older than every loaded one (#655). The caller decides when
+  // one applies; omitting it is how a stored summary is ignored.
+  const omittedBeforeHistory = Math.max(0, args.omittedBeforeHistory ?? 0);
+  if (droppedCount > 0 || omittedBeforeHistory > 0 || args.conversationSummary) {
     // Split the dropped span into the part the summary describes and the part
     // nothing describes. Equal on every normal path — `summarised` is
     // `droppedCount` and the marker below never renders — so this is the same
@@ -291,6 +304,14 @@ export function buildMessagesAndBreakdown(args: BuildMessagesArgs): BuildMessage
       const summaryBlock = `${heading}\n\n${args.conversationSummary}`;
       messages.push({ role: 'system', content: summaryBlock });
       breakdown.conversationSummary = makePart(summaryBlock, modelId);
+    }
+    if (omittedBeforeHistory > 0) {
+      // Between the summary (or the start) and the first loaded row. An upper
+      // bound — see `omittedBeforeHistory` — so it says "up to".
+      messages.push({
+        role: 'system',
+        content: `[... up to ${omittedBeforeHistory} earlier messages omitted ...]`,
+      });
     }
     const unsummarised = droppedCount - summarised;
     if (unsummarised > 0) {

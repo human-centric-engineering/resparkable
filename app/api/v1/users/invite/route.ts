@@ -16,7 +16,8 @@
  *   - orgId: The org the invitee joins on acceptance (optional; defaults to
  *     the install org) — must exist and be ACTIVE (§106)
  *   - orgRole: Their role in that org (optional; MEMBER, or OWNER for the
- *     first member of a new org)
+ *     first member of a new org). Refused for the install org, whose role
+ *     follows the platform `role` (#871)
  *
  * Response emailStatus values:
  *   - 'sent': Email was sent successfully
@@ -48,23 +49,17 @@
 import { withAdminAuth } from '@/lib/auth/guards';
 import { canAdminister } from '@/lib/auth/authorization';
 import { prisma } from '@/lib/db/client';
-import { BRAND } from '@/lib/brand';
 import { successResponse, errorResponse } from '@/lib/api/responses';
 import { ErrorCodes, ForbiddenError } from '@/lib/api/errors';
 import { validateRequestBody } from '@/lib/api/validation';
 import { inviteUserSchema } from '@/lib/validations/user';
-import {
-  generateInvitationToken,
-  getValidInvitation,
-  updateInvitationToken,
-} from '@/lib/utils/invitation-token';
-import { sendEmail } from '@/lib/email/send';
-import { resolveEmailTemplate } from '@/lib/email/registry';
+import { getValidInvitation } from '@/lib/utils/invitation-token';
+import { deliverInvitation } from '@/lib/auth/invitation-delivery';
 import { getRouteLogger } from '@/lib/api/context';
-import { env } from '@/lib/env';
 import { inviteLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
 import { getClientIP } from '@/lib/security/ip';
-import { DEFAULT_USER_ROLE } from '@/lib/auth/roles';
+import { DEFAULT_USER_ROLE, isPlatformAdmin } from '@/lib/auth/roles';
+import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 
 /**
  * POST /api/v1/users/invite
@@ -106,6 +101,32 @@ export const POST = withAdminAuth(async (request, session) => {
 
   // 3. Validate request body
   const body = await validateRequestBody(request, inviteUserSchema);
+
+  // An install-org role follows the platform role, as on the members screen,
+  // which refuses to edit it (#871). So an `orgRole` with no other org named
+  // is refused rather than stored: `role` is what sets it.
+  if (body.orgRole !== undefined && (!body.orgId || body.orgId === INSTALL_ORG_ID)) {
+    return errorResponse(
+      'A role in the main organisation follows the platform role; set role instead',
+      { code: ErrorCodes.VALIDATION_ERROR, status: 400 }
+    );
+  }
+
+  // The platform role is platform standing, whatever org this invitation
+  // targets: on acceptance it becomes `User.role`, and the install-org role
+  // follows from it. So only a platform admin may set anything above the
+  // default. Under Sunrise's default policy only platform admins pass the
+  // guard, so this changes nothing; it is the floor for a fork whose
+  // `canAdminister` admits an org's OWNER/ADMIN, which may narrow but never
+  // widen the platform-only surface (t-833). Read from the principal, so a
+  // support session — which presents the default role — is refused too.
+  if (body.role !== DEFAULT_USER_ROLE && !isPlatformAdmin(session.principal)) {
+    log.warn('Invitation with a platform role refused: caller is not a platform admin', {
+      adminId: session.user.id,
+      role: body.role,
+    });
+    throw new ForbiddenError('Only a platform administrator can set a platform role');
+  }
 
   // 4. Parse resend query parameter
   const url = new URL(request.url);
@@ -157,21 +178,43 @@ export const POST = withAdminAuth(async (request, session) => {
     );
   }
 
+  // The same floor for the invitation a resend replaces: re-sending a pending
+  // platform-role invitation rewrites its role and org, so it is a platform
+  // admin's to do (t-833), as the org invitations route refuses it outright.
+  if (
+    existingInvitation &&
+    existingInvitation.metadata.role !== DEFAULT_USER_ROLE &&
+    !isPlatformAdmin(session.principal)
+  ) {
+    log.warn('Resend of a platform-role invitation refused: caller is not a platform admin', {
+      adminId: session.user.id,
+      pendingRole: existingInvitation.metadata.role,
+    });
+    throw new ForbiddenError(
+      'Only a platform administrator can re-send an invitation that grants a platform role'
+    );
+  }
+
   // 6b. Which org this invitation joins, and as what (§106). The body's org
-  // keys when it sends either of them (`orgRole` alone means the install org
-  // with an explicit role — `membershipForNewUser` honours it); else, on a
-  // resend, the pending row's — a resend re-sends THIS invitation, and the
+  // keys when it sends either of them; else, on a resend, the pending row's —
+  // a resend re-sends THIS invitation, and the
   // admin table's Resend button posts only `{ name, email, role }`, so
   // without the carry-over a bounced invitation into an org would be
   // silently re-targeted to the install org. The platform `role` has always
   // come from the body on a resend; that is unchanged.
   const bodyNamesTarget = body.orgId !== undefined || body.orgRole !== undefined;
-  const target = bodyNamesTarget
+  const named = bodyNamesTarget
     ? { orgId: body.orgId, orgRole: body.orgRole }
     : {
         orgId: existingInvitation?.metadata.orgId,
         orgRole: existingInvitation?.metadata.orgRole,
       };
+
+  // A resend can carry an install-org `orgRole` from an invitation written
+  // before the body check above refused one; drop it, so the role follows the
+  // platform role (#871).
+  const intoInstall = !named.orgId || named.orgId === INSTALL_ORG_ID;
+  const target = intoInstall ? { orgId: named.orgId, orgRole: undefined } : named;
 
   // The org is in the body (or the pending row), so this cannot be a
   // `resource` resolver on the guard (a resolver runs before the body is
@@ -224,11 +267,15 @@ export const POST = withAdminAuth(async (request, session) => {
     ...(target.orgRole ? { orgRole: target.orgRole } : {}),
   };
 
-  // Use updateInvitationToken for resend (deletes old, creates new)
-  // Use generateInvitationToken for new invitations
-  const token = existingInvitation
-    ? await updateInvitationToken(body.email, invitationMetadata)
-    : await generateInvitationToken(body.email, invitationMetadata);
+  // 7–8. Store the token (replacing the pending one on a resend) and send the email
+  const delivered = await deliverInvitation({
+    email: body.email,
+    name: body.name,
+    metadata: invitationMetadata,
+    isResend: !!existingInvitation,
+    inviterName: session.user.name || 'Administrator',
+    log,
+  });
 
   log.info(existingInvitation ? 'Invitation resent' : 'Invitation created', {
     email: body.email,
@@ -239,54 +286,10 @@ export const POST = withAdminAuth(async (request, session) => {
     isResend: !!existingInvitation,
   });
 
-  // 8. Send invitation email
-  const appUrl = env.NEXT_PUBLIC_APP_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3000';
-  const invitationUrl = `${appUrl}/accept-invite?token=${token}&email=${encodeURIComponent(body.email)}`;
-
-  // Calculate expiration for email (7 days from now)
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 7);
-
-  const emailResult = await sendEmail({
-    to: body.email,
-    subject: `You've been invited to join ${BRAND.name}`,
-    react: resolveEmailTemplate('invitation', {
-      inviterName: session.user.name || 'Administrator',
-      inviteeName: body.name,
-      inviteeEmail: body.email,
-      invitationUrl,
-      expiresAt,
-    }),
-  });
-
-  // Email sending failure should NOT fail the request (just log warning)
-  if (!emailResult.success) {
-    log.warn('Failed to send invitation email', {
-      email: body.email,
-      error: emailResult.error,
-      deliveryStatus: emailResult.status,
-    });
-  } else {
-    log.info('Invitation email sent', {
-      email: body.email,
-      messageId: emailResult.id,
-      deliveryStatus: emailResult.status,
-    });
-  }
-
   // 9. Return invitation details (NOT user object)
-  // Message varies based on email delivery status and whether this is a resend
-  const actionWord = existingInvitation ? 'resent' : 'sent';
-  const message =
-    emailResult.status === 'sent'
-      ? `Invitation ${actionWord} successfully`
-      : emailResult.status === 'failed'
-        ? `Invitation ${existingInvitation ? 'regenerated' : 'created'} but email failed to send`
-        : `Invitation ${existingInvitation ? 'regenerated' : 'created'} (email service not configured)`;
-
   return successResponse(
     {
-      message,
+      message: delivered.message,
       invitation: {
         email: body.email,
         name: body.name,
@@ -294,10 +297,10 @@ export const POST = withAdminAuth(async (request, session) => {
         orgId: target.orgId ?? null,
         orgRole: target.orgRole ?? null,
         invitedAt: new Date().toISOString(),
-        expiresAt: expiresAt.toISOString(),
-        link: invitationUrl,
+        expiresAt: delivered.expiresAt.toISOString(),
+        link: delivered.link,
       },
-      emailStatus: emailResult.status,
+      emailStatus: delivered.emailStatus,
     },
     undefined,
     { status: 201 }

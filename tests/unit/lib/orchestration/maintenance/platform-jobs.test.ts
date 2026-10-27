@@ -50,6 +50,7 @@ vi.mock('@/lib/orchestration/agents/reconcile-platform-agents', () => ({
 }));
 vi.mock('@/lib/portability/jobs/worker', () => ({ processTransferJobs: vi.fn() }));
 vi.mock('@/lib/portability/jobs/expiry', () => ({ expireTransferArchives: vi.fn() }));
+vi.mock('@/lib/privacy/erasure-requests', () => ({ processPendingErasures: vi.fn() }));
 
 import { logger } from '@/lib/logging';
 import {
@@ -66,6 +67,7 @@ import {
 } from '@/lib/orchestration/retention';
 import { processPendingEvaluationRuns } from '@/lib/orchestration/evaluations/run-worker';
 import { reconcilePlatformAgentsIfStale } from '@/lib/orchestration/agents/reconcile-platform-agents';
+import { processPendingErasures } from '@/lib/privacy/erasure-requests';
 import { getTenantContext, runAsOrg } from '@/lib/tenancy/context';
 import { processTransferJobs } from '@/lib/portability/jobs/worker';
 import { expireTransferArchives } from '@/lib/portability/jobs/expiry';
@@ -96,6 +98,7 @@ const PER_ORG_TASKS = [
 const ALL_TASKS = [
   ...PER_ORG_TASKS,
   enforceSystemRetentionPolicies,
+  processPendingErasures,
   processTransferJobs,
   expireTransferArchives,
 ];
@@ -112,6 +115,8 @@ const RETENTION_IDLE = {
 };
 
 const SYSTEM_RETENTION_IDLE = { auditLogsDeleted: 0, mcpAuditLogsDeleted: 0 };
+
+const ERASURES_IDLE = { claimed: 0, erased: 0, failed: 0, pending: 0 };
 
 const ORG_A = 'org_a';
 const ORG_B = 'org_b';
@@ -164,6 +169,7 @@ function mockIdleTasks(): void {
     orphaned: 0,
   });
   vi.mocked(expireTransferArchives).mockResolvedValue({ expired: 0, failed: 0 });
+  vi.mocked(processPendingErasures).mockResolvedValue(ERASURES_IDLE);
 }
 
 beforeEach(() => {
@@ -189,6 +195,7 @@ describe('PLATFORM_JOB_NAMES', () => {
       'evaluationRuns',
       'auditLogRetention',
       'platformAgents',
+      'pendingErasures',
       'transferJobs',
       'transferArchiveExpiry',
     ]);
@@ -197,8 +204,10 @@ describe('PLATFORM_JOB_NAMES', () => {
   it('declares a scope on every task, and only the system-table tasks run as system (§108)', () => {
     // Every task that touches a tenant-owned table is per-org: under the
     // system scope nothing is stamped, and the reaper, recovery, the scheduler
-    // and the evaluation worker all CREATE rows. The one system task prunes
-    // two tables that have no org column at all.
+    // and the evaluation worker all CREATE rows. The system tasks are the
+    // prune of two tables that have no org column at all, and the erasure
+    // retrier, because a person (`User`) has no org and an erasure spans all
+    // of theirs.
     const scopes = PLATFORM_JOBS.map((job) => [job.name, job.scope] as const);
 
     expect(scopes).toEqual([
@@ -212,20 +221,29 @@ describe('PLATFORM_JOB_NAMES', () => {
       ['evaluationRuns', 'per-org'],
       ['auditLogRetention', { system: expect.stringContaining('audit') }],
       ['platformAgents', 'per-org'],
+      ['pendingErasures', { system: expect.stringContaining('pendingErasures') }],
       ['transferJobs', { system: expect.stringContaining('transfer') }],
       ['transferArchiveExpiry', { system: expect.stringContaining('transfer') }],
     ]);
   });
 
-  it('exempts only the tasks whose backoff is sub-minute', () => {
+  it('exempts only the tasks that must see every tick', () => {
     // A throttled retry drain would miss the 10s first retry entirely, so this
     // set is behavioural, not stylistic.
     const responsive = PLATFORM_JOBS.filter((job) => job.intervalMs === 0).map((job) => job.name);
 
+    // pendingErasures too: a throttled tick reports no work for it, and the
+    // idle gate could then sleep past a pending erasure's next attempt.
     // `transferJobs` is here for a different reason from the retry drains: it
     // runs one job per tick by design, so the cadence *is* the queue's
     // throughput and throttling it would throttle the feature.
-    expect(responsive).toEqual(['webhookRetries', 'hookRetries', 'evaluationRuns', 'transferJobs']);
+    expect(responsive).toEqual([
+      'webhookRetries',
+      'hookRetries',
+      'evaluationRuns',
+      'pendingErasures',
+      'transferJobs',
+    ]);
   });
 });
 
@@ -451,6 +469,20 @@ describe('runDuePlatformJobs — foundWork', () => {
         }),
     ],
     [
+      'pendingErasures — an erasure was claimed',
+      () =>
+        vi
+          .mocked(processPendingErasures)
+          .mockResolvedValue({ claimed: 1, erased: 1, failed: 0, pending: 0 }),
+    ],
+    [
+      'pendingErasures — one is still waiting out its backoff',
+      () =>
+        vi
+          .mocked(processPendingErasures)
+          .mockResolvedValue({ claimed: 0, erased: 0, failed: 0, pending: 2 }),
+    ],
+    [
       'evaluationRuns — a claimed run needs the next time-slice',
       () =>
         vi.mocked(processPendingEvaluationRuns).mockResolvedValue({
@@ -559,6 +591,28 @@ describe('runDuePlatformJobs — tenant scope (§108)', () => {
     await runDuePlatformJobs(T0);
 
     expect(seen).toEqual([INSTALL_ORG_ID]);
+  });
+
+  it('runs the pending-erasure retrier once under the system scope, never per org, even at multi', async () => {
+    mockEnv.TENANCY_MODE = 'multi';
+    orgs(ORG_A, ORG_B);
+    const seen = contextsSeenBy(processPendingErasures);
+
+    await runDuePlatformJobs(T0);
+
+    expect(seen).toEqual([null]);
+    expect(logger.info).toHaveBeenCalledWith(
+      'Entering system tenant scope',
+      expect.objectContaining({ reason: expect.stringContaining('pendingErasures') })
+    );
+  });
+
+  it('runs the pending-erasure retrier on every tick, however close together', async () => {
+    await runDuePlatformJobs(T0);
+    await runDuePlatformJobs(T0 + 1000);
+    await runDuePlatformJobs(T0 + 2000);
+
+    expect(processPendingErasures).toHaveBeenCalledTimes(3);
   });
 
   it('at multi runs each per-org task once per active org, in that org, and folds the summary', async () => {

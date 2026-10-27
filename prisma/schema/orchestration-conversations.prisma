@@ -264,10 +264,12 @@ model AiEventHook {
 }
 
 // Delivery history / retry queue for webhook-type AiEventHook dispatches.
-// Internal handlers run in-process and are not tracked here.
+// Internal handlers run in-process and are not tracked here. The row outlives
+// the hook that sent it (`SetNull`) and carries its own destination (§109
+// t-739); see lib/orchestration/webhooks/destination.ts.
 model AiEventHookDelivery {
   id               String    @id @default(cuid())
-  hookId           String
+  hookId           String? // null once the hook is deleted; the row is kept as the record
   eventType        String
   payload          Json
   status           String    @default("pending") // pending, delivered, failed, exhausted
@@ -277,8 +279,15 @@ model AiEventHookDelivery {
   lastResponseCode Int?
   lastError        String?   @db.Text
   createdAt        DateTime  @default(now())
+  // Same meaning as on `AiWebhookDelivery` (t-809).
+  stoppedByErasure Boolean   @default(false)
 
-  hook AiEventHook @relation(fields: [hookId], references: [id], onDelete: Cascade)
+  // Same three fields, same meaning, as on `AiWebhookDelivery`.
+  destination            String? @db.Text
+  destinationFingerprint String?
+  previousDestinations   Json?
+
+  hook AiEventHook? @relation(fields: [hookId], references: [id], onDelete: SetNull)
 
   orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
   org   Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -287,6 +296,9 @@ model AiEventHookDelivery {
   @@index([hookId])
   @@index([status])
   @@index([nextRetryAt])
+  // Subject access and erasure find the deliveries whose payload names a
+  // person by JSON containment (`lib/privacy/delivery-payloads.ts`, t-783).
+  @@index([payload(ops: JsonbPathOps)], type: Gin)
   @@map("ai_event_hook_delivery")
 }
 

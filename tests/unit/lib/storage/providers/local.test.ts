@@ -8,6 +8,7 @@ import {
 } from '@/lib/storage/providers/local';
 import { getStorageCapabilities } from '@/lib/storage/providers/types';
 import { logger } from '@/lib/logging';
+import { verifyStorageAccessToken } from '@/lib/storage/access-tokens';
 
 // Root paths here are inert strings — `fs` is mocked, so nothing is ever
 // written. They deliberately avoid `/tmp`: CodeQL's js/insecure-temporary-file
@@ -68,6 +69,10 @@ vi.mock('@/lib/env', () => ({
     BETTER_AUTH_URL: 'https://app.example.com',
   },
 }));
+
+/** Either layer may refuse a root-resolving key; see `root-equivalent prefixes`. */
+const ROOT_KEY_REFUSAL =
+  /Storage key must not resolve to the storage root|must not contain "\." or empty path segments/;
 
 describe('lib/storage/providers/local', () => {
   beforeEach(() => {
@@ -246,6 +251,10 @@ describe('lib/storage/providers/local', () => {
       // reach `rm(root, { recursive: true })` and erase every object the
       // provider holds. `existsSync` returns true throughout so the delete is
       // reached if the guard is absent.
+      // Since §109 t-736 `validateStorageKey` refuses `.` segments itself, so
+      // these keys stop there; `resolveWithin` stays as the backstop behind it.
+      // Either refusal satisfies the guard these tests exist for: nothing is
+      // deleted, written or read.
       describe('root-equivalent prefixes', () => {
         it.each([['.'], ['./'], ['./.'], ['././']])(
           'refuses %j without deleting anything',
@@ -257,9 +266,7 @@ describe('lib/storage/providers/local', () => {
               privateDir: '/srv/test-private',
             });
 
-            await expect(provider.deletePrefix(prefix)).rejects.toThrow(
-              'Storage key must not resolve to the storage root'
-            );
+            await expect(provider.deletePrefix(prefix)).rejects.toThrow(ROOT_KEY_REFUSAL);
             expect(rm).not.toHaveBeenCalled(); // test-review:accept no_arg_called — the whole point of the guard is that the recursive delete never runs
           }
         );
@@ -293,9 +300,7 @@ describe('lib/storage/providers/local', () => {
             privateDir: '/srv/test-private',
           });
 
-          await expect(provider.deletePrefix('.')).rejects.toThrow(
-            'Storage key must not resolve to the storage root'
-          );
+          await expect(provider.deletePrefix('.')).rejects.toThrow(ROOT_KEY_REFUSAL);
           expect(rm).not.toHaveBeenCalled(); // test-review:accept no_arg_called — asserts the private root survived too
         });
 
@@ -327,7 +332,7 @@ describe('lib/storage/providers/local', () => {
 
           await expect(
             provider.upload(Buffer.from('x'), { key: '.', contentType: 'text/plain' })
-          ).rejects.toThrow('Storage key must not resolve to the storage root');
+          ).rejects.toThrow(ROOT_KEY_REFUSAL);
           expect(mkdir).not.toHaveBeenCalled(); // test-review:accept no_arg_called — mkdir would create a directory OUTSIDE the storage root
           expect(writeFile).not.toHaveBeenCalled(); // test-review:accept no_arg_called — writeFile would turn the storage root into a file
         });
@@ -339,9 +344,7 @@ describe('lib/storage/providers/local', () => {
 
             const provider = new LocalProvider({ baseDir: '/srv/test-uploads' });
 
-            await expect(provider[method]('.')).rejects.toThrow(
-              'Storage key must not resolve to the storage root'
-            );
+            await expect(provider[method]('.')).rejects.toThrow(ROOT_KEY_REFUSAL);
           }
         );
       });
@@ -433,6 +436,34 @@ describe('lib/storage/providers/local', () => {
         const url = await provider.getSignedUrl('documents/user-1/contract.pdf', 300);
 
         expect(url).toMatch(/^\/api\/v1\/storage\/documents\/user-1\/contract\.pdf\?token=/);
+      });
+
+      it('mints an org-scoped token when given an orgId option', async () => {
+        const provider = new LocalProvider(TWO_ROOTS);
+
+        const url = await provider.getSignedUrl('orgs/org-a/report.pdf', 300, { orgId: 'org-a' });
+        const token = decodeURIComponent(url.split('token=')[1]);
+
+        expect(verifyStorageAccessToken(token)).toMatchObject({
+          key: 'orgs/org-a/report.pdf',
+          org: 'org-a',
+        });
+      });
+
+      it('rejects when the key is outside the orgId option', async () => {
+        const provider = new LocalProvider(TWO_ROOTS);
+
+        await expect(
+          provider.getSignedUrl('orgs/org-a/report.pdf', 300, { orgId: 'org-b' })
+        ).rejects.toThrow(/outside the org/i);
+      });
+
+      it('rejects an org-owned key signed with no orgId', async () => {
+        const provider = new LocalProvider(TWO_ROOTS);
+
+        await expect(provider.getSignedUrl('orgs/org-a/report.pdf', 300)).rejects.toThrow(
+          /only be signed for its own org/i
+        );
       });
 
       it('refuses to sign a traversal key', async () => {

@@ -19,6 +19,7 @@
  * - signed URL generation fails after upload → signed_url_failed
  * - metadata forwarding (description, originalFilename)
  * - result shapes (public path vs signed path)
+ * - TENANCY_MODE=multi: org key prefix, org-bound client, private-by-default signed URLs
  * - deriveExtension edge cases (directly via __testing export)
  * - customConfigSchema edge cases (directly via __testing export)
  *
@@ -82,7 +83,10 @@ vi.mock('@/lib/storage/client', () => ({
 // ---------------------------------------------------------------------------
 
 const { prisma } = await import('@/lib/db/client');
-const { UploadToStorageCapability, __testing } =
+const { getStorageClient } = await import('@/lib/storage/client');
+const { env } = await import('@/lib/env');
+const { runAsOrg, runAsSystem } = await import('@/lib/tenancy/context');
+const { UploadToStorageCapability, __testing, DEFAULT_MULTI_SIGNED_URL_TTL_SECONDS } =
   await import('@/lib/orchestration/capabilities/built-in/upload-to-storage');
 
 const { customConfigSchema, argsSchema, deriveExtension } = __testing;
@@ -977,5 +981,354 @@ describe('UploadToStorageCapability.execute()', () => {
       expect(serialised).not.toContain(sensitive);
       expect(serialised).not.toContain('QWxpY2U='); // first base64 chunk
     });
+  });
+});
+
+// ===========================================================================
+// 3. TENANCY_MODE=multi (§109 t-736)
+// ===========================================================================
+
+describe('UploadToStorageCapability.execute() at TENANCY_MODE=multi', () => {
+  const ORG_ID = 'org-acme';
+  const ORG_PREFIX = `orgs/${ORG_ID}/`;
+  const mockedGetStorageClient = vi.mocked(getStorageClient);
+  let previousMode: typeof env.TENANCY_MODE;
+
+  /** Run the capability inside the real tenant context for ORG_ID. */
+  function executeAsOrg(args = BASE_ARGS, context = BASE_CONTEXT) {
+    return runAsOrg(ORG_ID, () => new UploadToStorageCapability().execute(args, context));
+  }
+
+  beforeEach(() => {
+    previousMode = env.TENANCY_MODE;
+    env.TENANCY_MODE = 'multi';
+  });
+
+  afterEach(() => {
+    env.TENANCY_MODE = previousMode;
+  });
+
+  describe('org key prefix', () => {
+    it('wraps the default agent prefix in the org prefix', async () => {
+      noBinding();
+      await executeAsOrg();
+
+      const [, options] = mockUpload.mock.calls[0];
+      expect(options.key.startsWith(`${ORG_PREFIX}agent-uploads/agent-abc/`)).toBe(true);
+    });
+
+    it('wraps a binding keyPrefix in the org prefix rather than replacing it', async () => {
+      bindCustomConfig({ keyPrefix: 'reports/' });
+      await executeAsOrg();
+
+      const [, options] = mockUpload.mock.calls[0];
+      expect(options.key.startsWith(`${ORG_PREFIX}reports/`)).toBe(true);
+      expect(options.key).not.toContain('agent-uploads/');
+    });
+
+    it('records the org in the object metadata', async () => {
+      noBinding();
+      await executeAsOrg();
+
+      const [, options] = mockUpload.mock.calls[0];
+      expect(options.metadata?.orgId).toBe(ORG_ID);
+    });
+  });
+
+  describe('storage client', () => {
+    it('asks for the org-bound client', async () => {
+      noBinding();
+      await executeAsOrg();
+
+      expect(mockedGetStorageClient).toHaveBeenCalledWith({ orgId: ORG_ID });
+    });
+  });
+
+  describe('private by default', () => {
+    it('uploads privately and signs with the default 24h TTL when the binding chose neither way', async () => {
+      noBinding();
+      const before = Date.now();
+      const result = await executeAsOrg();
+      const after = Date.now();
+
+      const [, options] = mockUpload.mock.calls[0];
+      expect(options.public).toBe(false);
+      expect(DEFAULT_MULTI_SIGNED_URL_TTL_SECONDS).toBe(86400);
+      expect(mockGetSignedUrl).toHaveBeenCalledWith(DEFAULT_UPLOAD_RESULT.key, 86400);
+      expect(result.success).toBe(true);
+      expect(result.data?.signed).toBe(true);
+      const expiresMs = new Date(result.data?.expiresAt as string).getTime();
+      expect(expiresMs).toBeGreaterThanOrEqual(before + 86400 * 1000 - 2000);
+      expect(expiresMs).toBeLessThanOrEqual(after + 86400 * 1000 + 2000);
+    });
+
+    it('also signs by default when the binding only sets other fields (keyPrefix)', async () => {
+      bindCustomConfig({ keyPrefix: 'reports/' });
+      const result = await executeAsOrg();
+
+      expect(mockUpload.mock.calls[0][1].public).toBe(false);
+      expect(result.data?.signed).toBe(true);
+    });
+
+    it('uploads publicly and never signs when the binding sets public: true', async () => {
+      bindCustomConfig({ public: true });
+      const result = await executeAsOrg();
+
+      expect(mockUpload.mock.calls[0][1].public).toBe(true);
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+      expect(result.data?.signed).toBe(false);
+      expect(result.data?.url).toBe(DEFAULT_UPLOAD_RESULT.url);
+    });
+
+    it('uploads privately without signing when the binding sets public: false and no TTL', async () => {
+      bindCustomConfig({ public: false });
+      const result = await executeAsOrg();
+
+      expect(mockUpload.mock.calls[0][1].public).toBe(false);
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+      expect(result.data?.signed).toBe(false);
+    });
+
+    it('honours an explicit signedUrlTtlSeconds instead of the default', async () => {
+      bindCustomConfig({ signedUrlTtlSeconds: 600 });
+      const result = await executeAsOrg();
+
+      expect(mockGetSignedUrl).toHaveBeenCalledWith(DEFAULT_UPLOAD_RESULT.key, 600);
+      expect(result.data?.signed).toBe(true);
+    });
+  });
+
+  describe('no org context', () => {
+    it('returns no_org_context without uploading when no tenant context was entered', async () => {
+      noBinding();
+      const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('no_org_context');
+      expect(mockUpload).not.toHaveBeenCalled();
+      expect(mockedGetStorageClient).not.toHaveBeenCalled();
+    });
+
+    it('returns no_org_context without uploading under the system scope (no org)', async () => {
+      noBinding();
+      const result = await runAsSystem('test: system scope has no org', () =>
+        new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT)
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('no_org_context');
+      expect(mockUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider that cannot store private objects (default binding)', () => {
+    it('on s3, names the deployment setting and public: true, not signedUrlTtlSeconds', async () => {
+      noBinding();
+      mockStorageClient = {
+        name: 's3',
+        upload: mockUpload,
+        getSignedUrl: mockGetSignedUrl,
+        capabilities: { privateObjects: false, signedUrls: true },
+      };
+
+      const result = await executeAsOrg();
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('private_objects_not_supported');
+      expect(result.error?.message).toContain('S3_OBJECTS_PRIVATE_BY_DEFAULT');
+      expect(result.error?.message).toContain('public: true');
+      expect(result.error?.message).not.toContain('signedUrlTtlSeconds');
+      expect(mockUpload).not.toHaveBeenCalled();
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('on a non-s3 provider, points only at public: true with no env var named', async () => {
+      noBinding();
+      mockStorageClient = {
+        name: 'fork-provider',
+        upload: mockUpload,
+        getSignedUrl: mockGetSignedUrl,
+        capabilities: { privateObjects: false, signedUrls: true },
+      };
+
+      const result = await executeAsOrg();
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('private_objects_not_supported');
+      expect(result.error?.message).toContain('public: true');
+      expect(result.error?.message).not.toContain('S3_');
+      expect(result.error?.message).not.toContain('signedUrlTtlSeconds');
+      expect(mockUpload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('provider without signed URLs (Vercel-Blob-like)', () => {
+    beforeEach(() => {
+      mockStorageClient = {
+        name: 'vercel-blob',
+        upload: mockUpload,
+        capabilities: { privateObjects: false, signedUrls: false },
+      };
+    });
+
+    it('refuses a default binding with signed_url_not_supported and points at public: true', async () => {
+      noBinding();
+      const result = await executeAsOrg();
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('signed_url_not_supported');
+      expect(result.error?.message).toContain('public: true');
+      expect(mockUpload).not.toHaveBeenCalled();
+    });
+
+    it('succeeds publicly once the binding opts into public: true', async () => {
+      bindCustomConfig({ public: true });
+      const result = await executeAsOrg();
+
+      expect(result.success).toBe(true);
+      expect(result.data?.signed).toBe(false);
+      expect(mockUpload).toHaveBeenCalledTimes(1);
+      expect(mockUpload.mock.calls[0][1].public).toBe(true);
+    });
+  });
+});
+
+describe('UploadToStorageCapability.execute() at TENANCY_MODE=single (regression guard)', () => {
+  it('keeps the public, unprefixed, unsigned default and asks for an unscoped client', async () => {
+    expect(env.TENANCY_MODE).toBe('single');
+    noBinding();
+    const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+    const [, options] = mockUpload.mock.calls[0];
+    expect(options.key.startsWith('agent-uploads/agent-abc/')).toBe(true);
+    expect(options.key).not.toContain('orgs/');
+    expect(options.public).toBe(true);
+    expect(options.metadata).not.toHaveProperty('orgId');
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(result.data?.signed).toBe(false);
+    expect(vi.mocked(getStorageClient)).toHaveBeenCalledWith({});
+  });
+
+  it('refuses a binding keyPrefix under the reserved orgs/ root before uploading', async () => {
+    bindCustomConfig({ keyPrefix: 'orgs/acme/' });
+    const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('invalid_binding');
+    expect(result.error?.message).toContain('orgs/');
+    expect(mockUpload).not.toHaveBeenCalled();
+  });
+});
+
+describe('UploadToStorageCapability.execute() at single — private-objects remedy', () => {
+  it('keeps the explicit-binding remedy for public: false on a provider without privateObjects', async () => {
+    expect(env.TENANCY_MODE).toBe('single');
+    bindCustomConfig({ public: false });
+    mockStorageClient = {
+      name: 'local',
+      upload: mockUpload,
+      capabilities: { privateObjects: false },
+    };
+
+    const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('private_objects_not_supported');
+    expect(result.error?.message).toMatch(/signedUrlTtlSeconds/);
+    expect(result.error?.message).toMatch(/public:\s?false/);
+    expect(result.error?.message).not.toContain('private by default');
+    expect(mockUpload).not.toHaveBeenCalled();
+  });
+});
+
+describe('UploadToStorageCapability.execute() — keyPrefix segment validation', () => {
+  it('refuses a mixed-case reserved root (Orgs/) at single as invalid_binding', async () => {
+    bindCustomConfig({ keyPrefix: 'Orgs/reports/' });
+
+    const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+    expect(result.success).toBe(false);
+    expect(result.error?.code).toBe('invalid_binding');
+    expect(mockUpload).not.toHaveBeenCalled();
+  });
+
+  it.each(['./orgs/x/', 'a/./b/', 'a//b/', 'a/../b/'])(
+    'refuses keyPrefix %j as invalid_binding without uploading',
+    async (keyPrefix) => {
+      bindCustomConfig({ keyPrefix });
+
+      const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('invalid_binding');
+      expect(mockUpload).not.toHaveBeenCalled();
+    }
+  );
+
+  it('accepts a plain nested keyPrefix and uploads under it', async () => {
+    bindCustomConfig({ keyPrefix: 'reports/2026/' });
+
+    const result = await new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT);
+
+    expect(result.success).toBe(true);
+    expect(mockUpload.mock.calls[0][1].key.startsWith('reports/2026/')).toBe(true);
+  });
+});
+
+describe('UploadToStorageCapability.execute() — orgs/ binding prefix at multi', () => {
+  it('accepts it, nested inside the org prefix, because the org root wraps it', async () => {
+    env.TENANCY_MODE = 'multi';
+    try {
+      bindCustomConfig({ keyPrefix: 'orgs/acme/' });
+      const result = await runAsOrg('org-acme', () =>
+        new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT)
+      );
+      expect(result.success).toBe(true);
+      expect(mockUpload.mock.calls[0][1].key.startsWith('orgs/org-acme/orgs/acme/')).toBe(true);
+    } finally {
+      env.TENANCY_MODE = 'single';
+    }
+  });
+});
+
+describe('UploadToStorageCapability.execute() — org id unusable as a path segment', () => {
+  it('resolves to an error result (not an exception) from the key-prefix step and does not upload', async () => {
+    // The mocked client does not validate the org id, so this reaches the
+    // `orgKeyPrefix` call that sits inside the capability's error handling.
+    env.TENANCY_MODE = 'multi';
+    try {
+      noBinding();
+      const result = await runAsOrg('bad.id', () =>
+        new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT)
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('invalid_binding');
+      expect(mockUpload).not.toHaveBeenCalled();
+    } finally {
+      env.TENANCY_MODE = 'single';
+    }
+  });
+
+  it('resolves to invalid_org when binding the storage client rejects the org id', async () => {
+    // Bind through the real org scoper, which validates the id like the real
+    // `getStorageClient({ orgId })` does.
+    const { scopeStorageToOrg } = await import('@/lib/storage/org-scoped');
+    vi.mocked(getStorageClient).mockImplementationOnce((opts?: { orgId?: string }) =>
+      scopeStorageToOrg(mockStorageClient as never, opts?.orgId as string)
+    );
+    env.TENANCY_MODE = 'multi';
+    try {
+      noBinding();
+      const result = await runAsOrg('bad.id', () =>
+        new UploadToStorageCapability().execute(BASE_ARGS, BASE_CONTEXT)
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error?.code).toBe('invalid_org');
+      expect(mockUpload).not.toHaveBeenCalled();
+    } finally {
+      env.TENANCY_MODE = 'single';
+    }
   });
 });

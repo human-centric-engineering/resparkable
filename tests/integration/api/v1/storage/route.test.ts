@@ -14,6 +14,7 @@
  * - Happy path: valid token → bytes, with headers that prevent inline render
  * - Missing / malformed / expired / tampered token → 401
  * - Token minted for a different key → 403 (the cross-object read)
+ * - Token whose org claim does not match the key's org → 403 TOKEN_ORG_MISMATCH
  * - Storage unconfigured → 503; provider without `download` → 501
  * - Object missing → 404
  * - Multi-segment keys reassemble correctly
@@ -22,6 +23,7 @@
  * @see lib/storage/access-tokens.ts
  */
 
+import { createHmac } from 'crypto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 import type { StorageCapabilities, StorageObject } from '@/lib/storage/providers/types';
@@ -36,6 +38,12 @@ vi.mock('@/lib/env', () => ({
 
 vi.mock('@/lib/logging', () => ({
   logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+const mockOrgFindUnique = vi.fn<(args: unknown) => Promise<{ status: string } | null>>();
+
+vi.mock('@/lib/db/client', () => ({
+  prisma: { org: { findUnique: (args: unknown) => mockOrgFindUnique(args) } },
 }));
 
 const mockDownload = vi.fn<(key: string) => Promise<StorageObject>>();
@@ -65,6 +73,24 @@ function buildRequest(key: string, token?: string): NextRequest {
   return { nextUrl: url } as unknown as NextRequest;
 }
 
+const SECRET = 'test-secret-that-is-at-least-32-characters-long';
+
+/**
+ * Sign a payload by hand. Minting refuses an org/key mismatch, so the only way
+ * to present one to the route is to sign it ourselves — the construction is
+ * `<base64url(json)>.<base64url(HMAC-SHA256(secret, json))>`.
+ */
+function signToken(key: string, org?: string): string {
+  const json = JSON.stringify({
+    typ: 'storage-read',
+    key,
+    expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    ...(org !== undefined ? { org } : {}),
+  });
+  const signature = createHmac('sha256', SECRET).update(json, 'utf8').digest('base64url');
+  return `${Buffer.from(json, 'utf8').toString('base64url')}.${signature}`;
+}
+
 function call(segments: string[], token?: string): Promise<Response> {
   return GET(buildRequest(segments.join('/'), token), {
     params: Promise.resolve({ key: segments }),
@@ -84,6 +110,7 @@ beforeEach(() => {
     body: Buffer.from('confidential contents'),
     size: Buffer.byteLength('confidential contents'),
   });
+  mockOrgFindUnique.mockResolvedValue({ status: 'ACTIVE' });
 });
 
 describe('GET /api/v1/storage/[...key]', () => {
@@ -221,6 +248,130 @@ describe('GET /api/v1/storage/[...key]', () => {
 
       expect(response.status).toBe(401);
       expect((await response.json()).error.code).toBe('TOKEN_REQUIRED');
+    });
+  });
+
+  describe('org claim', () => {
+    const ORG_KEY = 'orgs/org-a/reports/q3.pdf';
+    const ORG_SEGMENTS = ORG_KEY.split('/');
+
+    it('serves an org-owned key when the claim names that org', async () => {
+      mockDownload.mockResolvedValue({
+        key: ORG_KEY,
+        body: Buffer.from('org a report'),
+        size: 12,
+      });
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      const response = await call(ORG_SEGMENTS, token);
+
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString()).toBe('org a report');
+      expect(mockDownload).toHaveBeenCalledWith(ORG_KEY);
+    });
+
+    it("reads an org-claimed token's object through that org's storage client", async () => {
+      const { getStorageClient } = await import('@/lib/storage/client');
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      await call(ORG_SEGMENTS, token);
+
+      expect(getStorageClient).toHaveBeenCalledTimes(1);
+      expect(getStorageClient).toHaveBeenCalledWith({ orgId: 'org-a' });
+    });
+
+    it('asks for the unbound client (no org) when the token carries no claim', async () => {
+      const { getStorageClient } = await import('@/lib/storage/client');
+      const { token } = generateStorageAccessToken(KEY, 300);
+
+      await call(SEGMENTS, token);
+
+      expect(getStorageClient).toHaveBeenCalledTimes(1);
+      expect(getStorageClient).toHaveBeenCalledWith({});
+    });
+
+    it.each(['orgs//org-a/x.pdf', 'Orgs/org-a/x.pdf'])(
+      'refuses the malformed reserved-root key %s even for a claimless token',
+      async (key) => {
+        const response = await call(key.split('/'), signToken(key));
+
+        expect(response.status).toBe(403);
+        expect((await response.json()).error.code).toBe('TOKEN_ORG_MISMATCH');
+        expect(mockDownload).not.toHaveBeenCalled();
+      }
+    );
+
+    it('refuses a token claiming org B for a key under orgs/org-a/', async () => {
+      const response = await call(ORG_SEGMENTS, signToken(ORG_KEY, 'org-b'));
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe('TOKEN_ORG_MISMATCH');
+      expect(mockDownload).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+    });
+
+    it('refuses a token with no claim for a key under orgs/org-a/', async () => {
+      const response = await call(ORG_SEGMENTS, signToken(ORG_KEY));
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe('TOKEN_ORG_MISMATCH');
+      expect(mockDownload).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+    });
+
+    it('refuses a token claiming org A for a legacy key no org owns', async () => {
+      const response = await call(SEGMENTS, signToken(KEY, 'org-a'));
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe('TOKEN_ORG_MISMATCH');
+      expect(mockDownload).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: function must not be called;
+    });
+
+    it('still serves a legacy key from a token with no claim', async () => {
+      const response = await call(SEGMENTS, signToken(KEY));
+
+      expect(response.status).toBe(200);
+      expect(mockDownload).toHaveBeenCalledWith(KEY);
+    });
+
+    it('looks up the claimed org by id and serves only when it is ACTIVE', async () => {
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      const response = await call(ORG_SEGMENTS, token);
+
+      expect(response.status).toBe(200);
+      expect(mockOrgFindUnique).toHaveBeenCalledTimes(1);
+      expect(mockOrgFindUnique).toHaveBeenCalledWith({
+        where: { id: 'org-a' },
+        select: { status: true },
+      });
+    });
+
+    it('refuses with 403 ORG_UNAVAILABLE when the claimed org no longer exists', async () => {
+      mockOrgFindUnique.mockResolvedValue(null);
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      const response = await call(ORG_SEGMENTS, token);
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe('ORG_UNAVAILABLE');
+      expect(mockDownload).not.toHaveBeenCalled();
+    });
+
+    it('refuses with 403 ORG_UNAVAILABLE when the claimed org is SUSPENDED', async () => {
+      mockOrgFindUnique.mockResolvedValue({ status: 'SUSPENDED' });
+      const { token } = generateStorageAccessToken(ORG_KEY, 300, { orgId: 'org-a' });
+
+      const response = await call(ORG_SEGMENTS, token);
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error.code).toBe('ORG_UNAVAILABLE');
+      expect(mockDownload).not.toHaveBeenCalled();
+    });
+
+    it('does not query orgs for a claimless token on a legacy key', async () => {
+      const response = await call(SEGMENTS, signToken(KEY));
+
+      expect(response.status).toBe(200);
+      expect(mockOrgFindUnique).not.toHaveBeenCalled();
     });
   });
 

@@ -22,7 +22,8 @@
  *      the next tick resumes from the next unprocessed case.
  *   6. When every case has a result: compute aggregate summary,
  *      log the run-level cost rollup, mark `status='completed'` (or
- *      `'failed'` with `summary.note = 'all_cases_failed'` when every case errored).
+ *      `'failed'` with `summary.note = 'all_cases_failed'` when every case errored,
+ *      or `'no_scores_recorded'` when no metric scored a single case).
  *
  * Concurrency-safe: the worker is single-tick-scoped and the claim
  * step ensures only one worker can hold a run's lease at a time.
@@ -280,11 +281,28 @@ async function driveRun(run: ClaimedRun): Promise<RunOutcome> {
   // row carries its errorCode.
   const failedCodes = allResults.flatMap((r) => (r.errorCode ? [r.errorCode] : []));
   const allCasesFailed = allResults.length > 0 && failedCodes.length === allResults.length;
-  const outcome: RunOutcome = allCasesFailed ? 'failed' : 'completed';
+  // The subject can run cleanly while no grader scores: every one threw (a
+  // judge with no provider, a judge outage) or skipped (an inactive judging
+  // workflow). No case carries an errorCode then, so the check above passes,
+  // but nothing was scored and the run is just as empty (#921). Each case's
+  // metricScores keeps the reasoning that says why.
+  const nothingScored =
+    allResults.length > 0 &&
+    !allCasesFailed &&
+    metricConfigs.length > 0 &&
+    Object.values(summary.stats).every((s) => s.scoredCount === 0);
+  const outcome: RunOutcome = allCasesFailed || nothingScored ? 'failed' : 'completed';
   if (allCasesFailed) {
     summary.note = 'all_cases_failed';
     summary.casesFailed = failedCodes.length;
     summary.dominantErrorCode = dominantErrorCode(failedCodes);
+  } else if (nothingScored) {
+    summary.note = 'no_scores_recorded';
+    // Some cases may have failed before grading; say so, as above.
+    if (failedCodes.length > 0) {
+      summary.casesFailed = failedCodes.length;
+      summary.dominantErrorCode = dominantErrorCode(failedCodes);
+    }
   }
   await markTerminal(run.id, outcome, { summary, totalCostUsd: totalCost });
 
@@ -517,9 +535,9 @@ interface RunSummary {
   rawScores: Record<string, number[]>;
   completedAt: string;
   note?: string;
-  /** Set with `note: 'all_cases_failed'`: how many cases failed (all of them). */
+  /** With `note: 'all_cases_failed'` (all of them), or `'no_scores_recorded'` when any failed. */
   casesFailed?: number;
-  /** Set with `note: 'all_cases_failed'`: the most frequent case `errorCode`. */
+  /** Set beside `casesFailed`: the most frequent case `errorCode`. */
   dominantErrorCode?: string;
 }
 

@@ -15,7 +15,10 @@
  *
  * Authentication: Admin only. Every targeted delivery must belong to
  * one of the caller's subscriptions; mismatches are skipped silently
- * so a partial selection doesn't 403 the whole batch.
+ * so a partial selection doesn't 403 the whole batch. A delivery whose
+ * subscription was deleted may be visible (`webhook-delivery-access.ts`) but
+ * has nowhere to go, so `retryDelivery` refuses it and it counts as skipped.
+ * So does one an erasure stopped (t-793).
  */
 
 import { z } from 'zod';
@@ -23,11 +26,13 @@ import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { ValidationError } from '@/lib/api/errors';
-import { adminLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
 import { getClientIP } from '@/lib/security/ip';
 import { cuidSchema } from '@/lib/validations/common';
 import { retryDelivery } from '@/lib/orchestration/webhooks/dispatcher';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import type { AuthenticatedSession } from '@/lib/auth/guards';
+import { webhookDeliveryVisibilityWhere } from '@/lib/orchestration/access/webhook-delivery-access';
+import { webhookSubscriptionVisibilityWhere } from '@/lib/orchestration/access/webhook-subscription-access';
 
 /** Cap concurrent in-flight retries so a large batch doesn't burst on the receiver. */
 const REPLAY_CONCURRENCY = 5;
@@ -44,58 +49,66 @@ const bodySchema = z.union([
   }),
 ]);
 
-export const POST = withAdminAuth(async (request, session) => {
-  const clientIP = getClientIP(request);
-  const rateLimit = adminLimiter.check(clientIP);
-  if (!rateLimit.success) return createRateLimitResponse(rateLimit);
+export const POST = withAdminAuth(
+  async (request, session) => {
+    const clientIP = getClientIP(request);
 
-  const raw = (await request.json().catch(() => null)) as unknown;
-  const parsed = bodySchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new ValidationError('Invalid replay request body', {
-      fields: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+    const raw = (await request.json().catch(() => null)) as unknown;
+    const parsed = bodySchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ValidationError('Invalid replay request body', {
+        fields: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+      });
+    }
+    const body = parsed.data;
+
+    const ids = await resolveTargetIds(body, session);
+
+    const replayed: string[] = [];
+    const skipped: string[] = [];
+
+    for (let i = 0; i < ids.length; i += REPLAY_CONCURRENCY) {
+      const slice = ids.slice(i, i + REPLAY_CONCURRENCY);
+      // `awaitDelivery: true` so the chunked `Promise.all` actually gates the
+      // outbound HTTP — without it, retryDelivery resolves after the DB reset
+      // and the receiver still gets the whole batch in parallel.
+      const results = await Promise.all(
+        slice.map(async (id) => {
+          const ok = await retryDelivery(id, { awaitDelivery: true });
+          return { id, ok };
+        })
+      );
+      for (const { id, ok } of results) (ok ? replayed : skipped).push(id);
+    }
+
+    logAdminAction({
+      userId: session.user.id,
+      action: 'webhook_delivery.replay_batch',
+      entityType: 'webhook_subscription',
+      entityId: 'subscriptionId' in body ? body.subscriptionId : 'multi',
+      metadata: { replayed: replayed.length, skipped: skipped.length },
+      clientIp: clientIP,
     });
+
+    return successResponse({
+      replayed: replayed.length,
+      skipped: skipped.length,
+      deliveryIds: replayed,
+    });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'self',
+      because:
+        "Subscriptions are scoped to the admin who created them (one whose creator was erased only where the policy permits that orphan) and deliveries through their subscription (an orphaned delivery only where the policy permits it), keyed on the caller's id. Never another member's.",
+    },
   }
-  const body = parsed.data;
-
-  const ids = await resolveTargetIds(body, session.user.id);
-
-  const replayed: string[] = [];
-  const skipped: string[] = [];
-
-  for (let i = 0; i < ids.length; i += REPLAY_CONCURRENCY) {
-    const slice = ids.slice(i, i + REPLAY_CONCURRENCY);
-    // `awaitDelivery: true` so the chunked `Promise.all` actually gates the
-    // outbound HTTP — without it, retryDelivery resolves after the DB reset
-    // and the receiver still gets the whole batch in parallel.
-    const results = await Promise.all(
-      slice.map(async (id) => {
-        const ok = await retryDelivery(id, { awaitDelivery: true });
-        return { id, ok };
-      })
-    );
-    for (const { id, ok } of results) (ok ? replayed : skipped).push(id);
-  }
-
-  logAdminAction({
-    userId: session.user.id,
-    action: 'webhook_delivery.replay_batch',
-    entityType: 'webhook_subscription',
-    entityId: 'subscriptionId' in body ? body.subscriptionId : 'multi',
-    metadata: { replayed: replayed.length, skipped: skipped.length },
-    clientIp: clientIP,
-  });
-
-  return successResponse({
-    replayed: replayed.length,
-    skipped: skipped.length,
-    deliveryIds: replayed,
-  });
-});
+);
 
 async function resolveTargetIds(
   body: { deliveryIds: string[] } | { subscriptionId: string; before?: Date },
-  userId: string
+  session: AuthenticatedSession
 ): Promise<string[]> {
   if ('deliveryIds' in body) {
     // Ownership filter — only return rows whose parent subscription the
@@ -103,8 +116,7 @@ async function resolveTargetIds(
     // whole batch over one stale ID.
     const owned = await prisma.aiWebhookDelivery.findMany({
       where: {
-        id: { in: body.deliveryIds },
-        subscription: { createdBy: userId },
+        AND: [webhookDeliveryVisibilityWhere(session), { id: { in: body.deliveryIds } }],
       },
       select: { id: true },
     });
@@ -112,7 +124,7 @@ async function resolveTargetIds(
   }
 
   const subscription = await prisma.aiWebhookSubscription.findFirst({
-    where: { id: body.subscriptionId, createdBy: userId },
+    where: { AND: [webhookSubscriptionVisibilityWhere(session), { id: body.subscriptionId }] },
     select: { id: true },
   });
   if (!subscription) return [];
@@ -121,6 +133,10 @@ async function resolveTargetIds(
     where: {
       subscriptionId: body.subscriptionId,
       status: 'exhausted',
+      // A row an erasure stopped is refused by `retryDelivery` anyway; left
+      // out here so a heavy erasure's rows cannot fill the oldest-first
+      // REPLAY_MAX_ROWS window and leave nothing replayable in it (t-809).
+      stoppedByErasure: false,
       ...(body.before ? { createdAt: { lt: body.before } } : {}),
     },
     select: { id: true },

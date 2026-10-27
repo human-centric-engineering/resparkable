@@ -9,54 +9,67 @@
  * targeted "I've reviewed this one, drop it" action.
  *
  * Authentication: Admin only. The delivery's parent subscription must
- * belong to the calling admin.
+ * belong to the calling admin, or have been deleted where the authorization
+ * policy permits it (`webhook-delivery-access.ts`). The audit entry names the
+ * delivery's recorded URL origin, which holds no secret; an email address is
+ * not written to the audit log, which outlives erasure.
  */
 
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ValidationError } from '@/lib/api/errors';
-import { adminLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
 import { getClientIP } from '@/lib/security/ip';
 import { cuidSchema } from '@/lib/validations/common';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import { webhookDeliveryAccessBasis } from '@/lib/orchestration/access/webhook-delivery-access';
+import { auditableDestination } from '@/lib/orchestration/webhooks/destination';
 
-export const DELETE = withAdminAuth<{ id: string }>(async (request, session, { params }) => {
-  const clientIP = getClientIP(request);
-  const rateLimit = adminLimiter.check(clientIP);
-  if (!rateLimit.success) return createRateLimitResponse(rateLimit);
+export const DELETE = withAdminAuth<{ id: string }>(
+  async (request, session, { params }) => {
+    const clientIP = getClientIP(request);
 
-  const { id: rawId } = await params;
-  if (!cuidSchema.safeParse(rawId).success) {
-    throw new ValidationError('Invalid delivery ID format');
-  }
-  const id = rawId;
+    const { id: rawId } = await params;
+    if (!cuidSchema.safeParse(rawId).success) {
+      throw new ValidationError('Invalid delivery ID format');
+    }
+    const id = rawId;
 
-  // Verify ownership before deleting.
-  const delivery = await prisma.aiWebhookDelivery.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      status: true,
-      eventType: true,
-      subscription: { select: { id: true, createdBy: true, url: true } },
+    // Verify ownership before deleting.
+    const delivery = await prisma.aiWebhookDelivery.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        eventType: true,
+        destination: true,
+        subscription: { select: { createdBy: true } },
+      },
+    });
+    if (!delivery || !webhookDeliveryAccessBasis(delivery, session)) {
+      throw new NotFoundError('Webhook delivery not found');
+    }
+
+    await prisma.aiWebhookDelivery.delete({ where: { id } });
+
+    logAdminAction({
+      userId: session.user.id,
+      action: 'webhook_delivery.delete',
+      entityType: 'delivery',
+      entityId: id,
+      entityName: auditableDestination(delivery.destination) ?? id,
+      metadata: { status: delivery.status, eventType: delivery.eventType },
+      clientIp: clientIP,
+    });
+
+    return successResponse({ deleted: true, deliveryId: id });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'self',
+      because:
+        "Subscriptions are scoped to the admin who created them (one whose creator was erased only where the policy permits that orphan) and deliveries through their subscription (an orphaned delivery only where the policy permits it), keyed on the caller's id. Never another member's.",
     },
-  });
-  if (!delivery || delivery.subscription.createdBy !== session.user.id) {
-    throw new NotFoundError('Webhook delivery not found');
   }
-
-  await prisma.aiWebhookDelivery.delete({ where: { id } });
-
-  logAdminAction({
-    userId: session.user.id,
-    action: 'webhook_delivery.delete',
-    entityType: 'delivery',
-    entityId: id,
-    entityName: delivery.subscription.url,
-    metadata: { status: delivery.status, eventType: delivery.eventType },
-    clientIp: clientIP,
-  });
-
-  return successResponse({ deleted: true, deliveryId: id });
-});
+);

@@ -24,7 +24,6 @@
  */
 
 import { totalmem } from 'node:os';
-import v8 from 'node:v8';
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -45,6 +44,7 @@ import {
   DEFAULT_HEAP_MB,
   LINTABLE,
 } from '@/scripts/ci/chunked-lint.mjs';
+import { resolveHeapMb } from '@/scripts/run-capped.mjs';
 
 const files = (n: number): string[] => Array.from({ length: n }, (_, i) => `f${i}.ts`);
 
@@ -496,18 +496,13 @@ describe('runChunk', () => {
     );
     await runChunk(['a.ts'], [], { spawnFn, command: ['eslint'], env: {} });
 
-    // FORK (Resparkable): the value is `resolveHeapMb`'s, not `DEFAULT_HEAP_MB`
-    // flat — it is floored at Node's own default heap limit, which exceeds
-    // 6144MB on a 16GB machine. See the note in the `withHeapCap` case below,
-    // and sunrise#702.
-    // What this row is actually for is unchanged: the cap reaches the CHILD's
-    // env rather than the coordinator's.
-    const expectedMb = Math.max(
-      DEFAULT_HEAP_MB,
-      Math.round(v8.getHeapStatistics().heap_size_limit / (1024 * 1024))
-    );
     const options = spawnFn.mock.calls[0]?.[2];
-    expect(options?.env.NODE_OPTIONS).toContain(`--max-old-space-size=${expectedMb}`);
+    // Against the resolver's answer on this machine, not DEFAULT_HEAP_MB: the
+    // real value is clamped to RAM, so pinning 6144 failed on the ~8GB private
+    // runner ci.md tells forks to size for (#700).
+    expect(options?.env.NODE_OPTIONS).toContain(
+      `--max-old-space-size=${resolveHeapMb({ requestedMb: DEFAULT_HEAP_MB })}`
+    );
   });
 });
 
@@ -553,27 +548,11 @@ describe('withHeapCap', () => {
     );
     const affordable = Math.floor((totalmem() * 0.75) / (1024 * 1024));
 
-    // FORK (Resparkable) — the ceiling is `max(asked, Node's own default)`, not
-    // `asked`. `resolveHeapMb` floors the result at
-    // `v8.getHeapStatistics().heap_size_limit` on purpose: a "cap" that
-    // LOWERED the heap below what Node would have given you anyway is a
-    // regression wearing a safety flag. On a 16GB machine that default is
-    // 6336MB, above `DEFAULT_HEAP_MB` (6144), so `applied <= DEFAULT_HEAP_MB`
-    // fails there. It passes on upstream CI because an 8GB Linux runner's
-    // default is ~4GB — the assertion encodes one box's answer, which is the
-    // thing its own comment above says it is avoiding. Filed as sunrise#702;
-    // revert to upstream's version when it lands.
-    //
-    // Two invariants, both load-bearing: never above what the machine can back,
-    // and never above the larger of what was asked for and what Node would have
-    // allowed unaided.
-    const ceiling = Math.max(
-      DEFAULT_HEAP_MB,
-      Math.round(v8.getHeapStatistics().heap_size_limit / (1024 * 1024))
-    );
+    // Two invariants, both load-bearing: never above what the machine can
+    // back, and never above what was asked for.
     expect(applied).toBeGreaterThan(0);
     expect(applied).toBeLessThanOrEqual(affordable);
-    expect(applied).toBeLessThanOrEqual(ceiling);
+    expect(applied).toBeLessThanOrEqual(DEFAULT_HEAP_MB);
   });
 
   it("defers to a cap already set, so CI's value always wins", () => {
@@ -604,6 +583,25 @@ describe('withHeapCap', () => {
     expect(out.PATH).toBe('/usr/bin');
     expect(out.CI).toBe('true');
   });
+
+  it('honours NODE_HEAP_MB the way run-capped does, so lint and lint:ci agree (#699)', () => {
+    // The machine is pinned (32GB, Node's own limit 2048MB) so neither clamp
+    // touches 3000 or the 6144 default: on a small box or under a large
+    // inherited heap limit both resolve to the same number, and the request
+    // being ignored would pass unseen.
+    const machine = { totalMemBytes: 32 * 1024 ** 3, defaultLimitMb: 2048 };
+    const capOf = (env: Record<string, string>) =>
+      Number(
+        /--max-old-space-size=(\d+)/.exec(
+          (withHeapCap(env, machine) as { NODE_OPTIONS: string }).NODE_OPTIONS
+        )?.[1]
+      );
+
+    expect(capOf({ NODE_HEAP_MB: '3000' })).toBe(3000);
+    // A malformed value is ignored, as in run-capped, not fatal.
+    expect(capOf({ NODE_HEAP_MB: 'lots' })).toBe(DEFAULT_HEAP_MB);
+    expect(capOf({})).toBe(DEFAULT_HEAP_MB);
+  });
 });
 
 describe('main', () => {
@@ -628,6 +626,34 @@ describe('main', () => {
 
     expect(run).not.toHaveBeenCalled();
     expect(String(warn.mock.calls[0]?.[0])).toContain('no lintable files');
+  });
+
+  it('reads CI_LINT_CHUNKS, the name every doc gives, when LINT_CHUNKS is unset (#699)', async () => {
+    // CI bridges the repo variable to LINT_CHUNKS; a developer following the
+    // docs locally sets CI_LINT_CHUNKS, which this ignored — a silent no-op.
+    const targets = ['a/1.ts', 'b/1.ts', 'c/1.ts', 'd/1.ts'];
+    const runWith = async (env: Record<string, string>) => {
+      const run = vi.fn((_files: string[], _argv: string[]) => Promise.resolve(0));
+      await main([], deps({ targets, env, run }));
+      return run.mock.calls.length;
+    };
+
+    expect(await runWith({ CI_LINT_CHUNKS: '4' })).toBe(4);
+    // CI's own bridge still wins when both are present.
+    expect(await runWith({ LINT_CHUNKS: '2', CI_LINT_CHUNKS: '4' })).toBe(2);
+    expect(await runWith({})).toBe(DEFAULT_CHUNKS);
+  });
+
+  it('names the variable it read when the chunk count is bad', async () => {
+    // A stale LINT_CHUNKS in a shell overrides a correct CI_LINT_CHUNKS; the
+    // warning has to say which one was used or the override is invisible.
+    const warn = vi.fn();
+    await main(
+      [],
+      deps({ targets: ['a/1.ts'], env: { LINT_CHUNKS: 'auto', CI_LINT_CHUNKS: '4' }, warn })
+    );
+
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/^chunked-lint: LINT_CHUNKS="auto"/);
   });
 
   it('runs one eslint process per chunk', async () => {

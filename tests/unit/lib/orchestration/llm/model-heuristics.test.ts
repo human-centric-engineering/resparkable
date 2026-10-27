@@ -12,6 +12,9 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  acceptsSamplingTemperature,
+  acceptsThinkingBudget,
+  anthropicAdaptiveEffort,
   anthropicThinkingBudget,
   deriveBestRole,
   deriveContextLength,
@@ -379,6 +382,13 @@ describe('supportsReasoningEffort', () => {
       supportsReasoningEffort('anthropic.claude-opus-4-20250514-v1:0', 'anthropic', 'anthropic')
     ).toBe(true);
     expect(supportsReasoningEffort('anthropic/claude-opus-4', 'anthropic', 'anthropic')).toBe(true);
+    expect(
+      supportsReasoningEffort(
+        'us.anthropic.claude-opus-4-1-20250805-v1:0',
+        'anthropic',
+        'anthropic'
+      )
+    ).toBe(true);
   });
 
   it('returns false for legacy / non-reasoning models', () => {
@@ -386,6 +396,56 @@ describe('supportsReasoningEffort', () => {
     expect(supportsReasoningEffort('gpt-4.1', 'openai', 'openai-legacy')).toBe(false);
     expect(supportsReasoningEffort('llama-3.3-70b', 'groq', 'openai-legacy')).toBe(false);
     expect(supportsReasoningEffort('gemini-2.5-pro', 'gemini', 'gemini')).toBe(false);
+  });
+});
+
+describe('acceptsSamplingTemperature', () => {
+  it.each([
+    'claude-haiku-5-5',
+    'claude-sonnet-5-5',
+    'claude-sonnet-5',
+    'claude-opus-5-5',
+    'claude-opus-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+    'claude-sonnet-4-10',
+  ])('refuses a temperature on %s (newer than 4.6)', (id) => {
+    expect(acceptsSamplingTemperature(id)).toBe(false);
+  });
+
+  it.each([
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-5',
+    'claude-sonnet-4.5',
+    'claude-sonnet-4-20250514',
+    'claude-opus-4-6',
+    'claude-opus-4-1-20250805',
+    'claude-opus-4',
+    'claude-3-5-sonnet-20241022',
+    'claude-3-haiku-20240307',
+  ])('accepts a temperature on %s (4.6 or older)', (id) => {
+    expect(acceptsSamplingTemperature(id)).toBe(true);
+  });
+
+  it('strips Bedrock and OpenRouter prefixes before matching', () => {
+    expect(acceptsSamplingTemperature('anthropic.claude-opus-4-20250514-v1:0')).toBe(true);
+    expect(acceptsSamplingTemperature('anthropic/claude-haiku-4.5')).toBe(true);
+    expect(acceptsSamplingTemperature('anthropic/claude-haiku-5.5')).toBe(false);
+  });
+
+  it('strips Bedrock cross-region and gateway prefixes', () => {
+    expect(acceptsSamplingTemperature('us.anthropic.claude-3-5-sonnet-20241022-v2:0')).toBe(true);
+    expect(acceptsSamplingTemperature('bedrock/anthropic.claude-3-haiku-20240307-v1:0')).toBe(true);
+    expect(acceptsSamplingTemperature('global.anthropic.claude-sonnet-5-5')).toBe(false);
+  });
+
+  it('leaves the temperature out for an id it does not recognise', () => {
+    expect(acceptsSamplingTemperature('claude-something-new')).toBe(false);
+    expect(acceptsSamplingTemperature('claude-opus-40')).toBe(false);
   });
 });
 
@@ -474,6 +534,46 @@ describe('anthropicThinkingBudget', () => {
     expect(anthropicThinkingBudget('low')).toBe(1024);
     expect(anthropicThinkingBudget('medium')).toBe(4096);
     expect(anthropicThinkingBudget('high')).toBe(16384);
+  });
+});
+
+describe('acceptsThinkingBudget', () => {
+  it.each([
+    'claude-opus-5-5',
+    'claude-opus-5',
+    'claude-opus-4-8',
+    'claude-opus-4-7',
+    'claude-sonnet-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-5-5',
+    'claude-fable-5-1',
+    'anthropic/claude-opus-4.7',
+    'global.anthropic.claude-sonnet-5-5',
+  ])('refuses a budget on %s (adaptive only)', (id) => {
+    expect(acceptsThinkingBudget(id)).toBe(false);
+  });
+
+  it.each([
+    'claude-opus-4-6',
+    'claude-opus-4-1-20250805',
+    'claude-opus-4',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-5',
+    'claude-sonnet-4.5',
+    'claude-haiku-4-5',
+    'anthropic/claude-opus-4.6',
+    'anthropic.claude-opus-4-20250514-v1:0',
+  ])('takes a budget on %s (4.6 or older)', (id) => {
+    expect(acceptsThinkingBudget(id)).toBe(true);
+  });
+});
+
+describe('anthropicAdaptiveEffort', () => {
+  it('maps minimal to the lowest effort and keeps the other buckets by name', () => {
+    expect(anthropicAdaptiveEffort('minimal')).toBe('low');
+    expect(anthropicAdaptiveEffort('low')).toBe('low');
+    expect(anthropicAdaptiveEffort('medium')).toBe('medium');
+    expect(anthropicAdaptiveEffort('high')).toBe('high');
   });
 });
 

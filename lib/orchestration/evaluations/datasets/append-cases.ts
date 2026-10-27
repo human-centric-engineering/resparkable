@@ -124,8 +124,10 @@ export async function appendCasesToDataset(params: {
     // Recompute the content hash over the full new case array. The
     // worker's hash-pin check expects this; an out-of-date hash would
     // make every queued run fail with `dataset_changed_post_submit`.
+    // Pinned to the owner the route observed, as the write below is — which is
+    // also what lets the owner layer (§115) see the read is confined.
     const allCases = await tx.aiDatasetCase.findMany({
-      where: { datasetId: dataset.id },
+      where: { datasetId: dataset.id, dataset: { userId: params.observedOwnerId } },
       orderBy: { position: 'asc' },
       select: {
         position: true,

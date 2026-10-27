@@ -10,6 +10,13 @@
  *   bundle is portable across environments. Document grants use
  *   `AiKnowledgeDocument.slug` (the stable cross-environment key — #338).
  *
+ *   Built-in (system) agents are left out, as the backup export leaves them
+ *   out: every install already has its own, they start with an empty
+ *   provider and model the bundle schema rejects, and the import would skip
+ *   them anyway (#721). A selection of only built-in agents is a 400; a mixed
+ *   one says how many it left out in `X-Skipped-System-Agents`, so the admin
+ *   is told rather than finding out at import.
+ *
  *   The response sets `Content-Disposition: attachment` so hitting the
  *   route directly from a browser triggers a "Save As" dialog.
  *
@@ -19,7 +26,7 @@
 import { z } from 'zod';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
@@ -44,112 +51,134 @@ const knowledgeRetrievalModeSchema = z
   .catch('model');
 const inheritanceModeSchema = z.enum(['override', 'append']).catch('override');
 
-export const POST = withAdminAuth(async (request, session) => {
-  const log = await getRouteLogger(request);
-  const body = await validateRequestBody(request, exportAgentsSchema);
-  const uniqueIds = [...new Set(body.agentIds)];
+export const POST = withAdminAuth(
+  async (request, session) => {
+    const log = await getRouteLogger(request);
+    const body = await validateRequestBody(request, exportAgentsSchema);
+    const uniqueIds = [...new Set(body.agentIds)];
 
-  const agents = await prisma.aiAgent.findMany({
-    where: { id: { in: uniqueIds } },
-    include: {
-      capabilities: {
-        include: {
-          capability: { select: { slug: true } },
+    const agents = await prisma.aiAgent.findMany({
+      where: { id: { in: uniqueIds } },
+      include: {
+        capabilities: {
+          include: {
+            capability: { select: { slug: true } },
+          },
         },
+        profile: { select: { slug: true } },
+        grantedTags: { select: { tag: { select: { slug: true } } } },
+        grantedDocuments: { select: { document: { select: { slug: true } } } },
       },
-      profile: { select: { slug: true } },
-      grantedTags: { select: { tag: { select: { slug: true } } } },
-      grantedDocuments: { select: { document: { select: { slug: true } } } },
-    },
-  });
+    });
 
-  if (agents.length !== uniqueIds.length) {
-    const foundIds = new Set(agents.map((a) => a.id));
-    const missing = uniqueIds.filter((id) => !foundIds.has(id));
-    throw new NotFoundError(`Agents not found: ${missing.join(', ')}`);
-  }
+    if (agents.length !== uniqueIds.length) {
+      const foundIds = new Set(agents.map((a) => a.id));
+      const missing = uniqueIds.filter((id) => !foundIds.has(id));
+      throw new NotFoundError(`Agents not found: ${missing.join(', ')}`);
+    }
 
-  const bundle: AgentBundle = {
-    version: '1',
-    exportedAt: new Date().toISOString(),
-    agents: agents.map((agent) => {
-      const historyParse = systemInstructionsHistorySchema.safeParse(
-        agent.systemInstructionsHistory
+    const exportable = agents.filter((agent) => !agent.isSystem);
+    if (exportable.length === 0) {
+      throw new ValidationError(
+        'Built-in agents cannot be exported: every install already has its own. Select at least one of your own agents.',
+        { agentIds: ['Every selected agent is a built-in agent'] }
       );
-      const history: SystemInstructionsHistoryEntry[] = historyParse.success
-        ? historyParse.data
-        : [];
-      if (!historyParse.success) {
-        logger.warn('export: systemInstructionsHistory malformed, exporting empty array', {
-          agentId: agent.id,
-          issues: historyParse.error.issues,
-        });
-      }
+    }
 
-      return {
-        name: agent.name,
-        slug: agent.slug,
-        isSystem: agent.isSystem,
-        description: agent.description,
-        systemInstructions: agent.systemInstructions,
-        systemInstructionsHistory: history,
-        model: agent.model,
-        provider: agent.provider,
-        providerConfig: jsonRecord.parse(agent.providerConfig),
-        temperature: agent.temperature,
-        maxTokens: agent.maxTokens,
-        reasoningEffort: reasoningEffortSchema.parse(agent.reasoningEffort),
-        monthlyBudgetUsd: agent.monthlyBudgetUsd,
-        maxCostPerTurnUsd: agent.maxCostPerTurnUsd,
-        metadata: jsonRecord.parse(agent.metadata),
-        isActive: agent.isActive,
-        fallbackProviders: agent.fallbackProviders,
-        rateLimitRpm: agent.rateLimitRpm,
-        inputGuardMode: guardModeSchema.parse(agent.inputGuardMode),
-        outputGuardMode: guardModeSchema.parse(agent.outputGuardMode),
-        citationGuardMode: guardModeSchema.parse(agent.citationGuardMode),
-        maxHistoryTokens: agent.maxHistoryTokens,
-        maxHistoryMessages: agent.maxHistoryMessages,
-        retentionDays: agent.retentionDays,
-        visibility: visibilitySchema.parse(agent.visibility),
-        topicBoundaries: agent.topicBoundaries,
-        brandVoiceInstructions: agent.brandVoiceInstructions,
-        widgetConfig: jsonRecord.parse(agent.widgetConfig),
-        kind: kindSchema.parse(agent.kind),
-        knowledgeAccessMode: knowledgeAccessModeSchema.parse(agent.knowledgeAccessMode),
-        knowledgeRetrievalMode: knowledgeRetrievalModeSchema.parse(agent.knowledgeRetrievalMode),
-        knowledgeTriggerKeywords: agent.knowledgeTriggerKeywords,
-        persona: agent.persona,
-        guardrails: agent.guardrails,
-        personaMode: inheritanceModeSchema.parse(agent.personaMode),
-        voiceMode: inheritanceModeSchema.parse(agent.voiceMode),
-        guardrailsMode: inheritanceModeSchema.parse(agent.guardrailsMode),
-        enableVoiceInput: agent.enableVoiceInput,
-        enableImageInput: agent.enableImageInput,
-        enableDocumentInput: agent.enableDocumentInput,
-        runtimePromptManaged: agent.runtimePromptManaged,
-        runtimePromptNote: agent.runtimePromptNote,
-        // Cross-environment relations by stable reference (slug); re-linked on import.
-        profileSlug: agent.profile?.slug ?? null,
-        knowledgeTagSlugs: agent.grantedTags.map((g) => g.tag.slug),
-        knowledgeDocumentSlugs: agent.grantedDocuments.map((g) => g.document.slug),
-        capabilities: agent.capabilities.map((link) => ({
-          slug: link.capability.slug,
-          isEnabled: link.isEnabled,
-          customConfig: jsonRecord.parse(link.customConfig),
-          customRateLimit: link.customRateLimit,
-        })),
-      };
-    }),
-  };
+    const bundle: AgentBundle = {
+      version: '1',
+      exportedAt: new Date().toISOString(),
+      agents: exportable.map((agent) => {
+        const historyParse = systemInstructionsHistorySchema.safeParse(
+          agent.systemInstructionsHistory
+        );
+        const history: SystemInstructionsHistoryEntry[] = historyParse.success
+          ? historyParse.data
+          : [];
+        if (!historyParse.success) {
+          logger.warn('export: systemInstructionsHistory malformed, exporting empty array', {
+            agentId: agent.id,
+            issues: historyParse.error.issues,
+          });
+        }
 
-  log.info('Agents exported', {
-    count: bundle.agents.length,
-    adminId: session.user.id,
-  });
+        return {
+          name: agent.name,
+          slug: agent.slug,
+          isSystem: agent.isSystem,
+          description: agent.description,
+          systemInstructions: agent.systemInstructions,
+          systemInstructionsHistory: history,
+          model: agent.model,
+          provider: agent.provider,
+          providerConfig: jsonRecord.parse(agent.providerConfig),
+          temperature: agent.temperature,
+          maxTokens: agent.maxTokens,
+          reasoningEffort: reasoningEffortSchema.parse(agent.reasoningEffort),
+          monthlyBudgetUsd: agent.monthlyBudgetUsd,
+          maxCostPerTurnUsd: agent.maxCostPerTurnUsd,
+          metadata: jsonRecord.parse(agent.metadata),
+          isActive: agent.isActive,
+          fallbackProviders: agent.fallbackProviders,
+          rateLimitRpm: agent.rateLimitRpm,
+          inputGuardMode: guardModeSchema.parse(agent.inputGuardMode),
+          outputGuardMode: guardModeSchema.parse(agent.outputGuardMode),
+          citationGuardMode: guardModeSchema.parse(agent.citationGuardMode),
+          maxHistoryTokens: agent.maxHistoryTokens,
+          maxHistoryMessages: agent.maxHistoryMessages,
+          retentionDays: agent.retentionDays,
+          visibility: visibilitySchema.parse(agent.visibility),
+          topicBoundaries: agent.topicBoundaries,
+          brandVoiceInstructions: agent.brandVoiceInstructions,
+          widgetConfig: jsonRecord.parse(agent.widgetConfig),
+          kind: kindSchema.parse(agent.kind),
+          knowledgeAccessMode: knowledgeAccessModeSchema.parse(agent.knowledgeAccessMode),
+          knowledgeRetrievalMode: knowledgeRetrievalModeSchema.parse(agent.knowledgeRetrievalMode),
+          knowledgeTriggerKeywords: agent.knowledgeTriggerKeywords,
+          persona: agent.persona,
+          guardrails: agent.guardrails,
+          personaMode: inheritanceModeSchema.parse(agent.personaMode),
+          voiceMode: inheritanceModeSchema.parse(agent.voiceMode),
+          guardrailsMode: inheritanceModeSchema.parse(agent.guardrailsMode),
+          enableVoiceInput: agent.enableVoiceInput,
+          enableImageInput: agent.enableImageInput,
+          enableDocumentInput: agent.enableDocumentInput,
+          runtimePromptManaged: agent.runtimePromptManaged,
+          runtimePromptNote: agent.runtimePromptNote,
+          // Cross-environment relations by stable reference (slug); re-linked on import.
+          profileSlug: agent.profile?.slug ?? null,
+          knowledgeTagSlugs: agent.grantedTags.map((g) => g.tag.slug),
+          knowledgeDocumentSlugs: agent.grantedDocuments.map((g) => g.document.slug),
+          capabilities: agent.capabilities.map((link) => ({
+            slug: link.capability.slug,
+            isEnabled: link.isEnabled,
+            customConfig: jsonRecord.parse(link.customConfig),
+            customRateLimit: link.customRateLimit,
+          })),
+        };
+      }),
+    };
 
-  const filename = `agents-export-${bundle.exportedAt.replace(/:/g, '-')}.json`;
-  return successResponse(bundle, undefined, {
-    headers: { 'Content-Disposition': `attachment; filename="${filename}"` },
-  });
-});
+    log.info('Agents exported', {
+      count: bundle.agents.length,
+      skippedSystemAgents: agents.length - exportable.length,
+      adminId: session.user.id,
+    });
+
+    const filename = `agents-export-${bundle.exportedAt.replace(/:/g, '-')}.json`;
+    return successResponse(bundle, undefined, {
+      headers: {
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'X-Skipped-System-Agents': String(agents.length - exportable.length),
+      },
+    });
+  },
+  {
+    tier: 'org',
+    ownership: {
+      decidedBy: 'nothing',
+      because:
+        'Agents and what hangs off them (capabilities, tokens, versions, widget config) are the org’s configuration, not anyone’s personal rows; row isolation bounds them to the entered org.',
+    },
+  }
+);

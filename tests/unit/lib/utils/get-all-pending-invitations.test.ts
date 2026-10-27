@@ -91,6 +91,13 @@ const createMockUser = (id: string, name: string) => ({
   timezone: 'UTC',
   location: null,
   preferences: {},
+  signupOrgId: null,
+  signupOrgRole: null,
+  erasureRequestedAt: null,
+  erasureRequestedBy: null,
+  erasureReason: null,
+  erasureAttempts: 0,
+  erasureNextAttemptAt: null,
 });
 
 /**

@@ -1,8 +1,9 @@
 /**
  * Orgs, as the vendor sees them (§106 t-672)
  *
- * GET  /api/v1/admin/orgs — every org with its member and owner counts, the
- *      enriched list the admin page reads in one request.
+ * GET  /api/v1/admin/orgs — every org with its member and owner counts and
+ *      its open support grant, if any (§121 t-823): the enriched list the
+ *      admin page reads in one request.
  * POST /api/v1/admin/orgs — create one: `{ slug, name, ownerUserId? }`,
  *      naming the founding OWNER in the same write.
  *
@@ -20,6 +21,7 @@ import { validateRequestBody } from '@/lib/api/validation';
 import { createOrgSchema } from '@/lib/validations/tenancy';
 import { createOrg } from '@/lib/tenancy/lifecycle';
 import { ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
+import { openSupportGrantWhere } from '@/lib/tenancy/support-grants';
 import { getRouteLogger } from '@/lib/api/context';
 
 const PLATFORM_ONLY = {
@@ -32,33 +34,60 @@ const PLATFORM_ONLY = {
 } as const;
 
 export const GET = withAdminAuth(async () => {
-  const orgs = await prisma.org.findMany({
-    select: {
-      id: true,
-      slug: true,
-      name: true,
-      status: true,
-      createdAt: true,
-      updatedAt: true,
-      _count: { select: { memberships: true } },
-    },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  // Owner counts in one query rather than one per row: an org with no
-  // OWNER is the state the admin page needs to flag.
-  const owners = await prisma.orgMembership.groupBy({
-    by: ['orgId'],
-    where: { role: ORG_OWNER_ROLE },
-    _count: { _all: true },
-  });
+  // Three independent queries, run together. Owner counts and open support
+  // grants are each one query rather than one per row: an org with no OWNER
+  // is the state the admin page needs to flag, and an open grant is where the
+  // vendor may enter. At most one grant is open per org
+  // (`lib/tenancy/support-grants.ts`).
+  const [orgs, owners, openGrants] = await Promise.all([
+    prisma.org.findMany({
+      select: {
+        id: true,
+        slug: true,
+        name: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { memberships: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
+    prisma.orgMembership.groupBy({
+      by: ['orgId'],
+      where: { role: ORG_OWNER_ROLE },
+      _count: { _all: true },
+    }),
+    prisma.orgSupportGrant.findMany({
+      // A suspended org admits nobody, so its grant is not open access.
+      where: { ...openSupportGrantWhere(new Date()), org: { status: 'ACTIVE' } },
+      select: {
+        orgId: true,
+        level: true,
+        expiresAt: true,
+        grantedBy: {
+          select: { orgMemberships: { where: { role: ORG_OWNER_ROLE }, select: { orgId: true } } },
+        },
+      },
+    }),
+  ]);
   const ownerCount = new Map(owners.map((row) => [row.orgId, row._count._all]));
+  // Entry admits under a grant only while its granter is still an OWNER of
+  // the org (`verifiedSupportGrant`, §121 t-824), so the list offers only
+  // those: a grant whose granter has left or been demoted admits nobody.
+  const supportGrant = new Map(
+    openGrants
+      .filter(({ orgId, grantedBy }) =>
+        grantedBy?.orgMemberships.some((membership) => membership.orgId === orgId)
+      )
+      .map(({ orgId, level, expiresAt }) => [orgId, { level, expiresAt }] as const)
+  );
 
   return successResponse({
     orgs: orgs.map(({ _count, ...org }) => ({
       ...org,
       memberCount: _count.memberships,
       ownerCount: ownerCount.get(org.id) ?? 0,
+      supportGrant: supportGrant.get(org.id) ?? null,
     })),
   });
 }, PLATFORM_ONLY);

@@ -25,6 +25,24 @@ import { NextRequest } from 'next/server';
 
 // ─── Module mocks ───────────────────────────────────────────────────────────
 
+// `after()` throws outside a real request scope. Recorded rather than run: the
+// chain is already running by the time it is handed over, so recording is
+// enough to prove the route keeps it alive instead of leaving it floating
+// (t-844).
+const mockAfter = vi.hoisted(() => vi.fn());
+vi.mock('next/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next/server')>()),
+  after: mockAfter,
+}));
+
+// The GET takes an admin API key only. Left real, `resolveApiKey` answers null
+// for every request here, so the session path the POST tests use is unchanged.
+const mockResolveApiKey = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/auth/api-keys', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/auth/api-keys')>()),
+  resolveApiKey: mockResolveApiKey,
+}));
+
 vi.mock('@/lib/auth/config', () => ({
   auth: { api: { getSession: vi.fn() } },
 }));
@@ -86,6 +104,9 @@ vi.mock('@/lib/orchestration/agents/reconcile-platform-agents', () => ({
   reconcilePlatformAgentsIfStale: vi.fn().mockResolvedValue({ reconciled: false }),
 }));
 
+// The pending-erasure retrier (t-842): its own module, mocked idle by default.
+vi.mock('@/lib/privacy/erasure-requests', () => ({ processPendingErasures: vi.fn() }));
+
 // The fork seam (#469). Left unmocked, the real empty registry always resolves
 // `undefined`, so neither the "a fork registered jobs" nor the rejection arm of
 // the summary ever ran. Mocked with the same default so existing tests see no
@@ -117,6 +138,7 @@ import {
 import { processPendingEvaluationRuns } from '@/lib/orchestration/evaluations/run-worker';
 import { processTransferJobs } from '@/lib/portability/jobs/worker';
 import { expireTransferArchives } from '@/lib/portability/jobs/expiry';
+import { processPendingErasures } from '@/lib/privacy/erasure-requests';
 import { runDueAppJobs } from '@/lib/orchestration/maintenance/app-jobs';
 import {
   __resetPlatformJobsForTests,
@@ -125,17 +147,42 @@ import {
 import { __resetIdleGateForTests } from '@/lib/orchestration/maintenance/idle-gate';
 import { mockAdminUser, mockUnauthenticatedUser } from '@/tests/helpers/auth';
 import {
+  GET,
+  HEAD,
   POST,
   __test_setTickRunning,
 } from '@/app/api/v1/admin/orchestration/maintenance/tick/route';
+import { API_KEY_SESSION_ID_PREFIX } from '@/lib/auth/api-keys';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function makeRequest(query = ''): NextRequest {
+function makeRequest(query = '', method: 'POST' | 'GET' = 'POST'): NextRequest {
   return new NextRequest(
     `http://localhost:3000/api/v1/admin/orchestration/maintenance/tick${query}`,
-    { method: 'POST' }
+    { method }
   );
+}
+
+/** What `resolveApiKey` answers for a valid, unbound admin key. */
+function adminApiKey() {
+  const admin = mockAdminUser();
+  return {
+    session: { ...admin, session: { ...admin.session, id: `${API_KEY_SESSION_ID_PREFIX}key-1` } },
+    scopes: ['admin'],
+    rateLimitRpm: null,
+    orgId: null,
+    ownerAccountType: 'HUMAN',
+  };
+}
+
+/** Has this promise settled yet? Checked after the microtask queue drains. */
+async function isSettled(promise: Promise<unknown>): Promise<boolean> {
+  let settled = false;
+  void promise.then(() => {
+    settled = true;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  return settled;
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -195,6 +242,7 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
     __resetIdleGateForTests();
 
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    mockResolveApiKey.mockResolvedValue(null);
 
     vi.mocked(processDueSchedules).mockResolvedValue(DEFAULT_SCHEDULE_RESULT);
     vi.mocked(processPendingRetries).mockResolvedValue(DEFAULT_RETRY_RESULT);
@@ -216,6 +264,12 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
       orphaned: 0,
     });
     vi.mocked(expireTransferArchives).mockResolvedValue({ expired: 0, failed: 0 });
+    vi.mocked(processPendingErasures).mockResolvedValue({
+      claimed: 0,
+      erased: 0,
+      failed: 0,
+      pending: 0,
+    });
     // Vanilla default: no fork jobs registered.
     vi.mocked(runDueAppJobs).mockResolvedValue(undefined);
     // No schedule on the horizon unless a test says otherwise.
@@ -263,6 +317,12 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
       orphaned: 0,
     });
     vi.mocked(expireTransferArchives).mockResolvedValue({ expired: 0, failed: 0 });
+    vi.mocked(processPendingErasures).mockResolvedValue({
+      claimed: 0,
+      erased: 0,
+      failed: 0,
+      pending: 0,
+    });
   }
 
   /** Run one tick and let its background chain settle. */
@@ -271,6 +331,115 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
     await new Promise((resolve) => setImmediate(resolve));
     return response;
   }
+
+  // ── after() — the chain outlives the response (t-844) ─────────────────────
+
+  describe('background chain under after()', () => {
+    it('hands the chain to after(), which settles only once the chain does', async () => {
+      // Hold one background task open so "the chain" and "the response" are
+      // distinguishable moments.
+      const retention = createDeferred<typeof DEFAULT_RETENTION_RESULT>();
+      vi.mocked(enforceRetentionPolicies).mockReturnValue(retention.promise);
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(202);
+      expect(mockAfter).toHaveBeenCalledTimes(1);
+      const handed: unknown = mockAfter.mock.calls[0][0];
+      expect(handed).toBeInstanceOf(Promise);
+      const background = handed as Promise<unknown>;
+
+      // The response is out, but the chain it handed over is still running.
+      expect(await isSettled(background)).toBe(false);
+      expect(logger.info).not.toHaveBeenCalledWith(
+        'Maintenance tick background tasks completed',
+        expect.anything()
+      );
+
+      retention.resolve(DEFAULT_RETENTION_RESULT);
+      await background;
+
+      // Settling is the chain finishing: its completion line is written and the
+      // overlap guard released, so the next tick runs.
+      expect(logger.info).toHaveBeenCalledWith(
+        'Maintenance tick background tasks completed',
+        expect.objectContaining({ retention: DEFAULT_RETENTION_RESULT })
+      );
+      expect((await POST(makeRequest())).status).toBe(202);
+    });
+
+    it('hands nothing to after() when the tick is skipped', async () => {
+      __test_setTickRunning(true);
+
+      const response = await POST(makeRequest());
+
+      expect(response.status).toBe(200);
+      expect(mockAfter).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── GET — Vercel Cron, admin API key only ────────────────────────────────
+
+  describe('GET', () => {
+    it('runs the tick for an admin API key and hands the chain to after()', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockUnauthenticatedUser());
+      mockResolveApiKey.mockResolvedValue(adminApiKey());
+
+      const response = await GET(makeRequest('', 'GET'));
+      const body = await parseJson<{ data: { schedules: unknown } }>(response);
+
+      expect(response.status).toBe(202);
+      expect(body.data.schedules).toEqual(DEFAULT_SCHEDULE_RESULT);
+      expect(processDueSchedules).toHaveBeenCalledTimes(1);
+      expect(mockAfter).toHaveBeenCalledWith(expect.any(Promise));
+    });
+
+    it('honours ?force=1 like the POST', async () => {
+      mockResolveApiKey.mockResolvedValue(adminApiKey());
+      mockIdleSweep();
+      await GET(makeRequest('', 'GET'));
+      // The first tick's chain is what arms the gate; wait for that chain
+      // itself rather than for an arbitrary number of turns.
+      await (mockAfter.mock.calls[0][0] as Promise<void>);
+
+      const idle = await GET(makeRequest('', 'GET'));
+      expect(idle.status).toBe(200);
+
+      const forced = await GET(makeRequest('?force=1', 'GET'));
+      expect(forced.status).toBe(202);
+    });
+
+    it('refuses a browser session, running nothing', async () => {
+      // An admin cookie session — what a cross-site navigation would carry.
+      const response = await GET(makeRequest('', 'GET'));
+      const body = await parseJson<{ error: { code: string; message: string } }>(response);
+
+      expect(response.status).toBe(403);
+      expect(body.error.code).toBe('FORBIDDEN');
+      expect(body.error.message).toMatch(/API key only/);
+      expect(processDueSchedules).not.toHaveBeenCalled(); // test-review:accept no_arg_called — refused before the tick
+      expect(mockAfter).not.toHaveBeenCalled();
+    });
+
+    it('answers HEAD with 405 and runs nothing, rather than Next running the GET', async () => {
+      mockResolveApiKey.mockResolvedValue(adminApiKey());
+
+      const response = HEAD();
+
+      expect(response.status).toBe(405);
+      expect(response.headers.get('Allow')).toBe('GET, POST');
+      expect(processDueSchedules).not.toHaveBeenCalled(); // test-review:accept no_arg_called — HEAD never ticks
+    });
+
+    it('returns 401 with neither a key nor a session', async () => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockUnauthenticatedUser());
+
+      const response = await GET(makeRequest('', 'GET'));
+
+      expect(response.status).toBe(401);
+      expect(processDueSchedules).not.toHaveBeenCalled(); // test-review:accept no_arg_called — refused before the tick
+    });
+  });
 
   // ── Authentication ───────────────────────────────────────────────────────
 
@@ -321,6 +490,7 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
       'evaluationRuns',
       'auditLogRetention',
       'platformAgents',
+      'pendingErasures',
       'transferJobs',
       'transferArchiveExpiry',
     ]);
@@ -342,6 +512,7 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
     expect(body.data).not.toHaveProperty('evaluationRuns');
     expect(body.data).not.toHaveProperty('auditLogRetention');
     expect(body.data).not.toHaveProperty('platformAgents');
+    expect(body.data).not.toHaveProperty('pendingErasures');
   });
 
   it('still invokes all seven maintenance tasks (six in background)', async () => {
@@ -359,6 +530,7 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
     expect(backfillMissingEmbeddings).toHaveBeenCalledTimes(1);
     expect(enforceRetentionPolicies).toHaveBeenCalledTimes(1);
     expect(processPendingExecutions).toHaveBeenCalledTimes(1);
+    expect(processPendingErasures).toHaveBeenCalledTimes(1);
   });
 
   it('logs background task summary when the chain settles', async () => {
@@ -555,6 +727,7 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
       enforceRetentionPolicies,
       processPendingExecutions,
       processPendingEvaluationRuns,
+      processPendingErasures,
     ];
 
     it('after a sweep that found nothing, the next tick does zero database work', async () => {
@@ -588,6 +761,31 @@ describe('POST /api/v1/admin/orchestration/maintenance/tick', () => {
       // this is the active-deployment path: every tick keeps sweeping.
       await tick();
       vi.clearAllMocks();
+
+      const response = await tick();
+
+      expect(response.status).toBe(202);
+      expect(processDueSchedules).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not arm while an erasure is still waiting out its backoff', async () => {
+      // Everything else found nothing, but a pending erasure is due again
+      // within the hour: the gate must keep ticking so it is retried on time.
+      mockIdleSweep();
+      vi.mocked(processPendingErasures).mockResolvedValue({
+        claimed: 0,
+        erased: 0,
+        failed: 0,
+        pending: 1,
+      });
+      await tick();
+      vi.clearAllMocks();
+      vi.mocked(processPendingErasures).mockResolvedValue({
+        claimed: 0,
+        erased: 0,
+        failed: 0,
+        pending: 1,
+      });
 
       const response = await tick();
 

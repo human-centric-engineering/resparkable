@@ -73,7 +73,7 @@ Judges are created via the agent form with `?kind=judge` in the URL (the "Create
 
 ### Bulk export
 
-Header has an **Export selected** button enabled iff `selected.size > 0`. Clicking POSTs `/agents/export` with `{ agentIds: [...selected] }` and turns the response blob into a file download using the server's `Content-Disposition` filename (falls back to `agents-YYYY-MM-DD.json` if absent).
+Header has an **Export selected** button enabled iff `selected.size > 0`. Clicking POSTs `/agents/export` with `{ agentIds: [...selected] }` and turns the response blob into a file download using the server's `Content-Disposition` filename (falls back to `agents-YYYY-MM-DD.json` if absent). Built-in (system) agents in the selection are left out of the file, and a muted notice says how many (from the `X-Skipped-System-Agents` header); if every selected agent is built-in, the server's `400` message is shown in the list's error banner (#721).
 
 The bundle carries the full agent configuration plus, **by slug**, the attached capabilities, the linked **profile** (`profileSlug`), and granted **knowledge tags** (`knowledgeTagSlugs`). Server-owned fields (`id`, `createdBy`, timestamps) are stripped for portability. Agent→**document** grants are intentionally not carried — documents have no stable cross-environment key (tracked in #338).
 
@@ -129,7 +129,7 @@ Values that "win" on the `better` direction render in green. Ties and missing nu
 
 Both are thin server shells that parallel-fetch the provider list and the aggregated model registry so the form's Model tab hydrates without a loading flicker. Missing providers/models → the form falls back to free-text inputs with an amber warning banner (see [`agent-form.md`](./agent-form.md)).
 
-The edit page additionally fetches the agent itself via `GET /agents/:id`. A `null` response triggers `notFound()`, which renders the stock Next.js 404 page.
+The edit page additionally fetches the agent itself via `GET /agents/:id`. A 404 triggers `notFound()`, which renders the stock Next.js 404 page; any other failure throws to the admin error boundary (#518). Its secondary panels — the quarantined-capabilities banner and the evaluation trend — show a "Couldn't load" notice in their place when their load fails, so a failure never reads as "nothing quarantined". On both pages a failed profile list shows the same notice above the form, which then hides its profile picker.
 
 When the agent names a provider its org is no longer approved for (§120 t-745), the edit page shows `<UnapprovedProvidersBanner>` at the top, from `GET /agents/:id`'s `_unapprovedProviders`. It says whether the agent cannot respond at all (its primary is refused) or only loses failover (a fallback is), and where a platform admin grants providers. It is hidden when the agent names none, or when it is unknown (`null`: no org in scope, or the policy could not be read).
 
