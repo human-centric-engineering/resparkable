@@ -55,6 +55,9 @@
  * Do not import the Prisma client (`@/lib/db`) from here: this runs while that
  * client is being built.
  */
+import { registerResparkableOwnerClassification } from '@/lib/framework/resparkable/owner-classification';
+
 export function initAppOwnerClassification(): void {
-  // No app owner classifications by default.
+  // Resparkable's user-linked models. The rows live in the framework tier.
+  registerResparkableOwnerClassification();
 }

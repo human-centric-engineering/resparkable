@@ -38,6 +38,12 @@ const RAW_SQL = /[\w$)\]]\.\$(queryRaw|executeRaw)(Unsafe|Typed)?\s*[(`<]|\bPris
  * cannot hand a narrowed caller another member's rows. Sorted by file.
  */
 const MANIFEST: ReadonlyArray<{ file: string; table: string; why: string }> = [
+  // FORK (Resparkable): the billing sweep's anti-join over finished runs.
+  {
+    file: 'lib/framework/resparkable/repo/billing.ts',
+    table: 'ai_workflow_execution',
+    why: 'Called only by the billing sweep in lib/framework/resparkable/jobs.ts, which runs from the maintenance tick where no person is narrowed. It returns run ids, owners and costs to that job, never to a caller.',
+  },
   {
     file: 'lib/orchestration/chat/conversation-semantic-search.ts',
     table: 'ai_conversation',

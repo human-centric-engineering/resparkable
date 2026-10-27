@@ -79,7 +79,10 @@ import { registerAppRateLimits } from '@/lib/app/rate-limit';
 import { registerAppCapabilities } from '@/lib/orchestration/capabilities';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import { buildContext } from '@/lib/orchestration/chat/context-builder';
-import { RESPARKABLE_CAPABILITIES } from '@/lib/framework/resparkable/capabilities/catalogue';
+import {
+  RESPARKABLE_CAPABILITIES,
+  RESPARKABLE_CAPABILITY_SLUGS,
+} from '@/lib/framework/resparkable/capabilities/catalogue';
 import { RESPARKABLE_MCP_RESOURCES } from '@/lib/framework/resparkable/mcp/exposure';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
 import { registerAppTenantResolver } from '@/lib/app/tenant-resolver';
@@ -551,10 +554,22 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/owner-classification.ts',
     risk: 'a stray classification would switch the data layer’s owner check on for a model nobody decided was private — refusing reads the product means to allow — or pre-classify a fork model nobody looked at, silencing the coverage guard for it',
+    // FORK (Resparkable): Sunrise asserts an empty registry; Resparkable
+    // classifies the three of its models the coverage guard can see. Pinning the
+    // exact set keeps the original intent: a stray classification still fails
+    // here, and so does one switched to `enforced` without a decision.
     assert: () => {
       __resetAppOwnerClassificationForTests();
       // The read triggers the lazy init, so this exercises the REAL file.
-      expect(appOwnerClassifications()).toEqual({});
+      const rows = appOwnerClassifications();
+      expect(Object.keys(rows).sort()).toEqual([
+        'ResparkableGroupAuditEntry',
+        'ResparkableGroupMember',
+        'TransferJob',
+      ]);
+      expect(Object.values(rows).some((row) => row.kind === 'personal' && row.enforced)).toBe(
+        false
+      );
     },
   },
   {
@@ -798,9 +813,18 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/capability-seed-pairs.ts',
     risk: 'a stray pair fails the capability parity test on every install (for a slug no seed writes it is a pair nothing wrote, for a slug core already pairs a duplicate), and a stray unchecked seed switches the parity checks off for that seed',
+    // FORK (Resparkable): Sunrise asserts both ship empty. Resparkable pairs
+    // its 24 capabilities and lets two seeds that write none throw. Pinning the
+    // slugs and the files keeps the intent: a stray pair or a stray unchecked
+    // seed still fails here.
     assert: () => {
-      expect(APP_CAPABILITY_PAIRS).toEqual([]);
-      expect(APP_UNCHECKED_SEEDS).toEqual({});
+      expect(APP_CAPABILITY_PAIRS.map((pair) => pair.slug).sort()).toEqual(
+        Object.values(RESPARKABLE_CAPABILITY_SLUGS).sort()
+      );
+      expect(Object.keys(APP_UNCHECKED_SEEDS).sort()).toEqual([
+        'framework-resparkable/004-agent-capabilities.ts',
+        'framework-resparkable/006-mcp.ts',
+      ]);
     },
   },
   {

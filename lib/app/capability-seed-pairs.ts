@@ -26,6 +26,8 @@
  * Full guide: CUSTOMIZATION.md §4 · .context/database/seeding.md
  */
 
+import { resparkableCapabilityHandlers } from '@/lib/framework/resparkable/capabilities';
+
 /** One capability slug and the class whose definition its seed must write. */
 export interface AppCapabilityPair {
   /** The capability slug; also its `functionDefinition.name`. */
@@ -48,7 +50,11 @@ export interface AppCapabilityPair {
  * ];
  * ```
  */
-export const APP_CAPABILITY_PAIRS: readonly AppCapabilityPair[] = [];
+export const APP_CAPABILITY_PAIRS: readonly AppCapabilityPair[] =
+  // Resparkable's 24, from the same list the dispatcher registers, so a new
+  // capability is paired the moment it can run. Its seed is
+  // `framework-resparkable/001-capabilities.ts`.
+  resparkableCapabilityHandlers().map((instance) => ({ slug: instance.slug, instance }));
 
 /**
  * Seeds of this fork's that the parity test cannot run under its strict mock
@@ -68,4 +74,11 @@ export const APP_CAPABILITY_PAIRS: readonly AppCapabilityPair[] = [];
  * };
  * ```
  */
-export const APP_UNCHECKED_SEEDS: Readonly<Record<string, string>> = {};
+export const APP_UNCHECKED_SEEDS: Readonly<Record<string, string>> = {
+  'framework-resparkable/004-agent-capabilities.ts':
+    'binds agents to the capabilities 001 seeds, and throws by design when one is missing; ' +
+    'it reads capabilities and writes none',
+  'framework-resparkable/006-mcp.ts':
+    'exposes the capabilities 001 seeds as MCP tools, and throws by design when one is missing; ' +
+    'it reads capabilities and writes none',
+};

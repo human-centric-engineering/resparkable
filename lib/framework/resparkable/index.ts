@@ -79,12 +79,10 @@ export async function initResparkable(): Promise<void> {
   // key to hang off, and **stored document originals**, which are object
   // storage and cannot enlist in a database transaction.
   //
-  // The realm caveat the old comment recorded still stands and is worth
-  // keeping: `lib/privacy/erasure-hooks.ts` is a plain module-scoped Map, so a
-  // boot-time registration may not be present in the erasure request's realm
-  // (sunrise#462 fixed exactly this for the contributor and capability
-  // registries and did not reach this one; ask #34). What has changed is how
-  // much rides on it. Every accepted grant and every comment an erased person
+  // The realm caveat the old comment recorded is gone: since Sunrise 0.15.0
+  // `lib/privacy/erasure-hooks.ts` keeps its registry on `globalThis`
+  // (sunrise#691), so a boot-time registration is the one erasure reads. What
+  // also changed is how much rides on it. Every accepted grant and every comment an erased person
   // wrote is covered by a hand-written `ON DELETE CASCADE` — probes B8 and B9 —
   // which is a database constraint and cannot fail to run. This hook covers the
   // residue, and `lib/framework/resparkable/privacy/erasure.ts` says so at the

@@ -34,6 +34,13 @@ import {
   parseSchema,
 } from '@/tests/helpers/owner-classification-audit';
 
+// FORK (Resparkable): `TransferJob` is this fork's, but it lives in
+// `platform.prisma`, which the helper counts as core. With the seam mocked empty
+// it would be reported unclassified in every case here, so it is left out of the
+// core half. Its real classification is checked by owner-classification.test.ts
+// against the real seam.
+const coreModels = () => [...coreSchema()].filter(([model]) => model !== 'TransferJob');
+
 /** The models a fork tier has classified, for the audit's fork-only rules. */
 const forkRows = () => new Set(Object.keys(appOwnerClassifications()));
 
@@ -64,7 +71,7 @@ model AppCountry {
   id String @id
 }
 `;
-    const forkSchema = new Map([...coreSchema(), ...parseSchema([appFile])]);
+    const forkSchema = new Map([...coreModels(), ...parseSchema([appFile])]);
 
     afterEach(() => {
       vi.restoreAllMocks();
@@ -151,7 +158,7 @@ model AppCountry {
     it("refuses a core ownerless kind, and needs none for a fork model's orphans", () => {
       const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
       const draftSchema = new Map([
-        ...coreSchema(),
+        ...coreModels(),
         ...parseSchema([
           `
 model AppDraft {
