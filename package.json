@@ -190,7 +190,7 @@
     "umap-js": "^1.4.0",
     "undici": "^7.30.1",
     "yaml": "^2.9.0",
-    "zod": "^4.6.5"
+    "zod": "^4.6.6"
   },
   "overrides": {
     "@react-email/ui": {
