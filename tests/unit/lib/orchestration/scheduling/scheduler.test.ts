@@ -11,11 +11,19 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  getSubjectReadScope,
+  runAsSubject,
+  type SubjectReadScope,
+} from '@/lib/auth/subject-context';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-vi.mock('@/lib/db/client', () => ({
-  prisma: {
+vi.mock('@/lib/db/client', () => {
+  const prisma = {
+    // The run is created, and the schedule claimed, in one transaction
+    // (t-839). The callback gets this same object, so `tx.X === prisma.X`.
+    $transaction: vi.fn(),
     aiWorkflowSchedule: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -42,7 +50,31 @@ vi.mock('@/lib/db/client', () => ({
     aiOrchestrationSettings: {
       findUnique: vi.fn().mockResolvedValue(null),
     },
-  },
+  };
+  prisma.$transaction.mockImplementation((callback: (tx: typeof prisma) => Promise<unknown>) =>
+    callback(prisma)
+  );
+  return { prisma };
+});
+
+// The erased-person check (t-839): its locks and receipt reads are proved in
+// erased-subjects.test.ts. Nobody is erased unless a test says so.
+const mockFindErasedSubjects = vi.hoisted(() =>
+  vi.fn(async (_tx: unknown, _subjects: unknown) => ({
+    addresses: [] as string[],
+    userIds: [] as string[],
+  }))
+);
+// The locks are only tried (review round 2): free unless a test says otherwise.
+const mockTryLockSubjects = vi.hoisted(() =>
+  vi.fn(async (_tx: unknown, _subjects: unknown) => true)
+);
+const mockBoundLockWaits = vi.hoisted(() => vi.fn(async (_tx: unknown, _ms: number) => undefined));
+vi.mock('@/lib/privacy/erased-subjects', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/privacy/erased-subjects')>()),
+  findErasedSubjects: mockFindErasedSubjects,
+  tryLockSubjects: mockTryLockSubjects,
+  boundLockWaits: mockBoundLockWaits,
 }));
 
 vi.mock('@/lib/logging', () => ({
@@ -66,6 +98,8 @@ vi.mock('@/lib/orchestration/engine/orchestration-engine', () => ({
 vi.mock('@/lib/validations/orchestration', async (importActual) => ({
   ...(await importActual<typeof import('@/lib/validations/orchestration')>()),
   workflowDefinitionSchema: {
+    // `withoutErasedRecipients` (t-839) re-parses the definition it rewrote.
+    parse: vi.fn((value: unknown) => value),
     safeParse: vi.fn().mockReturnValue({
       success: true,
       data: {
@@ -433,13 +467,18 @@ describe('processDueSchedules', () => {
     const schedule = makeSchedule();
     vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([schedule] as never);
     vi.mocked(prisma.aiWorkflowSchedule.updateMany).mockResolvedValue({ count: 0 });
+    vi.mocked(prisma.aiWorkflowExecution.create).mockResolvedValue({ id: 'exec_1' } as never);
+    const transaction = vi.mocked(prisma.$transaction);
 
     const result = await processDueSchedules();
 
     // processed is decremented when lock fails
     expect(result.processed).toBe(0);
     expect(result.succeeded).toBe(0);
-    expect(prisma.aiWorkflowExecution.create).not.toHaveBeenCalled();
+    // The claim is made after the insert, in the same transaction (t-839), so
+    // losing it rolls the run back: the transaction rejects and no engine runs.
+    await expect(transaction.mock.results[0].value).rejects.toThrow();
+    expect(mockExecute).not.toHaveBeenCalled();
     expect(logger.info).toHaveBeenCalledWith(
       'Scheduler: schedule already claimed by another tick, skipping',
       expect.objectContaining({ scheduleId: 'sched_1' })
@@ -593,6 +632,214 @@ describe('processDueSchedules', () => {
     );
   });
 
+  describe('a tick that read before an erasure (t-839)', () => {
+    const ERASED = 'gone@example.com';
+
+    it('checks the people the template and the version name, in the transaction, before the run is created', async () => {
+      const order: string[] = [];
+      const snapshot = {
+        steps: [
+          {
+            id: 'n',
+            type: 'send_notification',
+            config: { channel: 'email', to: 'someone@example.com' },
+          },
+          { id: 'a', type: 'human_approval', config: { approverUserIds: ['approver-1'] } },
+        ],
+      };
+      const schedule = makeSchedule({
+        inputTemplate: { userEmail: 'Gone@Example.com', note: 'weekly' },
+        workflow: { ...makeSchedule().workflow, publishedVersion: { id: 'wfv_1', snapshot } },
+      });
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([schedule] as never);
+      let inTransaction = false;
+      vi.mocked(prisma.$transaction).mockImplementationOnce(
+        async (callback: (tx: typeof prisma) => Promise<unknown>) => {
+          inTransaction = true;
+          try {
+            return await callback(prisma);
+          } finally {
+            inTransaction = false;
+          }
+        }
+      );
+      mockTryLockSubjects.mockImplementationOnce(async (tx: unknown) => {
+        order.push(`try:${String(inTransaction && tx === prisma)}`);
+        return true;
+      });
+      mockFindErasedSubjects.mockImplementationOnce(async (tx: unknown) => {
+        order.push(`check:${String(inTransaction && tx === prisma)}`);
+        return { addresses: [], userIds: [] };
+      });
+      vi.mocked(prisma.aiWorkflowExecution.create).mockImplementationOnce((async () => {
+        order.push(`create:${String(inTransaction)}`);
+        return { id: 'exec_1', inputData: {} };
+      }) as never);
+      vi.mocked(prisma.aiWorkflowSchedule.updateMany).mockImplementationOnce((async () => {
+        order.push(`claim:${String(inTransaction)}`);
+        return { count: 1 };
+      }) as never);
+
+      await processDueSchedules();
+
+      // Locks tried, receipts checked, then the run, then the claim: one transaction.
+      expect(order).toEqual(['try:true', 'check:true', 'create:true', 'claim:true']);
+      expect(mockTryLockSubjects.mock.calls[0][1]).toEqual(mockFindErasedSubjects.mock.calls[0][1]);
+      const subjects = mockFindErasedSubjects.mock.calls[0][1] as {
+        addresses: string[];
+        userIds: string[];
+      };
+      expect(subjects.addresses).toEqual(
+        expect.arrayContaining(['Gone@Example.com', 'someone@example.com'])
+      );
+      expect(subjects.userIds).toEqual(['approver-1']);
+      // The claim can wait out an erasure rewriting the schedule for its 60 s.
+      const options = vi.mocked(prisma.$transaction).mock.calls[0][1] as { timeout: number };
+      expect(options.timeout).toBeGreaterThan(60_000);
+    });
+
+    it('blanks an erased address in the run’s input and leaves the person out of what the engine runs', async () => {
+      const definition = {
+        steps: [
+          {
+            id: 'n',
+            name: 'Notify',
+            type: 'send_notification',
+            config: { channel: 'email', to: [ERASED, 'keep@example.com'] },
+            nextSteps: [{ targetStepId: 'a' }],
+          },
+          {
+            id: 'a',
+            name: 'Approve',
+            type: 'human_approval',
+            config: { prompt: 'OK?', approverUserIds: ['user-gone', 'user-keep'] },
+            nextSteps: [],
+          },
+        ],
+        entryStepId: 'n',
+        errorStrategy: 'fail',
+      };
+      vi.mocked(workflowDefinitionSchema.safeParse).mockReturnValue({
+        success: true,
+        data: definition,
+      } as never);
+      const schedule = makeSchedule({
+        inputTemplate: { userEmail: ' Gone@Example.com ', cc: [ERASED, 'keep@example.com'] },
+      });
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([schedule] as never);
+      mockFindErasedSubjects.mockResolvedValueOnce({ addresses: [ERASED], userIds: ['user-gone'] });
+      vi.mocked(prisma.aiWorkflowExecution.create).mockImplementationOnce((async (args: {
+        data: { inputData: unknown };
+      }) => ({ id: 'exec_1', inputData: args.data.inputData })) as never);
+
+      const result = await processDueSchedules();
+
+      expect(result.errors).toEqual([]);
+      expect(result.succeeded).toBe(1);
+      const expectedInput = { userEmail: '', cc: ['keep@example.com'] };
+      expect(prisma.aiWorkflowExecution.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ inputData: expectedInput }),
+      });
+      const [[workflowArg, inputArg]] = mockExecute.mock.calls as [
+        [{ definition: typeof definition }, unknown],
+      ];
+      expect(inputArg).toEqual(expectedInput);
+      expect(workflowArg.definition.steps[0].config.to).toEqual(['keep@example.com']);
+      expect(workflowArg.definition.steps[1].config.approverUserIds).toEqual(['user-keep']);
+      // Said, without the address it is keeping out.
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Scheduler: left out people whose data was erased from a scheduled run',
+        { scheduleId: 'sched_1', executionId: 'exec_1', addresses: 1, userIds: 1 }
+      );
+      expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(ERASED);
+    });
+
+    it('leaves a firing whose people are locked for the next tick: unclaimed, and not a failure', async () => {
+      const schedule = makeSchedule({ inputTemplate: { userEmail: 'busy@example.com' } });
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([schedule] as never);
+      mockTryLockSubjects.mockResolvedValueOnce(false);
+
+      const result = await processDueSchedules();
+
+      // Still processed, so the maintenance tick does not read the sweep as
+      // idle and skip ticks past this firing (review round 3).
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 0, errors: [] });
+      expect(mockFindErasedSubjects).not.toHaveBeenCalled();
+      expect(prisma.aiWorkflowExecution.create).not.toHaveBeenCalled();
+      expect(prisma.aiWorkflowSchedule.updateMany).not.toHaveBeenCalled();
+      expect(mockExecute).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Scheduler: a person this schedule names is locked; leaving it for the next tick',
+        { scheduleId: 'sched_1' }
+      );
+    });
+
+    it('bounds every lock wait in the run’s transaction inside its budget', async () => {
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([makeSchedule()] as never);
+      vi.mocked(prisma.aiWorkflowExecution.create).mockResolvedValue({ id: 'exec_1' } as never);
+
+      await processDueSchedules();
+
+      const [tx, lockWaitMs] = mockBoundLockWaits.mock.calls[0];
+      const options = vi.mocked(prisma.$transaction).mock.calls[0][1] as { timeout: number };
+      expect(tx).toBe(prisma);
+      expect(lockWaitMs).toBeGreaterThan(60_000);
+      expect(lockWaitMs).toBeLessThan(options.timeout);
+    });
+
+    it('does not count a failure when another tick claimed and ran the firing first', async () => {
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([makeSchedule()] as never);
+      vi.mocked(prisma.aiWorkflowExecution.create).mockRejectedValueOnce(
+        new Error('Transaction already closed')
+      );
+      vi.mocked(prisma.aiWorkflowSchedule.updateMany).mockResolvedValue({ count: 0 });
+
+      const result = await processDueSchedules();
+
+      expect(result).toEqual({ processed: 0, succeeded: 0, failed: 0, errors: [] });
+    });
+
+    it('logs a claim that fails after a failed run, and still records the run’s failure', async () => {
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([makeSchedule()] as never);
+      vi.mocked(prisma.aiWorkflowExecution.create).mockRejectedValueOnce(
+        new Error('insert failed')
+      );
+      vi.mocked(prisma.aiWorkflowSchedule.updateMany).mockRejectedValueOnce(
+        new Error('canceling statement due to lock timeout')
+      );
+
+      const result = await processDueSchedules();
+
+      expect(result.failed).toBe(1);
+      expect(result.errors).toEqual([{ scheduleId: 'sched_1', error: 'insert failed' }]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        'Scheduler: could not claim a firing whose run failed; it is tried again',
+        { scheduleId: 'sched_1', error: 'canceling statement due to lock timeout' }
+      );
+    });
+
+    it('still claims the firing when the run cannot be created, so it fails once per firing, not every tick', async () => {
+      const schedule = makeSchedule();
+      vi.mocked(prisma.aiWorkflowSchedule.findMany).mockResolvedValue([schedule] as never);
+      vi.mocked(prisma.aiWorkflowExecution.create).mockRejectedValueOnce(
+        new Error('value too long for column')
+      );
+
+      const result = await processDueSchedules();
+
+      expect(result.failed).toBe(1);
+      expect(result.errors).toEqual([
+        { scheduleId: 'sched_1', error: 'value too long for column' },
+      ]);
+      // Claimed once, on its own, after the transaction failed.
+      expect(prisma.aiWorkflowSchedule.updateMany).toHaveBeenCalledTimes(1);
+      expect(prisma.aiWorkflowSchedule.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 'sched_1', nextRunAt: schedule.nextRunAt } })
+      );
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
+  });
+
   it('records failure when the workflow has no published version (publish/draft model)', async () => {
     // A schedule pointing at a workflow that has never been published cannot
     // run — the scheduler must record a failure entry rather than create an
@@ -617,6 +864,10 @@ describe('processDueSchedules', () => {
     ]);
     // No execution row should be inserted — bail before create.
     expect(prisma.aiWorkflowExecution.create).not.toHaveBeenCalled();
+    // The firing is still claimed, so it is not retried every tick.
+    expect(prisma.aiWorkflowSchedule.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'sched_1', nextRunAt: schedule.nextRunAt } })
+    );
   });
 });
 
@@ -1038,6 +1289,35 @@ describe('resumeApprovedExecution', () => {
       data: VALID_DEFINITION,
     } as never);
     mockExecute.mockReturnValue((async function* () {})());
+  });
+
+  it('reads the execution as a crossing, not narrowed to whoever approved it (§115 t-801)', async () => {
+    // Called fire-and-forget from inside an approving admin's request, the
+    // resume would otherwise inherit that admin's subject.
+    let scopeSeen: SubjectReadScope | null = null;
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockImplementation((async () => {
+      scopeSeen = await getSubjectReadScope();
+      return null;
+    }) as never);
+
+    await runAsSubject(
+      {
+        principal: { userId: 'approver', credential: 'session' },
+        filter: { userId: 'approver' },
+        resolveFilter: () => Promise.resolve({ userId: 'approver' }),
+        unattributedReads: {
+          conversation: false,
+          dataset: false,
+          execution: false,
+          experiment: false,
+          webhookDelivery: false,
+          webhookSubscription: false,
+        },
+      },
+      () => resumeApprovedExecution('exec_1')
+    );
+
+    expect(scopeSeen).toMatchObject({ kind: 'admitted' });
   });
 
   it('returns silently when the execution row is missing', async () => {

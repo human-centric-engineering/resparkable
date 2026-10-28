@@ -89,6 +89,63 @@ export async function parseJsonResponse(response: Response): Promise<unknown> {
 }
 
 /**
+ * A real `Response` carrying a success envelope, for a faked `serverFetch`.
+ *
+ * Page tests fake only `serverFetch` and let the real `parseApiResponse` and
+ * `lib/api/server-load.ts` run, so a test proves what the page does with an
+ * actual API answer rather than with a hand-built `{ ok: false }` object.
+ */
+export function apiSuccess(data: unknown, meta?: unknown): Response {
+  return new Response(JSON.stringify({ success: true, data, ...(meta ? { meta } : {}) }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * One page of a list route, with the pagination meta the routes send.
+ * `requireAllServerData` reads `totalPages` to know when it has every row.
+ */
+export function apiPage(rows: unknown[], page = 1, totalPages = 1, limit = 100): Response {
+  return apiSuccess(rows, {
+    page,
+    limit,
+    total: Math.max(rows.length, (totalPages - 1) * limit),
+    totalPages,
+  });
+}
+
+/** A real `Response` carrying an error envelope. See {@link apiSuccess}. */
+export function apiFailure(status = 500, code = 'INTERNAL_ERROR'): Response {
+  return new Response(
+    JSON.stringify({ success: false, error: { code, message: `status ${status}` } }),
+    { status, headers: { 'Content-Type': 'application/json' } }
+  );
+}
+
+/**
+ * A 400 rejecting the path's `id`, in the shape the detail routes send it.
+ *
+ * `validatePathParam` and the hand-rolled checks send `{ id: [...] }`;
+ * `validateQueryParams` (the user and org routes) sends
+ * `{ errors: [{ path: 'id', ... }] }`. `requireServerData({ notFound: true })`
+ * renders not-found for either, and for no other 400.
+ */
+export function apiIdRejected(shape: 'path' | 'query' = 'path'): Response {
+  const details =
+    shape === 'path'
+      ? { id: ['Must be a valid CUID'] }
+      : { errors: [{ path: 'id', message: 'Invalid id' }] };
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: { code: 'VALIDATION_ERROR', message: 'Invalid id', details },
+    }),
+    { status: 400, headers: { 'Content-Type': 'application/json' } }
+  );
+}
+
+/**
  * Assert API success response
  *
  * Checks that response matches the standardized success format

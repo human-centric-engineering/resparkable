@@ -19,11 +19,12 @@ import { auth } from '@/lib/auth/config';
 import { withAuth } from '@/lib/auth/guards';
 import { humanAdminWhere } from '@/lib/auth/account';
 import { isApiKeySession } from '@/lib/auth/api-keys';
-import { eraseUser } from '@/lib/privacy/erase-user';
+import { requestUserErasure } from '@/lib/privacy/erasure-requests';
 import { getRouteLogger } from '@/lib/api/context';
 import { serverTrack } from '@/lib/analytics/server';
 import { EVENTS } from '@/lib/analytics/events';
 import { isPlatformAdmin } from '@/lib/auth/roles';
+import { getTenantContext } from '@/lib/tenancy/context';
 
 /**
  * GET /api/v1/users/me
@@ -297,6 +298,17 @@ export const DELETE = withAuth(
     const log = await getRouteLogger(request);
 
     try {
+      // Inside a support session the guard presents a platform admin as a
+      // plain user (§121 t-824), so the last-admin check below would not see
+      // them. Deleting a vendor account from inside a customer's org is not a
+      // support act anyway: end the session first.
+      if (getTenantContext()?.source === 'support') {
+        return errorResponse('End your support session before deleting your account.', {
+          status: 403,
+          code: ErrorCodes.FORBIDDEN,
+        });
+      }
+
       // Validate confirmation (ensures user typed "DELETE")
       await validateRequestBody(request, deleteAccountSchema);
 
@@ -311,8 +323,19 @@ export const DELETE = withAuth(
       // Counting it would let the last human admin self-delete, leaving zero
       // operators and re-opening the first-user-is-admin bootstrap. See
       // lib/auth/account.ts and lib/auth/config.ts.
+      //
+      // An admin whose own deletion is pending is not counted either (t-842):
+      // they can no longer sign in, and the retrier will erase them. The
+      // caller always is, so a caller whose own deletion is already pending
+      // (a cached session repeating the request) is not told they are the
+      // last admin when another remains.
       if (isPlatformAdmin(session.user)) {
-        const adminCount = await prisma.user.count({ where: humanAdminWhere });
+        const adminCount = await prisma.user.count({
+          where: {
+            ...humanAdminWhere,
+            OR: [{ erasureRequestedAt: null }, { id: session.user.id }],
+          },
+        });
         if (adminCount <= 1) {
           return errorResponse(
             'Cannot delete the last admin account. Transfer admin access to another user first.',
@@ -326,19 +349,21 @@ export const DELETE = withAuth(
         email: session.user.email,
       });
 
-      // Erase the user. Schema cascades remove personal data (sessions, accounts,
-      // conversations, executions, user memory, evaluations, API keys, webhook
-      // subscriptions); org config + audit rows are retained with their
-      // creator/userId set null; residual PII is scrubbed; an erasure receipt is
-      // written; and avatar blobs are removed. See lib/privacy/erase-user.ts.
-      await eraseUser({
+      // Record the deletion and disable the account (sessions, API keys,
+      // sign-in), then erase. Schema cascades remove personal data; org config
+      // + audit rows are retained with their creator/userId set null; residual
+      // PII is scrubbed; an erasure receipt is written; and avatar blobs are
+      // removed. If the erasure fails or the request is killed, the
+      // maintenance tick finishes it. See lib/privacy/erasure-requests.ts.
+      const erasure = await requestUserErasure({
         userId: session.user.id,
-        userEmail: session.user.email,
         actorUserId: session.user.id,
         reason: 'self_service',
       });
 
-      // Clear all better-auth cookies (session, cached session data, CSRF, OAuth state)
+      // Clear all better-auth cookies (session, cached session data, CSRF,
+      // OAuth state). Also when another attempt holds the deletion: the
+      // account's sessions are gone either way.
       const cookieStore = await cookies();
       cookieStore.delete('better-auth.session_token');
       cookieStore.delete('better-auth.session_data');
@@ -353,11 +378,31 @@ export const DELETE = withAuth(
       cookieStore.set('__Secure-better-auth.csrf_token', '', secureCookieOptions);
       cookieStore.set('__Secure-better-auth.state', '', secureCookieOptions);
 
+      // A repeat while another attempt holds it: an answer, not a failure,
+      // so returned rather than thrown into the error log below.
+      if (erasure.status === 'in_progress') {
+        return errorResponse('This account is already being deleted.', {
+          status: 409,
+          code: ErrorCodes.CONFLICT,
+        });
+      }
+
       // Track account deletion server-side (bypasses ad blockers for critical events)
       await serverTrack({
         event: EVENTS.ACCOUNT_DELETED,
         userId: session.user.id,
       });
+
+      // The erasure did not finish within the request's budget (t-845). The
+      // account is disabled and the maintenance tick finishes the erasure.
+      if (erasure.status === 'pending') {
+        log.info('User account deletion pending; the maintenance tick finishes it');
+        return successResponse(
+          { pending: true, requestedAt: erasure.requestedAt.toISOString() },
+          undefined,
+          { status: 202 }
+        );
+      }
 
       log.info('User account deleted successfully');
 
@@ -374,7 +419,7 @@ export const DELETE = withAuth(
     // Ownership: this route is self-scoped by construction — see RouteOwnership in lib/auth/guards.ts.
     ownership: {
       decidedBy: 'self',
-      because: "Erases the caller's own account through `eraseUser(session.user.id)`.",
+      because: "Erases the caller's own account through `requestUserErasure(session.user.id)`.",
     },
   }
 );

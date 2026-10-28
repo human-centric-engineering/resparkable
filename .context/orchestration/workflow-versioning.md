@@ -22,6 +22,21 @@ The publish/draft/rollback model addresses three concrete needs:
   edits.
 - **Monotonic audit.** History rows are immutable; rollback creates a new
   version copied from the target rather than rewinding the pointer.
+- **One exception: erasure.** When a person is erased, `eraseUser()` removes
+  their address from `send_notification` steps and their id from
+  `human_approval` steps in the draft **and every version's `snapshot`**
+  (t-791; owner ruling 2026-10-14), audited as `workflow.recipient_erased`.
+  Left alone, the live version would keep emailing them, a rollback would
+  restore the address, and old snapshots would keep their personal data. Only
+  those values change; no version is added or renumbered. See
+  [Data erasure, step 8](../privacy/data-erasure.md#what-eraseuser-does-beyond-the-cascade).
+- **And no writer puts them back** (t-805). `saveDraft`, `publishDraft`,
+  `rollback` and `createInitialVersion` each refuse, inside their
+  transaction, a definition that names an erased person — so a builder tab, a
+  publish or a rollback that read a copy from before the erasure fails with a
+  `ValidationError` rather than restoring them. Reload and the stripped
+  definition saves. See
+  [Writers that read before an erasure](../privacy/data-erasure.md#writers-that-read-before-an-erasure).
 
 ## Data model
 
@@ -32,7 +47,7 @@ The publish/draft/rollback model addresses three concrete needs:
 | `id`            | CUID (or UUID for backfilled rows from the migration).                   |
 | `workflowId`    | FK to `AiWorkflow`. Cascade delete.                                      |
 | `version`       | Monotonic integer per workflow, starts at 1, unique within a workflow.   |
-| `snapshot`      | Full `WorkflowDefinition` JSON at publish time. Never mutated.           |
+| `snapshot`      | Full `WorkflowDefinition` JSON at publish time. Mutated only by erasure. |
 | `changeSummary` | Optional admin-supplied label (≤ 500 chars). `null` for backfilled rows. |
 | `createdBy`     | FK to `User`.                                                            |
 | `createdAt`     | Insert timestamp.                                                        |

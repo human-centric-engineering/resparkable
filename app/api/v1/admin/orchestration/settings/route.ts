@@ -29,7 +29,11 @@ import { invalidateSettingsCache } from '@/lib/orchestration/llm/settings-resolv
 import { invalidateOrchestrationSettingsCache } from '@/lib/orchestration/settings';
 import { getEmbeddingModels } from '@/lib/orchestration/llm/embedding-models';
 import { parseAudioDefault } from '@/lib/orchestration/llm/audio-default';
-import { updateOrchestrationSettingsSchema } from '@/lib/validations/orchestration';
+import {
+  costLogsOutliveExecutions,
+  updateOrchestrationSettingsSchema,
+} from '@/lib/validations/orchestration';
+import { refuseErasedSubjects, WRITER_TRANSACTION_OPTIONS } from '@/lib/privacy/erased-subjects';
 import { logAdminAction, computeChanges } from '@/lib/orchestration/audit/admin-audit-logger';
 import {
   getOrchestrationSettings,
@@ -184,6 +188,13 @@ export const PATCH = withAdminAuth(
     // (see the refine on `updateOrchestrationSettingsSchema`). The schema catches
     // a whole-form save; this catches a patch that moves one side only, which is
     // what the API surface allows and the UI does not do.
+    //
+    // Only a body that names one of the two is checked, as on the org route
+    // (`incoherentRetentionPair`): a row persisted before #839 tightened the
+    // rule (finite cost logs, executions kept for ever) must not 400 a PATCH
+    // that changes something unrelated, such as the budget.
+    const touchesRetentionPair =
+      body.costLogRetentionDays !== undefined || body.executionRetentionDays !== undefined;
     const effectiveCostLogDays =
       body.costLogRetentionDays !== undefined
         ? body.costLogRetentionDays
@@ -193,12 +204,15 @@ export const PATCH = withAdminAuth(
         ? body.executionRetentionDays
         : (existing?.executionRetentionDays ?? null);
     if (
-      effectiveCostLogDays !== null &&
-      effectiveExecutionDays !== null &&
-      effectiveCostLogDays < effectiveExecutionDays
+      touchesRetentionPair &&
+      !costLogsOutliveExecutions(effectiveCostLogDays, effectiveExecutionDays)
     ) {
+      const keeping =
+        effectiveExecutionDays === null
+          ? 'executions you are keeping for ever'
+          : `executions you are keeping for ${effectiveExecutionDays} days`;
       return errorResponse(
-        `Cost log retention (${effectiveCostLogDays} days) must be at least as long as execution retention (${effectiveExecutionDays} days), or the cost breakdown empties out for executions you are still keeping`,
+        `Cost log retention (${effectiveCostLogDays} days) is shorter than execution retention, so the cost breakdown empties out for ${keeping}. Lengthen costLogRetentionDays, or set it to null to keep cost logs for ever.`,
         {
           code: 'VALIDATION_ERROR',
           status: 400,
@@ -259,6 +273,9 @@ export const PATCH = withAdminAuth(
     if (body.webhookRetentionDays !== undefined) {
       updateData.webhookRetentionDays = body.webhookRetentionDays;
     }
+    if (body.webhookDlqRetentionDays !== undefined) {
+      updateData.webhookDlqRetentionDays = body.webhookDlqRetentionDays;
+    }
     if (body.costLogRetentionDays !== undefined) {
       updateData.costLogRetentionDays = body.costLogRetentionDays;
     }
@@ -301,18 +318,30 @@ export const PATCH = withAdminAuth(
         : { disconnect: true };
     }
 
-    const row = await prisma.aiOrchestrationSettings.upsert({
-      where: { slug: 'global' },
-      create: {
-        slug: 'global',
-        defaultModels: mergedDefaults,
-        globalMonthlyBudgetUsd: body.globalMonthlyBudgetUsd ?? null,
-        searchConfig: body.searchConfig
-          ? (body.searchConfig as unknown as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-      },
-      update: updateData,
-    });
+    // The form saves its whole escalation list, so one opened before a person
+    // was erased would write their address back (t-805). Refused in the
+    // transaction that writes, under the lock erasure takes.
+    const row = await prisma.$transaction(async (tx) => {
+      if (body.escalationConfig?.emailAddresses) {
+        await refuseErasedSubjects(
+          tx,
+          { addresses: body.escalationConfig.emailAddresses },
+          'escalationConfig.emailAddresses'
+        );
+      }
+      return tx.aiOrchestrationSettings.upsert({
+        where: { slug: 'global' },
+        create: {
+          slug: 'global',
+          defaultModels: mergedDefaults,
+          globalMonthlyBudgetUsd: body.globalMonthlyBudgetUsd ?? null,
+          searchConfig: body.searchConfig
+            ? (body.searchConfig as unknown as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
+        },
+        update: updateData,
+      });
+    }, WRITER_TRANSACTION_OPTIONS);
 
     invalidateSettingsCache();
     // The singleton itself is cached for 30s now (#442) — clear it here so a save

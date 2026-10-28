@@ -4,6 +4,11 @@
  * MCP Dashboard Component
  *
  * Shows master toggle, quick stats, and links to sub-pages.
+ *
+ * An org viewer (§111 t-812) sees the API Keys card alone. Their org's keys
+ * are theirs; the server toggle, the exposed tools, resources and prompts,
+ * the audit log and the settings are the platform's, configured once for
+ * every org, and their pages and routes refuse an org admin.
  */
 
 import { useState } from 'react';
@@ -23,14 +28,39 @@ import { useSharedSettingsReadOnly } from '@/components/admin/shared-settings-ac
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { FieldHelp } from '@/components/ui/field-help';
+import { LoadFailedNotice } from '@/components/admin/load-failed-notice';
 import { apiClient } from '@/lib/api/client';
+import type { AdminViewerTier } from '@/lib/auth/admin-tier';
 import { API } from '@/lib/api/endpoints';
 import { mcpSettingsResponseSchema, type McpSettingsResponse } from '@/lib/validations/mcp';
 import { MCP_LATEST_PROTOCOL_VERSION, MCP_MIN_PROTOCOL_VERSION } from '@/types/mcp';
 
 interface McpDashboardProps {
   initialSettings: McpSettingsResponse | null;
-  stats: { tools: number; resources: number; prompts: number; keys: number };
+  /**
+   * The count on each card. A count is `null` when it failed to load: its
+   * card shows "—", a notice says some counts could not be loaded, and a
+   * `null` never counts as zero for the "Getting Started" card.
+   */
+  stats: {
+    tools: number | null;
+    resources: number | null;
+    prompts: number | null;
+    keys: number | null;
+  };
+  /** Who is viewing: an org viewer gets the API Keys card only. Defaults to the platform. */
+  viewerTier?: AdminViewerTier;
+}
+
+const KEYS_HREF = '/admin/orchestration/mcp/keys';
+
+interface QuickLink {
+  href: string;
+  label: string;
+  icon: typeof Wrench;
+  /** Badge count; `null` when it failed to load (shown as "—"); omitted for no badge. */
+  count?: number | null;
+  description: string;
 }
 
 const DEFAULT_SETTINGS: McpSettingsResponse = {
@@ -41,7 +71,11 @@ const DEFAULT_SETTINGS: McpSettingsResponse = {
   auditRetentionDays: 90,
 };
 
-export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
+export function McpDashboard({
+  initialSettings,
+  stats,
+  viewerTier = 'platform',
+}: McpDashboardProps) {
   const readOnly = useSharedSettingsReadOnly();
   const [settings, setSettings] = useState<McpSettingsResponse>(
     initialSettings ?? DEFAULT_SETTINGS
@@ -67,7 +101,7 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
     }
   }
 
-  const quickLinks = [
+  const quickLinks: QuickLink[] = [
     {
       href: '/admin/orchestration/mcp/tools',
       label: 'Exposed Tools',
@@ -93,7 +127,7 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
         'Slash-command templates clients show to end users (e.g. /analyze-pattern). Not auto-invoked by the model',
     },
     {
-      href: '/admin/orchestration/mcp/keys',
+      href: KEYS_HREF,
       label: 'API Keys',
       icon: Key,
       count: stats.keys,
@@ -104,17 +138,63 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
       href: '/admin/orchestration/mcp/audit',
       label: 'Audit Log',
       icon: FileText,
-      count: null,
       description: 'Review every MCP operation — who called what, when, and whether it succeeded',
     },
     {
       href: '/admin/orchestration/mcp/settings',
       label: 'Settings',
       icon: Settings,
-      count: null,
       description: 'Configure rate limits and audit log retention',
     },
   ];
+
+  const renderLink = (link: QuickLink) => {
+    const Icon = link.icon;
+    return (
+      <Link key={link.href} href={link.href} className="h-full">
+        <Card className="hover:border-primary/50 h-full transition-colors">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center justify-between text-sm font-medium">
+              <span className="flex items-center gap-2">
+                <Icon className="h-4 w-4" />
+                {link.label}
+              </span>
+              {link.count !== undefined && (
+                <Badge
+                  variant="secondary"
+                  title={link.count === null ? "Couldn't load this count" : undefined}
+                >
+                  {link.count ?? '—'}
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-muted-foreground text-xs">{link.description}</p>
+          </CardContent>
+        </Card>
+      </Link>
+    );
+  };
+
+  const countsFailedNotice = <LoadFailedNotice what="some of the card counts" />;
+
+  if (viewerTier !== 'platform') {
+    return (
+      <div className="space-y-4">
+        {stats.keys === null && countsFailedNotice}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {quickLinks.filter((link) => link.href === KEYS_HREF).map(renderLink)}
+        </div>
+      </div>
+    );
+  }
+
+  const anyCountFailed =
+    stats.tools === null ||
+    stats.resources === null ||
+    stats.prompts === null ||
+    stats.keys === null;
 
   return (
     <div className="space-y-6">
@@ -175,29 +255,8 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
       </Card>
 
       {/* Quick Links */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {quickLinks.map((link) => {
-          const Icon = link.icon;
-          return (
-            <Link key={link.href} href={link.href} className="h-full">
-              <Card className="hover:border-primary/50 h-full transition-colors">
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center justify-between text-sm font-medium">
-                    <span className="flex items-center gap-2">
-                      <Icon className="h-4 w-4" />
-                      {link.label}
-                    </span>
-                    {link.count !== null && <Badge variant="secondary">{link.count}</Badge>}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-muted-foreground text-xs">{link.description}</p>
-                </CardContent>
-              </Card>
-            </Link>
-          );
-        })}
-      </div>
+      {anyCountFailed && countsFailedNotice}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{quickLinks.map(renderLink)}</div>
 
       {/* Connection Info */}
       {settings.isEnabled && (
@@ -205,9 +264,9 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
           <CardHeader>
             <CardTitle className="text-sm">Client Configuration</CardTitle>
             <CardDescription>
-              Add this to your MCP client&apos;s config file (e.g.{' '}
-              <code className="text-xs">claude_desktop_config.json</code> for Claude Desktop, or{' '}
-              <code className="text-xs">.cursor/mcp.json</code> for Cursor)
+              Add this to the config of an MCP client that can send a request header, such as Cursor
+              (<code className="text-xs">.cursor/mcp.json</code>). Clients that only connect by
+              signing in, such as Claude Desktop, cannot connect to this server yet.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -235,7 +294,8 @@ export function McpDashboard({ initialSettings, stats }: McpDashboardProps) {
         </Card>
       )}
 
-      {/* Getting Started — show when nothing is configured yet */}
+      {/* Getting Started — show when nothing is configured yet. A failed
+          (null) count is unknown, not zero, so it never shows this. */}
       {stats.tools === 0 && stats.keys === 0 && (
         <Card>
           <CardHeader>

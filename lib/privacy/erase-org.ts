@@ -16,8 +16,9 @@
  * membership at all keeps their account; their sessions pointing at the
  * erased org have that pointer cleared (the guard then resolves `null` to
  * the install org at `single`, and refuses with `no-org` at `multi` until
- * they are invited somewhere), and `activeOrgForSession` gives them the
- * install-org default at their next sign-in. The alternatives — cascading
+ * they are invited somewhere). At `single`, `activeOrgForSession` gives them
+ * the install-org default at their next sign-in; at `multi` it does not
+ * (t-836), so they stay refused until someone adds them to an org. The alternatives — cascading
  * the users (erases accounts nobody asked to erase, and other orgs'
  * members with them), or refusing to erase an org with members (makes
  * offboarding a two-step with a manual roster purge) — were both rejected.
@@ -27,8 +28,24 @@
  * memberships that go with it are exported to their subjects while they
  * exist, not after.
  *
- * Nothing here is best-effort. A throw rolls the whole erasure back — the
- * org either exists with everything, or is gone with everything.
+ * **The database part is all-or-nothing.** A throw inside the transaction
+ * rolls the whole erasure back: the org either exists with every row, or is
+ * gone with every row.
+ *
+ * **The storage sweep is not, and runs after the commit** (§109 t-736). The
+ * org's objects live under `orgs/{orgId}/` (`lib/storage/org-keys.ts`), and an
+ * object store cannot join a database transaction. Deleting first would leave
+ * a rolled-back org with its files gone; deleting after leaves, at worst, an
+ * erased org with files still on disk, which {@link sweepErasedOrgStorage}
+ * clears (a second `eraseOrg` cannot: the org row is gone, so it refuses with
+ * `ORG_NOT_FOUND` before reaching the sweep). So the sweep is best-effort, like the avatar sweep in
+ * `eraseUser()`: a failure is logged and reported on the result as
+ * `storageSwept: false`, never thrown, because the org is already gone and a
+ * throw would tell the caller it was not.
+ *
+ * The sweep reaches only the prefix. Objects uploaded before org prefixes
+ * existed (`agent-uploads/{agentId}/…`) name no org, so nothing can say they
+ * were this org's, and they stay.
  *
  * @see lib/tenancy/lifecycle.ts — every other org mutation, and why this one is not there
  * @see lib/privacy/export-org.ts — the export that precedes this
@@ -40,6 +57,7 @@ import { logger } from '@/lib/logging';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
 import { INVITATION_IDENTIFIER_PREFIX } from '@/lib/utils/invitation-token';
 import { OrgLifecycleError } from '@/lib/tenancy/lifecycle';
+import { orgKeyPrefix } from '@/lib/storage/org-keys';
 
 export interface EraseOrgParams {
   /** Id of the org to erase. */
@@ -56,6 +74,12 @@ export interface EraseOrgResult {
   pendingInvitations: number;
   /** Sessions that were acting in the org and had that pointer cleared. */
   sessionsCleared: number;
+  /**
+   * Whether the org's storage prefix was deleted after the commit: `true` when
+   * the provider reported success, `false` when it did not or threw, `null`
+   * when no storage is configured. See the module header.
+   */
+  storageSwept: boolean | null;
 }
 
 /**
@@ -107,7 +131,54 @@ export async function eraseOrg(params: EraseOrgParams): Promise<EraseOrgResult> 
   });
 
   const erasedAt = new Date();
-  logger.info('Org erased', { orgId, actorUserId, ...result });
+  const storageSwept = await sweepOrgStorage(orgId);
+  logger.info('Org erased', { orgId, actorUserId, ...result, storageSwept });
 
-  return { erasedAt, ...result };
+  return { erasedAt, ...result, storageSwept };
+}
+
+/**
+ * Re-run the storage sweep for an org that has already been erased: after
+ * `eraseOrg` reported `storageSwept: false`, or when an upload in flight
+ * during the erasure landed after the sweep. Call it from a one-off script
+ * or console; there is deliberately no route.
+ *
+ * Refuses an org that still exists. Deleting a live org's files is not a
+ * repair, and erasing the org is what `eraseOrg` is for.
+ *
+ * @returns the same verdict as `storageSwept`
+ * @throws when the org has not been erased
+ */
+export async function sweepErasedOrgStorage(orgId: string): Promise<boolean | null> {
+  const org = await prisma.org.findUnique({ where: { id: orgId }, select: { id: true } });
+  if (org) {
+    throw new Error(
+      'This organisation still exists; erase it with eraseOrg rather than deleting its files'
+    );
+  }
+  const storageSwept = await sweepOrgStorage(orgId);
+  logger.info('Erased org storage swept again', { orgId, storageSwept });
+  return storageSwept;
+}
+
+/**
+ * Delete the org's storage prefix. Best-effort: runs after the transaction
+ * has committed, so it reports failure instead of throwing (module header).
+ */
+async function sweepOrgStorage(orgId: string): Promise<boolean | null> {
+  // Everything inside the try, the import and the provider lookup included:
+  // provider initialisation reads configuration and can throw, and a throw here
+  // would reach the caller after the org is already gone. From `client.ts`,
+  // not `upload.ts`, which would also load the image pipeline for nothing.
+  try {
+    const { getStorageClient } = await import('@/lib/storage/client');
+    // The org's own client: the unbound one refuses every key under `orgs/`.
+    const storage = getStorageClient({ orgId });
+    if (!storage) return null;
+    const { success } = await storage.deletePrefix(orgKeyPrefix(orgId));
+    return success;
+  } catch (err) {
+    logger.error('Org erased, but deleting its storage prefix failed', err, { orgId });
+    return false;
+  }
 }

@@ -36,6 +36,9 @@ import type { Stream } from '@anthropic-ai/sdk/core/streaming';
 
 import { logger } from '@/lib/logging';
 import {
+  acceptsSamplingTemperature,
+  acceptsThinkingBudget,
+  anthropicAdaptiveEffort,
   anthropicThinkingBudget,
   supportsReasoningEffort,
 } from '@/lib/orchestration/llm/model-heuristics';
@@ -458,10 +461,13 @@ export class AnthropicProvider implements LlmProvider {
       messages: conversation,
     };
     if (system) params.system = system;
-    // Extended thinking — Anthropic Claude 4 Opus and Sonnet 4.5+ accept
-    // `thinking: { type: 'enabled', budget_tokens: N }`. We translate
-    // the platform-neutral `reasoningEffort` bucket via the heuristic in
-    // model-heuristics. Three rules apply:
+    // Extended thinking — Claude Opus 4+ and Sonnet 4.5+ think. We
+    // translate the platform-neutral `reasoningEffort` bucket via the
+    // heuristics in model-heuristics. Models from Opus 4.7 / Sonnet 5 on
+    // refuse a token budget (400) and take adaptive thinking, with depth
+    // set by `output_config.effort`; there `minimal` sends the lowest
+    // effort and no `thinking` field, since several of them can't turn
+    // thinking off. The older models take a budget, and three rules apply:
     //
     //   1. Drop silently when the model doesn't support thinking — no
     //      400, mirroring how unsupported max_tokens used to trap us
@@ -473,11 +479,17 @@ export class AnthropicProvider implements LlmProvider {
     //      We omit the temperature send entirely in that case, mirroring
     //      how openai-compatible drops temperature on reasoning models.
     let thinkingEnabled = false;
-    if (
-      options.reasoningEffort !== undefined &&
-      supportsReasoningEffort(options.model, this.name, 'anthropic')
-    ) {
-      const rawBudget = anthropicThinkingBudget(options.reasoningEffort);
+    const effort = supportsReasoningEffort(options.model, this.name, 'anthropic')
+      ? options.reasoningEffort
+      : undefined;
+    if (effort !== undefined && !acceptsThinkingBudget(options.model)) {
+      if (effort !== 'minimal') {
+        params.thinking = { type: 'adaptive' };
+        thinkingEnabled = true;
+      }
+      params.output_config = { effort: anthropicAdaptiveEffort(effort) };
+    } else if (effort !== undefined) {
+      const rawBudget = anthropicThinkingBudget(effort);
       if (rawBudget !== undefined) {
         // Anthropic constraints:
         //   - `budget_tokens` MUST be ≥ 1024 (Anthropic API minimum).
@@ -517,7 +529,14 @@ export class AnthropicProvider implements LlmProvider {
       // rawBudget === undefined → reasoningEffort === 'minimal' on
       // Anthropic, which deliberately means "no extended thinking".
     }
-    if (!thinkingEnabled && options.temperature !== undefined) {
+    // Claude models from Opus 4.7 / Sonnet 5 / Haiku 5 on refuse any
+    // temperature (400), so it is sent only to the older families that
+    // honour one. The caller's value stays on the trace's requestParams.
+    if (
+      !thinkingEnabled &&
+      options.temperature !== undefined &&
+      acceptsSamplingTemperature(options.model)
+    ) {
       params.temperature = options.temperature;
     }
     if (options.tools?.length) {

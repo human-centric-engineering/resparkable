@@ -116,17 +116,6 @@ export const MIN_REASON_LENGTH = 20;
  * are history; the roster test is the current answer.
  */
 export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] = [
-  // ── Known gaps — the check exists because these were found by chance ──────
-  {
-    path: 'app/api/v1/admin/orchestration/approvals/history/route.ts',
-    disposition: 'known-gap',
-    tracking: '#773',
-    reason:
-      'hard-codes `userId: session.user.id`, so every approval decision on a scheduled ' +
-      'or inbound run is missing from approval history on every install — including ' +
-      "the caller's own decisions. Found one directory sideways during #774.",
-  },
-
   // ── Admin surfaces that scope by a road the helper does not offer ─────────
   {
     path: 'lib/orchestration/chat/conversation-semantic-search.ts',
@@ -154,12 +143,13 @@ export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] 
       'neither shared nor ownerless threads and has nothing to ask the helper.',
   },
   {
-    path: 'app/api/v1/admin/orchestration/agents/compare/route.ts',
+    path: 'lib/orchestration/agents/agent-comparison.ts',
     disposition: 'by-design',
     reason:
-      'one `aiConversation.count({ agentId })` among five per-agent aggregates, no row ' +
-      'content; its own header defers narrowing all four owner-bearing aggregates to ' +
-      'the customer tier together (§106), and a count is not a read surface for a thread.',
+      'one `aiConversation.count({ agentId })` among five per-agent aggregates for the ' +
+      'compare route, no row content; row isolation bounds it to the caller’s org and it ' +
+      'crosses owners inside it by decision (t-682, t-688), so a count is not a read ' +
+      'surface for a thread.',
   },
 
   // ── Consumer routes, self-scoped by construction ──────────────────────────
@@ -291,6 +281,22 @@ export const OWNERLESS_SURFACE_EXCEPTIONS: readonly OwnerlessSurfaceException[] 
     reason:
       'the Art. 15 manifest, keyed on the data subject’s own `userId` by construction; ' +
       'an ownerless row has no subject to be exported to.',
+  },
+  {
+    path: 'lib/privacy/delivery-payloads.ts',
+    disposition: 'by-design',
+    reason:
+      'Art. 15 and Art. 17 on delivery payloads (t-783): reads only the conversations and runs ' +
+      'whose `userId` is the data subject, to find the deliveries that name them; an ownerless ' +
+      'row has no subject, and there is no caller to scope to.',
+  },
+  {
+    path: 'lib/privacy/run-recipients.ts',
+    disposition: 'by-design',
+    reason:
+      'Art. 17 on schedules and runs (t-804): reads every run whose text names the data subject, ' +
+      'ownerless ones included, only to redact them inside the erasure transaction; there is no ' +
+      'caller to scope to and nothing is returned.',
   },
   {
     path: 'lib/privacy/org-sources.ts',

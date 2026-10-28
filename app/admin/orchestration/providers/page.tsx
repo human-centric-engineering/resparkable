@@ -7,8 +7,7 @@ import { ProvidersTabs } from '@/components/admin/orchestration/providers-tabs';
 import { SharedSettingsReadOnlyNotice } from '@/components/admin/shared-settings-access';
 import { FieldHelp } from '@/components/ui/field-help';
 import { API } from '@/lib/api/endpoints';
-import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
-import { logger } from '@/lib/logging';
+import { loadServerData, requireServerData } from '@/lib/api/server-load';
 import { KNOWN_PROVIDERS, detectApiKeyEnvVar } from '@/lib/orchestration/llm/known-providers';
 
 export const metadata: Metadata = {
@@ -16,30 +15,28 @@ export const metadata: Metadata = {
   description: 'LLM provider configurations, model matrix, and selection heuristic.',
 };
 
+/**
+ * The providers are what this page exists to show, and feed the default
+ * Configuration tab, so a failed load throws to the admin error boundary
+ * rather than rendering an empty provider list (#518).
+ */
 async function getProviders(): Promise<ProviderRow[]> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.PROVIDERS}?page=1&limit=50`);
-    if (!res.ok) return [];
-    const body = await parseApiResponse<ProviderRow[]>(res);
-    return body.success ? body.data : [];
-  } catch (err) {
-    logger.error('providers page: provider fetch failed', err);
-    return [];
-  }
+  const { data } = await requireServerData<ProviderRow[]>(
+    `${API.ADMIN.ORCHESTRATION.PROVIDERS}?page=1&limit=50`
+  );
+  return data;
 }
 
-async function getModels(): Promise<ModelRow[]> {
-  try {
-    const res = await serverFetch(
-      `${API.ADMIN.ORCHESTRATION.PROVIDER_MODELS}?page=1&limit=100&isActive=true`
-    );
-    if (!res.ok) return [];
-    const body = await parseApiResponse<ModelRow[]>(res);
-    return body.success ? body.data : [];
-  } catch (err) {
-    logger.error('providers page: model fetch failed', err);
-    return [];
-  }
+/**
+ * The Model Matrix tab's rows. `null` when they can't be loaded (logged by
+ * `loadServerData`): that tab shows a "Couldn't load" notice and the
+ * Configuration tab still works.
+ */
+async function getModels(): Promise<ModelRow[] | null> {
+  const result = await loadServerData<ModelRow[]>(
+    `${API.ADMIN.ORCHESTRATION.PROVIDER_MODELS}?page=1&limit=100&isActive=true`
+  );
+  return result.ok ? result.data : null;
 }
 
 export default async function ProvidersListPage() {

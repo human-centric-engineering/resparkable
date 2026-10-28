@@ -25,14 +25,17 @@ vi.mock('@/lib/api/client', () => ({
   apiClient: {
     delete: vi.fn(),
   },
+  // The real class's constructor shape: the form branches on `status`.
   APIClientError: class APIClientError extends Error {
     code?: string;
+    status?: number;
     details?: unknown;
 
-    constructor(message: string, code?: string, details?: unknown) {
+    constructor(message: string, code?: string, status?: number, details?: unknown) {
       super(message);
       this.name = 'APIClientError';
       this.code = code;
+      this.status = status;
       this.details = details;
     }
   },
@@ -505,6 +508,130 @@ describe('components/forms/delete-account-form', () => {
     });
   });
 
+  describe('a deletion that is still in progress (t-845)', () => {
+    /** Open the dialog, type the confirmation and press the delete action. */
+    async function confirmDeletion(user: ReturnType<typeof userEvent.setup>) {
+      render(<DeleteAccountForm />);
+      await user.click(screen.getByRole('button', { name: /^delete account$/i }));
+      await user.type(await screen.findByLabelText(/type.*delete.*to confirm/i), 'DELETE');
+      const actionButtons = screen.getAllByRole('button', { name: /delete account/i });
+      await user.click(actionButtons[actionButtons.length - 1]);
+    }
+
+    const PENDING = { pending: true, requestedAt: '2026-10-20T11:59:55.000Z' };
+
+    it('shows the "Deletion in progress" message in place of the confirmation, without leaving yet', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue(PENDING);
+
+      await confirmDeletion(user);
+
+      expect(await screen.findByText('Deletion in progress')).toBeInTheDocument();
+      expect(
+        screen.getByText(/your account is closed and you have been signed out/i)
+      ).toBeInTheDocument();
+      // The confirmation form is gone, and the person has not been moved on.
+      expect(screen.queryByLabelText(/type.*delete.*to confirm/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/are you absolutely sure/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /continue/i })).toBeInTheDocument();
+      expect(window.location.href).toBe('');
+    });
+
+    it('still resets the analytics identity, as for a finished deletion', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue(PENDING);
+
+      await confirmDeletion(user);
+      await screen.findByText('Deletion in progress');
+
+      expect(mockReset).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows the same message when another attempt already holds the deletion (409)', async () => {
+      // The route has signed the person out either way: an error left in an
+      // open dialog would strand them on a page with a dead session.
+      const user = userEvent.setup({ delay: null });
+      const { APIClientError } = await import('@/lib/api/client');
+      vi.mocked(apiClient.delete).mockRejectedValue(
+        new APIClientError('This account is already being deleted.', 'CONFLICT', 409)
+      );
+
+      await confirmDeletion(user);
+
+      expect(await screen.findByText('Deletion in progress')).toBeInTheDocument();
+      expect(screen.queryByText('This account is already being deleted.')).not.toBeInTheDocument();
+      expect(mockReset).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole('button', { name: /continue/i }));
+      expect(window.location.href).toBe('/');
+    });
+
+    it('leaves for the home page with a hard redirect when Continue is pressed', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue(PENDING);
+      await confirmDeletion(user);
+
+      await user.click(await screen.findByRole('button', { name: /continue/i }));
+
+      expect(window.location.href).toBe('/');
+    });
+
+    it('leaves for the home page when the message is dismissed with Escape', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue(PENDING);
+      await confirmDeletion(user);
+      await screen.findByText('Deletion in progress');
+
+      await user.keyboard('{Escape}');
+
+      await waitFor(() => {
+        expect(window.location.href).toBe('/');
+      });
+    });
+
+    it('cannot be closed while the request runs, so a pending answer is still shown', async () => {
+      const user = userEvent.setup({ delay: null });
+      let answer: (value: unknown) => void = () => undefined;
+      vi.mocked(apiClient.delete).mockReturnValue(
+        new Promise((resolve) => {
+          answer = resolve;
+        })
+      );
+      await confirmDeletion(user);
+      await screen.findByText(/deleting/i);
+
+      await user.keyboard('{Escape}');
+      expect(screen.getByText(/are you absolutely sure/i)).toBeInTheDocument();
+
+      answer(PENDING);
+      expect(await screen.findByText('Deletion in progress')).toBeInTheDocument();
+    });
+
+    it('redirects at once, with no message, when the deletion finished', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue({ deleted: true, message: 'Account deleted' });
+
+      await confirmDeletion(user);
+
+      await waitFor(() => {
+        expect(window.location.href).toBe('/');
+      });
+      expect(screen.queryByText('Deletion in progress')).not.toBeInTheDocument();
+    });
+
+    it('does not treat a body that only mentions pending as one still in progress', async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(apiClient.delete).mockResolvedValue({ pending: false });
+
+      await confirmDeletion(user);
+
+      await waitFor(() => {
+        expect(window.location.href).toBe('/');
+      });
+      expect(screen.queryByText('Deletion in progress')).not.toBeInTheDocument();
+    });
+  });
+
   describe('error handling', () => {
     it('should handle API errors gracefully', async () => {
       // Arrange
@@ -538,8 +665,9 @@ describe('components/forms/delete-account-form', () => {
         expect(apiClient.delete).toHaveBeenCalled(); // test-review:accept no_arg_called — callback-fired guard;
       });
 
-      // Dialog closes even on error due to AlertDialog behavior
-      // Error state is set but not visible because dialog is closed
+      // The dialog stays open while the request runs (t-845), so the error
+      // is shown in it rather than lost with a closed dialog.
+      expect(await screen.findByText('Failed to delete account')).toBeInTheDocument();
     });
 
     it('should not redirect when deletion fails', async () => {

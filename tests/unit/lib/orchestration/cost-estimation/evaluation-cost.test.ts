@@ -10,7 +10,8 @@
  * - Fingerprint mismatch (different judge set, different content hash)
  *   keeps the run on the heuristic floor
  * - Past-runs query failure logs + falls back to heuristic
- * - pricingKnown=false surfaces when getModel has no rates
+ * - pricingKnown=false surfaces only when nothing priced the model; a free
+ *   model (local, or a rate of 0) is priced
  *
  * @see lib/orchestration/cost-estimation/evaluation-cost.ts
  */
@@ -76,15 +77,40 @@ const JUDGE_MODEL = {
   supportsTools: true,
 };
 
-const UNPRICED_MODEL = {
-  id: 'unpriced-model',
-  name: 'free',
-  provider: 'local',
+const LOCAL_MODEL = {
+  id: 'local-model',
+  name: 'local',
+  provider: 'ollama',
   tier: 'local' as const,
   inputCostPerMillion: 0,
   outputCostPerMillion: 0,
   maxContext: 8_000,
   supportsTools: false,
+};
+
+// A matrix row an operator priced at an explicit 0 — free, not unknown.
+const FREE_MODEL = {
+  id: 'free-model',
+  name: 'free',
+  provider: 'openrouter',
+  tier: 'budget' as const,
+  inputCostPerMillion: 0,
+  outputCostPerMillion: 0,
+  maxContext: 8_000,
+  supportsTools: false,
+};
+
+// A matrix row with no cost that nothing else priced.
+const UNPRICED_MODEL = {
+  id: 'unpriced-model',
+  name: 'unpriced',
+  provider: 'openai',
+  tier: 'mid' as const,
+  inputCostPerMillion: 0,
+  outputCostPerMillion: 0,
+  maxContext: 8_000,
+  supportsTools: false,
+  pricingUnknown: true as const,
 };
 
 const mockedPrisma = vi.mocked(prisma, true);
@@ -98,6 +124,8 @@ beforeEach(() => {
     if (id === SUBJECT_MODEL.id) return SUBJECT_MODEL;
     if (id === JUDGE_MODEL.id) return JUDGE_MODEL;
     if (id === UNPRICED_MODEL.id) return UNPRICED_MODEL;
+    if (id === LOCAL_MODEL.id) return LOCAL_MODEL;
+    if (id === FREE_MODEL.id) return FREE_MODEL;
     if (id === 'default-chat') return SUBJECT_MODEL;
     return undefined;
   });
@@ -224,8 +252,11 @@ describe('estimateEvaluationRunCost — heuristic mode', () => {
     expect(judgeEntry?.pricingKnown).toBe(true);
   });
 
-  it('flags pricingKnown=false when the bound model has no rates', async () => {
-    mockSubjectAgent(UNPRICED_MODEL.id);
+  it.each([
+    ['marked pricingUnknown', UNPRICED_MODEL.id],
+    ['missing from the registry', 'not-in-registry'],
+  ])('flags pricingKnown=false when the bound model is %s', async (_label, modelId) => {
+    mockSubjectAgent(modelId);
     mockJudgeAgents([]);
     mockDataset(3, 'hash-1');
     mockPastRuns([]);
@@ -240,6 +271,27 @@ describe('estimateEvaluationRunCost — heuristic mode', () => {
     expect(result.basedOn).toBe('heuristic');
     expect(result.midUsd).toBe(0); // unpriced model contributes $0
     expect(result.modelMix[0].pricingKnown).toBe(false);
+  });
+
+  it.each([
+    ['a local-tier model', LOCAL_MODEL.id],
+    ['a model priced at an explicit 0', FREE_MODEL.id],
+  ])('reports %s as priced (free), as runtime records it', async (_label, modelId) => {
+    mockSubjectAgent(modelId);
+    mockJudgeAgents([{ slug: 'judge-free', model: modelId }]);
+    mockDataset(3, 'hash-1');
+    mockPastRuns([]);
+
+    const result = await estimateEvaluationRunCost({
+      agentId: 'agent-1',
+      userId: 'caller-id',
+      judgeAgentSlugs: ['judge-free'],
+      datasetId: 'ds-1',
+    });
+
+    expect(result.midUsd).toBe(0);
+    expect(result.modelMix).toHaveLength(2);
+    expect(result.modelMix.map((m) => m.pricingKnown)).toEqual([true, true]);
   });
 });
 

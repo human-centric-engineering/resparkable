@@ -4,9 +4,9 @@ import {
   AnalyticsView,
   type AgentOption,
 } from '@/components/admin/orchestration/analytics/analytics-view';
+import { LoadFailedNotice } from '@/components/admin/load-failed-notice';
 import { API } from '@/lib/api/endpoints';
-import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
-import { logger } from '@/lib/logging';
+import { loadServerData, type LoadResult } from '@/lib/api/server-load';
 import type {
   TopicEntry,
   UnansweredEntry,
@@ -33,77 +33,58 @@ function buildQuery(params: Record<string, string | string[] | undefined>): stri
   return qs.toString() ? `?${qs.toString()}` : '';
 }
 
+/*
+ * A failed load never renders as an empty state (#518), and no single
+ * analytics endpoint takes the page down. Topics, unanswered questions and
+ * content gaps reach `<AnalyticsView>` as `null` when they fail, and that
+ * panel shows `<LoadFailedNotice>` in place of an empty state ("No content
+ * gaps detected") that would read as an all-clear. Engagement figures show
+ * "—" when unknown, which already reads as unknown. The feedback summary and
+ * the agent filter options each show `<LoadFailedNotice>` above the view.
+ */
+
 async function getEngagement(query: string): Promise<EngagementMetrics | null> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.ANALYTICS_ENGAGEMENT}${query}`);
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ metrics: EngagementMetrics }>(res);
-    return body.success ? body.data.metrics : null;
-  } catch (err) {
-    logger.error('analytics page: failed to load engagement', err);
-    return null;
-  }
+  const result = await loadServerData<{ metrics: EngagementMetrics }>(
+    `${API.ADMIN.ORCHESTRATION.ANALYTICS_ENGAGEMENT}${query}`
+  );
+  return result.ok ? result.data.metrics : null;
 }
 
 async function getTopics(query: string): Promise<TopicEntry[] | null> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.ANALYTICS_TOPICS}${query}`);
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ topics: TopicEntry[] }>(res);
-    return body.success ? body.data.topics : null;
-  } catch (err) {
-    logger.error('analytics page: failed to load topics', err);
-    return null;
-  }
+  const result = await loadServerData<{ topics: TopicEntry[] }>(
+    `${API.ADMIN.ORCHESTRATION.ANALYTICS_TOPICS}${query}`
+  );
+  return result.ok ? result.data.topics : null;
 }
 
 async function getUnanswered(query: string): Promise<UnansweredEntry[] | null> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.ANALYTICS_UNANSWERED}${query}`);
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ questions: UnansweredEntry[] }>(res);
-    return body.success ? body.data.questions : null;
-  } catch (err) {
-    logger.error('analytics page: failed to load unanswered', err);
-    return null;
-  }
+  const result = await loadServerData<{ questions: UnansweredEntry[] }>(
+    `${API.ADMIN.ORCHESTRATION.ANALYTICS_UNANSWERED}${query}`
+  );
+  return result.ok ? result.data.questions : null;
 }
 
-async function getFeedback(query: string): Promise<FeedbackSummary | null> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.ANALYTICS_FEEDBACK}${query}`);
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ feedback: FeedbackSummary }>(res);
-    return body.success ? body.data.feedback : null;
-  } catch (err) {
-    logger.error('analytics page: failed to load feedback', err);
-    return null;
-  }
+async function getFeedback(query: string): Promise<LoadResult<FeedbackSummary>> {
+  const result = await loadServerData<{ feedback: FeedbackSummary }>(
+    `${API.ADMIN.ORCHESTRATION.ANALYTICS_FEEDBACK}${query}`
+  );
+  return result.ok ? { ...result, data: result.data.feedback } : result;
 }
 
 async function getContentGaps(query: string): Promise<ContentGap[] | null> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.ANALYTICS_CONTENT_GAPS}${query}`);
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ gaps: ContentGap[] }>(res);
-    return body.success ? body.data.gaps : null;
-  } catch (err) {
-    logger.error('analytics page: failed to load content gaps', err);
-    return null;
-  }
+  const result = await loadServerData<{ gaps: ContentGap[] }>(
+    `${API.ADMIN.ORCHESTRATION.ANALYTICS_CONTENT_GAPS}${query}`
+  );
+  return result.ok ? result.data.gaps : null;
 }
 
-async function getAgents(): Promise<AgentOption[]> {
-  try {
-    const res = await serverFetch(API.ADMIN.ORCHESTRATION.AGENTS);
-    if (!res.ok) return [];
-    const body = await parseApiResponse<Array<{ id: string; name: string }>>(res);
-    if (!body.success) return [];
-    return body.data.map((a) => ({ id: a.id, name: a.name }));
-  } catch (err) {
-    logger.error('analytics page: failed to load agents', err);
-    return [];
-  }
+async function getAgents(): Promise<LoadResult<AgentOption[]>> {
+  const result = await loadServerData<Array<{ id: string; name: string }>>(
+    API.ADMIN.ORCHESTRATION.AGENTS
+  );
+  return result.ok
+    ? { ...result, data: result.data.map((a) => ({ id: a.id, name: a.name })) }
+    : result;
 }
 
 export default async function AnalyticsPage({ searchParams }: PageProps) {
@@ -130,13 +111,16 @@ export default async function AnalyticsPage({ searchParams }: PageProps) {
         </p>
       </div>
 
+      {!feedback.ok && <LoadFailedNotice what="the feedback summary" />}
+      {!agents.ok && <LoadFailedNotice what="the agent filter options" />}
+
       <AnalyticsView
         engagement={engagement}
         topics={topics}
         unanswered={unanswered}
-        feedback={feedback}
+        feedback={feedback.ok ? feedback.data : null}
         contentGaps={contentGaps}
-        agents={agents}
+        agents={agents.ok ? agents.data : []}
         filters={{
           from: (typeof params.from === 'string' ? params.from : '') || thirtyDaysAgo,
           to: (typeof params.to === 'string' ? params.to : '') || today,

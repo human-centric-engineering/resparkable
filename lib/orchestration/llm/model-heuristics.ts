@@ -293,6 +293,19 @@ export function deriveParamProfile(modelId: string, provider: string): ParamProf
 }
 
 /**
+ * Reduce a Claude model id to the bare API form both Claude checks below
+ * match against: lower-cased, with any gateway path (`bedrock/`,
+ * `anthropic/`) and Bedrock's `anthropic.` prefix — cross-region
+ * `us.` / `eu.` / `global.` included — removed.
+ */
+function normalizeClaudeId(modelId: string): string {
+  return modelId
+    .toLowerCase()
+    .replace(/^.*\//, '')
+    .replace(/^(?:[a-z]{2,6}\.)?anthropic\./, '');
+}
+
+/**
  * Does this model accept the `reasoningEffort` parameter?
  *
  * Two distinct routes lead to true:
@@ -322,10 +335,7 @@ export function supportsReasoningEffort(
 ): boolean {
   if (paramProfile === 'openai-reasoning') return true;
   if (provider !== 'anthropic' && paramProfile !== 'anthropic') return false;
-  const id = modelId
-    .toLowerCase()
-    .replace(/^(anthropic[./])/, '')
-    .replace(/^(.*\/)/, '');
+  const id = normalizeClaudeId(modelId);
   // Claude Opus 4 and 5+ (any minor) support thinking. The `(?!-?\d)`
   // negative lookahead after the major version prevents `claude-opus-4`
   // from also matching `claude-opus-40` if Anthropic ever ships one with
@@ -338,6 +348,71 @@ export function supportsReasoningEffort(
   if (/^claude-sonnet-4[-.](?:[5-9]|\d{2,})(?:\b|[-.])/.test(id)) return true;
   if (/^claude-sonnet-([5-9]|\d{2,})(?:\b|[-.])/.test(id)) return true;
   return false;
+}
+
+/**
+ * Does this Claude model accept a sampling `temperature`?
+ *
+ * Anthropic removed the sampling parameters (`temperature`, `top_p`,
+ * `top_k`) from its newer models: Opus 4.7+, Sonnet 5+, Haiku 5+, Fable
+ * and Mythos all 400 on a non-default value. Only the older families
+ * still honour one: Claude 2 / 3.x, Haiku 4.x, and Opus / Sonnet 4.0–4.6.
+ *
+ * This is an allow-list of those older families, so a model this
+ * function doesn't recognise has its temperature left out rather than
+ * sent. A dropped temperature loses a setting; a sent one fails the
+ * whole call — and every Claude model released since 4.6 refuses it.
+ * The caller's intent is still recorded on the trace's
+ * `requestParams.temperature`.
+ *
+ * Ids go through `normalizeClaudeId`, so Bedrock, cross-region and
+ * OpenRouter forms classify the same as the bare API id. The minor version must be one or two digits,
+ * so a date stamp (`claude-sonnet-4-20250514`) reads as Sonnet 4.0.
+ */
+export function acceptsSamplingTemperature(modelId: string): boolean {
+  const id = normalizeClaudeId(modelId);
+  // Claude 2 / 3.x — every family accepts it (`claude-3-5-sonnet`,
+  // `claude-3-haiku`, `claude-instant-1.2`, `claude-2.1`).
+  if (/^claude-(?:instant|[23])(?:\b|[-.])/.test(id)) return true;
+  return isClaudeFourUpToSixOrOlderHaiku(id);
+}
+
+/**
+ * Haiku 4.x and earlier under the family-first naming, or Opus / Sonnet
+ * 4.0–4.6 — the last families before Anthropic removed both sampling
+ * parameters and thinking budgets. Takes an id already through
+ * `normalizeClaudeId`. A missing minor, or a date stamp in its place,
+ * is 4.0.
+ */
+function isClaudeFourUpToSixOrOlderHaiku(id: string): boolean {
+  if (/^claude-haiku-[1-4](?:\b|[-.])/.test(id)) return true;
+  const four = /^claude-(?:opus|sonnet)-4(?:[-.](\d{1,2})(?!\d))?(?:\b|[-.]|$)/.exec(id);
+  if (four) {
+    const minor = four[1] === undefined ? 0 : Number(four[1]);
+    return minor <= 6;
+  }
+  return false;
+}
+
+/**
+ * Does this Claude model take a fixed thinking budget
+ * (`thinking: { type: 'enabled', budget_tokens: N }`)?
+ *
+ * Anthropic removed `budget_tokens` from its newer models: Opus 4.7+,
+ * Sonnet 5+, Haiku 5+ and Fable 400 on it, and take adaptive thinking
+ * (`thinking: { type: 'adaptive' }` with depth set by
+ * `output_config.effort`) instead. Only the older families still take a
+ * budget: Haiku 4.x and Opus / Sonnet 4.0–4.6 (deprecated on 4.6, still
+ * accepted).
+ *
+ * An allow-list of those older families, as with
+ * `acceptsSamplingTemperature`, so a model this function doesn't
+ * recognise is sent adaptive thinking — every Claude release since 4.6
+ * has taken it. Ids go through `normalizeClaudeId`; a date stamp in the
+ * minor's place reads as 4.0.
+ */
+export function acceptsThinkingBudget(modelId: string): boolean {
+  return isClaudeFourUpToSixOrOlderHaiku(normalizeClaudeId(modelId));
 }
 
 /**
@@ -432,4 +507,20 @@ export function anthropicThinkingBudget(
     case 'high':
       return 16384;
   }
+}
+
+/**
+ * Map a {@link ReasoningEffort} value to Anthropic's `output_config.effort`
+ * for models on adaptive thinking (see `acceptsThinkingBudget`).
+ *
+ *   - `minimal` — `low`. Several of these models can't turn thinking off
+ *                 (Opus 5.5 and Sonnet 5.5 400 on `{ type: 'disabled' }`),
+ *                 so the lowest effort is the nearest they get. The
+ *                 provider sends it without a `thinking` field.
+ *   - `low` / `medium` / `high` — the same name.
+ *
+ * `xhigh` and `max` have no bucket of their own, so they are never sent.
+ */
+export function anthropicAdaptiveEffort(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
+  return effort === 'minimal' ? 'low' : effort;
 }

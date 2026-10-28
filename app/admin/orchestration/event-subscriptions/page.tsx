@@ -3,30 +3,17 @@ import Link from 'next/link';
 
 import { EventSubscriptionsTabs } from '@/components/admin/orchestration/event-subscriptions-tabs';
 import { type WebhookListItem } from '@/components/admin/orchestration/webhooks-table';
+import type { DlqDelivery } from '@/components/admin/orchestration/webhook-dlq-table';
 import { FieldHelp } from '@/components/ui/field-help';
 import { API } from '@/lib/api/endpoints';
-import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
+import { loadServerData, requireServerData } from '@/lib/api/server-load';
 import { parsePaginationMeta } from '@/lib/validations/common';
-import { logger } from '@/lib/logging';
 import type { PaginationMeta } from '@/types/api';
 
 export const metadata: Metadata = {
   title: 'Event Subscriptions · AI Orchestration',
   description: 'Manage webhook subscriptions and the dead-letter queue.',
 };
-
-interface DlqDelivery {
-  id: string;
-  eventType: string;
-  status: 'exhausted';
-  lastResponseCode: number | null;
-  lastError: string | null;
-  attempts: number;
-  createdAt: string;
-  lastAttemptAt: string | null;
-  subscriptionId: string;
-  subscription: { id: string; url: string; description: string | null };
-}
 
 const EMPTY_META: PaginationMeta = {
   page: 1,
@@ -43,35 +30,24 @@ const EMPTY_DLQ_META: PaginationMeta = {
 };
 
 async function getWebhooks(): Promise<{ webhooks: WebhookListItem[]; meta: PaginationMeta }> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.WEBHOOKS}?page=1&limit=25`);
-    if (!res.ok) return { webhooks: [], meta: EMPTY_META };
-    const body = await parseApiResponse<WebhookListItem[]>(res);
-    if (!body.success) return { webhooks: [], meta: EMPTY_META };
-    return {
-      webhooks: body.data,
-      meta: parsePaginationMeta(body.meta) ?? EMPTY_META,
-    };
-  } catch (err) {
-    logger.error('webhooks list page: initial fetch failed', err);
-    return { webhooks: [], meta: EMPTY_META };
-  }
+  const { data, meta } = await requireServerData<WebhookListItem[]>(
+    `${API.ADMIN.ORCHESTRATION.WEBHOOKS}?page=1&limit=25`
+  );
+  return { webhooks: data, meta: parsePaginationMeta(meta) ?? EMPTY_META };
 }
 
-async function getDlq(): Promise<{ deliveries: DlqDelivery[]; meta: PaginationMeta }> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.WEBHOOK_DLQ}?page=1&pageSize=20`);
-    if (!res.ok) return { deliveries: [], meta: EMPTY_DLQ_META };
-    const body = await parseApiResponse<DlqDelivery[]>(res);
-    if (!body.success) return { deliveries: [], meta: EMPTY_DLQ_META };
-    return {
-      deliveries: body.data,
-      meta: parsePaginationMeta(body.meta) ?? EMPTY_DLQ_META,
-    };
-  } catch (err) {
-    logger.error('event-subscriptions page: dlq fetch failed', err);
-    return { deliveries: [], meta: EMPTY_DLQ_META };
-  }
+/**
+ * The Dead Letter Queue tab's rows. An empty queue is the all-clear, so a
+ * failed load must not render as one (#518): it comes back as `null`
+ * deliveries (logged by `loadServerData`) and that tab shows a "Couldn't
+ * load" notice, while the Subscriptions tab still works.
+ */
+async function getDlq(): Promise<{ deliveries: DlqDelivery[] | null; meta: PaginationMeta }> {
+  const result = await loadServerData<DlqDelivery[]>(
+    `${API.ADMIN.ORCHESTRATION.WEBHOOK_DLQ}?page=1&pageSize=20`
+  );
+  if (!result.ok) return { deliveries: null, meta: EMPTY_DLQ_META };
+  return { deliveries: result.data, meta: parsePaginationMeta(result.meta) ?? EMPTY_DLQ_META };
 }
 
 export default async function EventSubscriptionsPage() {

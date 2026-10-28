@@ -177,18 +177,18 @@ export async function POST(request: NextRequest) {
 
 The `handleAPIError` function automatically translates Prisma error codes:
 
-| Prisma Code | API Error        | HTTP Status | Example                          |
-| ----------- | ---------------- | ----------- | -------------------------------- |
-| `P2002`     | EMAIL_TAKEN      | 400         | Unique constraint violation      |
-| `P2025`     | NOT_FOUND        | 404         | Record not found                 |
-| `P2003`     | VALIDATION_ERROR | 400         | Foreign key constraint violation |
-| Other       | INTERNAL_ERROR   | 500         | Generic database error           |
+| Prisma Code | API Error        | HTTP Status | Example                            |
+| ----------- | ---------------- | ----------- | ---------------------------------- |
+| `P2002`     | EMAIL_TAKEN      | 400         | Duplicate email (`user_email_key`) |
+| `P2002`     | VALIDATION_ERROR | 400         | Any other unique constraint        |
+| `P2025`     | NOT_FOUND        | 404         | Record not found                   |
+| `P2003`     | VALIDATION_ERROR | 400         | Foreign key constraint violation   |
+| Other       | INTERNAL_ERROR   | 500         | Generic database error             |
 
 **P2002 - Unique Constraint Violation**:
 
 ```typescript
-// When Prisma throws P2002 (e.g., duplicate email)
-// handleAPIError returns:
+// On user_email_key (a duplicate email), handleAPIError returns 400:
 {
   success: false,
   error: {
@@ -197,7 +197,30 @@ The `handleAPIError` function automatically translates Prisma error codes:
     details: { field: "email", constraint: "unique" }
   }
 }
+
+// On any other unique constraint, 400. Routes that catch a slug clash
+// themselves often answer 409 ConflictError instead; a P2002 they do not
+// catch arrives here. Routes that answer 409 for "a concurrent change, please
+// retry" (agent PATCH and import, bulk, instructions revert, backup import)
+// rely on this staying 400 to tell the two apart:
+{
+  success: false,
+  error: {
+    code: "VALIDATION_ERROR",
+    message: "A record with that value already exists"
+    // no details: a VALIDATION_ERROR's details map fields to messages, and
+    // the error does not say which field collided
+  }
+}
 ```
+
+Under Prisma 7's driver adapter a P2002 carries no `meta.target`; it names the
+collided index under `meta.driverAdapterError.cause.constraint`. To tell
+constraints apart, use `isUniqueViolationOn(err, UNIQUE_CONSTRAINTS.<name>)`
+from `lib/db/unique-violation.ts`, and add the constraint to
+`UNIQUE_CONSTRAINTS` if it is not there. A test checks every entry against
+the migrations. Don't read `meta.target` directly: the adapter never sets it
+(the helper only falls back to it for an engine without the adapter).
 
 **P2025 - Record Not Found**:
 

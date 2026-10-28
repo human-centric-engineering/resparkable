@@ -20,9 +20,10 @@
  *     each judge's bound model). Heuristic graders cost nothing and are
  *     not counted. Range is wide (±50% / ×2) to signal uncertainty.
  *
- * Pricing comes from the model registry (`getModel`) — operator-curated
- * `AiProviderModel.costPerMillionTokens` prices models the static fallback
- * and OpenRouter do not know, and fills a rate they carry at zero.
+ * Pricing comes from the model registry (`getModel`) — an operator-curated
+ * `AiProviderModel` row (its input/output prices, or its blended
+ * `costPerMillionTokens`) prices models the static fallback and OpenRouter
+ * do not know, and fills a rate they carry at zero.
  * A model with no pricing surfaces as `pricingKnown: false` on the
  * relevant `modelMix` entry so the UI can call out the unknown rather
  * than silently reading $0 as "free".
@@ -39,6 +40,7 @@ import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { getModel, refreshFromOpenRouter } from '@/lib/orchestration/llm/model-registry';
 import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
+import { isModelPriced } from '@/lib/orchestration/cost-estimation/model-pricing';
 import { getDefaultModelForTaskOrNull } from '@/lib/orchestration/llm/settings-resolver';
 import {
   loadWorkflowShape,
@@ -85,7 +87,8 @@ export interface EvaluationCostEstimateModel {
   outputTokens: number;
   costUsd: number;
   /**
-   * False when `getModel(modelId)` has no pricing data. The cost
+   * False when the registry has no price for the model (`isModelPriced`);
+   * a free model is priced, at $0. When unpriced, the cost
    * contribution is $0 in that case; surface the unknown rather than
    * mask it.
    */
@@ -520,9 +523,10 @@ function readCasesDone(progress: unknown): number {
 }
 
 // ---------------------------------------------------------------------------
-// Pricing helpers — duplicated from workflow-cost.ts deliberately. Each
-// estimator is small enough to stay self-contained; a shared module
-// would couple two unrelated change rhythms.
+// Pricing helpers — `priceTokens` is duplicated from workflow-cost.ts
+// deliberately: each estimator is small enough to stay self-contained.
+// Whether a model is priced at all is shared (`model-pricing.ts`), because
+// the two must agree with each other and with runtime.
 // ---------------------------------------------------------------------------
 
 function priceTokens(modelId: string, inputTokens: number, outputTokens: number): number {
@@ -532,12 +536,6 @@ function priceTokens(modelId: string, inputTokens: number, outputTokens: number)
     (inputTokens / 1_000_000) * model.inputCostPerMillion +
     (outputTokens / 1_000_000) * model.outputCostPerMillion
   );
-}
-
-function isModelPriced(modelId: string): boolean {
-  const m = getModel(modelId);
-  if (!m) return false;
-  return m.inputCostPerMillion > 0 || m.outputCostPerMillion > 0;
 }
 
 function median(values: number[]): number {

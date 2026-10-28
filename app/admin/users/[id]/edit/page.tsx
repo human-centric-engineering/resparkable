@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { serverFetch, parseApiResponse } from '@/lib/api/server-fetch';
 import { API } from '@/lib/api/endpoints';
+import { requireServerData } from '@/lib/api/server-load';
 import { getServerSession } from '@/lib/auth/utils';
 import { UserEditForm } from '@/components/admin/user-edit-form';
 import type { AdminUser } from '@/types/admin';
@@ -19,39 +19,27 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 }
 
 /**
- * Fetch user by ID from API
+ * Fetch user by ID from API. A missing user renders the not-found page; any
+ * other failure throws to the admin error boundary rather than reading as a
+ * missing user (#518).
  */
-async function getUser(id: string): Promise<AdminUser | null> {
-  try {
-    const res = await serverFetch(API.USERS.byId(id));
+async function getUser(id: string): Promise<AdminUser> {
+  const { data } = await requireServerData<AdminUser>(API.USERS.byId(id), { notFound: true });
 
-    if (!res.ok) {
-      return null;
-    }
-
-    const data = await parseApiResponse<AdminUser>(res);
-
-    if (!data.success) {
-      return null;
-    }
-
-    return {
-      id: data.data.id,
-      name: data.data.name,
-      email: data.data.email,
-      emailVerified: data.data.emailVerified,
-      image: data.data.image,
-      role: data.data.role,
-      bio: data.data.bio ?? null,
-      createdAt: new Date(data.data.createdAt),
-      updatedAt: new Date(data.data.updatedAt),
-      phone: data.data.phone ?? null,
-      timezone: data.data.timezone ?? null,
-      location: data.data.location ?? null,
-    };
-  } catch {
-    return null;
-  }
+  return {
+    id: data.id,
+    name: data.name,
+    email: data.email,
+    emailVerified: data.emailVerified,
+    image: data.image,
+    role: data.role,
+    bio: data.bio ?? null,
+    createdAt: new Date(data.createdAt),
+    updatedAt: new Date(data.updatedAt),
+    phone: data.phone ?? null,
+    timezone: data.timezone ?? null,
+    location: data.location ?? null,
+  };
 }
 
 /**
@@ -68,10 +56,6 @@ export default async function AdminUserEditPage({ params }: PageProps) {
   }
 
   const user = await getUser(id);
-
-  if (!user) {
-    notFound();
-  }
 
   return <UserEditForm user={user} currentUserId={session.user.id} />;
 }

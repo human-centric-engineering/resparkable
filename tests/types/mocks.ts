@@ -231,9 +231,9 @@ export type MockRouter = ReturnType<typeof useRouter> & {
  * another sweep, and spares forks repeating it.
  *
  * Two things defeat that. A cast suppresses the error rather than fixing it,
- * so the literal rots in silence, and the spelling varies: the suite's real
+ * so the literal rots in silence, and the spelling varies: a fork's real
  * offenders wrote `as unknown as ReturnType<typeof vi.fn>`, not the
- * `ReturnType<typeof useRouter>` form the first check looked for. An
+ * `ReturnType<typeof useRouter>` form the first check looked for (#936). An
  * incomplete literal inside a `vi.mock` factory has the same effect, because
  * nothing type-checks a mock factory; `tests/setup.ts` builds the suite-wide
  * default from this factory for that reason, and
@@ -245,10 +245,10 @@ export type MockRouter = ReturnType<typeof useRouter> & {
  * both shapes, and must come back clean. This file is exempt from the literal
  * rule and only that rule: it is the factory, so it necessarily writes the
  * complete router out, but a cast added here by a fork extending it is exactly
- * what needs catching. Minimal
- * stubs that supply two or three members for a component reading nothing else
- * are deliberately allowed and not counted; convert one the moment its
- * component might read more of the router than the stub provides.
+ * what needs catching. Minimal stubs that supply two or three members for a
+ * component reading nothing else are deliberately allowed and not counted;
+ * convert one the moment its component might read more of the router than the
+ * stub provides.
  *
  * It is worded as "run the check" because prose kept getting it wrong, and
  * this docblock was one of the places it did. Five review rounds running, a
@@ -256,8 +256,9 @@ export type MockRouter = ReturnType<typeof useRouter> & {
  * behind the first number matched `useRouter: vi.fn(() => ({…}))` and silently
  * missed `useRouter: () => ({…})`; its replacement missed single-line literals
  * and every file outside `*.test.ts`; and the one after that could not see a
- * shorthand member, so it read CLEAN over sixteen complete literals while this
- * comment said there were none. Run the check; do not restate a count here.
+ * shorthand member, so a fork carrying this comment read CLEAN over sixteen
+ * complete literals while it said there were none (#936). Run the check; do not
+ * restate a count here.
  *
  * `bfcacheId` is a fixed string, not a spy. Its real semantics are that it
  * *changes* on a fresh push/replace navigation, so a test asserting that a

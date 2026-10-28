@@ -22,6 +22,7 @@
 
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
+import { datasetVisibilityWhere } from '@/lib/orchestration/access/dataset-access';
 import { successResponse } from '@/lib/api/responses';
 import { getRouteLogger } from '@/lib/api/context';
 import { getClientIP } from '@/lib/security/ip';
@@ -45,12 +46,6 @@ export const POST = withAdminAuth<Params>(
     // 403) so the existence of another admin's experiment never leaks —
     // the posture every route in this family uses (#741).
     const visible = experimentVisibilityWhere(session);
-
-    // The guard asked the policy before this handler ran, so reading the answer
-    // costs nothing and — more to the point — cannot run a fork's membership
-    // lookup with a transaction open, which is what the `await` this replaced
-    // was carefully sequenced to avoid.
-    const mayReadUnownedDataset = session.unattributedReads.dataset;
 
     const exists = await prisma.aiExperiment.findFirst({
       where: { AND: [visible, { id }] },
@@ -77,17 +72,7 @@ export const POST = withAdminAuth<Params>(
         // Same clause object as the pre-transaction check — one policy answer
         // for the whole request, so the two reads cannot disagree.
         where: { AND: [visible, { id }] },
-        include: {
-          variants: true,
-          // Pull dataset.userId here so we can defence-in-depth verify
-          // it belongs to the caller before we copy its content into a
-          // run we own. Today's create-experiment route enforces dataset
-          // ownership at write time, but a future writer adding a new
-          // create path would silently bypass it without this check.
-          dataset: {
-            select: { id: true, userId: true, contentHash: true, caseCount: true },
-          },
-        },
+        include: { variants: true },
       });
       if (!experiment) throw new NotFoundError('Experiment not found');
 
@@ -99,7 +84,31 @@ export const POST = withAdminAuth<Params>(
         throw new ValidationError('Experiment needs at least 2 variants to run');
       }
 
-      const datasetDriven = !!experiment.dataset && !!experiment.metricConfigs;
+      // A pinned variant would be scored against the live agent, because the
+      // run path cannot load a saved version, so a version A/B would compare one
+      // config with itself and still name a winner (#857). Create refuses pins
+      // now; this catches rows stored with one before it did, and refuses before
+      // any evaluation run or session is written.
+      if (experiment.variants.some((v) => v.agentVersionId)) {
+        throw new ValidationError(
+          'This experiment pins a variant to a saved agent version, which cannot be run yet: it would be scored against the live agent. Create a new experiment without version pins.'
+        );
+      }
+
+      // The bound dataset, read through its visibility so the check below can
+      // verify it is one the caller may use before its content is copied into
+      // a run they own. The clause comes from the policy answer the guard
+      // already holds, so no lookup runs with the transaction open. Read on its
+      // own rather than included: the owner layer (§115) refuses an included
+      // dataset that is not the caller's with a bare 404, before that check
+      // could name the dataset.
+      const dataset = experiment.datasetId
+        ? await tx.aiDataset.findFirst({
+            where: { AND: [datasetVisibilityWhere(session), { id: experiment.datasetId }] },
+            select: { id: true, contentHash: true, caseCount: true },
+          })
+        : null;
+      const datasetDriven = !!experiment.datasetId && !!experiment.metricConfigs;
 
       // Defence in depth: the dataset bound to this experiment must be one the
       // caller may read. Create-time validation at `POST /experiments` already
@@ -119,14 +128,10 @@ export const POST = withAdminAuth<Params>(
       // Saying "Experiment not found" there is false and unactionable: the
       // experiment is in their list and opens on the detail route. It discloses
       // nothing extra, because the caller supplied the `datasetId` themselves.
-      if (datasetDriven && experiment.dataset) {
-        const owner = experiment.dataset.userId;
-        const mayUse = owner === session.user.id || (owner === null && mayReadUnownedDataset);
-        if (!mayUse) throw new NotFoundError('Experiment dataset not found');
-      }
+      if (datasetDriven && !dataset) throw new NotFoundError('Experiment dataset not found');
 
       for (const variant of experiment.variants) {
-        if (datasetDriven && experiment.dataset && experiment.metricConfigs) {
+        if (datasetDriven && dataset && experiment.metricConfigs) {
           // Dataset-driven path — create one AiEvaluationRun per variant.
           // The batch worker will drain them on the next maintenance tick.
           const evalRun = await tx.aiEvaluationRun.create({
@@ -136,12 +141,12 @@ export const POST = withAdminAuth<Params>(
               description: `Experiment ${id}, variant ${variant.id}`,
               subjectKind: 'agent',
               agentId: experiment.agentId,
-              datasetId: experiment.dataset.id,
-              datasetContentHash: experiment.dataset.contentHash,
+              datasetId: dataset.id,
+              datasetContentHash: dataset.contentHash,
               metricConfigs: experiment.metricConfigs,
               status: 'queued',
               progress: {
-                casesTotal: experiment.dataset.caseCount,
+                casesTotal: dataset.caseCount,
                 casesDone: 0,
                 casesFailed: 0,
               },
@@ -223,6 +228,7 @@ export const POST = withAdminAuth<Params>(
     return successResponse(updated);
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

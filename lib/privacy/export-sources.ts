@@ -41,6 +41,15 @@
 
 import { prisma } from '@/lib/db/client';
 import { contactSubmissionsOf } from '@/lib/privacy/contact-submissions';
+import {
+  normaliseAddress,
+  webhookDeliveriesAddressedTo,
+} from '@/lib/orchestration/webhooks/destination';
+import {
+  byCreatedAtThenId,
+  deliveriesNamingSubject,
+  subjectViewOfPayload,
+} from '@/lib/privacy/delivery-payloads';
 import { ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
 
 /** How a `User`-linked model is represented in a subject export. */
@@ -254,8 +263,14 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
     disposition: 'export',
     // Retained (`SetNull`) rather than cascaded, but the row carries the
     // subject's own IP address, so it is their personal data while the link
-    // exists — erasure scrubs `clientIp` for exactly this reason.
-    description: 'Admin configuration changes the subject made, including the IP address recorded.',
+    // exists — erasure scrubs `clientIp` for exactly this reason. A row made in
+    // a support session (§121 t-825) also carries `supportGrantId` /
+    // `supportOrgId`: ids of the grant and the org the subject acted in, which
+    // say where the subject's own act happened and nothing of the org's. They
+    // stay on erasure for the same reason the row does: once `userId` is
+    // null they name no one, and the org reads its support history by them.
+    description:
+      'Admin configuration changes the subject made, including the IP address recorded and, for a change made while working in a customer organisation as support, which organisation and grant.',
     fetch: ({ userId }) =>
       prisma.aiAdminAuditLog.findMany({ where: { userId }, orderBy: byCreatedAt }),
   },
@@ -284,6 +299,108 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
       const where = contactSubmissionsOf(subject);
       if (!where) return [];
       return prisma.contactSubmission.findMany({ where, orderBy: byCreatedAt });
+    },
+  },
+  {
+    model: 'AiWebhookDelivery',
+    section: 'webhookDeliveries',
+    disposition: 'export',
+    description:
+      'Event notifications the organisation sent that concern the subject: those emailed to their address (when, which event, and whether it was delivered), and those whose event was about their own conversations or workflow runs, or about a change they made. For an event about their own activity, which event it was and what it said about them; for a change they made, which change. These records outlive the subscription that sent them. Notifications emailed to an address are included only once the account has verified it. Other people named in an event — colleagues asked to approve a step, an administrator who acted on the subject’s run — are left out.',
+    // Two ways a delivery concerns the subject, merged by row: `sentTo` when it
+    // was emailed to their address, `about` when its payload names them
+    // (t-783). A row can be both.
+    //
+    // ⚠️ `sentTo` is keyed by address, like `ContactSubmission` above, and for
+    // the same reason no net finds it: a delivery has no user column, and
+    // since §109 t-739 it outlives its subscription, so the address it was
+    // emailed to can stay on the row after the subscription (which this
+    // manifest exports under `notificationSubscriptions`) is gone. Matched
+    // through the rule erasure redacts with — exact on the normalised address,
+    // verified only.
+    //
+    // ⚠️ Never the row's own `destination` or `previousDestinations`. A retry
+    // after the subscription was re-pointed leaves one row naming two inboxes —
+    // say the subject's in the history and a colleague's as the current one —
+    // and either column would hand the subject someone else's address. The
+    // match already proves the row went to the subject's address, so that,
+    // and only that, is what the export says.
+    //
+    // `about` is matched and shaped by `lib/privacy/delivery-payloads.ts`, the
+    // same rule erasure redacts with.
+    fetch: async (subject: SubjectQuery): Promise<unknown[]> => {
+      const where = webhookDeliveriesAddressedTo(subject);
+      // One read, then the other: at `multi` each is its own transaction on a
+      // pooled connection, and `exportUserData` reads one at a time so that an
+      // export never holds more than one (see export-user.ts).
+      const addressed = where
+        ? await prisma.aiWebhookDelivery.findMany({
+            where,
+            select: {
+              id: true,
+              eventType: true,
+              status: true,
+              lastAttemptAt: true,
+              createdAt: true,
+            },
+          })
+        : [];
+      const named = await deliveriesNamingSubject(prisma, 'webhook', subject.userId);
+      const sentTo = normaliseAddress(subject.email);
+      const sentToIds = new Set(addressed.map((row) => row.id));
+      const aboutById = new Map(named.map((row) => [row.id, row]));
+      const rows = [...addressed, ...named.filter((row) => !sentToIds.has(row.id))];
+      rows.sort(byCreatedAtThenId);
+      // Field by field, not a spread: widening a select must not be enough to
+      // put a row's own address columns, or its raw payload, in front of the
+      // subject.
+      return rows.map((row) => {
+        const about = aboutById.get(row.id);
+        return {
+          id: row.id,
+          eventType: row.eventType,
+          status: row.status,
+          lastAttemptAt: row.lastAttemptAt,
+          createdAt: row.createdAt,
+          sentTo: sentToIds.has(row.id) ? sentTo : null,
+          about: about
+            ? {
+                basis: about.basis,
+                data: subjectViewOfPayload(
+                  about.payload,
+                  about.basis,
+                  subject.userId,
+                  about.eventType
+                ),
+              }
+            : null,
+        };
+      });
+    },
+  },
+  {
+    model: 'AiEventHookDelivery',
+    section: 'eventHookDeliveries',
+    disposition: 'export',
+    description:
+      'Events the organisation sent to its own integrations that concern the subject: those about their own conversations or workflow runs (what the event said), and those about a change they made (which change). These records outlive the hook that sent them. Other people named in an event — colleagues asked to approve a step, an administrator who acted on the subject’s run — are left out.',
+    // ⚠️ No FK to `User` and no user column: listed by hand, like
+    // `ContactSubmission`. The payload names the subject; matched and shaped by
+    // `lib/privacy/delivery-payloads.ts` (t-783), the rule erasure redacts with.
+    // Never the row's destination: a hook's URL is the org's, not the subject's.
+    fetch: async (subject: SubjectQuery): Promise<unknown[]> => {
+      const rows = await deliveriesNamingSubject(prisma, 'hook', subject.userId);
+      return rows.map((row) => ({
+        id: row.id,
+        eventType: row.eventType,
+        status: row.status,
+        lastAttemptAt: row.lastAttemptAt,
+        createdAt: row.createdAt,
+        about: {
+          basis: row.basis,
+          data: subjectViewOfPayload(row.payload, row.basis, subject.userId, row.eventType),
+        },
+      }));
     },
   },
   {
@@ -331,6 +448,51 @@ export const SUBJECT_DATA_SOURCES: SubjectDataSource[] = [
           orderBy: byCreatedAt,
         })
       ),
+  },
+  {
+    // Two `User` FKs, both `SetNull`: the grant is the org's consent record,
+    // not the person's, so it outlives them (§121 t-823). What the subject
+    // receives is each act of theirs — granting, revoking — as its own row,
+    // dated when they did it and labelled with the act and the org, not the
+    // grant's reason or terms. One person can do both to one grant: two rows,
+    // each id the grant's with the act appended, so ids stay unique.
+    model: 'OrgSupportGrant',
+    section: 'supportGrants',
+    disposition: 'attribution',
+    description:
+      'Support-access grants the subject gave to the platform, or revoked, on behalf of an organisation.',
+    fetch: async ({ userId }: SubjectQuery): Promise<AttributionRow[]> => {
+      const grants = await prisma.orgSupportGrant.findMany({
+        where: { OR: [{ grantedById: userId }, { revokedById: userId }] },
+        select: {
+          id: true,
+          createdAt: true,
+          revokedAt: true,
+          grantedById: true,
+          revokedById: true,
+          org: { select: { name: true } },
+        },
+        orderBy: byCreatedAt,
+      });
+      const acts: AttributionRow[] = [];
+      for (const grant of grants) {
+        if (grant.grantedById === userId) {
+          acts.push({
+            id: `${grant.id}:granted`,
+            label: `Granted support access to ${grant.org.name}`,
+            createdAt: grant.createdAt,
+          });
+        }
+        if (grant.revokedById === userId && grant.revokedAt) {
+          acts.push({
+            id: `${grant.id}:revoked`,
+            label: `Revoked support access to ${grant.org.name}`,
+            createdAt: grant.revokedAt,
+          });
+        }
+      }
+      return acts.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    },
   },
   {
     model: 'AiAgent',

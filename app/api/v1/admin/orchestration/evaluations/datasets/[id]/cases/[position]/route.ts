@@ -98,13 +98,15 @@ export const PATCH = withAdminAuth<{ id: string; position: string }>(
             : (body.referenceCitations as Prisma.InputJsonValue);
       }
 
+      // The case write and the re-hash read are pinned to the owner the
+      // visibility check saw, as the dataset write below is.
       const updated = await tx.aiDatasetCase.update({
-        where: { datasetId_position: { datasetId, position } },
+        where: { datasetId_position: { datasetId, position }, dataset: { userId: dataset.userId } },
         data,
       });
 
       const allCases = await tx.aiDatasetCase.findMany({
-        where: { datasetId },
+        where: { datasetId, dataset: { userId: dataset.userId } },
         orderBy: { position: 'asc' },
         select: {
           position: true,
@@ -147,6 +149,7 @@ export const PATCH = withAdminAuth<{ id: string; position: string }>(
     return successResponse({ case: updatedCase, contentHash: newHash });
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

@@ -110,7 +110,7 @@ Filter chips and search match the View Models panel's pattern — one chip per `
 
 ### Step 3 — Review
 
-Expandable card per selected candidate with the heuristic-derived metadata as editable form controls (name, description, capability checkboxes, tierRole select, the five rating selects, bestRole text). Each card has a **Reset to suggestion** link that rolls back operator edits to the discovery defaults.
+Expandable card per selected candidate with the heuristic-derived metadata as editable form controls (name, description, capability checkboxes, tierRole select, the five rating selects, bestRole text). Each card has a **Reset to suggestion** link that rolls back operator edits to the discovery defaults. A chat or reasoning candidate's card also shows its price from the provider's catalogue (vendor first, then OpenRouter); when the catalogue has both an input and an output price they are saved with the model as `inputCostPerMillionTokens` / `outputCostPerMillionTokens` (t-774). When it has neither, only one, or a value the matrix refuses (OpenRouter lists router entries at -1), the card says so and the model is added unpriced; set its prices on the edit form.
 
 Embedding-specific fields (`dimensions`, `schemaCompatible`, `costPerMillionTokens`, `hasFreeTier`, `quality`, `strengths`, `setup`) are **not** in the dialog UI — operators can edit them via the legacy `/provider-models/[id]` edit form after creation. Keeps the review step tractable.
 
@@ -203,6 +203,17 @@ Leave on **Auto** for most rows — the heuristic correctly classifies any id st
 
 A misclassified reasoning model returns `400 Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.` on the first chat turn — the request envelope is captured on the execution trace (`requestParams` field on the failed step) so the misconfiguration is visible from the UI.
 
+### Chat pricing
+
+Rendered in a bordered "Chat Pricing" block when the Chat or Reasoning capability is checked (`hasSplitPricing` in `lib/validations/model-pricing.ts`; the o-series is classed `reasoning`):
+
+| Field              | Notes                                                           |
+| ------------------ | --------------------------------------------------------------- |
+| Input / 1M Tokens  | USD per 1M input (prompt) tokens → `inputCostPerMillionTokens`  |
+| Output / 1M Tokens | USD per 1M output (reply) tokens → `outputCostPerMillionTokens` |
+
+Set them **as a pair, or not at all**: the form, the create / bulk schemas and the PATCH route (against the row as saved) all refuse exactly one, because half a price would record the other half of every turn at $0. They price chat turns for a model the built-in price list doesn't know — dated snapshot ids, new releases, custom models. A model the built-in list (or OpenRouter) prices keeps that price; the row's figures don't override it (t-769). A row without them falls back to its single blended `costPerMillionTokens` for both input and output, and the form says so when editing such a row. Added in t-774; before it, a matrix-only model was charged `(input + output) / 2` both ways, overstating an input-heavy turn about 2×.
+
 ### Embedding-only fields
 
 Rendered in a bordered "Embedding Details" block that only appears when the Embedding capability is checked (the form watches `capabilities.includes('embedding')`):
@@ -223,10 +234,10 @@ The embedding block feeds the "Compare Embedding Providers" modal on the Knowled
 ### Submit behaviour
 
 - Validation errors surface inline below each field (`errors.{name}.message`).
-- The submit handler sends `capabilities[]` directly from the checkbox state and parses numeric strings (`dimensions`, `costPerMillionTokens`) before POST. In create mode, embedding fields are omitted when `embedding` is not in the array. In edit mode, removing `embedding` from the array explicitly nulls all embedding fields (`dimensions`, `schemaCompatible`, `costPerMillionTokens`, `hasFreeTier`, `quality`, `strengths`, `setup`) so stale values are cleared from the database.
+- The submit handler sends `capabilities[]` directly from the checkbox state and parses numeric strings (`dimensions`, `costPerMillionTokens`, the two chat prices) before POST. In create mode, embedding fields are omitted when `embedding` is not in the array, and the chat prices when they are blank. In edit mode, removing `embedding` from the array explicitly nulls the embedding-only fields (`dimensions`, `schemaCompatible`, `hasFreeTier`, `quality`, `strengths`, `setup`) so stale values are cleared from the database, and blank prices are sent as `null` together, but only while the pricing section is shown: a model without chat or reasoning keeps whatever prices it has. `costPerMillionTokens` is cleared only when the edit removes the embedding capability (it was the embedding rate). Otherwise `costPerMillionTokens` is left alone: it is also a chat row's blended fallback price, and clearing it (as the form did before t-774) left every edited chat model unpriced.
 - Create: `POST /api/v1/admin/orchestration/provider-models` → router pushes to the new model's edit page with a success banner.
 - Edit: `PATCH /api/v1/admin/orchestration/provider-models/:id` → inline "Saved" flash for 2s.
-- Most fields have a `<FieldHelp>` popover per the contextual-help rule. Fields with FieldHelp: Provider Slug, Model ID, Slug, Capabilities, Tier Role, Best Role, Dimensions, Schema Compatible, and all five rating dimensions (Reasoning Depth, Latency, Cost Efficiency, Context Length, Tool Use). Remaining embedding fields (Cost/1M Tokens, Free Tier, Local/Self-hosted, Quality, Strengths, Setup) also have FieldHelp.
+- Most fields have a `<FieldHelp>` popover per the contextual-help rule. Fields with FieldHelp: Provider Slug, Model ID, Slug, Capabilities, Tier Role, Best Role, Input / Output price, Dimensions, Schema Compatible, and all five rating dimensions (Reasoning Depth, Latency, Cost Efficiency, Context Length, Tool Use). Remaining embedding fields (Cost/1M Tokens, Free Tier, Local/Self-hosted, Quality, Strengths, Setup) also have FieldHelp.
 
 ## Recommend endpoint
 

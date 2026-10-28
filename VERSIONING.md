@@ -95,6 +95,7 @@ covered by the version contract.
   empty (or, for `surface.ts`, as a default it may replace):
   - `lib/app/account-sections.ts` → `initAppAccountSections()` — account-page section registry
   - `lib/app/admin-nav.ts` → `initAppNav()` — admin nav registry (`registerNavSection()`)
+  - `lib/app/admin-tier.ts` → `initAppOrgTierAdminPages()` — the fork's org-tier admin pages (primitive: `registerOrgTierAdminPage()` in `lib/auth/admin-tier.ts`)
   - `lib/app/agent-fields.ts` → `appAgentFields` — extra `AiAgent` config fields
   - `lib/app/api-key-scopes.ts` → `APP_API_KEY_SCOPES` — extra mintable API-key scopes
   - `lib/app/auth-landing.ts` → `appAuthLandingRoute` / `appAuthLandingLabel` — where sign-in lands
@@ -102,6 +103,7 @@ covered by the version contract.
   - `lib/app/bootstrap.ts` → `initApp()` — the app boot hook, awaited by `instrumentation.ts`
   - `lib/app/brand.ts` → `appBrandName` / `appBrandLegalName` / `appBrandDescription` — brand overrides
   - `lib/app/capabilities.ts` → `initAppCapabilities()` — capability registry (`registerAppCapability()`)
+  - `lib/app/capability-seed-pairs.ts` → `APP_CAPABILITY_PAIRS` / `APP_UNCHECKED_SEEDS` — which class goes with each slug the fork's capability seeds write, and which of its seeds the parity test cannot run, read by that test
   - `lib/app/ci.ts` → `appCoverageExclusions` / `appAlwaysRunTests` / `appOwnerlessSurfaceExceptions` — the fork's own coverage exclusions, whole-tree always-run tests, and files allowed to read an ownerless-capable model outside the access helpers
   - `lib/app/context-contributors.ts` → `initAppContextContributors()` — chat context contributors (primitive: `registerContextContributor()` in `lib/orchestration/chat/context-builder.ts`)
   - `lib/app/csp.ts` → `appFrameSrc` — extra CSP `frame-src` origins
@@ -110,6 +112,7 @@ covered by the version contract.
   - `lib/app/db-drift.ts` → `registerAppDriftProbes()` — drift-probe registry (primitives in `lib/db/drift-probes.ts`)
   - `lib/app/emails.ts` → `emailOverrides` — transactional-email template overrides
   - `lib/app/env.ts` → `appEnvSchema` — app env registry
+  - `lib/app/erasure.ts` → `initAppErasureHooks()` — Art. 17 erasure cleanup hooks (primitive: `registerErasureCleanupHook()` in `lib/privacy/erasure-hooks.ts`)
   - `lib/app/eslint.config.mjs` — the fork's own ESLint tier config, spread into the root config
   - `lib/app/evaluations.ts` → `initAppGraders()` — evaluation grader registry
   - `lib/app/footer.ts` → `footerCopyright` — footer copyright line
@@ -120,12 +123,14 @@ covered by the version contract.
   - `lib/app/leaf-bootstrap.ts` → `initLeafApp()` — a leaf fork's own one-time boot work
   - `lib/app/llm-providers.ts` → `registerAppProviderEligibility()` — provider-eligibility seam (primitive: `registerProviderEligibility()`, resolved through `lib/orchestration/llm/provider-eligibility.ts`)
   - `lib/app/mcp-resources.ts` → `initAppMcpResources()` — MCP resource-type registry
+  - `lib/app/owner-classification.ts` → `initAppOwnerClassification()` — a fork's own models in the owner classification: personal (and enforced by the owner layer) or not (primitive: `registerAppOwnerClassification()` in `lib/db/owner-classification.ts`)
+  - `lib/app/org-export.ts` → `initAppOrgSources()` — a fork's own tables in the org export (primitive: `registerAppOrgSources()` in `lib/privacy/org-source-registry.ts`)
   - `lib/app/platform-agents.ts` → `initAppPlatformAgents()` — platform agents every org gets an instance of (primitive: `registerPlatformAgent()` in `lib/orchestration/agents/platform-agents.ts`)
   - `lib/app/provider-credentials.ts` → `initAppProviderCredentials()` — where a provider row's API key comes from, per org (primitive: `registerProviderCredentialResolver()` in `lib/orchestration/llm/provider-credentials.ts`)
   - `lib/app/protected-nav.ts` → `protectedNavItems` — authenticated-area nav
   - `lib/app/protected-routes.ts` → `appProtectedRoutes` — extra route prefixes the proxy protects
   - `lib/app/public-nav.ts` → `publicNavItems` / `footerNavItems` / `footerLegalItems` — public nav and footer
-  - `lib/app/rate-limit.ts` → `registerAppRateLimits()` — rate-limit registry (`registerRateLimitTier()` / `registerRateLimitRule()` / `registerRateLimitKeyResolver()`)
+  - `lib/app/rate-limit.ts` → `registerAppRateLimits()` — rate-limit registry (`registerRateLimitTier()` / `registerRateLimitRule()` / `registerRateLimitKeyResolver()`). The per-org request counter (`quotas.requestsPerMinute`, `lib/security/org-request-cap.ts`) runs outside this registry, and `'org'` stays free as a custom key name
   - `lib/app/tenant-resolver.ts` → `registerAppTenantResolver()` — the proxy's tenant resolver (primitive: `registerTenantResolver()` in `lib/tenancy/resolver.ts`; Web-standard only)
   - `lib/app/reserved-tiers.ts` → `occupiedTiers` — which reserved namespace tiers this fork occupies
   - `lib/app/robots.ts` → `appDisallowedPaths` — extra `Disallow` paths in robots.txt
@@ -141,7 +146,17 @@ covered by the version contract.
     — `orgId` stamped on every tenant-owned create, every operation scoped by
     `set_config` at `multi`; the tenant context `lib/tenancy/context.ts`
     — `getTenantContext` / `requireTenantContext` / `requireOrgId` /
-    `runAsOrg` / `runAsSystem` / `runAsCredentialLookup` / `forEachOrg` —
+    `runAsOrg` / `runAsSystem` / `runAsCredentialLookup` / `forEachOrg`, and
+    its `'support'` source with the `support` field (`SupportEntry`: the grant
+    a support session entered under, §121 t-824) —
+    the subject context `lib/auth/subject-context.ts` —
+    `runAsSubject` / `getSubjectReadScope` / `runAcrossOwners` — the owner
+    classification `lib/db/owner-classification.ts`
+    (`OWNER_CLASSIFICATION` / `ownerClassificationOf` / `personalModels` /
+    `enforcedModels`, and an entry's `enforced` flag) — and the owner
+    chokepoint `lib/db/owner-extension.ts` over the tenancy client
+    (`withOwnerChecks()`, and `OwnerReadRefusedError`, the error a refused
+    read throws and `handleAPIError` answers as a 404) —
     plus the `x-sunrise-org` request-header contract between `proxy.ts` and
     the guards; and the operator surface that turns the capability on —
     `MIGRATE_DATABASE_URL`, `db:tenancy:enable|disable|role`,
@@ -156,10 +171,14 @@ covered by the version contract.
   - fork schema tier (`prisma/schema/app.prisma` — ships empty; the reserved `/app` and `/framework` tiers generally, see [`CUSTOMIZATION.md`](./CUSTOMIZATION.md#the-appplatform-model))
 
 - **Documented public APIs** —
-  - `withAuth()`, `withAdminAuth()`, their options (`resource`, `scope`, `ownership`/`RouteOwnership`) and the `AuthenticatedSession` they hand a handler — `principal` and `subjectFilter` — from [`lib/auth/guards.ts`](./lib/auth/guards.ts)
+  - `withAuth()`, `withAdminAuth()`, their options (`resource`, `scope`, `ownership`/`RouteOwnership`, and `withAdminAuth`'s `tier`) and the `AuthenticatedSession` they hand a handler — `principal` and `subjectFilter` — from [`lib/auth/guards.ts`](./lib/auth/guards.ts)
+  - admin tiers (§111): `AdminTier`, `ORG_TIER_ADMIN_PAGES`, `ORG_TIER_ADMIN_ROUTES`, `CORE_ADMIN_SECTIONS` and `adminPageTier()` from [`lib/auth/admin-tier.ts`](./lib/auth/admin-tier.ts), `orgTierAdminPages()` from [`lib/auth/org-tier-admin-pages.ts`](./lib/auth/org-tier-admin-pages.ts), `NavItem.tier` in `lib/admin-nav/registry.ts`, and the default policy's answer to `scope.tier: 'org'` — how a surface, a fork's included, places itself in the org tier (see [`.context/auth/authorization.md`](./.context/auth/authorization.md#admin-tiers))
   - `successResponse()`, `errorResponse()` from `lib/api/responses.ts`
   - `serverFetch()` from `lib/api/server-fetch.ts`
   - `logger` from `lib/logging/`
+  - org support grants (§121): `GET`/`POST /api/v1/orgs/[id]/support-grants` and `DELETE /api/v1/orgs/[id]/support-grants/[grantId]`; `findOpenSupportGrant()`, `openSupportGrantWhere()`, `grantSupportAccess()`, `revokeSupportGrant()`, `listSupportGrants()` and `SupportGrantError` from `lib/tenancy/support-grants.ts`; `SUPPORT_GRANT_LEVELS` / `DEFAULT_SUPPORT_GRANT_LEVEL` from `lib/tenancy/roles.ts`; `SUPPORT_GRANT_DEFAULT_HOURS` / `SUPPORT_GRANT_MAX_HOURS` and `createSupportGrantSchema` from `lib/validations/tenancy.ts`; entry under a grant (t-824): `verifiedSupportGrant()` and the `'support'` `OrgEntry` source from `lib/tenancy/entry.ts`, the support principal's shape (the default user role in place of the platform role, on the principal and on the handler's session; `presentedRole()` / `presentedSession()` / `isRefusedReadOnlyWrite()` from `lib/auth/support-principal.ts`), `requestSupportSession()` from `lib/auth/admin-page-viewer.ts`, and `support` on the `POST /api/v1/orgs/switch` response; the support stamp on audit rows (t-825): `logAdminAction()` filling `supportGrantId` / `supportOrgId` from the tenant context, `AdminAuditEntry.support` for a caller acting on a session from outside it, `listSupportActivity()`, `GET /api/v1/orgs/[id]/support-grants/activity`, and the `support` / `supportGrantId` filters and `supportGrant` field on `GET /api/v1/admin/orchestration/audit-log` (see [`.context/tenancy/support-access.md`](./.context/tenancy/support-access.md))
+  - an org's caps in `Org.settings.quotas` (`monthlyBudgetUsd`, `requestsPerMinute`): `readOrgQuotas()` / `loadOrgQuotas()` / `writeOrgQuotas()` and `ORG_QUOTAS_KEY` from `lib/tenancy/org-settings.ts`, with `orgQuotasSchema` / `OrgQuotas` from `lib/validations/tenancy.ts` — what a fork's billing or plan code calls to set an org's monthly budget and request cap
+  - the per-org request counter's cache clear, `forgetOrgRequestCap()` from `lib/security/org-request-cap.ts` — called after a direct `writeOrgQuotas()` so the change applies at once in that process
   - The orchestration admin API surface documented in
     [`.context/api/orchestration-endpoints.md`](./.context/api/orchestration-endpoints.md)
 - **Published Prisma model interfaces** —
@@ -167,6 +186,12 @@ covered by the version contract.
   - `Org` and `OrgMembership` (`prisma/schema/tenancy.prisma`) — the identity a
     fork's own tenant-owned models bind to; see
     [`.context/tenancy/identity.md`](./.context/tenancy/identity.md)
+  - `OrgSupportGrant` and `SupportGrantLevel` (`prisma/schema/tenancy.prisma`) — an
+    org's consent for vendor support to act inside it; see
+    [`.context/tenancy/support-access.md`](./.context/tenancy/support-access.md)
+  - `AiAdminAuditLog.supportGrantId` (FK to `OrgSupportGrant`, `SetNull`) and
+    `AiAdminAuditLog.supportOrgId` (no FK) — the grant and the org an audit row
+    was made under, null outside a support session (§121 t-825)
   - The `Ai*` orchestration models the admin API exposes (see
     [`.context/orchestration/admin-api.md`](./.context/orchestration/admin-api.md))
 

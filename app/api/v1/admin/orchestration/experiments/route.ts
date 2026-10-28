@@ -15,10 +15,11 @@
  * parent would list experiments whose results the viewer cannot open.
  *
  * One read of those models sits outside that family and is NOT owner-scoped:
- * `agents/compare/route.ts` counts `AiEvaluationSession` per agent across the
- * install. Correct today (a count, to a platform admin), and named here because
- * a roster of this family assembled by reading the `evaluations/` directory
- * misses it. Tracked as t-682.
+ * `agents/compare/route.ts`, through `lib/orchestration/agents/agent-comparison.ts`,
+ * counts `AiEvaluationSession` per agent across every owner in the caller's org
+ * — by decision (t-682, t-688; that module's header). Named here because a
+ * roster of this family assembled by reading the `evaluations/` directory
+ * misses it.
  *
  * **Ownerless rows are a third case, and they are the policy's to decide.**
  * `createdBy` is `SetNull`, so erasing an admin leaves their experiments with no
@@ -39,7 +40,7 @@ import { experimentVisibilityWhere } from '@/lib/orchestration/access/experiment
 import { prisma } from '@/lib/db/client';
 import { successResponse, paginatedResponse } from '@/lib/api/responses';
 import { validateRequestBody, validateQueryParams } from '@/lib/api/validation';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { getRouteLogger } from '@/lib/api/context';
 import { getClientIP } from '@/lib/security/ip';
 import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
@@ -76,6 +77,7 @@ const createSchema = z
       .array(
         z.object({
           label: z.string().min(1).max(100),
+          /** Refused for now (#857) — see the POST handler. */
           agentVersionId: z.string().optional(),
         })
       )
@@ -130,6 +132,7 @@ export const GET = withAdminAuth(
     return paginatedResponse(experiments, { page, limit, total });
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:
@@ -144,6 +147,17 @@ export const POST = withAdminAuth(
 
     const log = await getRouteLogger(request);
     const body = await validateRequestBody(request, createSchema);
+
+    // A variant pinned to a saved agent version cannot be honoured yet: the run
+    // path can only load the live agent, so a pinned variant would be scored
+    // against the live config and a version A/B would report noise as a winner
+    // (#857). Refused until a saved version can be run; `[id]/run` refuses rows
+    // that were stored with a pin before this check existed.
+    if (body.variants.some((v) => v.agentVersionId !== undefined)) {
+      throw new ValidationError(
+        'Pinning a variant to a saved agent version is not supported yet: every variant runs the live agent. Remove agentVersionId from the variants.'
+      );
+    }
 
     // Dataset visibility when the caller opted in — theirs, or one nobody
     // owns where the policy allows. Matches `[id]/run`, which already permits
@@ -172,7 +186,6 @@ export const POST = withAdminAuth(
         variants: {
           create: body.variants.map((v) => ({
             label: v.label,
-            agentVersionId: v.agentVersionId ?? null,
           })),
         },
       },
@@ -204,6 +217,7 @@ export const POST = withAdminAuth(
     return successResponse(experiment, undefined, { status: 201 });
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

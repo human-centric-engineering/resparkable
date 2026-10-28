@@ -40,6 +40,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { scaffoldsOnDisk } from '@/tests/helpers/app-scaffolds';
 
 // FORK (Resparkable): `lib/app/data-export.ts` is filled here, and it runs TWO
 // collectors — one per side of the D5 boundary. `repo/subject-export.ts`
@@ -78,7 +79,10 @@ import { registerAppRateLimits } from '@/lib/app/rate-limit';
 import { registerAppCapabilities } from '@/lib/orchestration/capabilities';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import { buildContext } from '@/lib/orchestration/chat/context-builder';
-import { RESPARKABLE_CAPABILITIES } from '@/lib/framework/resparkable/capabilities/catalogue';
+import {
+  RESPARKABLE_CAPABILITIES,
+  RESPARKABLE_CAPABILITY_SLUGS,
+} from '@/lib/framework/resparkable/capabilities/catalogue';
 import { RESPARKABLE_MCP_RESOURCES } from '@/lib/framework/resparkable/mcp/exposure';
 import { RESPARKABLE_CONTEXT_TYPE } from '@/lib/framework/resparkable/context/type';
 import { registerAppTenantResolver } from '@/lib/app/tenant-resolver';
@@ -94,7 +98,6 @@ import { initAppNav } from '@/lib/app/admin-nav';
 import { publicNavItems, footerNavItems, footerLegalItems } from '@/lib/app/public-nav';
 import { protectedNavItems } from '@/lib/app/protected-nav';
 import { appAuthLandingRoute, appAuthLandingLabel } from '@/lib/app/auth-landing';
-import { emailOverrides } from '@/lib/app/emails';
 import { initApp } from '@/lib/app/bootstrap';
 import { initAppKnowledgeAccessContributors } from '@/lib/app/knowledge-access-contributors';
 import { initAppGuardFloorContributors } from '@/lib/app/guard-floor-contributors';
@@ -117,6 +120,7 @@ import {
   appAlwaysRunTests,
   appOwnerlessSurfaceExceptions,
 } from '@/lib/app/ci';
+import { APP_CAPABILITY_PAIRS, APP_UNCHECKED_SEEDS } from '@/lib/app/capability-seed-pairs';
 import { initAppUserCreatedHooks } from '@/lib/app/user-created';
 import { collectAppSubjectData } from '@/lib/app/data-export';
 import { appTransferPolicies } from '@/lib/app/data-transfer';
@@ -126,7 +130,17 @@ import {
   getAppExcludedSubjectSources,
   __resetAppSubjectSourceRegistryForTests,
 } from '@/lib/privacy/subject-source-registry';
+import {
+  getAppOrgSources,
+  getAppExcludedOrgSources,
+  appOrgDeclarationsFailed,
+  __resetAppOrgSourceRegistryForTests,
+} from '@/lib/privacy/org-source-registry';
 import { getAppJobs, __resetAppJobsForTests } from '@/lib/orchestration/maintenance/app-jobs';
+import {
+  getErasureCleanupHooks,
+  __resetErasureCleanupHooksForTests,
+} from '@/lib/privacy/erasure-hooks';
 import { getEffectiveRateLimitPolicy, RATE_LIMIT_POLICY } from '@/lib/security/rate-limit-policy';
 import {
   hasProviderEligibilityResolver,
@@ -153,6 +167,16 @@ import {
   __resetAccountSectionRegistryForTests,
 } from '@/lib/account-sections/registry';
 import { initAppAuthorizationPolicy } from '@/lib/app/authorization';
+import { ORG_TIER_ADMIN_PAGES, adminPageTier } from '@/lib/auth/admin-tier';
+import {
+  getAppOrgTierAdminPages,
+  orgTierAdminPages,
+  __resetAppOrgTierAdminPagesForTests,
+} from '@/lib/auth/org-tier-admin-pages';
+import {
+  appOwnerClassifications,
+  __resetAppOwnerClassificationForTests,
+} from '@/lib/db/owner-classification';
 import {
   DEFAULT_AUTHORIZATION_POLICY,
   getAuthorizationPolicy,
@@ -433,7 +457,12 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   {
     seam: 'lib/app/emails.ts',
     risk: 'a stray override would swap an auth email for every install',
-    assert: () => expect(emailOverrides).toEqual({}),
+    assert: async () => {
+      // `importActual`, NOT a plain import: tests/setup.ts pins this seam to
+      // `{}` for every other file (#895), so a plain import would assert the pin.
+      const seam = await vi.importActual<typeof import('@/lib/app/emails')>('@/lib/app/emails');
+      expect(seam.emailOverrides).toEqual({});
+    },
   },
   {
     seam: 'lib/app/data-export.ts',
@@ -509,6 +538,38 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       expect(appTransferPolicies.policies).toEqual([]);
       expect(appTransferPolicies.excluded).toEqual([]);
       expect(appTransferPolicies.crossBoundaryEdges).toEqual([]);
+    },
+  },
+  {
+    seam: 'lib/app/org-export.ts',
+    risk: 'a stray source would read a table into every install\u2019s org export \u2014 and pre-account for an orgId model nobody decided about, silencing the org-manifest coverage rule for it',
+    assert: () => {
+      __resetAppOrgSourceRegistryForTests();
+      // The reads trigger the lazy init, so this exercises the REAL file.
+      expect(getAppOrgSources()).toEqual([]);
+      expect(getAppExcludedOrgSources()).toEqual([]);
+      expect(appOrgDeclarationsFailed()).toBe(false);
+    },
+  },
+  {
+    seam: 'lib/app/owner-classification.ts',
+    risk: 'a stray classification would switch the data layer’s owner check on for a model nobody decided was private — refusing reads the product means to allow — or pre-classify a fork model nobody looked at, silencing the coverage guard for it',
+    // FORK (Resparkable): Sunrise asserts an empty registry; Resparkable
+    // classifies the three of its models the coverage guard can see. Pinning the
+    // exact set keeps the original intent: a stray classification still fails
+    // here, and so does one switched to `enforced` without a decision.
+    assert: () => {
+      __resetAppOwnerClassificationForTests();
+      // The read triggers the lazy init, so this exercises the REAL file.
+      const rows = appOwnerClassifications();
+      expect(Object.keys(rows).sort()).toEqual([
+        'ResparkableGroupAuditEntry',
+        'ResparkableGroupMember',
+        'TransferJob',
+      ]);
+      expect(Object.values(rows).some((row) => row.kind === 'personal' && row.enforced)).toBe(
+        false
+      );
     },
   },
   {
@@ -614,6 +675,20 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     },
   },
   {
+    seam: 'lib/app/erasure.ts',
+    risk: 'a stray hook would run inside every account erasure on every install \u2014 deleting external data, or scrubbing rows, that the install never asked it to touch',
+    // FORK (Resparkable): Sunrise asserts this is empty. Resparkable registers
+    // one hook here, for the unaccepted invites and stored document originals
+    // its cascade cannot reach. It moved here from `initResparkable()` so it is
+    // registered in any process that erases somebody, not only one that booted.
+    // Pinning the exact set keeps the original intent: a stray hook still fails.
+    assert: () => {
+      __resetErasureCleanupHooksForTests();
+      // getErasureCleanupHooks() triggers the lazy init, so this exercises the REAL seam.
+      expect(getErasureCleanupHooks().map((hook) => hook.name)).toEqual(['resparkable']);
+    },
+  },
+  {
     seam: 'lib/app/user-created.ts',
     risk: 'a stray hook would run on every signup on every install',
     assert: () => expect(initAppUserCreatedHooks()).toBeUndefined(),
@@ -707,6 +782,18 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     },
   },
   {
+    seam: 'lib/app/admin-tier.ts',
+    risk: 'a stray pattern would open that admin page to every org OWNER/ADMIN on every install — the page only, since its API routes declare their own tier, but a page core meant for platform admins alone',
+    assert: () => {
+      __resetAppOrgTierAdminPagesForTests();
+      // The read triggers the lazy init, so this exercises the REAL seam.
+      expect(getAppOrgTierAdminPages()).toEqual([]);
+      // …and the roster the layout reads and hands the gate is exactly core's.
+      expect(orgTierAdminPages()).toEqual(ORG_TIER_ADMIN_PAGES);
+      expect(adminPageTier('/admin/users', orgTierAdminPages())).toBeNull();
+    },
+  },
+  {
     seam: 'lib/app/api-key-scopes.ts',
     risk: 'a stray scope would be mintable on every install \u2014 and a name colliding with a core scope would change what an existing key satisfies',
     assert: () => {
@@ -727,6 +814,23 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // Resparkable is relying on.
     assert: () =>
       expect([...occupiedTiers].sort()).toEqual(['.context/framework', 'lib/framework']),
+  },
+  {
+    seam: 'lib/app/capability-seed-pairs.ts',
+    risk: 'a stray pair fails the capability parity test on every install (for a slug no seed writes it is a pair nothing wrote, for a slug core already pairs a duplicate), and a stray unchecked seed switches the parity checks off for that seed',
+    // FORK (Resparkable): Sunrise asserts both ship empty. Resparkable pairs
+    // its 24 capabilities and lets two seeds that write none throw. Pinning the
+    // slugs and the files keeps the intent: a stray pair or a stray unchecked
+    // seed still fails here.
+    assert: () => {
+      expect(APP_CAPABILITY_PAIRS.map((pair) => pair.slug).sort()).toEqual(
+        Object.values(RESPARKABLE_CAPABILITY_SLUGS).sort()
+      );
+      expect(Object.keys(APP_UNCHECKED_SEEDS).sort()).toEqual([
+        'framework-resparkable/004-agent-capabilities.ts',
+        'framework-resparkable/006-mcp.ts',
+      ]);
+    },
   },
   {
     seam: 'lib/app/brand.ts',
@@ -782,6 +886,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
 afterEach(() => {
   __resetNavRegistryForTests();
   __resetAccountSectionRegistryForTests();
+  __resetAppOrgTierAdminPagesForTests();
   __resetAuthorizationPolicyForTests();
 });
 
@@ -790,7 +895,10 @@ describe('lib/app/ seams ship empty', () => {
     await assert();
   });
 
-  it('nothing but this file escapes the suite-wide brand-seam pin', () => {
+  it.each([
+    ['brand', 'brand'],
+    ['emails', 'email-override'],
+  ])('nothing but this file escapes the suite-wide %s-seam pin', (seam, label) => {
     // tests/setup.ts mocks `@/lib/app/brand` to null for EVERY test file, so
     // that no core test can read a fork's brand and fail for a reason the fork
     // cannot fix (#660/#661). That guarantee holds across all ~1095 test files
@@ -815,7 +923,9 @@ describe('lib/app/ seams ship empty', () => {
     // instance per round. vitest exposes exactly `unmock` and `doUnmock` for
     // removing a mock, so anchoring on `(?:do)?unmock` is exhaustive over the API
     // rather than over the spellings someone happened to think of.
-    const seamPath = String.raw`['"\`]@/lib/app/brand['"\`]`;
+    // The emails pin (#895) is the same shape and the same hazard, so both
+    // seams share the guard.
+    const seamPath = String.raw`['"\`]@/lib/app/` + seam + String.raw`['"\`]`;
     const unmockRe = new RegExp(String.raw`\bvi\s*\.\s*(?:do)?[Uu]nmock\s*\(\s*` + seamPath);
     const actualRe = new RegExp(String.raw`importActual[\s\S]{0,80}?` + seamPath);
 
@@ -842,9 +952,9 @@ describe('lib/app/ seams ship empty', () => {
 
     expect(
       offenders,
-      'These test files escape the brand-seam pin in tests/setup.ts. A fork that ' +
-        'fills lib/app/brand.ts would see its own brand here and fail a core test ' +
-        'it cannot fix — the exact class #660 is about. Re-doMock the null values ' +
+      `These test files escape the ${label}-seam pin in tests/setup.ts. A fork that ` +
+        `fills lib/app/${seam}.ts would see its own values here and fail a core test ` +
+        'it cannot fix — the exact class #660 is about. Re-doMock the pinned values ' +
         'instead of unmocking, and leave importActual to this file.'
     ).toEqual([]);
   });
@@ -852,11 +962,10 @@ describe('lib/app/ seams ship empty', () => {
   it('has a row for every seam file in lib/app/', () => {
     // Drift guard: adding a `lib/app/*` seam without adding a row above would
     // leave it silently unprotected. Reads the directory rather than trusting
-    // the table to be complete.
-    const dir = path.join(process.cwd(), 'lib/app');
-    const onDisk = readdirSync(dir)
-      .filter((f) => /\.(ts|mjs)$/.test(f) && !f.endsWith('.d.ts'))
-      .map((f) => `lib/app/${f}`);
+    // the table to be complete, through the classifier the VERSIONING.md guard
+    // uses (#734): a nested `lib/app/<name>/` seam is owed a row keyed
+    // `lib/app/<name>/`, and a file of any extension is owed one too.
+    const onDisk = scaffoldsOnDisk();
 
     const covered = new Set(SEAM_DEFAULTS.map((s) => s.seam));
     const missing = onDisk.filter((f) => !covered.has(f) && !UNASSERTED_SEAMS.has(f));

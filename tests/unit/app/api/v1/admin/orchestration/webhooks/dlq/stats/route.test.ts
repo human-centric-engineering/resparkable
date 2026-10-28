@@ -11,7 +11,7 @@
  * - 401 unauthenticated
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { NextRequest } from 'next/server';
 
 vi.mock('@/lib/auth/config', () => ({ auth: { api: { getSession: vi.fn() } } }));
@@ -23,16 +23,15 @@ vi.mock('@/lib/db/client', () => ({
     aiWebhookDelivery: { count: vi.fn(), findFirst: vi.fn() },
   },
 }));
-vi.mock('@/lib/security/rate-limit', () => ({
-  adminLimiter: { check: vi.fn(() => ({ success: true })) },
-  createRateLimitResponse: vi.fn(),
-}));
-vi.mock('@/lib/security/ip', () => ({ getClientIP: vi.fn(() => '127.0.0.1') }));
 
 import { GET } from '@/app/api/v1/admin/orchestration/webhooks/dlq/stats/route';
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import { adminLimiter, createRateLimitResponse } from '@/lib/security/rate-limit';
+import {
+  registerAuthorizationPolicy,
+  __resetAuthorizationPolicyForTests,
+  DEFAULT_AUTHORIZATION_POLICY,
+} from '@/lib/auth/authorization';
 import { mockAdminUser, mockUnauthenticatedUser } from '@/tests/helpers/auth';
 
 const ADMIN_ID = 'cmjbv4i3x00003wsloputgwul';
@@ -49,6 +48,10 @@ describe('GET /webhooks/dlq/stats', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+  });
+
+  afterEach(() => {
+    __resetAuthorizationPolicyForTests();
   });
 
   it('returns counts + oldest timestamp scoped to caller subscriptions', async () => {
@@ -70,20 +73,52 @@ describe('GET /webhooks/dlq/stats', () => {
 
     // All three queries must include the exhausted + ownership scope —
     // if any one slips that's a cross-tenant data leak.
+    const scope = {
+      AND: [
+        {
+          OR: [
+            { subscription: { OR: [{ createdBy: ADMIN_ID }, { createdBy: null }] } },
+            { subscriptionId: null },
+          ],
+        },
+        { status: 'exhausted' },
+      ],
+    };
     const countCalls = vi.mocked(prisma.aiWebhookDelivery.count).mock.calls;
-    expect(countCalls[0][0]?.where).toMatchObject({
-      status: 'exhausted',
-      subscription: { createdBy: ADMIN_ID },
-    });
-    expect(countCalls[1][0]?.where).toMatchObject({
-      status: 'exhausted',
-      subscription: { createdBy: ADMIN_ID },
-    });
+    expect(countCalls[0][0]?.where).toMatchObject(scope);
+    expect(countCalls[0][0]?.where).toHaveProperty('createdAt.gte');
+    expect(countCalls[1][0]?.where).toEqual(scope);
     const findCall = vi.mocked(prisma.aiWebhookDelivery.findFirst).mock.calls[0][0];
-    expect(findCall?.where).toMatchObject({
-      status: 'exhausted',
-      subscription: { createdBy: ADMIN_ID },
+    expect(findCall?.where).toEqual(scope);
+  });
+
+  it('drops the orphan arm from all three queries when the policy refuses unattributed reads', async () => {
+    registerAuthorizationPolicy({
+      ...DEFAULT_AUTHORIZATION_POLICY,
+      canRead: (viewer, target, scope) =>
+        target.kind === 'unattributed'
+          ? Promise.resolve(false)
+          : DEFAULT_AUTHORIZATION_POLICY.canRead(viewer, target, scope),
     });
+    vi.mocked(prisma.aiWebhookDelivery.count).mockResolvedValue(0);
+    vi.mocked(prisma.aiWebhookDelivery.findFirst).mockResolvedValue(null);
+
+    const res = await GET(makeRequest());
+
+    expect(res.status).toBe(200);
+    const scope = {
+      AND: [{ subscription: { createdBy: ADMIN_ID } }, { status: 'exhausted' }],
+    };
+    const wheres = [
+      ...vi.mocked(prisma.aiWebhookDelivery.count).mock.calls.map((c) => c[0]?.where),
+      vi.mocked(prisma.aiWebhookDelivery.findFirst).mock.calls[0][0]?.where,
+    ];
+    // Population: all three queries ran.
+    expect(wheres).toHaveLength(3);
+    for (const where of wheres) {
+      expect(where).toMatchObject(scope);
+      expect(JSON.stringify(where)).not.toContain('"OR"');
+    }
   });
 
   it('limits the 24h count to deliveries created in the last day', async () => {
@@ -122,17 +157,5 @@ describe('GET /webhooks/dlq/stats', () => {
     const res = await GET(makeRequest());
 
     expect(res.status).toBe(401);
-  });
-
-  it('returns the rate-limit response when the limiter rejects the request', async () => {
-    const rlResponse = new Response('rate limited', { status: 429 });
-    vi.mocked(adminLimiter.check).mockReturnValueOnce({ success: false } as never);
-    vi.mocked(createRateLimitResponse).mockReturnValueOnce(rlResponse);
-
-    const res = await GET(makeRequest());
-
-    expect(createRateLimitResponse).toHaveBeenCalled();
-    expect(res.status).toBe(429);
-    expect(prisma.aiWebhookDelivery.count).not.toHaveBeenCalled();
   });
 });

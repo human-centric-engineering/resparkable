@@ -16,30 +16,22 @@ import { DatasetAnatomyCard } from '@/components/admin/orchestration/evaluations
 import { DatasetNewTabs } from '@/components/admin/orchestration/evaluations-foundations/dataset-new-tabs';
 import type { AgentOption } from '@/components/admin/orchestration/evaluations-foundations/generate-from-description-form';
 import { API } from '@/lib/api/endpoints';
-import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
-import { logger } from '@/lib/logging';
+import { loadServerData } from '@/lib/api/server-load';
 
 export const metadata: Metadata = {
   title: 'New dataset · AI Orchestration',
   description: 'Upload a CSV or JSONL dataset, or generate cases from a description.',
 };
 
-async function loadChatAgents(): Promise<AgentOption[]> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.AGENTS}?limit=100&kind=chat`);
-    if (!res.ok) return [];
-    const parsed = await parseApiResponse<AgentOption[]>(res);
-    return parsed.success && Array.isArray(parsed.data) ? parsed.data : [];
-  } catch (err) {
-    logger.warn('New dataset page: failed to load agents for generate tab', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return [];
-  }
-}
-
 export default async function NewDatasetPage(): Promise<React.ReactElement> {
-  const agents = await loadChatAgents();
+  // Only the generate tab needs the agents. On an empty list that tab tells
+  // the admin to create an agent, so a failed load must not reach it as `[]`:
+  // it passes `null`, and the generate tab shows a "Couldn't load" notice
+  // while the upload tab still works (#518).
+  const agentsLoad = await loadServerData<AgentOption[]>(
+    `${API.ADMIN.ORCHESTRATION.AGENTS}?limit=100&kind=chat`
+  );
+  const agents = agentsLoad.ok ? agentsLoad.data : null;
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2 text-sm">

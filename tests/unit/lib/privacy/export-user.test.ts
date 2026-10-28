@@ -24,8 +24,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mocks — vi.hoisted so the factories below can close over them
 // ---------------------------------------------------------------------------
 
-const { mockPrisma, delegateFor, resetDelegates, mockUserFindUnique, mockLogger } = vi.hoisted(
-  () => {
+const { mockPrisma, delegateFor, resetDelegates, mockUserFindUnique, mockQueryRaw, mockLogger } =
+  vi.hoisted(() => {
     interface Delegate {
       findMany: ReturnType<typeof vi.fn>;
     }
@@ -54,6 +54,8 @@ const { mockPrisma, delegateFor, resetDelegates, mockUserFindUnique, mockLogger 
     };
 
     const userFindUnique = vi.fn();
+    // Tagged-template raw query, used by the delivery sources (t-783).
+    const queryRaw = vi.fn().mockResolvedValue([]);
 
     const prisma = new Proxy(
       {},
@@ -61,6 +63,7 @@ const { mockPrisma, delegateFor, resetDelegates, mockUserFindUnique, mockLogger 
         get(_target, property) {
           if (typeof property !== 'string') return undefined;
           if (property === 'user') return { findUnique: userFindUnique };
+          if (property === '$queryRaw') return queryRaw;
           return delegateFor(property);
         },
       }
@@ -71,10 +74,10 @@ const { mockPrisma, delegateFor, resetDelegates, mockUserFindUnique, mockLogger 
       delegateFor,
       resetDelegates,
       mockUserFindUnique: userFindUnique,
+      mockQueryRaw: queryRaw,
       mockLogger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     };
-  }
-);
+  });
 
 const mockInitAppSubjectSources = vi.fn();
 
@@ -115,6 +118,16 @@ import {
   type SubjectDataSource,
 } from '@/lib/privacy/export-sources';
 import { getTenantContext, runAsOrg } from '@/lib/tenancy/context';
+import { Prisma } from '@prisma/client';
+
+/**
+ * The parameters a tagged-template `$queryRaw` call binds, as Prisma flattens
+ * them: a fragment nested in the template contributes its own.
+ */
+function boundValues(call: unknown[]): unknown[] {
+  const [strings, ...values] = call as [TemplateStringsArray, ...unknown[]];
+  return Prisma.sql(strings, ...values).values;
+}
 
 const SUBJECT = {
   id: 'user-1',
@@ -142,6 +155,7 @@ function argsTo(delegate: string): Record<string, unknown> {
 beforeEach(() => {
   vi.clearAllMocks();
   resetDelegates();
+  mockQueryRaw.mockReset().mockResolvedValue([]);
   mockEnv.TENANCY_MODE = 'single';
   mockUserFindUnique.mockResolvedValue(SUBJECT);
   mockCollectAppSubjectData.mockResolvedValue({});
@@ -174,6 +188,21 @@ describe('exportUserData', () => {
       const bundle = await exportUserData(PARAMS);
 
       expect(bundle.account).toEqual(SUBJECT);
+    });
+
+    it('leaves out a pending erasure’s requester and retry state, and keeps when and why (t-842)', async () => {
+      await exportUserData(PARAMS);
+
+      const query = mockUserFindUnique.mock.calls[0][0] as {
+        omit?: Record<string, boolean>;
+      };
+      // The requester is another person's id; the attempt count and next
+      // attempt are the retrier's state, not the subject's data.
+      expect(query.omit).toEqual({
+        erasureRequestedBy: true,
+        erasureAttempts: true,
+        erasureNextAttemptAt: true,
+      });
     });
   });
 
@@ -309,6 +338,583 @@ describe('exportUserData', () => {
     });
   });
 
+  describe('webhook deliveries concerning the subject (webhookDeliveries)', () => {
+    const NORMALISED = 'subject@example.com';
+    const T1 = new Date('2026-01-10T00:00:00.000Z');
+    const T2 = new Date('2026-01-20T00:00:00.000Z');
+    const T3 = new Date('2026-01-30T00:00:00.000Z');
+
+    /** A row as `deliveriesNamingSubject` reads it: the table columns plus the `activity` flag. */
+    function namedRow(
+      overrides: Partial<{
+        id: string;
+        eventType: string;
+        status: string;
+        lastAttemptAt: Date | null;
+        createdAt: Date;
+        payload: Record<string, unknown>;
+        activity: boolean;
+      }> = {}
+    ) {
+      return {
+        id: 'n-1',
+        eventType: 'conversation_started',
+        status: 'delivered',
+        lastError: 'upstream said 500',
+        lastAttemptAt: T1,
+        createdAt: T1,
+        payload: {
+          event: 'conversation_started',
+          data: { conversationId: 'c-1', userId: 'user-1' },
+        },
+        activity: true,
+        ...overrides,
+      };
+    }
+
+    /** A row as the `findMany` for the subject's address selects it. */
+    function addressedRow(
+      overrides: Partial<{
+        id: string;
+        eventType: string;
+        status: string;
+        lastAttemptAt: Date | null;
+        createdAt: Date;
+      }> = {}
+    ) {
+      return {
+        id: 'a-1',
+        eventType: 'budget_exceeded',
+        status: 'delivered',
+        lastAttemptAt: T1,
+        createdAt: T1,
+        ...overrides,
+      };
+    }
+
+    /** Answer each `$queryRaw` by the delivery table its SQL names. */
+    function armRaw(rows: { webhook?: unknown[]; hook?: unknown[] }): void {
+      mockQueryRaw.mockImplementation(async (...args: unknown[]) => {
+        const text = JSON.stringify(args.slice(1));
+        return text.includes('ai_event_hook_delivery') ? (rows.hook ?? []) : (rows.webhook ?? []);
+      });
+    }
+
+    interface ExportedDelivery {
+      id: string;
+      sentTo: string | null;
+      about: { basis: string; data: Record<string, unknown> } | null;
+    }
+    const exported = (bundle: Awaited<ReturnType<typeof exportUserData>>) =>
+      bundle.personalData.webhookDeliveries as ExportedDelivery[];
+
+    it('reads exactly the deliveries addressed to the normalised address, selecting no payload', async () => {
+      // SUBJECT.email is 'Subject@Example.com': the where must carry the
+      // normalised form, since that is how a delivery row records it.
+      await exportUserData(PARAMS);
+
+      expect(callsTo('aiWebhookDelivery')).toHaveLength(1);
+      expect(argsTo('aiWebhookDelivery')).toEqual({
+        where: {
+          OR: [
+            { destination: NORMALISED },
+            { previousDestinations: { array_contains: [{ destination: NORMALISED }] } },
+          ],
+        },
+        select: {
+          id: true,
+          eventType: true,
+          status: true,
+          lastAttemptAt: true,
+          createdAt: true,
+        },
+      });
+      const select = argsTo('aiWebhookDelivery').select as Record<string, unknown>;
+      expect(Object.keys(select)).not.toContain('payload');
+      // One row can name two inboxes after a re-pointed retry, so neither
+      // address column may be read at all.
+      expect(Object.keys(select)).not.toContain('destination');
+      expect(Object.keys(select)).not.toContain('previousDestinations');
+      expect(Object.keys(select)).not.toContain('destinationFingerprint');
+      expect(JSON.stringify(argsTo('aiWebhookDelivery'))).not.toContain('insensitive');
+    });
+
+    it('does not export the admin’s reason on a force-failed run of the subject’s', async () => {
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'w-ff',
+            eventType: 'execution.force_failed',
+            payload: {
+              event: 'execution.force_failed',
+              data: {
+                executionId: 'e-1',
+                userId: 'user-1',
+                actorUserId: 'user-admin',
+                reason: 'admin note: suspected abuse',
+              },
+            },
+          }),
+        ],
+      });
+
+      const rows = exported(await exportUserData(PARAMS));
+
+      expect(rows[0].about).toEqual({
+        basis: 'activity',
+        data: { executionId: 'e-1', userId: 'user-1' },
+      });
+      expect(JSON.stringify(rows)).not.toContain('suspected abuse');
+    });
+
+    it('reads the payload-named rows only after the address read has resolved', async () => {
+      // At `multi` each read is its own transaction; the source must not hold two.
+      let release: (rows: unknown[]) => void = () => undefined;
+      delegateFor('aiWebhookDelivery').findMany.mockReturnValue(
+        new Promise<unknown[]>((resolve) => {
+          release = resolve;
+        })
+      );
+      const webhookRawCalls = () =>
+        mockQueryRaw.mock.calls.filter((call) =>
+          JSON.stringify(call.slice(1)).includes('ai_webhook_delivery')
+        ).length;
+
+      const pending = exportUserData(PARAMS);
+      // Let every read that is not waiting on the deferred one run.
+      await vi.waitFor(() => expect(callsTo('aiWebhookDelivery')).toHaveLength(1));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(webhookRawCalls()).toBe(0);
+
+      release([]);
+      await pending;
+
+      expect(webhookRawCalls()).toBe(1);
+    });
+
+    it('asks for the payload-named rows of the webhook table, by the subject’s id', async () => {
+      await exportUserData(PARAMS);
+
+      const webhookCalls = mockQueryRaw.mock.calls.filter((call) =>
+        JSON.stringify(call.slice(1)).includes('ai_webhook_delivery')
+      );
+      expect(webhookCalls).toHaveLength(1);
+      // The subject's id is bound as a parameter of the statement.
+      expect(boundValues(webhookCalls[0])).toContain(SUBJECT.id);
+    });
+
+    it('adds the subject’s own normalised address to addressed rows as sentTo, with about null', async () => {
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        addressedRow({ id: 'd-1', createdAt: T1, lastAttemptAt: T1 }),
+        addressedRow({
+          id: 'd-2',
+          eventType: 'workflow_failed',
+          status: 'failed',
+          lastAttemptAt: null,
+          createdAt: T2,
+        }),
+      ]);
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(bundle.personalData.webhookDeliveries).toEqual([
+        {
+          id: 'd-1',
+          eventType: 'budget_exceeded',
+          status: 'delivered',
+          lastAttemptAt: T1,
+          createdAt: T1,
+          sentTo: NORMALISED,
+          about: null,
+        },
+        {
+          id: 'd-2',
+          eventType: 'workflow_failed',
+          status: 'failed',
+          lastAttemptAt: null,
+          createdAt: T2,
+          sentTo: NORMALISED,
+          about: null,
+        },
+      ]);
+    });
+
+    it('exports a row that only names the subject with sentTo null and its basis and data', async () => {
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'n-1',
+            payload: {
+              event: 'conversation_started',
+              data: { conversationId: 'c-1', userId: 'user-1', agentSlug: 'support' },
+            },
+          }),
+        ],
+      });
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(bundle.personalData.webhookDeliveries).toEqual([
+        {
+          id: 'n-1',
+          eventType: 'conversation_started',
+          status: 'delivered',
+          lastAttemptAt: T1,
+          createdAt: T1,
+          sentTo: null,
+          about: {
+            basis: 'activity',
+            data: { conversationId: 'c-1', userId: 'user-1', agentSlug: 'support' },
+          },
+        },
+      ]);
+    });
+
+    it('exports a row both addressed to and naming the subject once, with sentTo and about', async () => {
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        addressedRow({ id: 'both', eventType: 'workflow_failed', createdAt: T1 }),
+      ]);
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'both',
+            eventType: 'workflow_failed',
+            payload: { event: 'workflow_failed', data: { executionId: 'e-1', userId: 'user-1' } },
+          }),
+        ],
+      });
+
+      const rows = exported(await exportUserData(PARAMS));
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('both');
+      expect(rows[0].sentTo).toBe(NORMALISED);
+      expect(rows[0].about).toEqual({
+        basis: 'activity',
+        data: { executionId: 'e-1', userId: 'user-1' },
+      });
+    });
+
+    it('still exports payload-named rows, without reading the address table, for an unverified address', async () => {
+      mockUserFindUnique.mockResolvedValue({ ...SUBJECT, emailVerified: false });
+      // Population: were the address read made, this row would be exported.
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        addressedRow({ id: 'stranger' }),
+      ]);
+      armRaw({ webhook: [namedRow({ id: 'n-1' })] });
+
+      const rows = exported(await exportUserData(PARAMS));
+
+      expect(callsTo('aiWebhookDelivery')).toHaveLength(0);
+      // The payload match is keyed on the account id, not an unproven address.
+      expect(rows.map((row) => row.id)).toEqual(['n-1']);
+      expect(rows[0].sentTo).toBeNull();
+    });
+
+    it('exports none for an unverified address with nothing naming the subject', async () => {
+      mockUserFindUnique.mockResolvedValue({ ...SUBJECT, emailVerified: false });
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        addressedRow({ id: 'stranger' }),
+      ]);
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(bundle.personalData.webhookDeliveries).toEqual([]);
+    });
+
+    it('orders rows from both kinds by createdAt, then id', async () => {
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        addressedRow({ id: 'a-late', createdAt: T3 }),
+        addressedRow({ id: 'tie-b', createdAt: T2 }),
+      ]);
+      armRaw({
+        webhook: [
+          namedRow({ id: 'tie-a', createdAt: T2 }),
+          namedRow({ id: 'n-early', createdAt: T1 }),
+        ],
+      });
+
+      const rows = exported(await exportUserData(PARAMS));
+
+      expect(rows.map((row) => row.id)).toEqual(['n-early', 'tie-a', 'tie-b', 'a-late']);
+    });
+
+    it('shows the subject their own view of the payload, without a colleague’s ids or names', async () => {
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'n-1',
+            eventType: 'workflow_failed',
+            payload: {
+              event: 'workflow_failed',
+              data: {
+                executionId: 'e-1',
+                userId: 'user-1',
+                actorUserId: 'user-admin',
+                actorUserName: 'Admin Person',
+                approverUserIds: ['user-2', 'user-1'],
+              },
+            },
+          }),
+        ],
+      });
+
+      const bundle = await exportUserData(PARAMS);
+      const rows = exported(bundle);
+
+      // The subject is told they were an approver, never who else was.
+      expect(rows[0].about?.data).toEqual({
+        executionId: 'e-1',
+        userId: 'user-1',
+        approverUserIds: ['user-1'],
+      });
+      const text = JSON.stringify(bundle.personalData.webhookDeliveries);
+      expect(text).not.toContain('user-admin');
+      expect(text).not.toContain('Admin Person');
+      expect(text).not.toContain('user-2');
+    });
+
+    it('tells an approver-only row’s subject they were an approver, and names no colleague', async () => {
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'n-1',
+            eventType: 'approval_required',
+            activity: false,
+            payload: {
+              event: 'approval_required',
+              data: {
+                workflowId: 'w-1',
+                approveUrl: 'https://app.example/approve?token=abc',
+                approverUserIds: ['user-2', 'user-1', 'user-3'],
+              },
+            },
+          }),
+        ],
+      });
+
+      const bundle = await exportUserData(PARAMS);
+      const rows = exported(bundle);
+
+      expect(rows[0].about).toEqual({
+        basis: 'actor',
+        data: { workflowId: 'w-1', approverUserIds: ['user-1'] },
+      });
+      const text = JSON.stringify(bundle.personalData.webhookDeliveries);
+      expect(text).not.toContain('user-2');
+      expect(text).not.toContain('user-3');
+      expect(text).not.toContain('token=abc');
+    });
+
+    it('reduces an actor row to the fact of the action, dropping what was changed', async () => {
+      armRaw({
+        webhook: [
+          namedRow({
+            id: 'n-1',
+            eventType: 'agent_updated',
+            activity: false,
+            payload: {
+              event: 'agent_updated',
+              data: {
+                agentId: 'ag-1',
+                actorUserId: 'user-1',
+                changes: { systemInstructions: 'secret prompt' },
+              },
+            },
+          }),
+        ],
+      });
+
+      const rows = exported(await exportUserData(PARAMS));
+
+      expect(rows[0].about).toEqual({
+        basis: 'actor',
+        data: { agentId: 'ag-1', actorUserId: 'user-1' },
+      });
+    });
+
+    it('never puts a payload or an address column on a row, even when the read carries them', async () => {
+      delegateFor('aiWebhookDelivery').findMany.mockResolvedValue([
+        {
+          ...addressedRow({ id: 'both' }),
+          destination: 'colleague@example.com',
+          previousDestinations: [{ destination: NORMALISED }],
+          payload: { data: { userId: 'colleague-id' } },
+        },
+        {
+          ...addressedRow({ id: 'addressed-only', createdAt: T2 }),
+          destination: 'colleague@example.com',
+        },
+      ]);
+      armRaw({
+        webhook: [namedRow({ id: 'both' }), namedRow({ id: 'named-only', createdAt: T3 })],
+      });
+
+      const bundle = await exportUserData(PARAMS);
+      const rows = bundle.personalData.webhookDeliveries as Array<Record<string, unknown>>;
+
+      expect(rows).toHaveLength(3);
+      for (const row of rows) {
+        expect(Object.keys(row).sort()).toEqual([
+          'about',
+          'createdAt',
+          'eventType',
+          'id',
+          'lastAttemptAt',
+          'sentTo',
+          'status',
+        ]);
+      }
+      const text = JSON.stringify(rows);
+      expect(text).not.toContain('colleague');
+      // lastError is on the raw row but is not the subject's data.
+      expect(text).not.toContain('upstream said 500');
+    });
+  });
+
+  describe('event-hook deliveries concerning the subject (eventHookDeliveries)', () => {
+    const T1 = new Date('2026-01-10T00:00:00.000Z');
+    const T2 = new Date('2026-01-20T00:00:00.000Z');
+
+    it('reads the hook table, not the webhook table, by the subject’s id', async () => {
+      await exportUserData(PARAMS);
+
+      const hookCalls = mockQueryRaw.mock.calls.filter((call) =>
+        JSON.stringify(call.slice(1)).includes('ai_event_hook_delivery')
+      );
+      expect(hookCalls).toHaveLength(1);
+      expect(boundValues(hookCalls[0])).toContain(SUBJECT.id);
+    });
+
+    it('exports each row with its basis and the subject’s view of the payload, nothing else', async () => {
+      mockQueryRaw.mockImplementation(async (...args: unknown[]) =>
+        JSON.stringify(args.slice(1)).includes('ai_event_hook_delivery')
+          ? [
+              {
+                id: 'h-1',
+                eventType: 'conversation_started',
+                status: 'failed',
+                lastError: null,
+                lastAttemptAt: null,
+                createdAt: T1,
+                payload: {
+                  event: 'conversation_started',
+                  data: { conversationId: 'c-1', userId: 'user-1', actorUserId: 'user-admin' },
+                },
+                activity: true,
+              },
+              {
+                id: 'h-2',
+                eventType: 'agent_updated',
+                status: 'delivered',
+                lastError: 'hook said no',
+                lastAttemptAt: T2,
+                createdAt: T2,
+                payload: {
+                  event: 'agent_updated',
+                  data: {
+                    agentId: 'ag-1',
+                    actorUserId: 'user-1',
+                    changes: { systemInstructions: 'secret prompt' },
+                  },
+                  url: 'https://hooks.example.com/org-secret',
+                },
+                activity: false,
+              },
+            ]
+          : []
+      );
+
+      const bundle = await exportUserData(PARAMS);
+
+      // The SQL orders by createdAt, id; the source keeps the order it was given.
+      expect(bundle.personalData.eventHookDeliveries).toEqual([
+        {
+          id: 'h-1',
+          eventType: 'conversation_started',
+          status: 'failed',
+          lastAttemptAt: null,
+          createdAt: T1,
+          about: { basis: 'activity', data: { conversationId: 'c-1', userId: 'user-1' } },
+        },
+        {
+          id: 'h-2',
+          eventType: 'agent_updated',
+          status: 'delivered',
+          lastAttemptAt: T2,
+          createdAt: T2,
+          about: { basis: 'actor', data: { agentId: 'ag-1', actorUserId: 'user-1' } },
+        },
+      ]);
+      const text = JSON.stringify(bundle.personalData.eventHookDeliveries);
+      expect(text).not.toContain('hooks.example.com');
+      expect(text).not.toContain('user-admin');
+      expect(text).not.toContain('hook said no');
+    });
+
+    it('does not export the admin’s reason on a force-failed run of the subject’s', async () => {
+      mockQueryRaw.mockImplementation(async (...args: unknown[]) =>
+        JSON.stringify(args.slice(1)).includes('ai_event_hook_delivery')
+          ? [
+              {
+                id: 'h-ff',
+                eventType: 'execution.force_failed',
+                status: 'delivered',
+                lastError: null,
+                lastAttemptAt: T1,
+                createdAt: T1,
+                payload: {
+                  event: 'execution.force_failed',
+                  data: {
+                    executionId: 'e-1',
+                    userId: 'user-1',
+                    actorUserId: 'user-admin',
+                    reason: 'admin note: suspected abuse',
+                  },
+                },
+                activity: true,
+              },
+            ]
+          : []
+      );
+
+      const bundle = await exportUserData(PARAMS);
+
+      const rows = bundle.personalData.eventHookDeliveries as Array<{
+        about: { basis: string; data: Record<string, unknown> };
+      }>;
+      expect(rows[0].about).toEqual({
+        basis: 'activity',
+        data: { executionId: 'e-1', userId: 'user-1' },
+      });
+      expect(JSON.stringify(rows)).not.toContain('suspected abuse');
+    });
+
+    it('does not mix the two tables’ rows', async () => {
+      mockQueryRaw.mockImplementation(async (...args: unknown[]) => {
+        const hook = JSON.stringify(args.slice(1)).includes('ai_event_hook_delivery');
+        return [
+          {
+            id: hook ? 'h-1' : 'w-1',
+            eventType: 'conversation_started',
+            status: 'delivered',
+            lastError: null,
+            lastAttemptAt: T1,
+            createdAt: T1,
+            payload: { data: { userId: 'user-1' } },
+            activity: true,
+          },
+        ];
+      });
+
+      const bundle = await exportUserData(PARAMS);
+
+      const ids = (rows: unknown) => (rows as Array<{ id: string }>).map((row) => row.id);
+      expect(ids(bundle.personalData.eventHookDeliveries)).toEqual(['h-1']);
+      expect(ids(bundle.personalData.webhookDeliveries)).toEqual(['w-1']);
+    });
+  });
+
   describe('reading across every org at multi (§107 t-748)', () => {
     // The email as the contact form stores it: trimmed and lower-cased.
     const NORMALISED_EMAIL = SUBJECT.email.trim().toLowerCase();
@@ -330,6 +936,13 @@ describe('exportUserData', () => {
       if (isSubject(value)) return true;
       if (!isRecord(value)) return false;
       const keys = Object.keys(value);
+      // JSON containment (`@>`) of the subject's address: exact, like `equals`.
+      if (keys.length === 1 && Array.isArray(value.array_contains)) {
+        return (
+          value.array_contains.length > 0 &&
+          value.array_contains.every((entry) => isRecord(entry) && isSubject(entry.destination))
+        );
+      }
       // An exact `equals` only. With `mode: 'insensitive'` Prisma emits an
       // unescaped ILIKE, so `_` or `%` in the value match other people's rows.
       if (keys.every((k) => k === 'equals' || k === 'mode')) {
@@ -344,7 +957,7 @@ describe('exportUserData', () => {
     /**
      * Whether `where` pins `model`'s rows to the subject: their id or email
      * on one of the row's own fields, at the top level or under `AND` —
-     * never through `OR`, `NOT` or a negating operator (`not`, `notIn`,
+     * through an `OR` only when every branch pins, never through `NOT` or a negating operator (`not`, `notIn`,
      * `none`, `every`), which do not narrow the read to them and under the
      * bypass would read other people's rows in every org.
      */
@@ -355,7 +968,17 @@ describe('exportUserData', () => {
           const parts = Array.isArray(value) ? value : [value];
           return parts.some((part) => pinsSubject(model, part));
         }
-        if (key === 'OR' || key === 'NOT') return false;
+        // An `OR` narrows to the subject only when EVERY branch does: a
+        // delivery is addressed to them either by its current destination or
+        // by one it was moved on from. One unpinned branch would read others'.
+        if (key === 'OR') {
+          return (
+            Array.isArray(value) &&
+            value.length > 0 &&
+            value.every((part) => pinsSubject(model, part))
+          );
+        }
+        if (key === 'NOT') return false;
         if (RELATION_PINS.has(`${model}.${key}`)) {
           return isRecord(value) && isRecord(value.some) && pinsSubject(model, value.some);
         }
@@ -371,6 +994,8 @@ describe('exportUserData', () => {
     const RELATION_READS: Record<string, string[]> = {
       // The org row of each of the subject's own memberships: id, slug, name.
       OrgMembership: ['org'],
+      // The name of the org each grant the subject gave or revoked was for.
+      OrgSupportGrant: ['org'],
       // The messages and share link of the subject's own conversations.
       AiConversation: ['messages', 'share'],
     };
@@ -389,6 +1014,9 @@ describe('exportUserData', () => {
         : [];
       return [...fromInclude, ...fromSelect].sort();
     }
+
+    /** Models read by raw SQL on the subject's id (t-783), with no `findMany` to inspect. */
+    const RAW_READ_MODELS = new Set(['AiEventHookDelivery']);
 
     const delegateOf = (model: string) => model.charAt(0).toLowerCase() + model.slice(1);
 
@@ -437,20 +1065,31 @@ describe('exportUserData', () => {
     it('pins every source on the subject, so the bypass widens it to their rows alone', async () => {
       await exportUserData(PARAMS);
 
-      const unpinned = SUBJECT_DATA_SOURCES.map((source) => source.model).filter(
-        (model) => !pinsSubject(model, argsTo(delegateOf(model)).where)
-      );
+      const unpinned = SUBJECT_DATA_SOURCES.map((source) => source.model)
+        .filter((model) => !RAW_READ_MODELS.has(model))
+        .filter((model) => !pinsSubject(model, argsTo(delegateOf(model)).where));
       expect(unpinned).toEqual([]);
+    });
+
+    it('pins the raw-SQL readers on the subject’s id as a bound parameter', async () => {
+      await exportUserData(PARAMS);
+
+      // One statement per delivery table, each carrying the subject's id as a
+      // parameter; nothing else identifies whose rows it returns.
+      const hookCalls = mockQueryRaw.mock.calls.filter((call) =>
+        JSON.stringify(call.slice(1)).includes('ai_event_hook_delivery')
+      );
+      expect(hookCalls).toHaveLength(RAW_READ_MODELS.size);
+      for (const call of hookCalls) expect(boundValues(call)).toContain(SUBJECT.id);
     });
 
     it('reads related rows only through relations named as the subject’s', async () => {
       await exportUserData(PARAMS);
 
       const reads = Object.fromEntries(
-        SUBJECT_DATA_SOURCES.map((source) => [
-          source.model,
-          relationReads(argsTo(delegateOf(source.model))),
-        ]).filter(([, relations]) => relations.length > 0)
+        SUBJECT_DATA_SOURCES.filter((source) => !RAW_READ_MODELS.has(source.model))
+          .map((source) => [source.model, relationReads(argsTo(delegateOf(source.model)))])
+          .filter(([, relations]) => relations.length > 0)
       );
       expect(reads).toEqual(RELATION_READS);
     });
@@ -486,6 +1125,29 @@ describe('exportUserData', () => {
       // A case-insensitive match is a pattern match in Postgres, not a pin.
       expect(
         pinsSubject('ContactSubmission', { email: { equals: SUBJECT.email, mode: 'insensitive' } })
+      ).toBe(false);
+
+      // An `OR` pins only when every branch does (t-739's delivery source).
+      const toThem = { destination: NORMALISED_EMAIL };
+      const movedOnFromThem = {
+        previousDestinations: { array_contains: [{ destination: NORMALISED_EMAIL }] },
+      };
+      expect(pinsSubject('AiWebhookDelivery', { OR: [toThem, movedOnFromThem] })).toBe(true);
+      expect(
+        pinsSubject('AiWebhookDelivery', { OR: [toThem, { status: 'delivered' }] }),
+        'one unpinned branch reads everyone else’s rows'
+      ).toBe(false);
+      expect(pinsSubject('AiWebhookDelivery', { OR: [] })).toBe(false);
+      expect(
+        pinsSubject('AiWebhookDelivery', {
+          previousDestinations: { array_contains: [{ destination: 'someone@else.example' }] },
+        })
+      ).toBe(false);
+      expect(
+        pinsSubject('AiWebhookDelivery', {
+          previousDestinations: { array_contains: [{ destination: NORMALISED_EMAIL }], path: [] },
+        }),
+        'containment plus another operator is not the bare match the guard knows'
       ).toBe(false);
     });
 
@@ -551,6 +1213,49 @@ describe('exportUserData', () => {
 
       expect(bundle.attributions.agents).toEqual([
         { id: 'agent-1', label: 'Support bot', createdAt: SUBJECT.createdAt },
+      ]);
+    });
+
+    it('reports each support-grant act as its own row, dated when the subject did it', async () => {
+      // Granted by the subject, revoked by them a day later; and someone
+      // else's grant the subject only revoked. The revocation carries its own
+      // date, not the grant's, and the label says which act it was.
+      const GRANTED = new Date('2026-03-01T00:00:00.000Z');
+      const REVOKED = new Date('2026-03-02T00:00:00.000Z');
+      const OTHERS = new Date('2026-02-01T00:00:00.000Z');
+      const OTHERS_REVOKED = new Date('2026-03-05T00:00:00.000Z');
+      delegateFor('orgSupportGrant').findMany.mockResolvedValue([
+        {
+          id: 'grant-others',
+          createdAt: OTHERS,
+          revokedAt: OTHERS_REVOKED,
+          grantedById: 'user-2',
+          revokedById: 'user-1',
+          org: { name: 'Acme' },
+        },
+        {
+          id: 'grant-own',
+          createdAt: GRANTED,
+          revokedAt: REVOKED,
+          grantedById: 'user-1',
+          revokedById: 'user-1',
+          org: { name: 'Acme' },
+        },
+      ]);
+
+      const bundle = await exportUserData(PARAMS);
+
+      expect(argsTo('orgSupportGrant').where).toEqual({
+        OR: [{ grantedById: 'user-1' }, { revokedById: 'user-1' }],
+      });
+      expect(bundle.attributions.supportGrants).toEqual([
+        { id: 'grant-own:granted', label: 'Granted support access to Acme', createdAt: GRANTED },
+        { id: 'grant-own:revoked', label: 'Revoked support access to Acme', createdAt: REVOKED },
+        {
+          id: 'grant-others:revoked',
+          label: 'Revoked support access to Acme',
+          createdAt: OTHERS_REVOKED,
+        },
       ]);
     });
 

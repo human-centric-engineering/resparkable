@@ -94,7 +94,7 @@ import { ESLint } from 'eslint';
 // them is what stops this file's cap drifting from the one the rest of the
 // toolchain uses — which it had already done: it applied a flat 6144 while
 // claiming in a comment to "match run-capped.mjs", which clamps.
-import { buildEnv, resolveHeapMb, DEFAULT_HEAP_MB } from '../run-capped.mjs';
+import { buildEnv, parseRequestedMb, resolveHeapMb, DEFAULT_HEAP_MB } from '../run-capped.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const IS_WINDOWS = process.platform === 'win32';
@@ -139,7 +139,26 @@ export const LINTABLE = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '
 export const DEFAULT_CHUNKS = 1;
 
 /**
- * Parse `LINT_CHUNKS`. A garbage value falls back rather than failing the run —
+ * The chunk count from the environment: `LINT_CHUNKS`, else
+ * `CI_LINT_CHUNKS`. CI sets `LINT_CHUNKS` from the `CI_LINT_CHUNKS` repo
+ * variable, but every doc tells a developer to set `CI_LINT_CHUNKS`, so a local
+ * `CI_LINT_CHUNKS=4 npm run lint:ci` has to take effect too (#699).
+ *
+ * A bad value is reported under the name that supplied it: a stale
+ * `LINT_CHUNKS` in a shell silently overriding the documented `CI_LINT_CHUNKS`
+ * is otherwise invisible.
+ *
+ * @param {Record<string, string | undefined>} env
+ * @param {(message: string) => void} [warn]
+ * @returns {number}
+ */
+export function chunksFromEnv(env, warn = console.error) {
+  if (env.LINT_CHUNKS) return parseChunks(env.LINT_CHUNKS, warn, 'LINT_CHUNKS');
+  return parseChunks(env.CI_LINT_CHUNKS, warn, 'CI_LINT_CHUNKS');
+}
+
+/**
+ * Parse the chunk count (see `chunksFromEnv`). A garbage value falls back rather than failing the run —
  * refusing to lint because an unrelated variable is malformed trades a small
  * problem for a bigger one, the same rule as `run-capped.mjs`'s `NODE_HEAP_MB`.
  *
@@ -151,14 +170,15 @@ export const DEFAULT_CHUNKS = 1;
  *
  * @param {string | undefined} raw
  * @param {(message: string) => void} [warn]
+ * @param {string} [name] the variable `raw` came from, for the warning.
  * @returns {number}
  */
-export function parseChunks(raw, warn = console.error) {
+export function parseChunks(raw, warn = console.error, name = 'LINT_CHUNKS / CI_LINT_CHUNKS') {
   if (raw === undefined || raw === '') return DEFAULT_CHUNKS;
   const value = Number(raw);
   if (Number.isInteger(value) && value > 0) return value;
   warn(
-    `chunked-lint: LINT_CHUNKS="${raw}" is not a positive integer — falling back to ${DEFAULT_CHUNKS} chunk(s). ` +
+    `chunked-lint: ${name}="${raw}" is not a positive integer — falling back to ${DEFAULT_CHUNKS} chunk(s). ` +
       `If you set this to fix a lint OOM, it has NOT taken effect.`
   );
   return DEFAULT_CHUNKS;
@@ -382,21 +402,33 @@ export function resolveEslintCommand() {
  * to `NODE_OPTIONS` rather than passing `--max-old-space-size` on the command
  * line, and only when no cap is already present, so an explicit value wins.
  *
- * THE CLAMP IS THE PART THAT WAS MISSING. `resolveHeapMb` reduces the request
- * to 75% of physical memory, floored at whatever Node would have picked
- * unaided. Without it this handed every machine a flat 6144 — and the very user
- * this function exists for, a developer reproducing a CI lint failure on an 8GB
- * laptop or in a 4GB container, got a ceiling the box cannot back. That turns
+ * THE CLAMP IS THE PART THAT WAS MISSING. `resolveHeapMb` floors the request
+ * at whatever Node would have picked unaided, then never lets the result go
+ * above 75% of physical memory. Without the clamp this handed every machine a
+ * flat 6144 — and the very user this function exists for, a developer
+ * reproducing a CI lint failure on an 8GB laptop or in a 4GB container, got a
+ * ceiling the box cannot back. That turns
  * the readable `JavaScript heap out of memory` abort into an opaque OS OOM
  * kill, which is the trade `run-capped.mjs` documents and refuses.
  *
  * @param {Record<string, string | undefined>} env
- * @param {{ heapMb?: number }} [deps] `heapMb` injected so a test can assert an
- *   exact value without depending on the machine it runs on.
+ * @param {{ heapMb?: number, totalMemBytes?: number, defaultLimitMb?: number }} [deps]
+ *   `heapMb` injected so a test can assert an exact value without depending on
+ *   the machine it runs on; `totalMemBytes` / `defaultLimitMb` pin the machine
+ *   facts `resolveHeapMb` clamps against, for a test of the request itself.
  * @returns {Record<string, string | undefined>}
  */
 export function withHeapCap(env, deps = {}) {
-  const { heapMb = resolveHeapMb({ requestedMb: DEFAULT_HEAP_MB }) } = deps;
+  // `NODE_HEAP_MB` is honoured exactly as `run-capped.mjs` honours it, so
+  // `lint` and `lint:ci` agree when it is set (#699). Unset, it is the default.
+  const { totalMemBytes, defaultLimitMb } = deps;
+  const {
+    heapMb = resolveHeapMb({
+      requestedMb: parseRequestedMb(env.NODE_HEAP_MB) ?? DEFAULT_HEAP_MB,
+      totalMemBytes,
+      defaultLimitMb,
+    }),
+  } = deps;
   return buildEnv(env, heapMb);
 }
 
@@ -478,7 +510,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     log = console.log,
     warn = console.error,
     targets = await lintTargets(),
-    chunks = parseChunks(env.LINT_CHUNKS, warn),
+    chunks = chunksFromEnv(env, warn),
     run = runChunk,
   } = deps;
 

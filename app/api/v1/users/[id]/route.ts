@@ -14,9 +14,9 @@
 
 import { prisma } from '@/lib/db/client';
 import { successResponse, errorResponse } from '@/lib/api/responses';
-import { NotFoundError, ValidationError } from '@/lib/api/errors';
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from '@/lib/api/errors';
 import { withAuth, withAdminAuth } from '@/lib/auth/guards';
-import { eraseUser } from '@/lib/privacy/erase-user';
+import { requestUserErasure } from '@/lib/privacy/erasure-requests';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { userIdSchema } from '@/lib/validations/user';
 import { adminUserUpdateSchema } from '@/lib/validations/admin';
@@ -159,6 +159,23 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
     });
   }
 
+  // The platform role is platform standing, so only a platform admin may
+  // change it, whatever the policy said. Under Sunrise's default policy only
+  // platform admins pass the guard, so this changes nothing; it is the floor
+  // for a fork whose `canAdminister` admits an org's OWNER/ADMIN, which may
+  // narrow but never widen the platform-only surface (t-837, as t-833 for
+  // invitations). Read from the principal, so a support session — which
+  // presents the default role — is refused too. A body repeating the current
+  // role changes nothing and is let through.
+  if (body.role && body.role !== existingUser.role && !isPlatformAdmin(session.principal)) {
+    log.warn('Platform role change refused: caller is not a platform admin', {
+      adminId: session.user.id,
+      targetUserId: id,
+      role: body.role,
+    });
+    throw new ForbiddenError('Only a platform administrator can change a platform role');
+  }
+
   // Prevent admin from demoting themselves
   if (session.user.id === id && body.role && body.role !== PLATFORM_ADMIN_ROLE) {
     return errorResponse('Cannot change your own role', {
@@ -193,7 +210,9 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
     });
     // `accountType` is not editable here (SERVICE is refused above), so the
     // row read before the update still says what kind of account this is.
-    if (body.role) {
+    // Only on an actual change: a body repeating the current role is let
+    // through the floor above, and must not write the install-org row.
+    if (body.role && body.role !== existingUser.role) {
       await syncInstallMembershipRole(
         { id, role: updated.role, accountType: existingUser.accountType },
         tx
@@ -277,15 +296,33 @@ export const DELETE = withAdminAuth<{ id: string }>(async (request, session, { p
     });
   }
 
-  // Erase the user: cascades remove personal data, retained config/audit are
-  // de-attributed, residual PII is scrubbed, an erasure receipt is written, and
-  // avatar blobs are removed. See lib/privacy/erase-user.ts.
-  await eraseUser({
+  // Record the deletion and disable the account (sessions, API keys,
+  // sign-in), then erase: cascades remove personal data, retained
+  // config/audit are de-attributed, residual PII is scrubbed, an erasure
+  // receipt is written, and avatar blobs are removed. If the erasure fails or
+  // the request is killed, the maintenance tick finishes it. See
+  // lib/privacy/erasure-requests.ts.
+  const erasure = await requestUserErasure({
     userId: id,
-    userEmail: user.email,
     actorUserId: session.user.id,
     reason: 'admin_action',
   });
+  if (erasure.status === 'in_progress') {
+    throw new ConflictError('This user is already being deleted.');
+  }
+  // The erasure did not finish within the request's budget (t-845). The
+  // account is disabled and the maintenance tick finishes the erasure.
+  if (erasure.status === 'pending') {
+    log.info('User deletion pending; the maintenance tick finishes it', {
+      deletedUserId: id,
+      adminId: session.user.id,
+    });
+    return successResponse(
+      { id, pending: true, requestedAt: erasure.requestedAt.toISOString() },
+      undefined,
+      { status: 202 }
+    );
+  }
 
   log.info('User deleted by admin', { deletedUserId: id, adminId: session.user.id });
 

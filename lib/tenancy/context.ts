@@ -53,7 +53,7 @@ import { registerLogTenancy } from '@/lib/admin/logs';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
-import type { OrgRole } from '@/lib/tenancy/roles';
+import type { OrgRole, SupportGrantLevel } from '@/lib/tenancy/roles';
 
 /**
  * How the org was decided. The design record's seven, plus `implicit` — the
@@ -62,10 +62,13 @@ import type { OrgRole } from '@/lib/tenancy/roles';
  * and the two signed-token entries of §107 t-708: `inbound-trigger` (a
  * channel signature over a workflow's trigger row) and `approval-token` (an
  * HMAC token over an execution id), where the org is the ROW's, read under a
- * system scope before it is entered.
+ * system scope before it is entered. And `support` (§121 t-824): a platform
+ * admin's session admitted to an org they are not a member of, under that
+ * org's open support grant.
  */
 export type TenantContextSource =
   | 'session'
+  | 'support'
   | 'api-key'
   | 'embed-token'
   | 'mcp-key'
@@ -86,6 +89,19 @@ export interface TenantContext {
    * Absent for a system scope, a job, or a caller with no membership.
    */
   role?: OrgRole | null;
+  /**
+   * The grant a `support` entry was admitted under (§121 t-824) — present
+   * exactly when `source` is `'support'`. What the audit log reads to name
+   * the support actor and the grant (t-825).
+   */
+  support?: SupportEntry;
+}
+
+/** The grant a support session acts under, as entry verified it for this request. */
+export interface SupportEntry {
+  grantId: string;
+  level: SupportGrantLevel;
+  expiresAt: Date;
 }
 
 const tenantContext = new AsyncLocalStorage<TenantContext>();
@@ -93,6 +109,25 @@ const tenantContext = new AsyncLocalStorage<TenantContext>();
 /** True when this install runs more than one org. Read once per call, not cached. */
 export function isMultiTenant(): boolean {
   return env.TENANCY_MODE === 'multi';
+}
+
+/**
+ * Does the current call stack act for the platform, rather than for a
+ * customer org? Always at `single`. At `multi`: inside the install org or a
+ * system scope. A call stack with NO context at `multi` is a bug — a path
+ * nobody taught to enter one — and answers no, so whatever this gates fails
+ * closed rather than treating the bug as the platform.
+ *
+ * The rule behind `canChangeSharedSettings`, and behind what a customer org's
+ * configs may reach: the env vars they may name (`lib/orchestration/env-template.ts`)
+ * and the addresses their outbound fetches may connect to
+ * (`lib/security/safe-dispatcher.ts`, §111 t-811).
+ */
+export function actsForPlatform(): boolean {
+  if (!isMultiTenant()) return true;
+  const context = getTenantContext();
+  if (!context) return false;
+  return context.orgId === null || context.orgId === INSTALL_ORG_ID;
 }
 
 // Teach the admin log buffer whose lines it is holding (§108 t-714).
@@ -180,10 +215,17 @@ export function runAsOrg<T>(
   options: {
     source?: Exclude<TenantContextSource, 'system' | 'implicit'>;
     role?: OrgRole | null;
+    support?: SupportEntry;
   } = {}
 ): Promise<T> {
-  return tenantContext.run({ orgId, source: options.source ?? 'job', role: options.role }, () =>
-    settleInside(fn)
+  return tenantContext.run(
+    {
+      orgId,
+      source: options.source ?? 'job',
+      role: options.role,
+      ...(options.support ? { support: options.support } : {}),
+    },
+    () => settleInside(fn)
   );
 }
 

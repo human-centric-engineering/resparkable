@@ -31,8 +31,11 @@ vi.mock('@/lib/logging', () => ({
   logger: mockLogger,
 }));
 
-vi.mock('@/lib/db/client', () => ({
-  prisma: {
+vi.mock('@/lib/db/client', () => {
+  // A run's writes check for erasures in the transaction that writes them
+  // (t-843); `$queryRaw` finds no erasure receipt.
+  const prisma = {
+    $queryRaw: vi.fn().mockResolvedValue([]),
     aiWorkflowExecution: {
       create: vi.fn(),
       updateMany: vi.fn(),
@@ -45,8 +48,14 @@ vi.mock('@/lib/db/client', () => ({
       findUnique: vi.fn(),
       deleteMany: vi.fn(),
     },
-  },
-}));
+  };
+  return {
+    prisma: {
+      ...prisma,
+      $transaction: vi.fn((run: (client: unknown) => Promise<unknown>) => run(prisma)),
+    },
+  };
+});
 
 vi.mock('@/lib/env', () => ({
   env: {
@@ -504,6 +513,12 @@ describe('OrchestrationEngine', () => {
     expect(breach.usedUsd).toBeCloseTo(1, 6);
     expect(breach.limitUsd).toBe(0.5);
     expect(breach.failedStepId).toBe('a');
+    // The webhook names the run's owner, so erasure finds the delivery after
+    // the run is gone (t-792).
+    expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+      'workflow_budget_exceeded',
+      expect.objectContaining({ userId: USER_ID })
+    );
   });
 
   it('budget overrun yields workflow_failed without step_completed for the over-budget step', async () => {
@@ -2146,6 +2161,10 @@ describe('OrchestrationEngine', () => {
     // so an operator can tell parallel-branch overruns apart from
     // sequential ones.
     expect(failed.error).toMatch(/^Budget exceeded during parallel batch\b/);
+    expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+      'workflow_budget_exceeded',
+      expect.objectContaining({ userId: USER_ID })
+    );
   });
 
   // ─── Parallel batch: budget warning after batch ───────────────────
@@ -2974,6 +2993,10 @@ describe('OrchestrationEngine', () => {
     >;
     expect(failed.error).toMatch(/^Budget exceeded\b/);
     expect(failed.failedStepId).toBe('a');
+    expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+      'workflow_budget_exceeded',
+      expect.objectContaining({ userId: USER_ID })
+    );
   });
 
   // ─── Bounded retry back-edge logic ───────────────────────────────────────
@@ -4043,6 +4066,62 @@ describe('OrchestrationEngine', () => {
       >;
       expect(failed).toBeDefined();
       expect(failed.error).toContain('Budget exceeded');
+      expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+        'workflow_budget_exceeded',
+        expect.objectContaining({ userId: USER_ID })
+      );
+    });
+
+    it('names the run owner when the check after a parallel batch trips (t-792)', async () => {
+      // The check inside the batch runs after every branch with the same
+      // condition, so through real steps it always fires first. This one is
+      // the backstop for a batch that comes back clean but over the cap,
+      // reached here by stubbing the batch.
+      const batch = vi
+        .spyOn(
+          OrchestrationEngine.prototype as unknown as {
+            executeParallelBatch: (...args: unknown[]) => Promise<unknown>;
+          },
+          'executeParallelBatch'
+        )
+        .mockImplementation(async (_steps: unknown, ctx: unknown) => {
+          (ctx as { totalCostUsd: number }).totalCostUsd = 2;
+          return { events: [], failed: false, paused: false, nextIds: ['a'] };
+        });
+      registerStepType('parallel', async () => ({ output: {}, tokensUsed: 0, costUsd: 0 }));
+      registerStepType('llm_call', async () => ({ output: 'x', tokensUsed: 0, costUsd: 0 }));
+      const def: WorkflowDefinition = {
+        steps: [
+          {
+            id: 'p',
+            name: 'P',
+            type: 'parallel',
+            config: {},
+            nextSteps: [{ targetStepId: 'a' }, { targetStepId: 'b' }],
+          },
+          { id: 'a', name: 'A', type: 'llm_call', config: { prompt: 'a' }, nextSteps: [] },
+          { id: 'b', name: 'B', type: 'llm_call', config: { prompt: 'b' }, nextSteps: [] },
+        ],
+        entryStepId: 'p',
+        errorStrategy: 'fail',
+      };
+
+      try {
+        const events = await collect(new OrchestrationEngine(), makeWorkflow(def), {
+          userId: USER_ID,
+          budgetLimitUsd: 1,
+        });
+
+        expect(batch).toHaveBeenCalled();
+        const breach = events.find((e) => e.type === 'workflow_budget_exceeded');
+        expect(breach).toMatchObject({ usedUsd: 2, limitUsd: 1, failedStepId: 'a' });
+        expect(dispatchWebhookEvent).toHaveBeenCalledWith(
+          'workflow_budget_exceeded',
+          expect.objectContaining({ failedStepId: 'a', userId: USER_ID })
+        );
+      } finally {
+        batch.mockRestore();
+      }
     });
 
     it('propagates lastOutput from a parallel batch into the workflow_completed event', async () => {

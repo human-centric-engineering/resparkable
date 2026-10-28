@@ -4,8 +4,8 @@
  * GET    /api/v1/admin/orgs/[id] — the org with its full roster and its
  *        `settings` column.
  * PATCH  /api/v1/admin/orgs/[id] — rename, re-slug, suspend, reinstate, or
- *        set this org's own retention windows:
- *        `{ name?, slug?, status?, settings?: { retention? } }`.
+ *        set this org's own retention windows or caps:
+ *        `{ name?, slug?, status?, settings?: { retention?, quotas? } }`.
  * DELETE /api/v1/admin/orgs/[id] — erase it (`eraseOrg`): the org, its
  *        memberships, its credentials and its pending invitations go; its
  *        members' accounts stay.
@@ -23,10 +23,20 @@
  * admin gets no say until the org console (§111) exists to give them one, so
  * the slice is written here, behind `withAdminAuth`, and read back by the
  * member view as a validated slice rather than as the raw column.
+ *
+ * **An org's caps change only from the install org** (§110 t-788). The guard
+ * admits a platform admin switched into a customer's org, which is right for
+ * a rename; for `settings.quotas` it would let whoever administers that org
+ * raise its own monthly budget or request cap. So at `multi` a patch naming `quotas` is
+ * refused unless the call stack is in the install org — the rule shared
+ * settings use (`canChangeSharedSettings`) — or the caller is an unbound admin
+ * API key, which acts as the install org. Each caps write is recorded in the
+ * admin audit log (`org.quotas.update`) with the caps it replaced.
  */
 
-import { withAdminAuth } from '@/lib/auth/guards';
+import { withAdminAuth, type AuthenticatedSession } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
+import { APIError, ErrorCodes } from '@/lib/api/errors';
 import { errorResponse, successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import {
@@ -34,12 +44,33 @@ import {
   updateOrgSchema,
   type OrgRetentionSlice,
 } from '@/lib/validations/tenancy';
-import { OrgLifecycleError, updateOrg } from '@/lib/tenancy/lifecycle';
+import { OrgLifecycleError, updateOrgReportingPrevious } from '@/lib/tenancy/lifecycle';
 import { readRetentionWindows } from '@/lib/orchestration/retention-windows';
-import { isMultiTenant } from '@/lib/tenancy/context';
+import { getTenantContext, isMultiTenant } from '@/lib/tenancy/context';
 import { eraseOrg } from '@/lib/privacy/erase-org';
-import { isSettingsWriteConflict } from '@/lib/tenancy/org-settings';
+import { isSettingsWriteConflict, readOrgQuotas } from '@/lib/tenancy/org-settings';
+import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import { getClientIP } from '@/lib/security/ip';
+import { forgetOrgCap } from '@/lib/orchestration/llm/spend-caps';
+import { forgetOrgRequestCap } from '@/lib/security/org-request-cap';
+import {
+  canChangeSharedSettings,
+  SHARED_SETTINGS_REFUSAL_CODE,
+} from '@/lib/tenancy/shared-settings';
 import { getRouteLogger } from '@/lib/api/context';
+
+/** The words an admin sees when a customer org's context tries to set caps. */
+const QUOTAS_REFUSAL =
+  "An organisation's caps can only be changed from the install organisation. Switch to the install organisation to make this change.";
+
+/**
+ * Whether this caller may write `settings.quotas`: anyone at `single`; at
+ * `multi`, the install org, or an unbound admin API key (the guard refuses a
+ * bound one), which enters no org and acts as the install org.
+ */
+function mayWriteQuotas(session: AuthenticatedSession): boolean {
+  return session.principal.credential === 'api-key' || canChangeSharedSettings();
+}
 
 const PLATFORM_ONLY = {
   // Ownership: no ownership decision — a vendor surface, platform admin only. See RouteOwnership in lib/auth/guards.ts.
@@ -92,6 +123,17 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
   const { id } = validateQueryParams(new URLSearchParams(await params), orgIdParamSchema);
   const body = await validateRequestBody(request, updateOrgSchema);
 
+  if (body.settings?.quotas !== undefined && !mayWriteQuotas(session)) {
+    log.warn('tenancy: refused an org caps write outside the install org', {
+      orgId: id,
+      actorUserId: session.user.id,
+      activeOrgId: getTenantContext()?.orgId ?? null,
+    });
+    throw new APIError(QUOTAS_REFUSAL, ErrorCodes.FORBIDDEN, 403, {
+      reason: SHARED_SETTINGS_REFUSAL_CODE,
+    });
+  }
+
   const incoherent = await incoherentRetentionPair(body.settings?.retention);
   if (incoherent) {
     // The remedy is in the message because it is not guessable from the
@@ -109,9 +151,9 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
     );
   }
 
-  let org: Awaited<ReturnType<typeof updateOrg>>;
+  let updated: Awaited<ReturnType<typeof updateOrgReportingPrevious>>;
   try {
-    org = await updateOrg(id, body);
+    updated = await updateOrgReportingPrevious(id, body);
   } catch (error) {
     if (!isSettingsWriteConflict(error)) throw error;
     // A concurrent write to this org's settings (another admin, the provider
@@ -132,6 +174,32 @@ export const PATCH = withAdminAuth<{ id: string }>(async (request, session, { pa
     log.info('Org retention windows stored but not applied at TENANCY_MODE=single', {
       orgId: id,
       windows: Object.keys(body.settings.retention),
+    });
+  }
+
+  const { org, previousSettings } = updated;
+
+  if (body.settings?.quotas !== undefined) {
+    // This process enforces the new caps at once; others within each cache's
+    // TTL (the spend gate's, and the request counter's in the proxy).
+    forgetOrgCap(id);
+    forgetOrgRequestCap(id);
+
+    // An org's caps are a financial control, so a change to one is kept in the
+    // admin audit log with what it replaced, as agent budgets are.
+    logAdminAction({
+      userId: session.user.id,
+      action: 'org.quotas.update',
+      entityType: 'org',
+      entityId: id,
+      entityName: org.name,
+      changes: {
+        quotas: {
+          from: readOrgQuotas(previousSettings, { orgId: id }),
+          to: readOrgQuotas(org.settings, { orgId: id }),
+        },
+      },
+      clientIp: getClientIP(request),
     });
   }
 

@@ -51,13 +51,15 @@
  */
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { prisma } from '@/lib/db/client';
+import { isUniqueViolationOn, UNIQUE_CONSTRAINTS } from '@/lib/db/unique-violation';
 import { logger } from '@/lib/logging';
 import { APIError } from '@/lib/api/errors';
 import { revokeUserSessions } from '@/lib/auth/sessions';
+import { isPlatformAdmin } from '@/lib/auth/roles';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
-import { initialMembershipFor } from '@/lib/tenancy/membership';
+import { healSignupRecord, initialMembershipFor } from '@/lib/tenancy/membership';
 import { orgIdParamSchema, type OrgSettingsPatch } from '@/lib/validations/tenancy';
-import { applyRetentionPatch } from '@/lib/tenancy/org-settings';
+import { applyOrgSettingsPatch, definedEntries } from '@/lib/tenancy/org-settings';
 import {
   DEFAULT_ORG_ROLE,
   ORG_OWNER_ROLE,
@@ -85,7 +87,8 @@ export type OrgLifecycleErrorCode =
   | 'LAST_OWNER'
   | 'ALREADY_MEMBER'
   | 'NOT_A_MEMBER'
-  | 'OWNER_STANDING';
+  | 'OWNER_STANDING'
+  | 'ORG_NOT_ACTIVE';
 
 const STATUS_FOR: Record<OrgLifecycleErrorCode, number> = {
   ORG_NOT_FOUND: 404,
@@ -97,6 +100,7 @@ const STATUS_FOR: Record<OrgLifecycleErrorCode, number> = {
   ALREADY_MEMBER: 409,
   NOT_A_MEMBER: 404,
   OWNER_STANDING: 403,
+  ORG_NOT_ACTIVE: 400,
 };
 
 /**
@@ -125,6 +129,19 @@ export class OrgLifecycleError extends APIError {
 export interface MembershipActor {
   platformAdmin: boolean;
   orgRole?: string | null;
+}
+
+/**
+ * The caller's standing, from what the guard verified: platform admin, or
+ * their role in the org the request entered. Every org route that hands the
+ * lifecycle an actor builds it here, so they cannot disagree about who has
+ * owner standing.
+ */
+export function membershipActorOf(session: {
+  user: { role?: string | null };
+  principal: { orgRole?: string | null };
+}): MembershipActor {
+  return { platformAdmin: isPlatformAdmin(session.user), orgRole: session.principal.orgRole };
 }
 
 /** May this actor confer, alter or revoke the OWNER role in the org? */
@@ -223,8 +240,9 @@ async function requireSlugFree(slug: string, exceptOrgId: string | null, db: Lif
 /**
  * Create an org, naming its founding OWNER in the same write when one is
  * given. The pre-check on the slug gives a clean 409; a race past it
- * surfaces as Prisma's P2002, which `handleAPIError` already turns into a
- * 400 rather than a 500.
+ * surfaces as Prisma's P2002 on `org_slug_key`, which is answered with the
+ * same 409 `SLUG_TAKEN` (t-814). Any other unique violation goes to the
+ * shared handler.
  *
  * Once the org is committed it gets its own instances of the platform agents
  * (§116 t-724) — see {@link materialisePlatformAgents}.
@@ -236,18 +254,26 @@ export async function createOrg(
   await requireSlugFree(input.slug, null, db);
   const owner = input.ownerUserId ? await requireManageableUser(input.ownerUserId, db) : null;
 
-  const org = await db.$transaction(async (tx) => {
-    const created = await tx.org.create({
-      data: { slug: input.slug, name: input.name },
-      select: orgSelect,
-    });
-    if (owner) {
-      await tx.orgMembership.create({
-        data: { orgId: created.id, userId: owner.id, role: ORG_OWNER_ROLE },
+  const org = await db
+    .$transaction(async (tx) => {
+      const created = await tx.org.create({
+        data: { slug: input.slug, name: input.name },
+        select: orgSelect,
       });
-    }
-    return created;
-  });
+      if (owner) {
+        await healSignupRecord(owner.id, tx);
+        await tx.orgMembership.create({
+          data: { orgId: created.id, userId: owner.id, role: ORG_OWNER_ROLE },
+        });
+      }
+      return created;
+    })
+    .catch((err: unknown) => {
+      if (isUniqueViolationOn(err, UNIQUE_CONSTRAINTS.orgSlug)) {
+        throw new OrgLifecycleError('SLUG_TAKEN', 'An organisation with that slug already exists');
+      }
+      throw err;
+    });
 
   logger.info('Org created', { orgId: org.id, slug: org.slug, ownerUserId: owner?.id ?? null });
   await materialisePlatformAgents(org.id);
@@ -305,9 +331,31 @@ async function materialisePlatformAgents(orgId: string): Promise<void> {
  */
 export async function updateOrg(
   orgId: string,
-  patch: { name?: string; slug?: string; status?: OrgStatus; settings?: OrgSettingsPatch },
+  patch: OrgPatch,
   db: LifecycleDb = prisma
 ): Promise<OrgRecord> {
+  return (await updateOrgReportingPrevious(orgId, patch, db)).org;
+}
+
+/** What {@link updateOrg} accepts. */
+export interface OrgPatch {
+  name?: string;
+  slug?: string;
+  status?: OrgStatus;
+  settings?: OrgSettingsPatch;
+}
+
+/**
+ * {@link updateOrg}, also returning the `settings` column as it stood before
+ * the write — read inside the write's transaction for a settings patch, so it
+ * is the value this write replaced. For an audit entry that records what a cap
+ * was changed from.
+ */
+export async function updateOrgReportingPrevious(
+  orgId: string,
+  patch: OrgPatch,
+  db: LifecycleDb = prisma
+): Promise<{ org: OrgRecord; previousSettings: Prisma.JsonValue }> {
   const current = await requireOrg(orgId, db);
 
   if (orgId === INSTALL_ORG_ID) {
@@ -335,17 +383,15 @@ export async function updateOrg(
     ...(patch.status !== undefined && { status: patch.status }),
   };
 
-  // Keyed on `settings`, not on `settings.retention`: a patch naming another
-  // slice of the column must still take the transaction, or it would report a
-  // change it did not make. `orgSettingsPatchSchema` admits only `retention`
-  // today, so this is the branch being right ahead of the second slice rather
-  // than a reachable bug.
+  // Keyed on `settings`, not on one slice of it: a patch naming any slice of
+  // the column (`retention`, `quotas`) takes the transaction.
   const settingsPatch = patch.settings;
 
-  const updated =
+  let previousSettings: Prisma.JsonValue = current.settings;
+  const write =
     settingsPatch === undefined
-      ? await db.org.update({ where: { id: orgId }, data, select: orgSelect })
-      : await db.$transaction(async (tx) => {
+      ? db.org.update({ where: { id: orgId }, data, select: orgSelect })
+      : db.$transaction(async (tx) => {
           // Re-read inside the transaction: `current` was read before the
           // slug check and is not the row this write is merging into.
           const row = await tx.org.findUnique({
@@ -353,28 +399,36 @@ export async function updateOrg(
             select: { settings: true },
           });
           if (!row) throw new OrgLifecycleError('ORG_NOT_FOUND', 'Organisation not found');
+          previousSettings = row.settings;
           return tx.org.update({
             where: { id: orgId },
             data: {
               ...data,
-              settings: applyRetentionPatch(row.settings, settingsPatch.retention),
+              settings: applyOrgSettingsPatch(row.settings, settingsPatch),
             },
             select: orgSelect,
           });
         }, SERIALIZABLE);
+  // A rename racing another past the slug check: the same answer as the check.
+  const updated = await write.catch((err: unknown) => {
+    if (isUniqueViolationOn(err, UNIQUE_CONSTRAINTS.orgSlug)) {
+      throw new OrgLifecycleError('SLUG_TAKEN', 'An organisation with that slug already exists');
+    }
+    throw err;
+  });
 
   logger.info('Org updated', {
     orgId,
     changes: Object.keys(patch),
     ...(patch.status !== undefined && patch.status !== current.status && { status: patch.status }),
     ...(settingsPatch?.retention !== undefined && {
-      retention:
-        settingsPatch.retention === null || Object.keys(settingsPatch.retention).length === 0
-          ? 'cleared'
-          : 'set',
+      retention: definedEntries(settingsPatch.retention) === null ? 'cleared' : 'set',
+    }),
+    ...(settingsPatch?.quotas !== undefined && {
+      quotas: definedEntries(settingsPatch.quotas) === null ? 'cleared' : 'set',
     }),
   });
-  return updated;
+  return { org: updated, previousSettings };
 }
 
 /**
@@ -427,13 +481,69 @@ export async function addMember(
     effectiveRole = members === 0 ? ORG_OWNER_ROLE : DEFAULT_ORG_ROLE;
   }
 
-  const membership = await db.orgMembership.create({
-    data: { orgId, userId, role: effectiveRole },
-    select: membershipSelect,
+  // Placed by hand: a signup record that survived a failed write is paid and
+  // cleared first (t-838), in the same transaction.
+  const membership = await db.$transaction(async (tx) => {
+    await healSignupRecord(userId, tx);
+    // The record may have named this very org, in which case it is now written
+    // — with the role the invitation gave. A role the caller asked for wins
+    // over it (review round 3); with none asked, the invitation's stands.
+    const healed = await tx.orgMembership.findUnique({
+      where: { orgId_userId: { orgId, userId } },
+      select: membershipSelect,
+    });
+    if (!healed) {
+      return tx.orgMembership.create({
+        data: { orgId, userId, role: effectiveRole },
+        select: membershipSelect,
+      });
+    }
+    if (role === undefined || healed.role === effectiveRole) return healed;
+    return tx.orgMembership.update({
+      where: { orgId_userId: { orgId, userId } },
+      data: { role: effectiveRole },
+      select: membershipSelect,
+    });
   });
 
-  logger.info('Org member added', { orgId, userId, role: effectiveRole });
+  logger.info('Org member added', { orgId, userId, role: membership.role });
   return membership;
+}
+
+/**
+ * May this actor invite someone into the org, as `role`? (§111 t-813)
+ *
+ * The invitation's half of {@link addMember}'s rules, asked before the
+ * invitation is issued rather than when it is accepted: by then the inviter's
+ * standing is not known. An explicit `OWNER` needs the actor's owner standing,
+ * so an ADMIN cannot appoint an owner by invitation any more than by role
+ * change. The install org is refused: its memberships follow the platform
+ * role, so inviting into it is the platform's invitation
+ * (`POST /api/v1/users/invite`), which also sets that role. A suspended org
+ * issues no new invitations. One issued before the suspension can still be
+ * accepted; its member is then refused at entry, like every member of a
+ * suspended org (`.context/tenancy/identity.md`). No role means the
+ * acceptance-time rule decides (`membershipForNewUser`).
+ */
+export async function checkInvitationInto(
+  orgId: string,
+  role: OrgRole | undefined,
+  actor: MembershipActor,
+  db: LifecycleDb = prisma
+): Promise<void> {
+  // The install org first: it takes no invitation from here at any role, so
+  // that is the reason to give, not the caller's standing.
+  if (orgId === INSTALL_ORG_ID) {
+    throw new OrgLifecycleError(
+      'INSTALL_ORG_MEMBERSHIP',
+      'Members of the install organisation are invited from Users, where their platform role is set'
+    );
+  }
+  if (role === ORG_OWNER_ROLE) requireOwnerStanding(actor, 'invite someone as an owner');
+  const org = await requireOrg(orgId, db);
+  if (org.status !== 'ACTIVE') {
+    throw new OrgLifecycleError('ORG_NOT_ACTIVE', 'A suspended organisation cannot invite members');
+  }
 }
 
 /**
@@ -566,8 +676,11 @@ export async function removeMember(
  */
 export async function syncInstallMembershipRole(
   user: { id: string; role: string | null; accountType: string | null },
-  db: Pick<PrismaClient, 'orgMembership'> = prisma
+  db: Pick<PrismaClient, 'orgMembership' | 'user' | 'org'> = prisma
 ): Promise<MembershipRecord> {
+  // A surviving signup record is paid first (t-838): the floor written alone
+  // would stop the sign-in heal ever placing them in the org that invited them.
+  await healSignupRecord(user.id, db);
   const { role } = initialMembershipFor(user);
   const membership = await db.orgMembership.upsert({
     where: { orgId_userId: { orgId: INSTALL_ORG_ID, userId: user.id } },

@@ -219,8 +219,27 @@ describe('BudgetAlertsList', () => {
     it('renders global cap banner when globalCap.exceeded is true', () => {
       render(<BudgetAlertsList alerts={[]} globalCap={exceededCap} />);
 
-      expect(screen.getByText(/global cap/i)).toBeInTheDocument();
-      expect(screen.getByText(/all agent chat is blocked/i)).toBeInTheDocument();
+      expect(screen.getByText('Global monthly budget exceeded')).toBeInTheDocument();
+      // Every paid AI call is refused, not only chat (§110 t-788).
+      expect(screen.getByText(/calls to paid ai providers are refused/i)).toBeInTheDocument();
+      expect(screen.getByText(/\$542\.00/)).toBeInTheDocument();
+      expect(screen.getByText('108%')).toBeInTheDocument();
+    });
+
+    it("names no figure to an org that is not shown the platform's spend", () => {
+      // `spent: null`: a customer org at multi, which may not see every org's spend.
+      render(
+        <BudgetAlertsList alerts={[]} globalCap={{ cap: 500, spent: null, exceeded: true }} />
+      );
+
+      expect(screen.getByText('Global monthly budget exceeded')).toBeInTheDocument();
+      expect(
+        screen.getByText(/the platform has reached its global monthly ai budget/i)
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+      expect(screen.getByText('Exceeded')).toBeInTheDocument();
+      // Only the install org can change the cap.
+      expect(screen.queryByRole('link', { name: /adjust cap/i })).not.toBeInTheDocument();
     });
 
     it('renders Adjust cap link pointing to settings page', () => {
@@ -233,19 +252,19 @@ describe('BudgetAlertsList', () => {
     it('does not render global cap banner when exceeded is false', () => {
       render(<BudgetAlertsList alerts={[]} globalCap={withinCap} />);
 
-      expect(screen.queryByText(/all agent chat is blocked/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Global monthly budget exceeded')).not.toBeInTheDocument();
     });
 
     it('does not render global cap banner when globalCap is null', () => {
       render(<BudgetAlertsList alerts={[]} globalCap={null} />);
 
-      expect(screen.queryByText(/all agent chat is blocked/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Global monthly budget exceeded')).not.toBeInTheDocument();
     });
 
     it('does not render global cap banner when globalCap is undefined', () => {
       render(<BudgetAlertsList alerts={[]} />);
 
-      expect(screen.queryByText(/all agent chat is blocked/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Global monthly budget exceeded')).not.toBeInTheDocument();
     });
 
     it('shows empty state when no agent alerts and cap not exceeded', () => {
@@ -261,7 +280,7 @@ describe('BudgetAlertsList', () => {
       render(<BudgetAlertsList alerts={alerts} globalCap={exceededCap} />);
 
       // Global banner present
-      expect(screen.getByText(/all agent chat is blocked/i)).toBeInTheDocument();
+      expect(screen.getByText('Global monthly budget exceeded')).toBeInTheDocument();
       // Agent alert also present
       expect(screen.getByText('Over-Budget Bot')).toBeInTheDocument();
     });

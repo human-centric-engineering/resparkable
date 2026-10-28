@@ -6,7 +6,7 @@
  * same shape of read path S3 gets from presigned URLs.
  *
  * Token format: `<base64url-payload>.<base64url-signature>`
- *   payload = JSON { typ: 'storage-read', key, expiresAt }
+ *   payload = JSON { typ: 'storage-read', key, expiresAt, org? }
  *   signature = HMAC-SHA256(BETTER_AUTH_SECRET, payload-bytes)
  *
  * No database storage or migration required — verification is purely
@@ -23,11 +23,21 @@
  * asserted on verify, so the separation is now structural.
  *
  * **The token is scoped to a single key, and the read route must check it
- * against the key actually requested.** That binding is the entire access
- * control model here: storage keys carry no ownership
- * (`agent-uploads/{agentId}/{uuid}` names no user), so there is nothing else
- * to authorise against. A token that verified but was not compared to the
+ * against the key actually requested.** That binding is the primary access
+ * control here: storage keys name no user, so there is nothing else to
+ * authorise against. A token that verified but was not compared to the
  * requested key would be a universal read grant.
+ *
+ * **`org` says which org the token was minted for (§109 t-736).** An
+ * org-owned key (`orgs/{orgId}/…`, `lib/storage/org-keys.ts`) can only be
+ * signed with a claim naming that same org, and a key that is not org-owned
+ * only without one, so minting refuses a key outside the caller's org. The
+ * read route then refuses a token whose claim does not match the requested
+ * key's prefix. Given the key binding, that second check only bites on a
+ * token minted wrongly, which is the point of it: the mint-time rule is one
+ * function, and the read route is where a mistake in it would otherwise leak.
+ * A token minted before the claim existed carries none, and still reads any
+ * key that is not org-owned.
  *
  * @see app/api/v1/storage/[...key]/route.ts — the only consumer
  */
@@ -36,6 +46,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { z } from 'zod';
 import { env } from '@/lib/env';
 import { isRecord } from '@/lib/utils';
+import { isUnderOrgRoot, orgOfKey } from '@/lib/storage/org-keys';
 
 /** Default token lifetime when the caller doesn't specify one. */
 const DEFAULT_EXPIRY_SECONDS = 3600; // 1 hour
@@ -57,6 +68,8 @@ const tokenPayloadSchema = z.object({
   typ: z.literal(TOKEN_TYPE),
   key: z.string().min(1),
   expiresAt: z.string().min(1),
+  /** The org the token was minted for; absent for a key no org owns. */
+  org: z.string().min(1).optional(),
 });
 
 type TokenPayload = z.infer<typeof tokenPayloadSchema>;
@@ -79,22 +92,66 @@ function sign(payloadJson: string): string {
 }
 
 /**
+ * The one rule tying a token's `org` claim to a key: the claim must name the
+ * org the key belongs to, and be absent exactly when no org owns the key.
+ * Minting and the read route both ask it, so the two checks cannot drift.
+ */
+export function tokenOrgMatchesKey(org: string | null | undefined, key: string): boolean {
+  const keyOrg = orgOfKey(key);
+  // Under the reserved root but naming no org (`orgs//x/…`, `Orgs/x/…`): no
+  // claim matches, so no token can be minted for it or read it. Treating it as
+  // unowned would let a claimless token reach a path the filesystem resolves
+  // into some org's tree.
+  if (keyOrg === null && isUnderOrgRoot(key)) return false;
+  return (org ?? null) === keyOrg;
+}
+
+/** Who a token is minted for. */
+export interface StorageAccessTokenOptions {
+  /**
+   * The org the token is minted for. Required for an org-owned key, and must
+   * be that key's org; refused for a key no org owns.
+   */
+  orgId?: string;
+}
+
+/**
  * Generate a signed read token for a single storage key.
  *
  * @param key - The storage key this token grants access to, and only this key
  * @param expiresInSeconds - Lifetime, clamped to {@link MAX_EXPIRY_SECONDS}
+ * @param options - The org the token is minted for (see the module header)
+ * @throws when the key is outside `options.orgId`, or is org-owned and no org
+ *   was given
  */
 export function generateStorageAccessToken(
   key: string,
-  expiresInSeconds: number = DEFAULT_EXPIRY_SECONDS
+  expiresInSeconds: number = DEFAULT_EXPIRY_SECONDS,
+  options: StorageAccessTokenOptions = {}
 ): { token: string; expiresAt: Date } {
   if (!key) {
     throw new Error('Storage access token requires a key');
   }
 
+  const { orgId } = options;
+  if (!tokenOrgMatchesKey(orgId, key)) {
+    throw new Error(
+      orgId === undefined
+        ? 'Storage access token refused: an org-owned key can only be signed for its own org'
+        : 'Storage access token refused: the key is outside the org it was minted for'
+    );
+  }
+
   const ttl = Math.min(Math.max(Math.floor(expiresInSeconds), 1), MAX_EXPIRY_SECONDS);
   const expiresAt = new Date(Date.now() + ttl * 1000);
-  const payload: TokenPayload = { typ: TOKEN_TYPE, key, expiresAt: expiresAt.toISOString() };
+  const payload: TokenPayload = {
+    typ: TOKEN_TYPE,
+    key,
+    expiresAt: expiresAt.toISOString(),
+    // Left off entirely, not written as undefined, so a token for a key no org
+    // owns has exactly the shape it had before the claim existed.
+    ...(orgId !== undefined ? { org: orgId } : {}),
+  };
 
   const payloadJson = JSON.stringify(payload);
 
@@ -131,7 +188,7 @@ function describePayloadFailure(raw: unknown): string {
  *
  * Verifying tells you the token is authentic — **not** that it grants access
  * to the object being requested. The caller must compare `payload.key`
- * against the requested key.
+ * against the requested key, and `payload.org` against that key's org.
  */
 export function verifyStorageAccessToken(token: string): TokenPayload {
   const dotIndex = token.indexOf('.');
@@ -189,9 +246,10 @@ export function verifyStorageAccessToken(token: string): TokenPayload {
 export function buildStorageAccessUrl(
   key: string,
   expiresInSeconds?: number,
-  baseUrl?: string
+  baseUrl?: string,
+  options: StorageAccessTokenOptions = {}
 ): { url: string; expiresAt: Date } {
-  const { token, expiresAt } = generateStorageAccessToken(key, expiresInSeconds);
+  const { token, expiresAt } = generateStorageAccessToken(key, expiresInSeconds, options);
 
   // Each segment is encoded separately so the `/` separators survive.
   const encodedKey = key.split('/').map(encodeURIComponent).join('/');

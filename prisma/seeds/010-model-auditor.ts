@@ -5,7 +5,7 @@ import type { SeedUnit } from '@/prisma/runner';
 import { CAPABILITIES } from '@/lib/orchestration/model-audit/enums';
 import { serviceAccountWhere } from '@/lib/auth/account';
 
-export const APPLY_AUDIT_CHANGES_DEFINITION = {
+const APPLY_AUDIT_CHANGES_DEFINITION = {
   slug: 'apply_audit_changes',
   name: 'Apply Audit Changes',
   description:
@@ -47,6 +47,8 @@ export const APPLY_AUDIT_CHANGES_DEFINITION = {
                   'dimensions',
                   'schemaCompatible',
                   'quality',
+                  'inputCostPerMillionTokens',
+                  'outputCostPerMillionTokens',
                 ],
                 description: 'The auditable field name to update.',
               },
@@ -98,7 +100,7 @@ export const APPLY_AUDIT_CHANGES_DEFINITION = {
   },
 } as const;
 
-export const ADD_PROVIDER_MODELS_DEFINITION = {
+const ADD_PROVIDER_MODELS_DEFINITION = {
   slug: 'add_provider_models',
   name: 'Add Provider Models',
   description:
@@ -204,6 +206,16 @@ export const ADD_PROVIDER_MODELS_DEFINITION = {
                 type: 'string',
                 enum: ['high', 'medium', 'budget'],
               },
+              inputCostPerMillionTokens: {
+                type: 'number',
+                description:
+                  'Published USD price per 1M input tokens. Set together with outputCostPerMillionTokens, or omit both.',
+              },
+              outputCostPerMillionTokens: {
+                type: 'number',
+                description:
+                  'Published USD price per 1M output tokens. Set together with inputCostPerMillionTokens, or omit both.',
+              },
             },
             required: [
               'name',
@@ -225,7 +237,7 @@ export const ADD_PROVIDER_MODELS_DEFINITION = {
   },
 } as const;
 
-export const DEACTIVATE_PROVIDER_MODELS_DEFINITION = {
+const DEACTIVATE_PROVIDER_MODELS_DEFINITION = {
   slug: 'deactivate_provider_models',
   name: 'Deactivate Provider Models',
   description:

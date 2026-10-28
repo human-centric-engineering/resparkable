@@ -36,6 +36,14 @@ vi.mock('@/lib/logging', () => ({
   logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+// The spend gate runs beside the policy on every call and reads the org row
+// too; these tests count the policy's reads, so it is stubbed out. It has its
+// own tests (`spend-caps.test.ts`, `provider-spend-gate.test.ts`).
+vi.mock('@/lib/orchestration/llm/spend-caps', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/orchestration/llm/spend-caps')>()),
+  assertWithinSpendCaps: vi.fn(async () => undefined),
+}));
+
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import {

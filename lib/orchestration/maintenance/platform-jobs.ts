@@ -56,6 +56,7 @@ import { expireTransferArchives } from '@/lib/portability/jobs/expiry';
 import { processTransferJobs } from '@/lib/portability/jobs/worker';
 import { requireOrgId, runAsOrg } from '@/lib/tenancy/context';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { processPendingErasures } from '@/lib/privacy/erasure-requests';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
@@ -133,16 +134,20 @@ function job<T>(spec: {
  * | `pendingExecutionRecovery`| 2 min    | per-org | its own stale-pending threshold is 2 min                            |
  * | `evaluationRuns`          | every    | per-org | the worker drives one time-slice per tick, so cadence is throughput |
  * | `auditLogRetention`       | 1 hour   | system  | the two audit tables have no org; once, not once per org            |
- * | `platformAgents`          | 15 min   | per-org | catches up an org whose platform agents are behind the running code |
+ * | `platformAgents`          | 15 min   | per-org | catches up an org behind the running code or what it can reach      |
+ * | `pendingErasures`         | every    | system  | a throttled tick would report no work and let the idle gate skip it |
  * | `transferJobs`            | every    | system  | one job per tick, so cadence *is* throughput for a queued transfer  |
  * | `transferArchiveExpiry`   | 1 hour   | system  | the archive TTL is measured in days                                 |
  *
  * `platformAgents` does real work only after a deploy changes the platform
- * agents' definitions, or when an org's creation-time reconcile failed. An
- * org whose definitions name a capability or tag with no row yet is
- * reconciled (reads, and a warning) on every run until the row exists;
- * every other run is one `Org` read per org. Fifteen minutes bounds how long
- * a new org can be without its judges and clean-up assistant after a failure.
+ * agents' definitions, when an org's creation-time reconcile failed, or when
+ * a binding the platform picked is no longer its pick (t-798). An org whose
+ * definitions name a capability or tag with no row yet is reconciled (reads,
+ * and a warning) on every run until the row exists. Every other run is one
+ * `Org` read per org, plus the pick's reads where an agent picks its own
+ * binding. Fifteen minutes bounds how long a new org can be without its
+ * judges and clean-up assistant after a failure, and how long a binding
+ * stays behind what the org can reach.
  */
 export const PLATFORM_JOBS: readonly PlatformJob[] = [
   job({
@@ -233,6 +238,21 @@ export const PLATFORM_JOBS: readonly PlatformJob[] = [
       r.result !== undefined &&
       (r.result.created.length + r.result.updated.length + r.result.deactivated.length > 0 ||
         r.result.knowledge === 'created'),
+  }),
+  job({
+    name: 'pendingErasures',
+    // Every tick: a tick that throttled it would report it as no work, and
+    // the idle gate could then sleep past a pending erasure's next attempt.
+    // Two indexed reads when nothing is pending.
+    intervalMs: 0,
+    // A person's erasure spans every org they belong to, and `eraseUser()`
+    // enters the system scope itself at `multi`; per org it would erase the
+    // same person once per org.
+    scope: { system: 'pendingErasures: finish account deletions a request left pending (t-842)' },
+    run: () => processPendingErasures(),
+    // Any pending erasure counts, due or not: one waiting out its backoff must
+    // keep the idle gate from skipping past its next attempt.
+    foundWork: (r) => r.claimed > 0 || r.pending > 0,
   }),
   job({
     name: 'transferJobs',

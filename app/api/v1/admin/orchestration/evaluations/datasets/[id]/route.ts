@@ -21,6 +21,7 @@ import {
   datasetAccessBasis,
   logDatasetAccess,
 } from '@/lib/orchestration/access/dataset-access';
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
 import { NotFoundError, ConflictError } from '@/lib/api/errors';
@@ -57,7 +58,7 @@ export const GET = withAdminAuth<{ id: string }>(
 
     const { dataset, basis } = await loadDataset(id, session);
     const cases = await prisma.aiDatasetCase.findMany({
-      where: { datasetId: id },
+      where: { datasetId: id, dataset: datasetVisibilityWhere(session) },
       orderBy: { position: 'asc' },
       take: 50,
     });
@@ -73,6 +74,7 @@ export const GET = withAdminAuth<{ id: string }>(
     return successResponse({ dataset, cases });
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:
@@ -130,13 +132,24 @@ export const DELETE = withAdminAuth<{ id: string }>(
     const { dataset, basis } = await loadDataset(id, session);
     // Block delete when a non-terminal run still references this dataset —
     // worker must not pick up a run mid-delete and fail mid-pipeline.
-    const blockingRun = await prisma.aiEvaluationRun.findFirst({
-      where: { datasetId: id, status: { in: ['queued', 'running'] } },
-      select: { id: true, name: true, status: true },
-    });
+    // Anyone's run: a run another member queued against an orphan this caller
+    // may delete still blocks it, so this crosses owners to see it — and names
+    // the run only when it is the caller's own.
+    const blockingRun = await runAcrossOwners(
+      'dataset delete: a queued or running run on the dataset blocks it, whoever started it',
+      () =>
+        prisma.aiEvaluationRun.findFirst({
+          where: { datasetId: id, status: { in: ['queued', 'running'] } },
+          select: { id: true, name: true, status: true, userId: true },
+        })
+    );
     if (blockingRun) {
+      const which =
+        blockingRun.userId === session.user.id
+          ? `"${blockingRun.name}"`
+          : 'started by another admin';
       throw new ConflictError(
-        `Cannot delete dataset: it is referenced by an active run "${blockingRun.name}" (${blockingRun.status})`
+        `Cannot delete dataset: it is referenced by an active run ${which} (${blockingRun.status})`
       );
     }
 

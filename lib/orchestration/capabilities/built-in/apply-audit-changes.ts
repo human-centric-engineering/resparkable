@@ -16,6 +16,13 @@ import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
 import { invalidateModelCache } from '@/lib/orchestration/llm/provider-selector';
 import { updateProviderModelSchema } from '@/lib/validations/orchestration';
+import {
+  isHalfPrice,
+  numericStringToNumber,
+  PRICE_FIELDS,
+  PRICE_PAIR_MESSAGE,
+  touchesPricesAsPair,
+} from '@/lib/validations/model-pricing';
 import { BaseCapability } from '@/lib/orchestration/capabilities/base-capability';
 import { unwrapApprovalPayload } from '@/lib/orchestration/capabilities/approval-payload-unwrap';
 import type {
@@ -43,7 +50,22 @@ export const AUDITABLE_FIELDS = [
   'dimensions',
   'schemaCompatible',
   'quality',
+  // Chat pricing (t-774). Applied only as a pair; a price proposal must
+  // cite a source with a reference (`audit-proposals` schema).
+  'inputCostPerMillionTokens',
+  'outputCostPerMillionTokens',
 ] as const;
+
+/**
+ * Auditable fields whose values are numbers. The approval screen edits a
+ * proposed value as text, so an admin's modified `"3.5"` arrives as a
+ * string; it is read as the number it spells before validation.
+ */
+const NUMERIC_AUDIT_FIELDS: ReadonlySet<string> = new Set([...PRICE_FIELDS, 'dimensions']);
+
+function coerceNumeric(field: string, value: unknown): unknown {
+  return NUMERIC_AUDIT_FIELDS.has(field) ? numericStringToNumber(value) : value;
+}
 
 /**
  * Compare an auditable field's current value against the value the
@@ -271,108 +293,48 @@ export class ApplyAuditChangesCapability extends BaseCapability<Args, Data> {
     let capturedName: string | undefined = undefined;
     let capturedMetadata: unknown = undefined;
 
-    for (const change of changes) {
-      // Validate the proposed value against the update schema
-      const partial = { [change.field]: change.proposedValue };
-      const parsed = updateProviderModelSchema.safeParse(partial);
-
-      if (!parsed.success) {
-        results.push({
-          field: change.field,
-          previousValue: change.currentValue,
-          newValue: change.proposedValue,
-          status: 'invalid',
-          reason: parsed.error.issues.map((i) => i.message).join('; '),
-        });
-        invalid++;
-        continue;
+    const record = (outcome: AppliedChange[]): void => {
+      results.push(...outcome);
+      for (const r of outcome) {
+        if (r.status === 'applied') applied++;
+        else if (r.status === 'skipped') skipped++;
+        else invalid++;
       }
+    };
 
-      // Use the Zod-parsed value, not the raw proposedValue
-      const validatedValue = (parsed.data as Record<string, unknown>)[change.field];
-
-      // Atomic check-then-update inside a serializable transaction.
-      // The previous implementation read the model once at the top of
-      // the function and compared against that cached snapshot before
-      // writing — a TOCTOU window in which a concurrent admin edit
-      // could be silently overwritten (the cached snapshot still
-      // matched the audit's expected value, the drift check passed,
-      // and the write clobbered the operator's change without
-      // surfacing it in `results`). Re-reading inside a serializable
-      // transaction collapses the gap to zero.
-      let outcome: 'applied' | 'drift' | 'missing' | 'error';
-      let driftActualValue: unknown = undefined;
-      let updateError: string | null = null;
-      try {
-        outcome = await prisma.$transaction(
-          async (tx) => {
-            const fresh = await tx.aiProviderModel.findUnique({ where: { id: modelId } });
-            if (!fresh) return 'missing' as const;
-            if (capturedName === undefined) {
-              capturedName = fresh.name;
-              capturedMetadata = fresh.metadata;
-            }
-            const current = (fresh as Record<string, unknown>)[change.field];
-            if (!valuesEqual(current, change.currentValue)) {
-              driftActualValue = current;
-              return 'drift' as const;
-            }
-            await tx.aiProviderModel.update({
-              where: { id: modelId },
-              data: {
-                [change.field]: validatedValue,
-              },
-            });
-            return 'applied' as const;
-          },
-          { isolationLevel: 'Serializable' }
+    // Each change is its own unit, except the two prices, which apply
+    // together or not at all (t-774): half a price records the other half
+    // of every turn at $0. An admin who accepts one and rejects the other
+    // gets neither.
+    const priceChanges = changes.filter((c) => PRICE_FIELDS.has(c.field));
+    const units: Array<typeof changes> = changes
+      .filter((c) => !PRICE_FIELDS.has(c.field))
+      .map((c) => [c]);
+    if (priceChanges.length > 0) {
+      if (touchesPricesAsPair(priceChanges.map((c) => c.field))) {
+        units.push(priceChanges);
+      } else {
+        record(
+          priceChanges.map((c) => ({
+            field: c.field,
+            previousValue: c.currentValue,
+            newValue: c.proposedValue,
+            status: 'invalid' as const,
+            reason:
+              'Input and output prices apply as a pair: accept both, or neither, exactly once each',
+          }))
         );
-      } catch (err) {
-        updateError = err instanceof Error ? err.message : 'Unknown error';
-        outcome = 'error';
       }
+    }
 
-      switch (outcome) {
-        case 'applied':
-          results.push({
-            field: change.field,
-            previousValue: change.currentValue,
-            newValue: validatedValue,
-            status: 'applied',
-          });
-          applied++;
-          break;
-        case 'drift':
-          results.push({
-            field: change.field,
-            previousValue: driftActualValue,
-            newValue: change.proposedValue,
-            status: 'skipped',
-            reason: `Field value changed since audit (expected ${JSON.stringify(change.currentValue)}, found ${JSON.stringify(driftActualValue)})`,
-          });
-          skipped++;
-          break;
-        case 'missing':
-          results.push({
-            field: change.field,
-            previousValue: change.currentValue,
-            newValue: change.proposedValue,
-            status: 'invalid',
-            reason: `Provider model ${modelId} no longer exists`,
-          });
-          invalid++;
-          break;
-        case 'error':
-          results.push({
-            field: change.field,
-            previousValue: change.currentValue,
-            newValue: change.proposedValue,
-            status: 'invalid',
-            reason: `Database update failed: ${updateError ?? 'unknown'}`,
-          });
-          invalid++;
-          break;
-      }
+    for (const unit of units) {
+      const outcome = await this.applyUnit(modelId, unit, (fresh) => {
+        if (capturedName === undefined) {
+          capturedName = fresh.name;
+          capturedMetadata = fresh.metadata;
+        }
+      });
+      record(outcome);
     }
 
     const modelName = capturedName ?? 'unknown';
@@ -427,5 +389,145 @@ export class ApplyAuditChangesCapability extends BaseCapability<Args, Data> {
       invalid,
       changes: results,
     };
+  }
+  /**
+   * Validate and apply a set of changes as one unit: all are checked for
+   * drift and written in a single serializable transaction, or none are.
+   *
+   * Atomic check-then-update: the previous implementation read the model
+   * once and compared against that cached snapshot before writing — a
+   * TOCTOU window in which a concurrent admin edit could be silently
+   * overwritten. Re-reading inside a serializable transaction collapses
+   * the gap to zero.
+   */
+  private async applyUnit(
+    modelId: string,
+    unit: z.infer<typeof singleModelSchema>['changes'],
+    onFound: (fresh: { name: string; metadata: unknown }) => void
+  ): Promise<AppliedChange[]> {
+    // Validate every proposed value against the update schema first.
+    const validated: Array<{ change: (typeof unit)[number]; value: unknown }> = [];
+    const invalidResults: AppliedChange[] = [];
+    for (const change of unit) {
+      const proposed = coerceNumeric(change.field, change.proposedValue);
+      const parsed = updateProviderModelSchema.safeParse({ [change.field]: proposed });
+      if (!parsed.success) {
+        invalidResults.push({
+          field: change.field,
+          previousValue: change.currentValue,
+          newValue: change.proposedValue,
+          status: 'invalid',
+          reason: parsed.error.issues.map((i) => i.message).join('; '),
+        });
+        continue;
+      }
+      // Use the Zod-parsed value, not the raw proposedValue
+      validated.push({
+        change,
+        value: (parsed.data as Record<string, unknown>)[change.field],
+      });
+    }
+    if (invalidResults.length > 0) {
+      // One invalid value sinks the unit; its partners are reported too.
+      return [
+        ...invalidResults,
+        ...validated.map(({ change }) => ({
+          field: change.field,
+          previousValue: change.currentValue,
+          newValue: change.proposedValue,
+          status: 'invalid' as const,
+          reason: 'Not applied: its paired change is invalid',
+        })),
+      ];
+    }
+
+    // A price pair must leave both set or both cleared: one number beside a
+    // `null` is half a price, which the update schema accepts field by field
+    // and the database refuses (`ai_provider_model_price_pair`).
+    const prices = validated.filter(({ change }) => PRICE_FIELDS.has(change.field));
+    if (prices.length === 2 && isHalfPrice(prices[0].value, prices[1].value)) {
+      return prices.map(({ change }) => ({
+        field: change.field,
+        previousValue: change.currentValue,
+        newValue: change.proposedValue,
+        status: 'invalid' as const,
+        reason: PRICE_PAIR_MESSAGE,
+      }));
+    }
+
+    let outcome: 'applied' | 'drift' | 'missing' | 'error';
+    const drift: Record<string, unknown> = {};
+    let updateError: string | null = null;
+    try {
+      outcome = await prisma.$transaction(
+        async (tx) => {
+          const fresh = await tx.aiProviderModel.findUnique({ where: { id: modelId } });
+          if (!fresh) return 'missing' as const;
+          onFound(fresh);
+          for (const { change } of validated) {
+            const current = (fresh as Record<string, unknown>)[change.field];
+            // A model may write a numeric currentValue as a string ("3");
+            // read it the way the proposed value is read, so a match is not
+            // mistaken for drift.
+            const expected = coerceNumeric(change.field, change.currentValue);
+            if (!valuesEqual(current, expected)) drift[change.field] = current;
+          }
+          if (Object.keys(drift).length > 0) return 'drift' as const;
+          await tx.aiProviderModel.update({
+            where: { id: modelId },
+            data: Object.fromEntries(validated.map(({ change, value }) => [change.field, value])),
+          });
+          return 'applied' as const;
+        },
+        { isolationLevel: 'Serializable' }
+      );
+    } catch (err) {
+      updateError = err instanceof Error ? err.message : 'Unknown error';
+      outcome = 'error';
+    }
+
+    return validated.map(({ change, value }): AppliedChange => {
+      switch (outcome) {
+        case 'applied':
+          return {
+            field: change.field,
+            previousValue: change.currentValue,
+            newValue: value,
+            status: 'applied',
+          };
+        case 'drift':
+          return change.field in drift
+            ? {
+                field: change.field,
+                previousValue: drift[change.field],
+                newValue: change.proposedValue,
+                status: 'skipped',
+                reason: `Field value changed since audit (expected ${JSON.stringify(change.currentValue)}, found ${JSON.stringify(drift[change.field])})`,
+              }
+            : {
+                field: change.field,
+                previousValue: change.currentValue,
+                newValue: change.proposedValue,
+                status: 'skipped',
+                reason: 'Not applied: its paired field changed since audit',
+              };
+        case 'missing':
+          return {
+            field: change.field,
+            previousValue: change.currentValue,
+            newValue: change.proposedValue,
+            status: 'invalid',
+            reason: `Provider model ${modelId} no longer exists`,
+          };
+        case 'error':
+          return {
+            field: change.field,
+            previousValue: change.currentValue,
+            newValue: change.proposedValue,
+            status: 'invalid',
+            reason: `Database update failed: ${updateError ?? 'unknown'}`,
+          };
+      }
+    });
   }
 }

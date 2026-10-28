@@ -17,6 +17,7 @@ import { Prisma } from '@prisma/client';
 import { INSTALL_ORG_ID, INSTALL_ORG_SLUG } from '@/lib/tenancy/constants';
 import { DEFAULT_ORG_ROLE, ORG_ADMIN_ROLE, ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
 import { PLATFORM_ADMIN_ROLE, DEFAULT_USER_ROLE } from '@/lib/auth/roles';
+import { uniqueViolationError } from '@/tests/helpers/prisma-errors';
 
 const db = vi.hoisted(() => ({
   org: { findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
@@ -28,7 +29,7 @@ const db = vi.hoisted(() => ({
     count: vi.fn(),
     upsert: vi.fn(),
   },
-  user: { findUnique: vi.fn() },
+  user: { findUnique: vi.fn(), update: vi.fn() },
   $transaction: vi.fn(),
 }));
 vi.mock('@/lib/db/client', () => ({ prisma: db }));
@@ -48,12 +49,14 @@ vi.mock('@/lib/orchestration/agents/reconcile-platform-agents', () => ({
 import {
   addMember,
   changeMemberRole,
+  checkInvitationInto,
   createOrg,
   OrgLifecycleError,
   removeMember,
   resolveOrgResource,
   syncInstallMembershipRole,
   updateOrg,
+  updateOrgReportingPrevious,
 } from '@/lib/tenancy/lifecycle';
 import { APIError } from '@/lib/api/errors';
 import { logger } from '@/lib/logging';
@@ -183,6 +186,34 @@ describe('createOrg', () => {
     expect(mockReconcile).not.toHaveBeenCalled();
   });
 
+  it('answers a slug taken by a race past the pre-check as SLUG_TAKEN, like the pre-check (t-814)', async () => {
+    db.org.findUnique.mockResolvedValue(null); // free when checked
+    db.org.create.mockRejectedValue(
+      uniqueViolationError({ index: 'org_slug_key', modelName: 'Org' })
+    );
+
+    const error = await refusal(() => createOrg({ slug: 'other', name: 'x' }));
+
+    expect(error.code).toBe('SLUG_TAKEN');
+    expect(error.status).toBe(409);
+    expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it('leaves a unique violation on another constraint to the shared handler (t-814)', async () => {
+    db.org.findUnique.mockResolvedValue(null);
+    db.user.findUnique.mockResolvedValue(human(OWNER));
+    db.org.create.mockResolvedValue(orgRow());
+    const collision = uniqueViolationError({
+      index: 'org_membership_orgId_userId_key',
+      modelName: 'OrgMembership',
+    });
+    db.orgMembership.create.mockRejectedValue(collision);
+
+    await expect(createOrg({ slug: 'other', name: 'x', ownerUserId: OWNER })).rejects.toBe(
+      collision
+    );
+  });
+
   it('refuses a missing owner, and the SERVICE account, without creating the org', async () => {
     db.org.findUnique.mockResolvedValue(null);
     db.user.findUnique.mockResolvedValueOnce(null);
@@ -260,6 +291,26 @@ describe('updateOrg', () => {
     expect((await refusal(() => updateOrg(ORG, { slug: 'taken' }))).code).toBe('SLUG_TAKEN');
     expect(db.org.update).not.toHaveBeenCalled();
   });
+
+  it('answers a rename racing another past the slug check as SLUG_TAKEN (t-814)', async () => {
+    db.org.findUnique.mockResolvedValueOnce(orgRow()).mockResolvedValueOnce(null); // free when checked
+    db.org.update.mockRejectedValue(
+      uniqueViolationError({ index: 'org_slug_key', modelName: 'Org' })
+    );
+
+    const error = await refusal(() => updateOrg(ORG, { slug: 'renamed' }));
+
+    expect(error.code).toBe('SLUG_TAKEN');
+    expect(error.status).toBe(409);
+  });
+
+  it('leaves a unique violation on another constraint of a rename to the shared handler', async () => {
+    db.org.findUnique.mockResolvedValueOnce(orgRow()).mockResolvedValueOnce(null);
+    const collision = uniqueViolationError({ index: 'some_other_key', modelName: 'Org' });
+    db.org.update.mockRejectedValue(collision);
+
+    await expect(updateOrg(ORG, { slug: 'renamed' })).rejects.toBe(collision);
+  });
 });
 
 describe('addMember', () => {
@@ -278,6 +329,62 @@ describe('addMember', () => {
     expect(membership.role).toBe(ORG_ADMIN_ROLE);
     // An explicit role is honoured even on an empty org — the caller chose it.
     expect(db.orgMembership.count).not.toHaveBeenCalled();
+  });
+
+  it('pays a surviving signup record before adding, and clears it (t-838)', async () => {
+    // Their signup decided org INVITED and its write failed; an admin now adds
+    // them to ORG. They get both, and the record goes, so a later removal
+    // from every org is never healed back.
+    const INVITED = 'cmorg000000000000000invtd';
+    db.user.findUnique.mockResolvedValue({
+      ...human(OTHER),
+      signupOrgId: INVITED,
+      signupOrgRole: ORG_ADMIN_ROLE,
+    });
+    db.org.findUnique.mockResolvedValue(orgRow());
+    db.orgMembership.count.mockResolvedValue(3);
+
+    await addMember(ORG, OTHER, DEFAULT_ORG_ROLE, AS_OWNER);
+
+    expect(db.orgMembership.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: { orgId: INVITED, userId: OTHER, role: ORG_ADMIN_ROLE },
+      })
+    );
+    expect(db.orgMembership.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { orgId: ORG, userId: OTHER, role: DEFAULT_ORG_ROLE } })
+    );
+    expect(db.user.update).toHaveBeenCalledWith({
+      where: { id: OTHER },
+      data: { signupOrgId: null, signupOrgRole: null },
+    });
+  });
+
+  it('a role the caller asked for wins over the one a healed record wrote for the same org (review round 3)', async () => {
+    db.user.findUnique.mockResolvedValue({
+      ...human(OTHER),
+      signupOrgId: ORG,
+      signupOrgRole: DEFAULT_ORG_ROLE,
+    });
+    db.orgMembership.count.mockResolvedValue(3);
+    // The healed row is what the second read finds.
+    db.orgMembership.findUnique
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'm1', orgId: ORG, userId: OTHER, role: DEFAULT_ORG_ROLE });
+    db.orgMembership.update.mockResolvedValue({
+      id: 'm1',
+      orgId: ORG,
+      userId: OTHER,
+      role: ORG_ADMIN_ROLE,
+    });
+
+    const membership = await addMember(ORG, OTHER, ORG_ADMIN_ROLE, AS_OWNER);
+
+    expect(membership.role).toBe(ORG_ADMIN_ROLE);
+    expect(db.orgMembership.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { role: ORG_ADMIN_ROLE } })
+    );
+    expect(db.orgMembership.create).not.toHaveBeenCalled();
   });
 
   it('defaults to MEMBER in a populated org, and OWNER for the first member of an empty one', async () => {
@@ -519,7 +626,11 @@ describe('syncInstallMembershipRole (ruling a)', () => {
   });
 
   it('accepts a transaction client', async () => {
-    const tx = { orgMembership: { upsert: vi.fn().mockResolvedValue({ role: DEFAULT_ORG_ROLE }) } };
+    const tx = {
+      orgMembership: { upsert: vi.fn().mockResolvedValue({ role: DEFAULT_ORG_ROLE }) },
+      user: { findUnique: vi.fn().mockResolvedValue(null) },
+      org: { findUnique: vi.fn() },
+    };
     await syncInstallMembershipRole(human(OWNER), tx as never);
     expect(tx.orgMembership.upsert).toHaveBeenCalled();
     expect(db.orgMembership.upsert).not.toHaveBeenCalled();
@@ -697,6 +808,28 @@ describe('updateOrg — the retention slice (§108 t-713)', () => {
     );
   });
 
+  it('reports the settings the write replaced, read inside its transaction', async () => {
+    // What the caps audit entry records as "from" (§110 t-788).
+    const before = { quotas: { monthlyBudgetUsd: 10 }, branding: { logo: 'x' } };
+    stored(before);
+
+    const result = await updateOrgReportingPrevious(ORG, {
+      settings: { quotas: { monthlyBudgetUsd: 20 } },
+    });
+
+    expect(result.previousSettings).toEqual(before);
+    expect(result.org).toEqual(orgRow());
+  });
+
+  it('reports the current settings as the previous ones for a patch that leaves them alone', async () => {
+    db.org.findUnique.mockResolvedValue({ ...orgRow(), settings: { branding: { logo: 'y' } } });
+    db.org.update.mockResolvedValue(orgRow());
+
+    const result = await updateOrgReportingPrevious(ORG, { name: 'Renamed' });
+
+    expect(result.previousSettings).toEqual({ branding: { logo: 'y' } });
+  });
+
   it('takes no transaction when the patch does not touch settings', async () => {
     db.org.findUnique.mockResolvedValue(orgRow());
     db.org.update.mockResolvedValue(orgRow());
@@ -716,4 +849,67 @@ describe('updateOrg — the retention slice (§108 t-713)', () => {
     expect(error.code).toBe('ORG_NOT_FOUND');
     expect(db.org.update).not.toHaveBeenCalled();
   });
+});
+
+describe('checkInvitationInto (§111 t-813)', () => {
+  it('refuses an OWNER invitation without owner standing before any read', async () => {
+    const error = await refusal(() => checkInvitationInto(ORG, ORG_OWNER_ROLE, AS_ADMIN));
+
+    expect(error.code).toBe('OWNER_STANDING');
+    expect(error.status).toBe(403);
+    expect(db.org.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a platform admin', AS_PLATFORM],
+    ['an org OWNER', AS_OWNER],
+  ])('lets %s invite an OWNER into an active org', async (_label, actor) => {
+    db.org.findUnique.mockResolvedValue(orgRow());
+
+    await expect(checkInvitationInto(ORG, ORG_OWNER_ROLE, actor)).resolves.toBeUndefined();
+
+    expect(db.org.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: ORG } }));
+  });
+
+  it('refuses the install org before any read', async () => {
+    const error = await refusal(() => checkInvitationInto(INSTALL_ORG_ID, undefined, AS_PLATFORM));
+
+    expect(error.code).toBe('INSTALL_ORG_MEMBERSHIP');
+    expect(error.status).toBe(400);
+    expect(db.org.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('gives the install org as the reason even to an ADMIN asking for OWNER', async () => {
+    const error = await refusal(() =>
+      checkInvitationInto(INSTALL_ORG_ID, ORG_OWNER_ROLE, AS_ADMIN)
+    );
+
+    expect(error.code).toBe('INSTALL_ORG_MEMBERSHIP');
+  });
+
+  it('is ORG_NOT_FOUND when the org does not exist', async () => {
+    db.org.findUnique.mockResolvedValue(null);
+
+    const error = await refusal(() => checkInvitationInto(ORG, undefined, AS_PLATFORM));
+
+    expect(error.code).toBe('ORG_NOT_FOUND');
+    expect(error.status).toBe(404);
+  });
+
+  it('refuses a suspended org with ORG_NOT_ACTIVE (400)', async () => {
+    db.org.findUnique.mockResolvedValue(orgRow({ status: 'SUSPENDED' }));
+
+    const error = await refusal(() => checkInvitationInto(ORG, ORG_ADMIN_ROLE, AS_ADMIN));
+
+    expect(error.code).toBe('ORG_NOT_ACTIVE');
+    expect(error.status).toBe(400);
+  });
+
+  it.each([[DEFAULT_ORG_ROLE], [undefined], [ORG_ADMIN_ROLE]])(
+    'lets an org ADMIN invite role %s into an active org',
+    async (role) => {
+      db.org.findUnique.mockResolvedValue(orgRow());
+      await expect(checkInvitationInto(ORG, role, AS_ADMIN)).resolves.toBeUndefined();
+    }
+  );
 });

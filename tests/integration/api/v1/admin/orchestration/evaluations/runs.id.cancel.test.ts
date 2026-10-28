@@ -163,7 +163,7 @@ describe('POST /api/v1/admin/orchestration/evaluations/runs/:id/cancel', () => {
     const data = await parseJson<{ data: { status: string } }>(response);
     expect(data.data.status).toBe('cancelled');
     expect(vi.mocked(prisma.aiEvaluationRun.update)).toHaveBeenCalledWith({
-      where: { id: RUN_ID },
+      where: { id: RUN_ID, userId: mockAdminUser().user.id },
       data: expect.objectContaining({
         status: 'cancelled',
         lockedBy: null,

@@ -39,6 +39,7 @@ import {
   listValidApiKeyScopes,
   type ApiKeyScope,
 } from '@/lib/auth/api-keys';
+import { isPlatformAdmin } from '@/lib/auth/roles';
 import { logger } from '@/lib/logging';
 import { loggablePath } from '@/lib/logging/redact-path';
 import {
@@ -51,8 +52,10 @@ import {
   type SubjectFilter,
 } from '@/lib/auth/authorization';
 import { resolveUnattributedReads, type UnattributedReads } from '@/lib/auth/orphan-reads';
+import type { AdminTier } from '@/lib/auth/admin-tier';
 import { env } from '@/lib/env';
 import { runAsOrg } from '@/lib/tenancy/context';
+import { runAsSubject } from '@/lib/auth/subject-context';
 import {
   enterApiKeyOrg,
   enterSessionOrg,
@@ -61,6 +64,11 @@ import {
   type OrgRefusal,
 } from '@/lib/tenancy/entry';
 import { TENANT_HEADER_NAME } from '@/lib/tenancy/resolver';
+import {
+  isRefusedReadOnlyWrite,
+  presentedRole,
+  presentedSession,
+} from '@/lib/auth/support-principal';
 import {
   canChangeSharedSettings,
   SHARED_SETTINGS_REFUSAL,
@@ -115,11 +123,12 @@ export interface AuthSession {
  *
  * A handler that reconstructed one got it **wrong in the widening direction**.
  * `administersEverything()` branches on `credential` and `scopes`: an
- * `api-key` principal is judged by `hasScope(scopes, 'admin')`, a `session`
- * principal by the platform role. `withAuth` accepts a key of any scope, so
- * assuming `credential: 'session'` means a `chat`-scoped key held by a user
- * whose role is `ADMIN` is judged by the role — `subjectScope` answers `{}`
- * (every subject) where it should answer `{ userId }`. That is the credential
+ * `api-key` principal is judged by `hasScope(scopes, 'admin')` together with
+ * its owner's platform role (#746), a `session` principal by the role alone.
+ * `withAuth` accepts a key of any scope, so assuming `credential: 'session'`
+ * means a `chat`-scoped key held by a user whose role is `ADMIN` is judged by
+ * the role — `subjectScope` answers `{}` (every subject) where it should
+ * answer `{ userId }`. That is the credential
  * narrowing #542 exists to hold, undone by a plausible-looking helper.
  *
  * It was also invisible to `checkAuthorizationParity`: the guard asked
@@ -393,6 +402,21 @@ export interface WithAdminAuthOptions<TParams = Record<string, string>> {
    * fails naming any route that writes one of those models without it.
    */
   writesSharedSettings?: true;
+  /**
+   * This route is part of an org-tier surface: the customer's, not the
+   * platform's (§111 t-810). Passed to the policy as `scope.tier`, where the
+   * default policy admits an org OWNER/ADMIN of the entered org as well as a
+   * platform admin. Absent — every route that has not opted in, a fork's
+   * included — the route stays platform-only.
+   *
+   * Opening a route is a reviewed diff in two places: here, and
+   * `ORG_TIER_ADMIN_ROUTES` in `lib/auth/admin-tier.ts`, which
+   * `tests/unit/scripts/ci/admin-tier-roster.test.ts` holds to the tree. It
+   * widens admission only: the handler still runs in the entered org, so what
+   * it reads is that org's by row isolation, and `writesSharedSettings` still
+   * refuses a shared-settings write from outside the install org.
+   */
+  tier?: AdminTier;
 }
 
 /**
@@ -410,7 +434,9 @@ function principalOf(
 ): AuthorizationPrincipal {
   return {
     userId: session.user.id,
-    role: session.user.role,
+    // A support session presents the default user role, never the platform
+    // one (§121 t-824, `lib/auth/support-principal.ts`).
+    role: presentedRole(session.user.role, entry),
     credential,
     scopes,
     // The org facts ride on the principal (§106): the guard is the one writer,
@@ -478,6 +504,20 @@ async function sessionEntryFor(
   );
   if (isOrgRefusal(entry)) {
     refuseOrgEntry(guard, request, principalOf(session, 'session'), entry);
+  }
+  // A READ_ONLY support grant refuses every write here, before the resolver,
+  // the policy or the handler runs (§121 t-824) — one rule in the one place
+  // both guards enter a session's org, so no route can forget it.
+  if (isRefusedReadOnlyWrite(entry, request.method)) {
+    logger.warn('tenancy: refused a write under a read-only support grant', {
+      guard,
+      path: loggablePath(request.nextUrl?.pathname),
+      method: request.method,
+      userId: session.user.id,
+      orgId: entry.orgId,
+      grantId: entry.support?.grantId,
+    });
+    throw new ForbiddenError('Support access to this organisation is read-only');
   }
   return entry;
 }
@@ -640,7 +680,9 @@ export class OwnershipDecisionMissingError extends Error {
  * Four ways to satisfy it:
  *
  * 1. `ownership: { decidedBy: 'policy' }` **and** the handler read
- *    `session.subjectFilter`. Declaring without reading is reported separately,
+ *    `session.subjectFilter`, or a personal read the owner layer checked for
+ *    this caller passed and the route read no personal model the layer does
+ *    not check yet (`lib/db/owner-extension.ts`). Declaring without reading is reported separately,
  *    with its own message, because it is a different mistake: the author knew
  *    the rule and the query still went out unnarrowed.
  * 2. `ownership: { decidedBy: 'resource', … }` — the policy decided about the
@@ -672,6 +714,18 @@ function reportOwnershipGap(options: {
   responseCarriedRows: boolean;
   filter: SubjectFilter;
   filterRead: boolean;
+  /**
+   * The data layer checked a personal read for this caller and it passed
+   * (§115 t-801): the owner layer narrowed for the route, so a `'policy'`
+   * route that relied on it has used the policy's answer.
+   */
+  dataLayerConfined: boolean;
+  /**
+   * The route read a personal model the owner layer does not check yet. That
+   * read was narrowed by nothing but the route, so {@link dataLayerConfined}
+   * says nothing about it and does not excuse the route.
+   */
+  dataLayerUnchecked: boolean;
   principal: AuthorizationPrincipal;
   state: OwnershipReportState;
 }): void {
@@ -698,10 +752,15 @@ function reportOwnershipGap(options: {
       // return successResponse({ items: [] })` — lands here honestly, having
       // answered nobody's query. There is no way to tell it apart from a route
       // that forgot, so it is reported and the remedy is one line: read the
-      // filter before the early return.
-      complaint = options.filterRead
-        ? null
-        : `${options.guard}: this route declares ownership { decidedBy: 'policy' } but never read session.subjectFilter, so the policy did not narrow anything it did. If the handler returned early without building its query, read the filter before that return.`;
+      // filter before the early return. A read the owner layer checked and
+      // passed counts too (§115 t-801): the data layer narrowed it for the
+      // route, which is the answer the declaration promised — unless the
+      // route also read a personal model the layer does not check yet, which
+      // nothing narrowed.
+      complaint =
+        options.filterRead || (options.dataLayerConfined && !options.dataLayerUnchecked)
+          ? null
+          : `${options.guard}: this route declares ownership { decidedBy: 'policy' } but never read session.subjectFilter, so the policy did not narrow anything it did. If the handler returned early without building its query, read the filter before that return.`;
       break;
     case 'resource':
       // The arm whose entire meaning is "the resolver decided". With no
@@ -968,7 +1027,7 @@ export function withAuth(
           handler,
           request: request as NextRequest,
           context: context as RouteContext | undefined,
-          session,
+          session: presentedSession(session, entry),
           principal,
           ownership: options?.ownership,
           declaredResource: options?.resource !== undefined,
@@ -997,7 +1056,13 @@ function orgScope(entry: OrgEntry | null): { org?: string } {
  * which at `single` still resolves to the install org for whatever asks.
  */
 function inTenantScope<T>(entry: OrgEntry | null, fn: () => Promise<T>): Promise<T> {
-  return entry ? runAsOrg(entry.orgId, fn, { source: entry.source, role: entry.role }) : fn();
+  return entry
+    ? runAsOrg(entry.orgId, fn, {
+        source: entry.source,
+        role: entry.role,
+        ...(entry.support ? { support: entry.support } : {}),
+      })
+    : fn();
 }
 
 /**
@@ -1074,6 +1139,8 @@ async function runHandler(args: {
   // it without reaching into an object this module does not own.
   const filter: SubjectFilter = filterIsUsable ? { ...(await subjectScope(args.principal)) } : {};
   let filterRead = false;
+  let dataLayerConfined = false;
+  let dataLayerUnchecked = false;
 
   // One principal, built by the guard and handed on — never rebuilt by the
   // handler. See {@link AuthenticatedSession} for what reconstruction cost.
@@ -1129,10 +1196,32 @@ async function runHandler(args: {
   // literal so the accessor still satisfies the interface at construction.
   Object.defineProperty(authenticated, 'subjectFilter', { enumerable: false });
 
-  const response =
-    args.context !== undefined
-      ? await args.handler(args.request, authenticated, args.context)
-      : await args.handler(args.request, authenticated);
+  // The handler runs as this principal, so the data layer can ask whose rows it
+  // may read (§115, `lib/auth/subject-context.ts`) without the route passing
+  // anything down. Handed the filter when it was computed above, so the route
+  // and the data layer are given the same answer; asked lazily otherwise, so a
+  // `'self'` route that never touches a personal model still costs nothing.
+  const response = await runAsSubject(
+    {
+      principal: args.principal,
+      filter: filterIsUsable ? filter : undefined,
+      resolveFilter: () => subjectScope(args.principal),
+      unattributedReads,
+      // A share is consent to the admin surface, where each shared read is
+      // audit-logged — so only there does the owner layer honour one.
+      readsShared: args.guard === 'withAdminAuth',
+      onConfinedRead: () => {
+        dataLayerConfined = true;
+      },
+      onUncheckedRead: () => {
+        dataLayerUnchecked = true;
+      },
+    },
+    async () =>
+      args.context !== undefined
+        ? await args.handler(args.request, authenticated, args.context)
+        : await args.handler(args.request, authenticated)
+  );
 
   // After the handler, not before: whether it consulted the filter is only
   // knowable once it has run. A handler that threw is not checked — no response
@@ -1151,6 +1240,8 @@ async function runHandler(args: {
     responseCarriedRows: response.ok,
     filter,
     filterRead,
+    dataLayerConfined,
+    dataLayerUnchecked,
     principal: args.principal,
   });
 
@@ -1229,11 +1320,11 @@ export function withAdminAuth(
       const [request, context] = args;
 
       // API-key fallback (Phase 4): admin-scoped keys can hit admin
-      // endpoints headlessly. The user behind the key needs neither
-      // `role: 'ADMIN'` nor an active session cookie — the scope is the
-      // capability check. Any key without `admin` scope is rejected
-      // here with 403 rather than falling through to the cookie path
-      // (which would 401 a key-bearing caller and confuse CI).
+      // endpoints headlessly, with no session cookie. The key needs the
+      // `admin` scope, and its owner must still be a platform admin (#746).
+      // Any key without `admin` scope is rejected here with 403 rather than
+      // falling through to the cookie path (which would 401 a key-bearing
+      // caller and confuse CI).
       const apiKey = await resolveApiKey(request as NextRequest);
       let session: AuthSession;
       let principal: AuthorizationPrincipal;
@@ -1257,6 +1348,14 @@ export function withAdminAuth(
         // (`bound-admin-key`), so neither guard admits it anywhere.
         if (!hasScope(apiKey.scopes, 'admin') || apiKey.orgId) {
           throw new ForbiddenError('Admin scope required');
+        }
+        // The third clause (#746, owner ruling 2026-10-17): an admin key works
+        // only while its owner is a platform admin. `resolveApiKey` reads the
+        // owner's role on every request, so demoting them stops the key and
+        // re-promoting restores it. Same 403 wording as a session that is not
+        // an admin, so it does not say whose role changed.
+        if (!isPlatformAdmin(apiKey.session.user)) {
+          throw new ForbiddenError('Admin access required');
         }
         session = apiKey.session;
         // An admin key is a platform credential: no org is entered (§106,
@@ -1293,7 +1392,10 @@ export function withAdminAuth(
         // and look at their key would send them to the one place that is fine.
         if (
           resource === UNRESOLVED ||
-          !(await canAdminister(principal, resource, orgScope(entry)))
+          !(await canAdminister(principal, resource, {
+            ...orgScope(entry),
+            ...(options?.tier ? { tier: options.tier } : {}),
+          }))
         ) {
           // Same reason as the `canRead` refusal above: the guard owns the
           // decision, so it owns the record of refusing.
@@ -1328,7 +1430,7 @@ export function withAdminAuth(
           handler,
           request: request as NextRequest,
           context: context as RouteContext | undefined,
-          session,
+          session: presentedSession(session, entry),
           principal,
           ownership: options?.ownership,
           declaredResource: options?.resource !== undefined,

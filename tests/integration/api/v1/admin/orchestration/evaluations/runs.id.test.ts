@@ -33,6 +33,7 @@ vi.mock('next/headers', () => ({
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiEvaluationRun: { findFirst: vi.fn() },
+    aiDataset: { findFirst: vi.fn() },
   },
 }));
 
@@ -54,6 +55,7 @@ import { prisma } from '@/lib/db/client';
 const ADMIN_ID = 'cmjbv4i3x00003wsloputgwul';
 const RUN_ID = 'cmjbv4i3x00003wsloputgwu1';
 const INVALID_ID = 'not-a-cuid';
+const DATASET = { id: 'd', name: 'Dataset', caseCount: 3, contentHash: 'h' };
 
 function makeRunRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -64,7 +66,7 @@ function makeRunRow(overrides: Record<string, unknown> = {}) {
     progress: { casesTotal: 3, casesDone: 1, casesFailed: 0 },
     agent: { id: 'a', name: 'Agent', slug: 'agent' },
     workflow: null,
-    dataset: { id: 'd', name: 'Dataset', caseCount: 3, contentHash: 'h' },
+    datasetId: 'd',
     _count: { results: 1 },
     ...overrides,
   };
@@ -130,9 +132,10 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs/:id', () => {
     );
   });
 
-  it('returns 200 with run + includes on happy path', async () => {
+  it('returns 200 with the run and its dataset on happy path', async () => {
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
     vi.mocked(prisma.aiEvaluationRun.findFirst).mockResolvedValue(makeRunRow() as never);
+    vi.mocked(prisma.aiDataset.findFirst).mockResolvedValue(DATASET as never);
 
     const response = await GET(makeGetRequest(RUN_ID), makeParams(RUN_ID));
 
@@ -143,7 +146,7 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs/:id', () => {
         id: string;
         status: string;
         agent: { id: string };
-        dataset: { id: string };
+        dataset: typeof DATASET | null;
         _count: { results: number };
       };
     }>(response);
@@ -151,16 +154,31 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs/:id', () => {
     expect(data.data.id).toBe(RUN_ID);
     expect(data.data.status).toBe('running');
     expect(data.data._count.results).toBe(1);
-    // Confirm include shape was passed (agent + workflow + dataset + _count).
-    expect(vi.mocked(prisma.aiEvaluationRun.findFirst)).toHaveBeenCalledWith(
+    expect(data.data.dataset).toEqual(DATASET);
+    // The dataset is not included on the run: read on its own, so a dataset
+    // that changed hands cannot refuse the whole read (§115).
+    const runArgs = vi.mocked(prisma.aiEvaluationRun.findFirst).mock.calls[0][0];
+    expect(runArgs?.include).not.toHaveProperty('dataset');
+    expect(vi.mocked(prisma.aiDataset.findFirst)).toHaveBeenCalledWith(
       expect.objectContaining({
-        include: expect.objectContaining({
-          agent: expect.anything(),
-          workflow: expect.anything(),
-          dataset: expect.anything(),
-          _count: expect.anything(),
-        }),
+        // Theirs, or one nobody owns — this admin's policy admits orphans.
+        where: { AND: [{ OR: [{ userId: ADMIN_ID }, { userId: null }] }, { id: 'd' }] },
       })
     );
+  });
+
+  it("still returns the caller's run when its dataset is no longer theirs", async () => {
+    // An orphan dataset the run used, since claimed by another admin: the
+    // visibility read finds nothing, and the run comes back with no dataset.
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiEvaluationRun.findFirst).mockResolvedValue(makeRunRow() as never);
+    vi.mocked(prisma.aiDataset.findFirst).mockResolvedValue(null);
+
+    const response = await GET(makeGetRequest(RUN_ID), makeParams(RUN_ID));
+
+    expect(response.status).toBe(200);
+    const data = await parseJson<{ data: { id: string; dataset: unknown } }>(response);
+    expect(data.data.id).toBe(RUN_ID);
+    expect(data.data.dataset).toBeNull();
   });
 });

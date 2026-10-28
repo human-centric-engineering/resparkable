@@ -26,6 +26,20 @@ import type {
 } from '@prisma/driver-adapter-utils';
 import { withTenancy, injectOrgId, readTenancySchema } from '@/lib/db/tenancy-extension';
 import type { TenantContext } from '@/lib/tenancy/context';
+import {
+  getSubjectReadScope,
+  runAsSubject,
+  type SubjectReadScope,
+} from '@/lib/auth/subject-context';
+
+const NO_UNATTRIBUTED_READS = {
+  conversation: false,
+  dataset: false,
+  execution: false,
+  experiment: false,
+  webhookDelivery: false,
+  webhookSubscription: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // A recording adapter
@@ -584,6 +598,44 @@ describe('at multi', () => {
       expect(outerSeen).toContain('AiAgent.findMany');
       expect(setConfigs()).toHaveLength(1);
       expect(recorder.boundaries).toEqual(['tx1 BEGIN', 'tx1 COMMIT']);
+    });
+
+    it("carries the request's subject into that layer's hook inside an interactive transaction", async () => {
+      // §115 t-800: the owner layer reads the subject the guard entered, and the
+      // read it most needs to see is the one inside a `$transaction` callback —
+      // where the tx client, not the request, issues the query.
+      const seen: { op: string; scope: SubjectReadScope }[] = [];
+      const layered = db.$extends({
+        query: {
+          $allOperations: async (params) => {
+            seen.push({
+              op: `${params.model ?? 'raw'}.${params.operation}`,
+              scope: await getSubjectReadScope(),
+            });
+            return params.query(params.args);
+          },
+        },
+      });
+      const principal = { userId: 'member-1', role: 'USER', credential: 'session' as const };
+      await runAsSubject(
+        {
+          principal,
+          resolveFilter: () => Promise.resolve({ userId: 'member-1' }),
+          unattributedReads: NO_UNATTRIBUTED_READS,
+        },
+        () =>
+          asOrg(ORG_A, () =>
+            layered.$transaction(async (tx) => {
+              await tx.aiAgent.findMany();
+            })
+          )
+      );
+      // The model read is the one that matters; the transaction's own
+      // set_config passes through the layer too, and sees the same subject.
+      expect(seen.map((s) => s.op)).toContain('AiAgent.findMany');
+      for (const { scope } of seen) {
+        expect(scope).toMatchObject({ kind: 'subject', filter: { userId: 'member-1' } });
+      }
     });
   });
 });

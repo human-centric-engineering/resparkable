@@ -39,6 +39,7 @@ which destination fields are used.
 
 - URL-synced tabs (`useUrlTabs`) at the top of the page: **Subscriptions** (default) and **Dead Letter Queue**.
 - Both tabs are server-seeded by the parent page so `?tab=dlq` deep links render without a client-side fetch flash.
+- A failed subscriptions load throws to the admin error boundary. A failed DLQ load shows a "Couldn't load the dead-letter queue" notice in that tab, with no count badge, and the Subscriptions tab still works: an empty queue is the all-clear, so a failure never renders as one (#518).
 - The DLQ tab also renders a Dead Letter Queue overview FieldHelp explaining what lands here and the available actions (retry, discard, bulk replay).
 
 ### `WebhooksTable`
@@ -78,11 +79,12 @@ which destination fields are used.
 
 `components/admin/orchestration/webhook-dlq-table.tsx`
 
-- Lists `exhausted` deliveries across all subscriptions the calling admin owns — single console for the "what's currently dead-lettered" question that the per-subscription view can't answer cleanly.
+- Lists `exhausted` deliveries across all subscriptions the calling admin owns, plus any whose subscription was deleted — single console for the "what's currently dead-lettered" question that the per-subscription view can't answer cleanly.
 - Filters: subscription, event type, From / To date range. Filter changes refetch from `GET /webhooks/dlq`.
-- Each row links to its parent subscription's edit page and shows event, last response code, attempts, last error.
+- Each row links to its parent subscription's edit page and shows the destination recorded on the delivery, event, last response code, attempts, last error.
+- A row whose subscription was deleted reads "Deleted subscription" with its recorded destination ("Destination not recorded" on rows that predate recording), has no link, and cannot be retried. It can still be discarded.
 - Row actions: retry (calls `POST /webhooks/deliveries/:id/retry`, same path as the per-subscription view) and discard (calls `DELETE /webhooks/deliveries/:id`, AlertDialog confirmation).
-- **Bulk replay** button hits `POST /webhooks/dlq/replay`. With a subscription filter active, replays every exhausted row for that subscription (and respects the "To" date as a cutoff); without one, replays the rows visible on the current page.
+- **Bulk replay** button hits `POST /webhooks/dlq/replay`. With a subscription filter active, replays every exhausted row for that subscription (and respects the "To" date as a cutoff); without one, replays the rows visible on the current page whose subscription still exists.
 - Pagination through `parsePaginationMeta`.
 
 ### `WebhookDeliveries`
@@ -95,22 +97,100 @@ which destination fields are used.
 - Retry button for failed/exhausted deliveries
 - `lastError` column shows truncated error message for failed deliveries
 
+## Where a delivery went
+
+A delivery row records its own destination, because its subscription holds
+only the current one and can be edited or deleted (§109 t-739). The rule and
+its reasoning live in `lib/orchestration/webhooks/destination.ts`; in short:
+
+- **`destination`** is what an admin reads: the URL's **origin only**
+  (`https://hooks.slack.com`), or the email address, trimmed and lower-cased.
+  A webhook URL often carries its credential in the path, the query, the
+  userinfo or the fragment, and no heuristic can tell a short path token from
+  a route name, so the row keeps none of them.
+- **`destinationFingerprint`** is a keyed HMAC of the full destination
+  (`v1:…`). The origin cannot tell one Slack webhook from another; the
+  fingerprint can. From a server shell, `fingerprintDestination('webhook', url)`
+  answers "was this delivery sent to exactly this URL?". It is keyed from
+  `BETTER_AUTH_SECRET`, so rotating that secret makes earlier fingerprints
+  unverifiable.
+- **Retries follow the subscription's current destination.** When that has
+  changed since the last attempt, the previous pair moves into
+  `previousDestinations` (`[{ destination, destinationFingerprint, until }]`),
+  so the row names every place the payload was sent.
+- **Deleting a subscription keeps its deliveries** (`subscriptionId` becomes
+  null): the deliveries are the org's record of where its customers' data
+  went — minus the erased person's own address, which `eraseUser()` redacts
+  to `[erased]`, and minus what an event said about an erased person (see
+  [data erasure](../privacy/data-erasure.md), steps 5–7). An email
+  subscription whose recipient is erased has its address cleared and is
+  deactivated, with a `webhook_subscription.recipient_erased` audit entry;
+  give it a new address to turn it back on. Any edit to it needs that new address
+  in the same request, since an email subscription with no address is refused. A retry of
+  an orphaned delivery is refused (`409`). With no creator left to scope by,
+  an orphan is shown to the admins the authorization policy permits an
+  unattributed read — platform admins by default — through the
+  `webhookDelivery` kind and `lib/orchestration/access/webhook-delivery-access.ts`
+  (see [Rows nobody owns](../auth/authorization.md#rows-nobody-owns)). Erasing
+  the org still removes its deliveries, and retention prunes orphans by age
+  like any other row.
+- **Erasing the admin who created a subscription keeps it running** (t-782).
+  `createdBy` becomes null and the subscription goes on delivering, with its
+  deliveries still linked to it; the list marks it **Creator erased**. With no
+  creator left to scope by, it is shown — and can be edited, tested, switched
+  off or deleted — by the admins the authorization policy permits an ownerless
+  `webhookSubscription`, platform admins by default, through
+  `lib/orchestration/access/webhook-subscription-access.ts`. A fork that wants
+  an org's own admins to inherit a departed colleague's integrations widens the
+  policy for that kind; nothing in the routes changes.
+- **Rows that predate recording** are filled from their subscription's
+  current destination by the `022-delivery-destinations` seed unit, which is
+  the best value available rather than a record. Rows whose subscription was
+  already gone stay null.
+
+Event-hook deliveries (`AiEventHookDelivery`) follow the same rules; see
+[Event hooks](../orchestration/hooks.md#deliveries).
+
 ## Channel Behaviour
 
-| Aspect              | Webhook channel                          | Email channel                                                           |
-| ------------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
-| Destination field   | `url` (validated by `isSafeProviderUrl`) | `emailAddress` (RFC-shape check)                                        |
-| Auth                | HMAC-SHA256 via `secret`                 | None — the channel is the auth                                          |
-| Payload             | JSON POST                                | React Email template (`emails/event-notification.tsx`)                  |
-| Retry semantics     | Per-subscription `maxAttempts` + DLQ     | Same (against Resend); Resend also retries on its side                  |
-| Audit row           | `AiWebhookDelivery`                      | `AiWebhookDelivery` (same table)                                        |
-| Config requirements | None                                     | `RESEND_API_KEY` + `EMAIL_FROM` must be set; otherwise marked exhausted |
+| Aspect              | Webhook channel                          | Email channel                                                                  |
+| ------------------- | ---------------------------------------- | ------------------------------------------------------------------------------ |
+| Destination field   | `url` (validated by `isSafeProviderUrl`) | `emailAddress` (RFC-shape check)                                               |
+| Auth                | HMAC-SHA256 via `secret`                 | None — the channel is the auth                                                 |
+| Payload             | JSON POST                                | React Email template (`emails/event-notification.tsx`)                         |
+| Retry semantics     | Per-subscription `maxAttempts` + DLQ     | Same (against Resend); Resend also retries on its side                         |
+| Send timeout        | 5 s (`DISPATCH_TIMEOUT_MS.webhook`)      | 15 s, render and send together (`DISPATCH_TIMEOUT_MS.email`, t-808); retriable |
+| Audit row           | `AiWebhookDelivery`                      | `AiWebhookDelivery` (same table)                                               |
+| Config requirements | None                                     | `RESEND_API_KEY` + `EMAIL_FROM` must be set; otherwise marked exhausted        |
 
 The generic email template renders the same `{ event, timestamp, data }`
 payload a webhook receiver would get — title from the event type, a
 key/value detail table for non-action fields, a `changes` block with
 from→to colouring, and Approve/Reject buttons when the payload
 includes `approveUrl` / `rejectUrl` (i.e. `approval_required`).
+
+**An email send is deduplicated across its automatic retries (t-822).** A
+send that times out may still have been accepted by Resend, so each one
+carries a Resend idempotency key,
+`webhook-delivery/<deliveryId>/<sendGeneration>/<address hash>`:
+
+- **Automatic retries** (the in-process timer and the maintenance tick) reuse
+  the key, so a retry after a timed-out send Resend accepted does not send a
+  second email. Resend answers it with the original send.
+- **A manual retry or a DLQ replay** bumps the row's `sendGeneration` when it
+  resets the row, so it gets a new key and sends again. An admin who resends
+  means it.
+- **An edited address** gives a new key, so a retry after the subscription's
+  address changed is a send to the new address.
+- **The key lasts 24 hours** at Resend. The automatic retries all fall well
+  inside that: the backoff is capped at 86,400 s per step, but the defaults
+  are 10, 60 and 300 s. A retry later than 24 hours after its first attempt
+  is sent again.
+- **The email shows the delivery's `createdAt`**, not a per-attempt time.
+  Resend refuses a reused key on a request that differs from the first
+  (409 `invalid_idempotent_request`). For the same reason, a retry of a
+  payload an erasure redacted between attempts fails rather than sending
+  the redacted copy.
 
 ## API Endpoints
 
@@ -120,13 +200,14 @@ Uses admin orchestration webhook endpoints:
 - `POST /webhooks` — create
 - `GET /webhooks/:id` — get
 - `PATCH /webhooks/:id` — update
-- `DELETE /webhooks/:id` — delete
+- `DELETE /webhooks/:id` — delete (its deliveries are kept; see [Where a delivery went](#where-a-delivery-went))
 - `POST /webhooks/:id/test` — send test ping event
-- `GET /webhooks/:id/deliveries` — delivery history (scoped to `session.user.id`)
-- `POST /webhooks/deliveries/:id/retry` — retry failed delivery (verifies parent subscription ownership)
-- `DELETE /webhooks/deliveries/:id` — permanently delete a delivery row (verifies parent subscription ownership, audit-logged as `webhook_delivery.delete`)
-- `GET /webhooks/dlq?page=&pageSize=&subscriptionId=&eventType=&since=&until=` — list exhausted deliveries across all subscriptions the calling admin owns. Always scoped to `status=exhausted` and the caller's subscriptions; filters narrow further.
-- `GET /webhooks/dlq/stats` — depth signal for the health dashboard. Returns `{ exhausted24h, exhaustedTotal, oldestExhaustedAt }` scoped to the caller's subscriptions. Consumed by improvement #41 (health dashboard).
+- `GET /webhooks/:id/deliveries` — delivery history (scoped to the caller's own subscriptions, plus ones whose creator was erased where the policy permits)
+- `GET /webhooks/deliveries?status=&subscriptionId=&orphaned=` — deliveries in any status across the subscriptions the caller may see, including those whose subscription was deleted (where the policy permits); the route that reaches a delivered orphan, which neither the per-subscription list nor the DLQ can
+- `POST /webhooks/deliveries/:id/retry` — retry failed delivery (verifies parent subscription ownership; 409 when the subscription was deleted, or when an erasure stopped the delivery)
+- `DELETE /webhooks/deliveries/:id` — permanently delete a delivery row (verifies parent subscription ownership, or that it was deleted; audit-logged as `webhook_delivery.delete`, naming the delivery's origin, never an email address)
+- `GET /webhooks/dlq?page=&pageSize=&subscriptionId=&eventType=&since=&until=` — list exhausted deliveries across all subscriptions the calling admin may see (their own, plus ones whose creator was erased where the policy permits), plus orphaned deliveries. Always scoped to `status=exhausted` and that scope; filters narrow further.
+- `GET /webhooks/dlq/stats` — depth signal for the health dashboard. Returns `{ exhausted24h, exhaustedTotal, oldestExhaustedAt }` over the same scope. Consumed by improvement #41 (health dashboard).
 - `POST /webhooks/dlq/replay` — bulk replay. Body either `{ deliveryIds: string[] }` (explicit selection, max 500) or `{ subscriptionId, before? }` (replay all exhausted rows for one subscription, optionally capped by `createdAt < before`). Loops `retryDelivery()` with concurrency cap of 5. Ownership filter skips rows the caller doesn't own. Audit-logged as `webhook_delivery.replay_batch`.
 
 Consumer-facing:

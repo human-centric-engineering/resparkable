@@ -47,10 +47,13 @@ const IS_WINDOWS = process.platform === 'win32';
  * that decides which jobs get a cap and a typo fails loudly instead of
  * spawning something unexpected.
  *
- * `tsc` is deliberately absent. Measured peak for `tsc --noEmit` is 1.64-1.75
- * GiB across Sunrise, Hub and Daybreak — a factor of 2.4 under the default, so
- * capping it would be speculation, not a fix. Adding it later is one entry
- * here plus the script in `package.json`.
+ * `tsc` is here because the measurement that once kept it out was of a warm
+ * run. `tsconfig.json` sets `incremental`, so 1.64-1.75 GiB was `tsc --noEmit`
+ * reading its build info. Cold — a fresh clone, or after a large upstream merge
+ * — base Sunrise peaks at 2.74 GiB RSS (measured 19 Oct 2026), and ConQuest
+ * (~1.9x base) aborted at 4.40 GB under the default and passed at 2.38 GB once
+ * capped. `type-check` runs first in `validate`, so an abort there stopped the
+ * whole gate before lint or formatting ran (#693).
  *
  * BEFORE ADDING ONE, know what the argv is. Everything this wrapper spawns
  * today takes a **static** argv from `package.json`. On Windows it runs under
@@ -63,7 +66,7 @@ const IS_WINDOWS = process.platform === 'win32';
  * other filename-passing caller) through this wrapper means quoting the
  * passthrough args first.
  */
-export const BINS = ['eslint'];
+export const BINS = ['eslint', 'tsc'];
 
 /** Cap applied when nothing else asks for one. Matches the worked example in
  * `.context/architecture/ci.md` and the value the largest fork measured. */
@@ -90,25 +93,55 @@ export function hasHeapCap(nodeOptions) {
 }
 
 /**
+ * The heap Node would have chosen for this machine unaided, in MB — or 0 when
+ * this process was itself started under a cap, because then it is unknowable.
+ *
+ * `heap_size_limit` only means "Node's own default" when nothing set it. Under
+ * an inherited `--max-old-space-size=N` in `NODE_OPTIONS` it reads N plus V8's
+ * other spaces, so flooring at it handed the child more than was asked for
+ * (6144 -> 6336), and on a small box with a large parent cap more than the
+ * machine could back (#711). Returning 0 drops the floor rather than guessing.
+ *
+ * Only `NODE_OPTIONS` counts. A cap passed on this process's own command line
+ * (`node --max-old-space-size=12288 scripts/run-capped.mjs ...`) is not
+ * inherited by the child, so there V8's limit is the best record of what the
+ * caller asked for, and keeping it as the floor stops the child being cut
+ * back to the default.
+ *
+ * @param {object} [opts]
+ * @param {string | undefined} [opts.nodeOptions] This process's `NODE_OPTIONS`.
+ * @param {number} [opts.heapLimitBytes] V8's reported heap limit.
+ * @returns {number}
+ */
+export function unaidedLimitMb({
+  nodeOptions = process.env.NODE_OPTIONS,
+  heapLimitBytes = v8.getHeapStatistics().heap_size_limit,
+} = {}) {
+  if (hasHeapCap(nodeOptions)) return 0;
+  return heapLimitBytes / MB;
+}
+
+/**
  * The cap to apply, in MB.
  *
- * Clamped down to a fraction of physical memory, then floored at whatever Node
- * would have chosen unaided — so on a machine too small for the requested cap
- * the wrapper is a no-op rather than a downgrade.
+ * Floored at whatever Node would have chosen unaided — so a small explicit ask
+ * is a no-op rather than a downgrade — and never above a fraction of physical
+ * memory, whatever the floor says.
  *
  * @param {object} [opts]
  * @param {number} [opts.requestedMb] Explicit ask (`NODE_HEAP_MB`).
  * @param {number} [opts.totalMemBytes] Physical memory.
- * @param {number} [opts.defaultLimitMb] Node's own default for this machine.
+ * @param {number} [opts.defaultLimitMb] Node's unaided default for this
+ *   machine; 0 for none (see `unaidedLimitMb`).
  * @returns {number}
  */
 export function resolveHeapMb({
   requestedMb = DEFAULT_HEAP_MB,
   totalMemBytes = totalmem(),
-  defaultLimitMb = v8.getHeapStatistics().heap_size_limit / MB,
+  defaultLimitMb = unaidedLimitMb(),
 } = {}) {
   const affordable = Math.floor((totalMemBytes * MEMORY_FRACTION) / MB);
-  return Math.max(Math.round(defaultLimitMb), Math.min(requestedMb, affordable));
+  return Math.min(affordable, Math.max(Math.round(defaultLimitMb), requestedMb));
 }
 
 /**
@@ -177,6 +210,9 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     onSignal = (signal, handler) => process.on(signal, handler),
     clearSignal = (signal) => process.removeAllListeners(signal),
     raise = (signal) => process.kill(process.pid, signal),
+    // Injected so a test can assert what `main` asks for and applies without
+    // depending on the RAM of the machine running it (#700).
+    resolveHeap = resolveHeapMb,
   } = deps;
 
   const [name, ...passthrough] = argv;
@@ -187,7 +223,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     return undefined;
   }
 
-  const heapMb = resolveHeapMb({ requestedMb: parseRequestedMb(env.NODE_HEAP_MB) });
+  const heapMb = resolveHeap({ requestedMb: parseRequestedMb(env.NODE_HEAP_MB) });
 
   const child = spawnFn(resolveCommand(name), passthrough, {
     cwd: ROOT,

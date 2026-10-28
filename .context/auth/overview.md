@@ -504,17 +504,17 @@ export const passwordSchema = z
 
 export const emailSchema = z
   .string()
+  .trim()
+  .toLowerCase()
   .min(1, 'Email is required')
   .email('Invalid email address')
-  .max(255)
-  .toLowerCase()
-  .trim();
+  .max(255);
 
 export const signUpSchema = z
   .object({
     email: emailSchema,
     password: passwordSchema,
-    name: z.string().min(1).max(100).trim(),
+    name: z.string().trim().min(1).max(100),
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {
@@ -648,8 +648,12 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const authenticated = isAuthenticated(request);
 
-  const isProtectedRoute = protectedRoutes.some((route) => pathname.startsWith(route));
-  const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route));
+  const isProtectedRoute = protectedRoutes.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
+  );
+  const isAuthRoute = authRoutes.some(
+    (route) => pathname === route || pathname.startsWith(`${route}/`)
+  );
 
   // Redirect unauthenticated users to login
   if (isProtectedRoute && !authenticated) {

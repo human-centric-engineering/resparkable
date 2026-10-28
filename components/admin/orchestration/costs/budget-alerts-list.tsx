@@ -107,17 +107,25 @@ export function BudgetAlertsList({ alerts, globalCap }: BudgetAlertsListProps) {
               <p className="font-medium text-red-700 dark:text-red-300">
                 Global monthly budget exceeded
               </p>
-              <p className="text-muted-foreground text-xs">
-                Combined spend of <Usd value={globalCap.spent} /> has reached the{' '}
-                <Usd value={globalCap.cap} /> global cap. All agent chat is blocked until the cap is
-                raised or the month resets.{' '}
-                <a href="/admin/orchestration/settings" className="text-primary underline">
-                  Adjust cap
-                </a>
-              </p>
+              {globalCap.spent !== null ? (
+                <p className="text-muted-foreground text-xs">
+                  Combined spend of <Usd value={globalCap.spent} /> has reached the{' '}
+                  <Usd value={globalCap.cap} /> global cap. Calls to paid AI providers are refused
+                  until the cap is raised or the month resets. Local models still work.{' '}
+                  <a href="/admin/orchestration/settings" className="text-primary underline">
+                    Adjust cap
+                  </a>
+                </p>
+              ) : (
+                <p className="text-muted-foreground text-xs">
+                  The platform has reached its global monthly AI budget. Calls to paid AI providers
+                  are refused until a platform admin raises the cap or the month resets. Local
+                  models still work.
+                </p>
+              )}
             </div>
             <Badge variant="destructive" className="ml-auto shrink-0">
-              {globalCap.cap && globalCap.cap > 0
+              {globalCap.spent !== null && globalCap.cap && globalCap.cap > 0
                 ? `${Math.round((globalCap.spent / globalCap.cap) * 100)}%`
                 : 'Exceeded'}
             </Badge>

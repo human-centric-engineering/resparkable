@@ -84,6 +84,7 @@ export const POST = withAdminAuth<{ id: string }>(
     const result = await generateCases({
       agentId: body.agentId,
       userId: session.user.id,
+      datasetWhere: datasetVisibilityWhere(session),
       mode: body.mode,
       count: body.count,
       ...(body.topic ? { topic: body.topic } : {}),
@@ -112,6 +113,7 @@ export const POST = withAdminAuth<{ id: string }>(
     });
   },
   {
+    tier: 'org',
     ownership: {
       decidedBy: 'self',
       because:

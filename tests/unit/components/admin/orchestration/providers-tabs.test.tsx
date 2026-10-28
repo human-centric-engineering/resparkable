@@ -10,6 +10,7 @@
  * - Tab switching: clicking Model Matrix tab shows its content
  * - Tab switching: clicking Configuration tab shows its content
  * - Active tab visual state: correct tab has aria-selected="true"
+ * - A tab whose rows failed to load (`null`) shows a notice; the other tab is unaffected
  *
  * @see components/admin/orchestration/providers-tabs.tsx
  */
@@ -327,6 +328,29 @@ describe('ProvidersTabs', () => {
 
     it('hides it outside a provider, where nothing says this is the install org', () => {
       expect(canAuditWith(null)).toBe('false');
+    });
+  });
+
+  describe('A tab whose rows failed to load (#518)', () => {
+    function renderOn(tab: string, props: Parameters<typeof ProvidersTabs>[0]) {
+      vi.mocked(useSearchParams).mockReturnValue(
+        new URLSearchParams(tab) as ReturnType<typeof useSearchParams>
+      );
+      render(<ProvidersTabs {...props} />);
+    }
+
+    it('shows a notice in the Model Matrix tab when the models are null', () => {
+      renderOn('tab=models', { initialProviders: PROVIDERS, initialModels: null });
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/couldn.t load the model matrix/i);
+      expect(screen.queryByTestId('provider-models-matrix')).not.toBeInTheDocument();
+    });
+
+    it('leaves the Configuration tab working when only the models are null', () => {
+      renderOn('', { initialProviders: PROVIDERS, initialModels: null });
+
+      expect(screen.getByTestId('providers-list')).toHaveTextContent('1 providers');
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
   });
 

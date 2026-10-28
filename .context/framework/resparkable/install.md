@@ -542,31 +542,42 @@ copies wholesale. None of them is a Resparkable file, and none needs registering
 | Docs          | `.context/framework/resparkable/**`                        |
 | Smoke scripts | `scripts/framework/resparkable/**`                         |
 
-### 2.13 Erasure — automatic, and now genuinely nothing to wire _(phase 7, simplified in phase 56)_
+### 2.13 Erasure — `lib/app/erasure.ts` _(**required**, Sunrise ≥ 0.15.0)_
 
-Every `framework_resparkable_*` table hangs off `ResparkableSpace`, whose FK to
-`"user"` is `ON DELETE CASCADE`. Deleting the user deletes the brain, with no
-app code involved and nothing for you to register.
+```ts
+import { registerResparkableErasureHook } from '@/lib/framework/resparkable/privacy/erasure';
 
-> Its sibling, the **subject-access export** (Art. 15), **is not automatic** and
-> must be wired by hand — see [§2.15](#215-subject-access-export--libappdata-exportts-required-resparkable--080).
+export function initAppErasureHooks(): void {
+  registerResparkableErasureHook();
+}
+```
 
-**There used to be an exception, and phase 56 removed it.** Phase 7 was the first
-time Resparkable wrote to a table it did not own: `AiWorkflowSchedule`, whose
-`createdBy` is `onDelete: SetNull`. Those rows outlived the account, enabled and
-with a live `nextRunAt`, so the tier registered an erasure cleanup hook to delete
-them — and then a safety net in the sweep job underneath the hook, because
-`registerErasureCleanupHook` writes into a plain module-scope `Map` that
-`eraseUser()` reads without lazily initialising any `lib/app/*` seam first. A
-hook registered at boot might simply not be there in the erasure request's realm
-([resparkable#462]).
+Almost all of Resparkable's erasure is the database. Every
+`framework_resparkable_*` table hangs off `ResparkableSpace`, whose FK to
+`"user"` is `ON DELETE CASCADE`, and the two cross-person cases (a grant naming
+somebody else, a comment somebody else wrote) have their own cascading FKs.
+None of that needs wiring.
 
-Two mechanisms, one of them existing only because the other could not be
-trusted. Both are gone: the queue owns per-user scheduling now, `ResparkableJob`
-is inside the cascade like every other satellite table, and there are no
-`AiWorkflowSchedule` rows left to orphan. Erasure is one foreign key again.
+The hook covers the two things a cascade cannot reach:
 
-[resparkable#462]: https://github.com/human-centric-engineering/sunrise/issues/462
+- **Unaccepted invites.** A grant or group invite sent to an address with no
+  account has no foreign key to hang off, so the address would outlive its
+  owner's erasure on somebody else's row.
+- **Stored document originals.** Object storage cannot take part in a database
+  transaction, so the blobs are deleted by code.
+
+Skip this and erasure still reports success, with the email addresses and
+files left behind. As with §2.15, that is a compliance decision.
+
+Static import, for the same reason as §2.8. Core calls
+`initAppErasureHooks()` itself before it first reads the hook list, in whatever
+process is erasing somebody. That is why the hook is registered here and not
+from `initResparkable()`: a boot-time registration only exists in a process
+that booted the app, and a script or worker that calls `eraseUser()` directly
+would skip it without saying so.
+
+> Its sibling, the **subject-access export** (Art. 15), is wired the same way:
+> see [§2.15](#215-subject-access-export--libappdata-exportts-required-sunrise--080).
 
 ### 2.14 External cron — **required in production** _(phase 7)_
 
@@ -654,7 +665,7 @@ board is operable by keyboard at all.
 
 ### 2.15 Subject-access export — `lib/app/data-export.ts` _(**required**, Sunrise ≥ 0.8.0)_
 
-The sibling of §2.13's erasure hook, and the half that is **not** automatic.
+The sibling of §2.13's erasure hook, and wired the same way.
 Sunrise 0.8.0 added the seam ([#467]); Resparkable supplies the collector, the host
 wires it:
 

@@ -5,6 +5,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { InputBreakdownList } from '@/components/admin/orchestration/chat/input-breakdown-list';
+import { HISTORY_LOAD_LIMIT } from '@/lib/orchestration/chat/types';
 import type { InputBreakdown } from '@/types/orchestration';
 
 function makeBreakdown(overrides: Partial<InputBreakdown> = {}): InputBreakdown {
@@ -158,5 +159,44 @@ describe('InputBreakdownList', () => {
     const userRow = screen.getByRole('button', { name: /your message/i }).closest('li');
     expect(userRow).not.toBeNull();
     if (userRow) expect(within(userRow).getByText(/0%/)).toBeInTheDocument();
+  });
+
+  it('renders the other-models panel with per-model rows, total cost and the summariser footnote (#655)', () => {
+    render(
+      <InputBreakdownList
+        breakdown={makeBreakdown()}
+        sideEffectModels={[
+          {
+            kind: 'embedding',
+            model: 'text-embedding-3-small',
+            provider: 'openai',
+            callCount: 3,
+            inputTokens: 1200,
+            costUsd: 0.0002,
+          },
+          {
+            kind: 'summarizer',
+            model: 'claude-haiku-4-5',
+            inputTokens: 900,
+            outputTokens: 120,
+            costUsd: 0.001,
+          },
+        ]}
+      />
+    );
+
+    const panel = screen.getByTestId('side-effect-models');
+    expect(within(panel).getByText('Other models this turn')).toBeInTheDocument();
+    expect(within(panel).getByText('Embedding')).toBeInTheDocument();
+    expect(within(panel).getByText('× 3')).toBeInTheDocument();
+    expect(within(panel).getByText(/via openai/)).toBeInTheDocument();
+    expect(within(panel).getByText('Summariser')).toBeInTheDocument();
+    expect(within(panel).getByText(/900→120/)).toBeInTheDocument();
+    // The footnote states the summariser's real trigger, not the cap alone.
+    expect(
+      within(panel).getByText(
+        new RegExp(`past ${HISTORY_LOAD_LIMIT}\\s+messages after the last summary`)
+      )
+    ).toBeInTheDocument();
   });
 });

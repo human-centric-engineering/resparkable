@@ -84,8 +84,15 @@ const byCreatedAt = { createdAt: 'asc' } as const;
  * at `multi` is an orphan, not the install org's. The credential attributions
  * below deliberately do NOT use this — a `NULL`-org API key is a platform
  * credential, not the org's.
+ *
+ * Exported for a fork's own org sources (`lib/app/org-export.ts`, §109
+ * t-737): a fork table is stamped like core's, so its `NULL`-org rows — those
+ * written under `runAsSystem`, which stamps nothing — are the install org's at
+ * `single` too, and a plain `where: { orgId }` would leave them out.
  */
-function ownedBy(orgId: string): { orgId: string } | { OR: [{ orgId: string }, { orgId: null }] } {
+export function ownedBy(
+  orgId: string
+): { orgId: string } | { OR: [{ orgId: string }, { orgId: null }] } {
   if (orgId === INSTALL_ORG_ID && !isMultiTenant()) return { OR: [{ orgId }, { orgId: null }] };
   return { orgId };
 }
@@ -116,6 +123,22 @@ export const ORG_DATA_SOURCES: OrgDataSource[] = [
       prisma.orgMembership.findMany({
         where: { orgId },
         include: { user: { select: { id: true, name: true, email: true } } },
+        orderBy: byCreatedAt,
+      }),
+  },
+  {
+    model: 'OrgSupportGrant',
+    section: 'supportGrants',
+    disposition: 'export',
+    description:
+      'Every time the organisation let the platform’s support staff in: at what level, why, for how long, who granted it, and who ended it. The names of those people ride along; nothing else about them is included.',
+    fetch: ({ orgId }) =>
+      prisma.orgSupportGrant.findMany({
+        where: { orgId },
+        include: {
+          grantedBy: { select: { id: true, name: true } },
+          revokedBy: { select: { id: true, name: true } },
+        },
         orderBy: byCreatedAt,
       }),
   },
@@ -297,7 +320,8 @@ export const ORG_DATA_SOURCES: OrgDataSource[] = [
     model: 'AiEventHookDelivery',
     section: 'eventHookDeliveries',
     disposition: 'export',
-    description: 'Each attempt to deliver an event to a hook, with the payload and the outcome.',
+    description:
+      'Each attempt to deliver an event to a hook: the payload, the outcome, and where it was sent. The address is recorded as its origin only, so it holds no credential, with a keyed fingerprint of the full address.',
     fetch: ({ orgId }) =>
       prisma.aiEventHookDelivery.findMany({
         where: ownedBy(orgId),
@@ -322,7 +346,7 @@ export const ORG_DATA_SOURCES: OrgDataSource[] = [
     section: 'webhookDeliveries',
     disposition: 'export',
     description:
-      'Each attempt to deliver an event to a webhook subscription, with the payload and the outcome.',
+      'Each attempt to deliver an event to a webhook subscription: the payload, the outcome, and where it was sent. A URL is recorded as its origin only, so it holds no credential, with a keyed fingerprint of the full address.',
     fetch: ({ orgId }) =>
       prisma.aiWebhookDelivery.findMany({
         where: ownedBy(orgId),

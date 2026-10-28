@@ -95,7 +95,7 @@ export async function completeEvaluationSession(
   }
 
   const logs = await prisma.aiEvaluationLog.findMany({
-    where: { sessionId: session.id },
+    where: { sessionId: session.id, session: { userId: params.userId } },
     orderBy: { sequenceNumber: 'asc' },
     take: MAX_LOGS_IN_PROMPT,
   });
@@ -220,7 +220,7 @@ export async function completeEvaluationSession(
     ? (metricSummary as unknown as Prisma.InputJsonValue)
     : undefined;
   const updated = await prisma.aiEvaluationSession.update({
-    where: { id: session.id },
+    where: { id: session.id, userId: params.userId },
     data: {
       status: 'completed',
       summary: analysis.summary,
@@ -266,7 +266,7 @@ export async function rescoreEvaluationSession(
   }
 
   const logs = await prisma.aiEvaluationLog.findMany({
-    where: { sessionId: session.id },
+    where: { sessionId: session.id, session: { userId: params.userId } },
     orderBy: { sequenceNumber: 'asc' },
     take: MAX_LOGS_IN_PROMPT,
   });
@@ -286,7 +286,7 @@ export async function rescoreEvaluationSession(
   });
 
   await prisma.aiEvaluationSession.update({
-    where: { id: session.id },
+    where: { id: session.id, userId: params.userId },
     data: { metricSummary: metricSummary as unknown as Prisma.InputJsonValue },
   });
 
@@ -511,7 +511,7 @@ async function scoreEvaluationLogs(opts: ScoreLogsOptions): Promise<EvaluationMe
         },
       };
       await prisma.aiEvaluationLog.update({
-        where: { id: log.id },
+        where: { id: log.id, session: { userId: opts.userId } },
         data: {
           faithfulnessScore: faithfulness.score,
           groundednessScore: groundedness.score,

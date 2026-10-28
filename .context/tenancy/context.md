@@ -141,13 +141,14 @@ interface TenantContext {
 The guards enter the org for every request they admit, from one of three
 sources, and it is decided **once** ([`lib/tenancy/entry.ts`](../../lib/tenancy/entry.ts)):
 
-| Source              | Where the org comes from                                       | Verified against membership?                                                                                                                                                                             |
-| ------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `resolver` (header) | `x-sunrise-org`, written by the proxy from the fork's resolver | **Always** — including the install org, including a platform admin. The header picks _which_ org; it never grants entry. Wins over the session for that request.                                         |
-| `session`           | `session.session.activeOrgId` (t-670)                          | When it names a non-install org, or at `multi`. **At `single`, null or the install org enters the install org with no read** — the role is the platform role projected by `initialMembershipFor`'s rule. |
-| `api-key`           | the key's `orgId` — the org it was minted in (t-673)           | `admin` scope ⇒ a platform credential, **no org entered** (finding 13). Otherwise: bound ⇒ that org, verified against the owner's membership; unbound ⇒ install org at `single`, refused at `multi`.     |
-| `embed-token`       | the token's `orgId` (t-673)                                    | No user to verify: the org's own status is read with the token (`resolveCredentialOrg`) — a suspended org's tokens are refused. Unbound ⇒ install org at `single`, refused at `multi`.                   |
-| `mcp-key`           | the key's `orgId` (t-673)                                      | As `embed-token`. The transport wraps each method in `runAsOrg`; the key outlives its creator but not its org.                                                                                           |
+| Source              | Where the org comes from                                       | Verified against membership?                                                                                                                                                                                                                                                                    |
+| ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `resolver` (header) | `x-sunrise-org`, written by the proxy from the fork's resolver | **Always** — including the install org, including a platform admin. The header picks _which_ org; it never grants entry. Wins over the session for that request.                                                                                                                                |
+| `session`           | `session.session.activeOrgId` (t-670)                          | When it names a non-install org, or at `multi`. **At `single`, null or the install org enters the install org with no read** — the role is the platform role projected by `initialMembershipFor`'s rule.                                                                                        |
+| `support`           | the resolver header or `activeOrgId`, as for a session (t-824) | A platform admin at `multi` who is **not** a member, admitted under the org's open support grant (`verifiedSupportGrant`), re-read every request. Role `ADMIN`, plus `support: { grantId, level, expiresAt }` on the entry and the context.                                                     |
+| `api-key`           | the key's `orgId` — the org it was minted in (t-673)           | `admin` scope ⇒ a platform credential, **no org entered** (finding 13), refused (`admin-key-owner-not-admin`) once its owner is no longer a platform admin (#746). Otherwise: bound ⇒ that org, verified against the owner's membership; unbound ⇒ install org at `single`, refused at `multi`. |
+| `embed-token`       | the token's `orgId` (t-673)                                    | No user to verify: the org's own status is read with the token (`resolveCredentialOrg`) — a suspended org's tokens are refused. Unbound ⇒ install org at `single`, refused at `multi`.                                                                                                          |
+| `mcp-key`           | the key's `orgId` (t-673)                                      | As `embed-token`. The transport wraps each method in `runAsOrg`; the key outlives its creator but not its org.                                                                                                                                                                                  |
 
 **Why the install org needs no read at `single`.** Every user is a member of
 the install org (the identity invariant) and their role in it is the platform
@@ -159,9 +160,15 @@ a Prisma mock it never needed (124 test files run them; 91 mock Prisma
 without `orgMembership`, 32 not at all). The row is kept in step with the
 projection: a platform-role change re-applies the rule to the install
 membership (ruling a, [identity.md](./identity.md#the-invariant-one-install-org-every-user-a-member)),
-and the members API refuses to edit install-org roles. The one remaining way
-the two can differ is an invitation that names an explicit `orgRole` on the
-install org, which is honoured as written.
+and the members API refuses to edit install-org roles. An invitation cannot set
+one either: the invite route refuses an install-org `orgRole`, and one written
+before it did is ignored (#871).
+
+**A support entry is a session that presents as an org ADMIN** (§121 t-824).
+The guards hand the policy and the handler the default user role in place of
+the platform one, so nothing downstream treats the actor as a platform admin
+while they are in the org, and a READ_ONLY grant refuses every write in the
+guard. The rules are in [support-access.md](./support-access.md#entering-under-a-grant-t-824).
 
 **A refusal is a 403 that names nothing.** "Not a member" and "no such org"
 are one answer; a suspended org is refused with the same words. The guard's
@@ -175,7 +182,8 @@ removed from it, can still see their orgs and reach the way out — a switch
 behind the refusal would lock them out of every other org they belong to. Both
 handlers run outside any scope, with no org facts on the principal, and read
 only the caller's own membership rows (the switch checks membership of the org
-it switches _to_).
+it switches _to_, or, for a platform admin at `multi`, that org's open
+support grant, writing a `support.enter` audit row).
 The marker carries a required `because`, like `ownership`; it is not a lever
 for making a 403 go away. Sign-in helps too: `activeOrgForSession` chooses
 among the user's **active** orgs, so a member of one suspended and one active
@@ -226,7 +234,7 @@ them from `runAsSystem` to the quieter scope), and the row's `orgId` with its or
 `resolveCredentialOrg` rule a credential's does before the rest of the
 request runs inside `runAsOrg(orgId, …, { source: 'inbound-trigger' |
 'approval-token' })`. A refusal — no org at `multi`, a suspended org — is
-the route's usual 404. The fire-and-forget engine drain and resume start
+the route's usual 404. The background engine drain and resume start
 inside that scope and keep it.
 **The credential resolvers read their row the same way** (t-709):
 `resolveApiKey` (`lib/auth/api-keys.ts`), `resolveEmbedToken`
@@ -264,7 +272,10 @@ drainEngine` continuation keeps the scope it was started in — pinned by
 
 A tick fired from an admin's session does **not** inherit that admin's org:
 each job enters its own scope, and `tests/unit/lib/orchestration/maintenance/run-tick.test.ts`
-starts the tick inside a foreign org to prove it. A fork's job with no
+starts the tick inside a foreign org to prove it. Nor is it narrowed to that
+admin's own rows: `runScopedJob` runs every job across owners
+(`runAcrossOwners`, §115 t-803), so the owner layer reads a job's queries as it
+reads the cron tick's ([authorization.md → The owner chokepoint](../auth/authorization.md#the-owner-chokepoint)). A fork's job with no
 `scope` gets `'per-org'` — a job that forgets is scoped, never bypassing
 ([scheduling.md → App jobs](../orchestration/scheduling.md#app-jobs--the-fork-seam-on-the-tick)).
 The smoke scripts under `scripts/smoke/` run their `main` inside
@@ -333,7 +344,8 @@ and its row in [`fork-init-seams.md`](../architecture/fork-init-seams.md).
 
 The client every importer receives from `lib/db/client.ts` is the base
 `PrismaClient` through `withTenancy()`, a Prisma `$extends` that reads this
-context below the handler. No route, job or script learns about `orgId`.
+context below the handler (and, over it, the owner layer of §115 —
+[Authorization → The owner chokepoint](../auth/authorization.md#the-owner-chokepoint)). No route, job or script learns about `orgId`.
 Two behaviours, and only these:
 
 - **Every create of a tenant-owned row is stamped** with the context's org

@@ -234,7 +234,9 @@ describe('POST /api/v1/admin/orchestration/executions/:id/review', () => {
 
     expect(prisma.aiWorkflowExecution.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: EXEC_ID },
+        // Confined by the visibility clause, so the owner layer (§115) sees a
+        // write it can check.
+        where: { id: EXEC_ID, AND: [expect.objectContaining({ OR: expect.any(Array) })] },
         data: expect.objectContaining({
           supervisorVerdict: 'pass',
           supervisorScore: 0.9,

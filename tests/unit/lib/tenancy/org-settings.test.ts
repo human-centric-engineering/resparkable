@@ -33,15 +33,19 @@ vi.mock('@/lib/db/client', () => ({
 
 import {
   ORG_PLATFORM_AGENTS_KEY,
+  ORG_QUOTAS_KEY,
   ORG_RETENTION_KEY,
-  applyRetentionPatch,
+  applyOrgSettingsPatch,
+  loadOrgQuotas,
   loadOrgRetention,
   loadPlatformAgentsMarker,
   readOrgRetention,
   isSettingsWriteConflict,
   readOrgProviderPolicy,
+  readOrgQuotas,
   readPlatformAgentsMarker,
   writeOrgProviderPolicy,
+  writeOrgQuotas,
   writePlatformAgentsMarker,
 } from '@/lib/tenancy/org-settings';
 
@@ -149,11 +153,11 @@ describe('loadOrgRetention', () => {
   });
 });
 
-describe('applyRetentionPatch', () => {
+describe('applyOrgSettingsPatch: the retention slice', () => {
   it('replaces the slice and leaves a fork’s own keys alone', () => {
-    const written = applyRetentionPatch(
+    const written = applyOrgSettingsPatch(
       { branding: { logo: 'x' }, retention: { webhookRetentionDays: 7 } },
-      { executionRetentionDays: 30 }
+      { retention: { executionRetentionDays: 30 } }
     );
 
     expect(written).toEqual({
@@ -165,9 +169,9 @@ describe('applyRetentionPatch', () => {
   it('replaces the slice outright rather than merging key by key', () => {
     // Merging would leave no way to stop overriding a window: a PATCH states
     // the org's whole set.
-    const written = applyRetentionPatch(
+    const written = applyOrgSettingsPatch(
       { retention: { webhookRetentionDays: 7, costLogRetentionDays: 90 } },
-      { costLogRetentionDays: 120 }
+      { retention: { costLogRetentionDays: 120 } }
     );
 
     expect(written).toEqual({ retention: { costLogRetentionDays: 120 } });
@@ -175,19 +179,22 @@ describe('applyRetentionPatch', () => {
 
   it('removes the slice on null, keeping the rest of the column', () => {
     expect(
-      applyRetentionPatch({ branding: { logo: 'x' }, retention: { webhookRetentionDays: 7 } }, null)
+      applyOrgSettingsPatch(
+        { branding: { logo: 'x' }, retention: { webhookRetentionDays: 7 } },
+        { retention: null }
+      )
     ).toEqual({ branding: { logo: 'x' } });
   });
 
   it('nulls the column when nothing is left, so "never set" has one shape', () => {
-    expect(applyRetentionPatch({ retention: { webhookRetentionDays: 7 } }, null)).toBe(
-      Prisma.DbNull
-    );
-    expect(applyRetentionPatch(null, null)).toBe(Prisma.DbNull);
+    expect(
+      applyOrgSettingsPatch({ retention: { webhookRetentionDays: 7 } }, { retention: null })
+    ).toBe(Prisma.DbNull);
+    expect(applyOrgSettingsPatch(null, { retention: null })).toBe(Prisma.DbNull);
   });
 
   it('writes the slice into an unset column', () => {
-    expect(applyRetentionPatch(null, { webhookRetentionDays: 7 })).toEqual({
+    expect(applyOrgSettingsPatch(null, { retention: { webhookRetentionDays: 7 } })).toEqual({
       [ORG_RETENTION_KEY]: { webhookRetentionDays: 7 },
     });
   });
@@ -195,8 +202,10 @@ describe('applyRetentionPatch', () => {
   it('treats an empty slice as no slice, so "never set" keeps one spelling', () => {
     // `{}` names no window, so it says what `null` says. Storing it would
     // leave the column non-NULL for ever.
-    expect(applyRetentionPatch({ retention: { webhookRetentionDays: 7 } }, {})).toBe(Prisma.DbNull);
-    expect(applyRetentionPatch({ branding: { logo: 'x' } }, {})).toEqual({
+    expect(
+      applyOrgSettingsPatch({ retention: { webhookRetentionDays: 7 } }, { retention: {} })
+    ).toBe(Prisma.DbNull);
+    expect(applyOrgSettingsPatch({ branding: { logo: 'x' } }, { retention: {} })).toEqual({
       branding: { logo: 'x' },
     });
   });
@@ -205,16 +214,16 @@ describe('applyRetentionPatch', () => {
     // Not reachable through the route today — the schema admits only
     // `retention` — but the column is shared and the next slice is a fork's.
     expect(
-      applyRetentionPatch(
+      applyOrgSettingsPatch(
         { branding: { logo: 'x' }, retention: { webhookRetentionDays: 7 } },
-        undefined
+        { retention: undefined }
       )
     ).toEqual({ branding: { logo: 'x' }, retention: { webhookRetentionDays: 7 } });
   });
 
   it('replaces a column that is not an object at all', () => {
     // Nothing the platform writes produces this; a hand-edit can.
-    expect(applyRetentionPatch('nonsense', { webhookRetentionDays: 7 })).toEqual({
+    expect(applyOrgSettingsPatch('nonsense', { retention: { webhookRetentionDays: 7 } })).toEqual({
       retention: { webhookRetentionDays: 7 },
     });
   });
@@ -287,11 +296,15 @@ describe('the platform-agents marker (§116 t-724)', () => {
   it('keeps the retention slice’s own writes from dropping the marker', () => {
     // The other direction: an admin's retention PATCH merges into a column
     // that now carries the marker.
-    expect(applyRetentionPatch({ platformAgents: marker }, { webhookRetentionDays: 7 })).toEqual({
+    expect(
+      applyOrgSettingsPatch({ platformAgents: marker }, { retention: { webhookRetentionDays: 7 } })
+    ).toEqual({
       platformAgents: marker,
       retention: { webhookRetentionDays: 7 },
     });
-    expect(applyRetentionPatch({ platformAgents: marker, retention: {} }, null)).toEqual({
+    expect(
+      applyOrgSettingsPatch({ platformAgents: marker, retention: {} }, { retention: null })
+    ).toEqual({
       platformAgents: marker,
     });
   });
@@ -369,7 +382,7 @@ describe('the provider policy (§120 t-742)', () => {
 
   it('keeps the retention slice’s own writes from dropping the policy', () => {
     const providers = { approved: ['openai'] };
-    expect(applyRetentionPatch({ providers }, null)).toEqual({ providers });
+    expect(applyOrgSettingsPatch({ providers }, { retention: null })).toEqual({ providers });
   });
 
   it('recognises a serialization clash and nothing else as a write conflict', () => {
@@ -384,5 +397,197 @@ describe('the provider policy (§120 t-742)', () => {
     expect(isSettingsWriteConflict(clash)).toBe(true);
     expect(isSettingsWriteConflict(unique)).toBe(false);
     expect(isSettingsWriteConflict(new Error('x'))).toBe(false);
+  });
+});
+
+describe('the org caps (§110 t-788)', () => {
+  /** A `$transaction` over one org row holding `settings`, recording the write. */
+  function txOver(settings: unknown) {
+    const tx = {
+      org: {
+        findUnique: vi.fn().mockResolvedValue(settings === undefined ? null : { settings }),
+        update: vi.fn(),
+      },
+    };
+    const $transaction = vi.fn(async (fn: (t: typeof tx) => Promise<unknown>, _opts?: unknown) =>
+      fn(tx)
+    );
+    return { tx, db: { $transaction } as never, $transaction };
+  }
+
+  it('reads a cap an org has set, and {} for every way of having none', () => {
+    expect(ORG_QUOTAS_KEY).toBe('quotas');
+    expect(readOrgQuotas({ quotas: { monthlyBudgetUsd: 250 } })).toEqual({ monthlyBudgetUsd: 250 });
+    expect(readOrgQuotas({ quotas: { monthlyBudgetUsd: 0 } })).toEqual({ monthlyBudgetUsd: 0 });
+    expect(readOrgQuotas(null)).toEqual({});
+    expect(readOrgQuotas({ retention: {} })).toEqual({});
+    expect(readOrgQuotas({ quotas: null })).toEqual({});
+    expect(readOrgQuotas({ quotas: {} })).toEqual({});
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+  });
+
+  it('drops an unreadable cap with a warning rather than enforcing it', () => {
+    expect(readOrgQuotas({ quotas: { monthlyBudgetUsd: -1 } }, { orgId: ORG_A })).toEqual({});
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'Dropped malformed org caps; the org is not capped by them',
+      { orgId: ORG_A, keys: ['monthlyBudgetUsd'] }
+    );
+
+    mockLogger.warn.mockClear();
+    expect(readOrgQuotas({ quotas: [10] }, { orgId: ORG_A })).toEqual({});
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'Org quotas slice is not an object; the org has no cap of its own',
+      { orgId: ORG_A }
+    );
+  });
+
+  it('reads the request cap beside the budget, dropping only an unreadable one (§110 t-789)', () => {
+    expect(
+      readOrgQuotas({ quotas: { monthlyBudgetUsd: 10, requestsPerMinute: 600 } }, { orgId: ORG_A })
+    ).toEqual({ monthlyBudgetUsd: 10, requestsPerMinute: 600 });
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+
+    expect(
+      readOrgQuotas({ quotas: { monthlyBudgetUsd: 10, requestsPerMinute: 0.5 } }, { orgId: ORG_A })
+    ).toEqual({ monthlyBudgetUsd: 10 });
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      'Dropped malformed org caps; the org is not capped by them',
+      { orgId: ORG_A, keys: ['requestsPerMinute'] }
+    );
+  });
+
+  it('ignores a key it does not know, keeping the caps it does', () => {
+    expect(readOrgQuotas({ quotas: { monthlyBudgetUsd: 10, futureCap: 3 } })).toEqual({
+      monthlyBudgetUsd: 10,
+    });
+  });
+
+  it('loads one org’s caps, and {} for an org that does not exist', async () => {
+    mockFindUnique.mockResolvedValueOnce({ settings: { quotas: { monthlyBudgetUsd: 5 } } });
+    expect(await loadOrgQuotas(ORG_A)).toEqual({ monthlyBudgetUsd: 5 });
+    expect(mockFindUnique).toHaveBeenCalledWith({
+      where: { id: ORG_A },
+      select: { settings: true },
+    });
+
+    mockFindUnique.mockResolvedValueOnce(null);
+    expect(await loadOrgQuotas('gone')).toEqual({});
+  });
+
+  it('writes the caps in a serializable transaction, keeping every other key', async () => {
+    const { tx, db, $transaction } = txOver({
+      providers: { approved: ['a'] },
+      quotas: { monthlyBudgetUsd: 10 },
+    });
+
+    const written = await writeOrgQuotas(ORG_A, { monthlyBudgetUsd: 25 }, db);
+
+    expect($transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    expect(written).toEqual({
+      previous: { monthlyBudgetUsd: 10 },
+      stored: { monthlyBudgetUsd: 25 },
+    });
+    expect(tx.org.update).toHaveBeenCalledWith({
+      where: { id: ORG_A },
+      data: {
+        settings: { providers: { approved: ['a'] }, quotas: { monthlyBudgetUsd: 25 } },
+      },
+    });
+  });
+
+  it('removes the slice for null or {}, and NULLs a column left empty', async () => {
+    const kept = txOver({ branding: { logo: 'x' }, quotas: { monthlyBudgetUsd: 10 } });
+    expect(await writeOrgQuotas(ORG_A, null, kept.db)).toEqual({
+      previous: { monthlyBudgetUsd: 10 },
+      stored: {},
+    });
+    expect(kept.tx.org.update).toHaveBeenCalledWith({
+      where: { id: ORG_A },
+      data: { settings: { branding: { logo: 'x' } } },
+    });
+
+    const emptied = txOver({ quotas: { monthlyBudgetUsd: 10 } });
+    await writeOrgQuotas(ORG_A, {}, emptied.db);
+    expect(emptied.tx.org.update).toHaveBeenCalledWith({
+      where: { id: ORG_A },
+      data: { settings: Prisma.DbNull },
+    });
+  });
+
+  it('treats a cap forwarded as undefined as no cap, removing the slice', async () => {
+    // What a plan with no cap produces: `{ monthlyBudgetUsd: plan.cap }`. Zod
+    // keeps the key, so counting keys would store `quotas: {}` for ever.
+    const { tx, db } = txOver({ quotas: { monthlyBudgetUsd: 10 } });
+
+    expect(await writeOrgQuotas(ORG_A, { monthlyBudgetUsd: undefined }, db)).toEqual({
+      previous: { monthlyBudgetUsd: 10 },
+      stored: {},
+    });
+    expect(tx.org.update).toHaveBeenCalledWith({
+      where: { id: ORG_A },
+      data: { settings: Prisma.DbNull },
+    });
+  });
+
+  it('validates what it is given, writing nothing for a bad cap or an unknown key', async () => {
+    const { tx, db } = txOver({});
+
+    await expect(writeOrgQuotas(ORG_A, { monthlyBudgetUsd: -5 }, db)).rejects.toThrow(
+      /zero or positive/
+    );
+    await expect(
+      writeOrgQuotas(ORG_A, { monthlyBudgetUsd: 5, typo: 1 } as never, db)
+    ).rejects.toThrow(/typo/);
+    expect(tx.org.update).not.toHaveBeenCalled(); // test-review:accept no_arg_called — refused before any write
+  });
+
+  it('writes nothing for an org that is gone', async () => {
+    const { tx, db } = txOver(undefined);
+
+    expect(await writeOrgQuotas('gone', { monthlyBudgetUsd: 5 }, db)).toBeNull();
+    expect(tx.org.update).not.toHaveBeenCalled(); // test-review:accept no_arg_called — no row, so no write at all
+  });
+
+  it('a PATCH slice whose every key is undefined removes the slice', () => {
+    expect(
+      applyOrgSettingsPatch(
+        { quotas: { monthlyBudgetUsd: 10 }, branding: { logo: 'x' } },
+        { quotas: { monthlyBudgetUsd: undefined } }
+      )
+    ).toEqual({ branding: { logo: 'x' } });
+    expect(
+      applyOrgSettingsPatch(
+        { quotas: { monthlyBudgetUsd: 10 } },
+        { quotas: { monthlyBudgetUsd: undefined } }
+      )
+    ).toBe(Prisma.DbNull);
+  });
+
+  it('a PATCH replaces each slice it names and leaves the rest', () => {
+    const current = {
+      retention: { webhookRetentionDays: 7 },
+      quotas: { monthlyBudgetUsd: 10 },
+      branding: { logo: 'x' },
+    };
+
+    expect(applyOrgSettingsPatch(current, { quotas: { monthlyBudgetUsd: 20 } })).toEqual({
+      retention: { webhookRetentionDays: 7 },
+      quotas: { monthlyBudgetUsd: 20 },
+      branding: { logo: 'x' },
+    });
+    expect(applyOrgSettingsPatch(current, { quotas: null })).toEqual({
+      retention: { webhookRetentionDays: 7 },
+      branding: { logo: 'x' },
+    });
+    // A retention-only patch carries the caps across untouched.
+    expect(applyOrgSettingsPatch(current, { retention: null })).toEqual({
+      quotas: { monthlyBudgetUsd: 10 },
+      branding: { logo: 'x' },
+    });
+    expect(
+      applyOrgSettingsPatch({ quotas: { monthlyBudgetUsd: 10 } }, { quotas: {}, retention: null })
+    ).toBe(Prisma.DbNull);
   });
 });

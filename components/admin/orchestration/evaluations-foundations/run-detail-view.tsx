@@ -50,9 +50,15 @@ interface RunDetail {
   createdAt: string;
 }
 
+/**
+ * Only a run that reached aggregation has `metricSlugs` and `stats`. A run the
+ * worker failed before then (dataset changed, invalid metric configs, preflight)
+ * carries just a `note`, plus `error` for a preflight failure; a run the worker
+ * crashed on carries `error` and `message` (#922).
+ */
 interface RunSummary {
-  metricSlugs: string[];
-  stats: Record<
+  metricSlugs?: string[];
+  stats?: Record<
     string,
     {
       mean: number | null;
@@ -68,6 +74,10 @@ interface RunSummary {
   totalJudgeTokens?: { input: number; output: number };
   note?: string;
   dominantErrorCode?: string;
+  /** Preflight failures carry the reason here; a worker crash, its code. */
+  error?: string;
+  /** With `error: 'worker_unexpected_error'`: what was thrown. */
+  message?: string;
 }
 
 interface CaseResult {
@@ -90,12 +100,16 @@ interface CaseResult {
   costUsd: number;
   errorCode: string | null;
   errorMessage: string | null;
+  /** `null` when the run's dataset is no longer one this admin may see. */
   datasetCase: {
     input: unknown;
     expectedOutput: string | null;
     metadata: Record<string, unknown> | null;
-  };
+  } | null;
 }
+
+/** Shown in place of a case's input when its dataset is no longer visible to this admin. */
+const CASE_UNAVAILABLE = 'Not available: you can no longer see the dataset this case came from.';
 
 const STATUS_STYLES: Record<RunDetail['status'], string> = {
   queued: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200',
@@ -323,46 +337,58 @@ export function RunDetailView({ runId }: { runId: string }): React.ReactElement 
             <CardTitle className="text-base">Summary</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Metric</TableHead>
-                  <TableHead className="w-24">Scored</TableHead>
-                  <TableHead className="w-24">Mean</TableHead>
-                  <TableHead className="w-24">Median</TableHead>
-                  <TableHead className="w-24">p95</TableHead>
-                  <TableHead className="w-28">Pass rate</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {run.summary.metricSlugs.map((slug) => {
-                  const s = run.summary?.stats[slug];
-                  if (!s) return null;
-                  return (
-                    <TableRow key={slug}>
-                      <TableCell className="font-mono text-xs">{slug}</TableCell>
-                      <TableCell className="font-mono text-xs">{s.scoredCount}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.mean != null ? s.mean.toFixed(3) : '—'}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.median != null ? s.median.toFixed(3) : '—'}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.p95 != null ? s.p95.toFixed(3) : '—'}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.passRate != null ? `${Math.round(s.passRate * 100)}%` : '—'}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+            {run.summary.metricSlugs && run.summary.stats ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Metric</TableHead>
+                    <TableHead className="w-24">Scored</TableHead>
+                    <TableHead className="w-24">Mean</TableHead>
+                    <TableHead className="w-24">Median</TableHead>
+                    <TableHead className="w-24">p95</TableHead>
+                    <TableHead className="w-28">Pass rate</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {run.summary.metricSlugs.map((slug) => {
+                    const s = run.summary?.stats?.[slug];
+                    if (!s) return null;
+                    return (
+                      <TableRow key={slug}>
+                        <TableCell className="font-mono text-xs">{slug}</TableCell>
+                        <TableCell className="font-mono text-xs">{s.scoredCount}</TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {s.mean != null ? s.mean.toFixed(3) : '—'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {s.median != null ? s.median.toFixed(3) : '—'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {s.p95 != null ? s.p95.toFixed(3) : '—'}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">
+                          {s.passRate != null ? `${Math.round(s.passRate * 100)}%` : '—'}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            ) : (
+              <p className="text-muted-foreground text-sm">
+                No metrics were aggregated for this run.
+              </p>
+            )}
             {run.summary.note ? (
               <p className="text-muted-foreground mt-3 text-xs">
                 Note: {run.summary.note}
                 {run.summary.dominantErrorCode ? ` (${run.summary.dominantErrorCode})` : ''}
+              </p>
+            ) : null}
+            {run.summary.error ? (
+              <p className="text-destructive mt-1 text-xs">
+                {run.summary.error}
+                {run.summary.message ? `: ${run.summary.message}` : ''}
               </p>
             ) : null}
           </CardContent>
@@ -405,9 +431,13 @@ export function RunDetailView({ runId }: { runId: string }): React.ReactElement 
                     <TableCell className="font-mono">{c.casePosition}</TableCell>
                     <TableCell className="max-w-xs">
                       <div className="line-clamp-2 text-xs">
-                        {typeof c.datasetCase.input === 'string'
-                          ? c.datasetCase.input
-                          : JSON.stringify(c.datasetCase.input)}
+                        {c.datasetCase === null ? (
+                          <span className="text-muted-foreground">{CASE_UNAVAILABLE}</span>
+                        ) : typeof c.datasetCase.input === 'string' ? (
+                          c.datasetCase.input
+                        ) : (
+                          JSON.stringify(c.datasetCase.input)
+                        )}
                       </div>
                     </TableCell>
                     {run.metricConfigs.map((m) => {
@@ -444,12 +474,14 @@ export function RunDetailView({ runId }: { runId: string }): React.ReactElement 
               <div className="max-h-[70vh] space-y-4 overflow-y-auto">
                 <Section title="Input">
                   <pre className="bg-muted rounded p-3 text-xs whitespace-pre-wrap">
-                    {typeof selected.datasetCase.input === 'string'
-                      ? selected.datasetCase.input
-                      : JSON.stringify(selected.datasetCase.input, null, 2)}
+                    {selected.datasetCase === null
+                      ? CASE_UNAVAILABLE
+                      : typeof selected.datasetCase.input === 'string'
+                        ? selected.datasetCase.input
+                        : JSON.stringify(selected.datasetCase.input, null, 2)}
                   </pre>
                 </Section>
-                {selected.datasetCase.expectedOutput ? (
+                {selected.datasetCase?.expectedOutput ? (
                   <Section title="Expected output">
                     <pre className="bg-muted rounded p-3 text-xs whitespace-pre-wrap">
                       {selected.datasetCase.expectedOutput}

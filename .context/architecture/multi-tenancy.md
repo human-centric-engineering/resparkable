@@ -86,6 +86,43 @@ is on:
   org you create after flipping the mode**, or its agents, workflows and
   knowledge base will refuse to call any vendor. See
   [LLM providers → Per-org approved providers](../orchestration/llm-providers.md#per-org-approved-providers-core-at-multi).
+- **An org's configs cannot read the operator's env vars** (§111 t-811). At
+  `multi`, an outbound call, auth secret or channel credential configured in
+  a customer org may name only env vars under that org's `ORG_<ORG ID>_`
+  prefix. Set a customer's credentials under its prefix. The install org
+  names any. See
+  [External calls](../orchestration/external-calls.md).
+- **Each org can have its own monthly AI budget** (§110 t-788). A platform
+  admin in the install org sets `settings.quotas.monthlyBudgetUsd` with
+  `PATCH /api/v1/admin/orgs/[id]`, or a fork's billing code calls
+  `writeOrgQuotas()`. An org's own admins cannot change it, and every change
+  is in the admin audit log. Every paid AI call made in the org is held to it
+  (the provider manager's spend gate): a chat turn ends with
+  `org_budget_exceeded`, and a workflow step, evaluation or job fails with
+  that code. Local models are never stopped. Unset means no org cap. The global
+  `globalMonthlyBudgetUsd` stays an install-wide ceiling: it totals every
+  org's spend, so one tenant can still exhaust it for everyone unless each
+  org has a cap below it. See
+  [Costs → Per-org monthly budget cap](../admin/orchestration-costs.md#per-org-monthly-budget-cap).
+- **Each org can have its own API request cap** (§110 t-789). Set
+  `settings.quotas.requestsPerMinute` the same way, with the same
+  install-org-only rule. It limits all of the org's callers together, on top
+  of each caller's own limit, so one org can no longer use as much shared
+  capacity as every one of its users and keys combined. The org is the one
+  the guard will enter (your tenant resolver's, else the session's) or the
+  key row's, never `x-sunrise-org`, and a user is counted only against an org
+  they are an active member of. Embed-widget traffic, the platform admin
+  surface, listing orgs and switching between them are not counted. Unset means no org
+  cap, and at `single` nothing is counted. Another instance can enforce an old cap for up
+  to 30 seconds, and with several instances each counts separately. See
+  [Rate limiting → Per-org request cap](../security/rate-limiting.md#per-org-request-cap).
+- **Each org's monthly AI usage is visible to the install org** (§110 t-790).
+  `GET /api/v1/admin/orchestration/costs/orgs?period=YYYY-MM` returns every
+  org's spend, calls and tokens for a UTC calendar month against its budget
+  cap, plus erased orgs' detached spend. The costs page shows it as a per-org
+  table and each org's page shows its month to date. Only the install org may
+  read it. Plans, pricing and invoices built on it are yours. See
+  [Costs → Per-org usage](../admin/orchestration-costs.md#per-org-usage).
 - **The data subject is per org.** `eraseUser` / `exportUserData` act inside
   the org the request entered: a person with memberships in several orgs is
   erased from, and exported from, the org that asked — the tenant is the
@@ -98,11 +135,11 @@ own it have not shipped (the Multi-tenancy phase on the Hub; the design
 record's [target architecture](./multi-tenancy-design.md#target-architecture)
 says which piece each feature lands):
 
-- **The Learn page is the install org's alone, and org admins still see it.** The
-  Pattern Advisor, the Quiz Master and their patterns knowledge help the
-  install's app admins build their app, so they exist only in the install
-  org. Until the console split (§111) hides that page from org admins, it is
-  listed in their console and finds nothing there.
+- **The Learn page is the install org's alone.** The Pattern Advisor, the
+  Quiz Master and their patterns knowledge help the install's app admins
+  build their app, so they exist only in the install org. It is a platform
+  page, so an org admin is not shown it and is refused it (§111). A platform
+  admin switched into a customer org still finds it empty there.
 - **Some process-global state is shared across orgs on purpose.** RLS cannot
   see a Node heap, so every module-level holder in `lib/` is declared in
   [`lib/tenancy/process-state.ts`](../../lib/tenancy/process-state.ts) with
@@ -444,11 +481,14 @@ db:drift-check` is what tells you, and the order in
   every policy. `runAsSystem` is never the path of least resistance for a
   job that "needs to see everything" — that job is per-org, and the policies
   do the seeing ([scheduling.md → App jobs](../orchestration/scheduling.md#app-jobs--the-fork-seam-on-the-tick)).
-- **Per-tenant quotas: register a key resolver, don't fork the middleware.**
-  `registerRateLimitKeyResolver('org', …)` in `lib/app/rate-limit.ts`
-  buckets by anything derivable from the request; derive the identifier from
-  an authenticated principal, never from a value the caller controls
-  ([rate limiting → custom keys](../security/rate-limiting.md)).
+- **A per-tenant request cap is built in; don't register an `'org'` key for
+  it.** Set the org's `quotas.requestsPerMinute` (see the request-cap bullet
+  above). A custom key resolver in `lib/app/rate-limit.ts` is still how to
+  bucket by something else derivable from the request, a workspace or a
+  device. Derive it from an authenticated principal, never from a value the
+  caller controls ([rate limiting → custom keys](../security/rate-limiting.md)).
+  A fork that registered `'org'` from the earlier version of this advice still
+  boots, because the built-in counter does not claim that key name.
 
 ## The control plane: which admin surfaces are whose
 
@@ -456,8 +496,10 @@ Everything above is the **data** plane — which rows exist for whom. This
 section is the **control** plane: which _admin surfaces_ a customer runs and
 which stay the vendor's. It stays on this page because its reader is the
 same fork that enables the capability and then has to decide what a customer
-sees; §111 is the platform work that splits the console along it, and until
-then this is the map.
+sees. §111 splits the console along it: a surface is admitted to an org
+admin by declaring itself org-tier, and the declarations are one roster
+([admin tiers](../auth/authorization.md#admin-tiers)). This map is the
+reasoning; the roster is what runs.
 
 **The rule, so the table below does not have to be maintained to stay true:**
 
@@ -495,6 +537,14 @@ model per install**, because vector dimension is a schema property.
 
 ### The customer's
 
+These are open to the org's OWNER/ADMIN (§111 t-811). **The source of truth
+for what is open is the roster, not this table:** `ORG_TIER_ADMIN_PAGES` and
+`ORG_TIER_ADMIN_ROUTES` in [`lib/auth/admin-tier.ts`](../../lib/auth/admin-tier.ts),
+pinned by `tests/unit/scripts/ci/admin-tier-roster.test.ts`. The roster also
+lists the shared-config reads these pages need (capabilities, agent profiles,
+providers and models, tags), whose writes stay the install org's. To open a
+fork's own surface, declare it the same way.
+
 | Surface                                             | Backing models                                        |
 | --------------------------------------------------- | ----------------------------------------------------- |
 | `orchestration/agents` (+ `new`, `[id]`, `compare`) | `AiAgent`, `AiAgentVersion`, the token models         |
@@ -507,40 +557,38 @@ model per install**, because vector dimension is a schema property.
 | `orchestration/event-subscriptions` (+ `dlq`)       | `AiWebhookSubscription`, `AiEventHook`                |
 | `orchestration/mcp/keys`                            | `McpApiKey`                                           |
 | `orchestration/approvals`                           | Approvals on executions                               |
+| `members` (§111 t-813, shown at `multi` only)       | `OrgMembership` of the entered org, and invitations   |
+| `support-access` (§121 t-823, `multi` only)         | `OrgSupportGrant` of the entered org                  |
 
-### Mixed — these need splitting, not assigning
+### Mixed — split per viewer, not assigned
 
 This is the "almost" in "almost 1:1", and skipping it is how a fork ships a
-customer console that leaks an aggregate.
+customer console that leaks an aggregate. §111 t-812 splits each of these
+**by query, not by page**: the page is on the roster, asks who is viewing
+(`adminPageViewerTier()` in `lib/auth/admin-page-viewer.ts`), and renders its
+platform-ops half for a platform viewer only. The routes behind the org's
+half are org-tier and read in the entered org; the routes behind the
+platform-ops half are undeclared, so an org admin who calls one directly is
+refused. The roster pins both.
 
-- **`orchestration` (dashboard) and `overview`** — headline counts over both
-  planes. Split the query, not the page.
-- **`orchestration/costs`** — the _settings_ are the global singleton
-  (platform-ops); the _spend_ is `AiCostLog`, per-tenant (`orgId`, `SetNull`
-  on org erasure so the vendor's billing record survives the tenant).
-- **`orchestration/analytics`** — topics, unanswered questions, engagement
-  and content gaps are all derived from `AiConversation`. Tenant data
-  presented as a global roll-up: the _page_ is a customer's, the vendor's
-  version of it is a different query.
-- **`orchestration/executions`** — the one that looks cleanly splittable and
-  is not. `app/admin/orchestration/executions/page.tsx` fans three reads —
-  `getExecutions()` (`AiWorkflowExecution`, the customer's),
-  `getInitialSnapshot()` (live-engine lease state, process-global) and
-  `getOrchestrationSettings()` (the global singleton, for the stuck-step
-  threshold) — and renders the live-engine dashboard **above** the table on
-  the same page. `executions/live` is a deeper view of the same platform-ops
-  data, not a separable surface.
-- **`orchestration/mcp/prompts`** — looks like a customer's, and is not one.
-  `McpExposedPrompt` is on `GLOBAL_CONFIG_MODELS`: its `createdBy` is
-  provenance, `prompt-registry.ts` serves every enabled row from a
-  process-global cache to every MCP client, `name` is unique across the
-  install, and the enabled cap is global. Shipping this page in a customer
-  console publishes one tenant's prompt to all of them. Assign it to the
-  customer only after scoping the model (column, `@@unique([orgId, name])`,
-  per-org cache key and cap).
-- **`orchestration/mcp` (landing)** — sits above both halves of the MCP split.
-  (`mcp/sessions` was listed here too until §39 t-718 deleted the page with the
-  stateful transport.)
+| Page                          | The org admin's half                                                                                                       | The platform's half (absent for them)                                                                                       |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `orchestration` (dashboard)   | Agent count, spend, budget alerts, dashboard stats, activity: all tenant rows in their org                                 | The setup wizard and banner (providers, global settings) and capability quarantines (`AiCapability`, global)                |
+| `orchestration/costs`         | Summary, alerts, trend, per-agent and per-model spend (`AiCostLog` in their org), pricing (the model catalogue, read-open) | Each org's usage (`costs/orgs`), the link to the global budget settings, and the global cap's amount and spend              |
+| `orchestration/analytics`     | All of it: every figure is derived from `AiConversation` in their org, quoted text from threads they may open (§115)       | None on the page. The vendor's cross-org view of the same figures is a different query, not built                           |
+| `orchestration/executions`    | The executions table (their org's, as the list route scopes it)                                                            | The live-engine cards (process-global lease and in-flight state), the lease inspector and force-fail; `executions/live` too |
+| `orchestration/mcp` (landing) | The API Keys card: their org's `McpApiKey` rows, and their nav route to `mcp/keys`                                         | The server toggle, exposed tools, resources and prompts, the audit log and the settings                                     |
+| `overview`                    | None. Every figure is install-wide (`User` is a system model) or the process's own, so the page stays platform-only        | All of it. `/admin` sends an org admin to the orchestration dashboard instead                                               |
+
+`orchestration/mcp/prompts` stays platform-ops on its own: it looks like a
+customer's, and is not one. `McpExposedPrompt` is on `GLOBAL_CONFIG_MODELS`:
+its `createdBy` is provenance, `prompt-registry.ts` serves every enabled row
+from a process-global cache to every MCP client, `name` is unique across the
+install, and the enabled cap is global. Shipping this page in a customer
+console publishes one tenant's prompt to all of them. Assign it to the
+customer only after scoping the model (column, `@@unique([orgId, name])`,
+per-org cache key and cap). (`mcp/sessions` was listed here too until §39
+t-718 deleted the page with the stateful transport.)
 
 ### Why the URL tree is not the answer
 

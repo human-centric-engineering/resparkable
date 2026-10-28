@@ -6,7 +6,7 @@
  * without string-matching on error messages.
  */
 
-import { PROVIDER_NOT_PERMITTED } from '@/lib/orchestration/llm/provider';
+import { PROVIDER_NOT_PERMITTED, SPEND_CAP_CODES } from '@/lib/orchestration/llm/provider';
 
 /**
  * Thrown by the `human_approval` executor. The engine catches this
@@ -78,12 +78,23 @@ export class BudgetExceeded extends Error {
 const EXECUTOR_THREW = 'executor_threw';
 
 function isPolicyRefusal(cause: unknown): boolean {
+  return refusalCodeIn(cause, [PROVIDER_NOT_PERMITTED]) !== null;
+}
+
+const SPEND_CAP_REFUSALS: readonly string[] = Object.values(SPEND_CAP_CODES);
+
+/**
+ * The first of `codes` carried by `cause` or anything it wraps, by duck type
+ * on `code`; bounded at ten levels, as {@link isPolicyRefusal} explains.
+ */
+function refusalCodeIn(cause: unknown, codes: readonly string[]): string | null {
   let current: unknown = cause;
   for (let depth = 0; depth < 10 && current instanceof Error; depth++) {
-    if ((current as Error & { code?: unknown }).code === PROVIDER_NOT_PERMITTED) return true;
+    const code = (current as Error & { code?: unknown }).code;
+    if (typeof code === 'string' && codes.includes(code)) return code;
     current = current.cause;
   }
-  return false;
+  return null;
 }
 
 /**
@@ -131,10 +142,16 @@ export class ExecutorError extends Error {
     // shows that code's generic message instead of the raw one, because the raw
     // message is whatever an executor threw. Recoding it would forward that
     // message to the client. It still becomes non-retriable.
-    const refused = isPolicyRefusal(cause);
-    this.code = refused && code !== EXECUTOR_THREW ? PROVIDER_NOT_PERMITTED : code;
+    //
+    // A monthly spend cap's refusal (§110 t-788) is decided the same way, for
+    // the same reason: the cap is still reached on the next attempt. Its code
+    // is kept, so a trace says which cap stopped the step.
+    const refusalCode = isPolicyRefusal(cause)
+      ? PROVIDER_NOT_PERMITTED
+      : refusalCodeIn(cause, SPEND_CAP_REFUSALS);
+    this.code = refusalCode !== null && code !== EXECUTOR_THREW ? refusalCode : code;
     this.cause = cause;
-    this.retriable = refused ? false : retriable;
+    this.retriable = refusalCode !== null ? false : retriable;
     this.tokensUsed = tokensUsed;
     this.costUsd = costUsd;
   }

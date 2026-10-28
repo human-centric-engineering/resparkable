@@ -24,6 +24,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { FieldHelp } from '@/components/ui/field-help';
 import { isSafeProviderUrl } from '@/lib/security/safe-url';
+import { costLogsOutliveExecutions } from '@/lib/validations/orchestration';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -68,6 +69,7 @@ export interface OrchestrationSettings {
     bm25Weight?: number;
   } | null;
   webhookRetentionDays: number | null;
+  webhookDlqRetentionDays: number | null;
   costLogRetentionDays: number | null;
   auditLogRetentionDays: number | null;
   executionRetentionDays: number | null;
@@ -123,6 +125,7 @@ const settingsFormSchema = z
     stuckExecutionThresholdMins: nullableNumber.pipe(z.number().int().min(1).max(1440).nullable()),
     // Retention
     webhookRetentionDays: nullableNumber.pipe(z.number().int().positive().max(365).nullable()),
+    webhookDlqRetentionDays: nullableNumber.pipe(z.number().int().positive().max(365).nullable()),
     costLogRetentionDays: nullableNumber.pipe(z.number().int().positive().max(365).nullable()),
     auditLogRetentionDays: nullableNumber.pipe(z.number().int().positive().max(3650).nullable()),
     executionRetentionDays: nullableNumber.pipe(z.number().int().positive().max(3650).nullable()),
@@ -156,15 +159,16 @@ const settingsFormSchema = z
    */
   .refine(
     (v) => {
-      const costLog = Number(v.costLogRetentionDays);
-      const execution = Number(v.executionRetentionDays);
-      // Blank means "never prune this class" — no coupling to break.
-      if (!v.costLogRetentionDays || !v.executionRetentionDays) return true;
+      // Blank means "never prune this class". A blank cost log always covers;
+      // a blank execution window does not survive a finite cost-log one (#839).
+      const costLog = v.costLogRetentionDays ? Number(v.costLogRetentionDays) : null;
+      const execution = v.executionRetentionDays ? Number(v.executionRetentionDays) : null;
       if (Number.isNaN(costLog) || Number.isNaN(execution)) return true;
-      return costLog >= execution;
+      return costLogsOutliveExecutions(costLog, execution);
     },
     {
-      message: 'Must be at least as long as execution retention, or cost breakdowns empty out',
+      message:
+        'Must be at least as long as execution retention, or cost breakdowns empty out. Leave blank to keep cost logs for ever.',
       path: ['costLogRetentionDays'],
     }
   );
@@ -212,14 +216,27 @@ export function SettingsForm({
   const formSchema = React.useMemo(
     () =>
       settingsFormSchema.superRefine((values, ctx) => {
-        // Mirror `onSubmit`'s condition EXACTLY. It sends webhookUrl only when
-        // escalation is enabled AND has recipients; otherwise it PATCHes
-        // `escalationConfig: null` and the URL never leaves the browser.
-        // Validating more eagerly than that would block an operator turning the
-        // feature off — or removing its last recipient — to be rid of a
-        // now-rejected legacy URL, and since this page saves every setting in
-        // one request, nothing else on it could be saved either.
-        if (!values.escalationEnabled || escalationEmails.length === 0) return;
+        if (!values.escalationEnabled) return;
+        // Enabled with no recipients is what erasing the list's only address
+        // leaves (t-791): the webhook was kept, and saving this as "off" would
+        // drop it without anyone choosing to. So ask: add an address, or turn
+        // escalation off — which is also how to be rid of a now-rejected
+        // legacy URL, since the URL is only checked below while it would be
+        // sent.
+        if (escalationEmails.length === 0) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['escalationEnabled'],
+            message: 'Add at least one email address, or turn escalation notifications off.',
+          });
+          return;
+        }
+        // Mirror `onSubmit`, which sends webhookUrl only while escalation is
+        // enabled; otherwise it PATCHes `escalationConfig: null` and the URL
+        // never leaves the browser. Validating more eagerly than that would
+        // block an operator turning the feature off to be rid of a rejected
+        // URL, and since this page saves every setting in one request, nothing
+        // else on it could be saved either.
         const url = values.escalationWebhookUrl;
         if (!url) return;
         if (
@@ -258,6 +275,9 @@ export function SettingsForm({
     setEmailError(null);
     setEscalationEmails((prev) => [...prev, val]);
     setEmailInput('');
+    // The "add an address" error is answered; it would otherwise stay until
+    // the next submit, since the list lives outside the form's own fields.
+    clearErrors('escalationEnabled');
   };
 
   const defaults: SettingsFormData = React.useMemo(
@@ -272,6 +292,7 @@ export function SettingsForm({
       maxMessagesPerConversation: toStr(initialSettings.maxMessagesPerConversation),
       stuckExecutionThresholdMins: toStr(initialSettings.stuckExecutionThresholdMins ?? null),
       webhookRetentionDays: toStr(initialSettings.webhookRetentionDays),
+      webhookDlqRetentionDays: toStr(initialSettings.webhookDlqRetentionDays),
       costLogRetentionDays: toStr(initialSettings.costLogRetentionDays),
       auditLogRetentionDays: toStr(initialSettings.auditLogRetentionDays),
       executionRetentionDays: toStr(initialSettings.executionRetentionDays),
@@ -298,6 +319,7 @@ export function SettingsForm({
     handleSubmit,
     reset,
     watch,
+    clearErrors,
     formState: { errors, isDirty, isSubmitting },
   } = useForm<SettingsFormData>({
     resolver: zodResolver(formSchema),
@@ -344,6 +366,7 @@ export function SettingsForm({
           }
         : null;
 
+      // Enabled with no recipients never reaches here: the schema refuses it.
       const escalationConfig =
         values.escalationEnabled && escalationEmails.length > 0
           ? {
@@ -370,6 +393,7 @@ export function SettingsForm({
             ? { stuckExecutionThresholdMins: values.stuckExecutionThresholdMins }
             : {}),
           webhookRetentionDays: values.webhookRetentionDays,
+          webhookDlqRetentionDays: values.webhookDlqRetentionDays,
           costLogRetentionDays: values.costLogRetentionDays,
           auditLogRetentionDays: values.auditLogRetentionDays,
           executionRetentionDays: values.executionRetentionDays,
@@ -823,6 +847,28 @@ export function SettingsForm({
           </div>
 
           <div className="space-y-1.5">
+            <Label htmlFor="webhookDlqRetentionDays" className="flex items-center gap-1">
+              Failed webhook retention (days)
+              <FieldHelp title="Failed webhook delivery cleanup">
+                Webhook deliveries that ran out of retries are deleted after this many days. Set it
+                longer than webhook log retention to keep failures around for replay. Leave blank to
+                use the webhook log retention above.
+              </FieldHelp>
+            </Label>
+            <Input
+              id="webhookDlqRetentionDays"
+              type="number"
+              min={1}
+              max={365}
+              placeholder="Same as webhook log retention"
+              {...register('webhookDlqRetentionDays')}
+            />
+            {errors.webhookDlqRetentionDays && (
+              <p className="text-xs text-red-600">{errors.webhookDlqRetentionDays.message}</p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
             <Label htmlFor="costLogRetentionDays" className="flex items-center gap-1">
               Cost log retention (days)
               <FieldHelp title="Cost log cleanup">
@@ -874,7 +920,8 @@ export function SettingsForm({
                 Finished workflow executions (completed, failed, or cancelled) older than this are
                 automatically deleted, along with their steps, dispatches, and inbound-trigger
                 payloads. In-flight and awaiting-approval executions are never deleted. Leave blank
-                to keep all history indefinitely.
+                to keep all history indefinitely — if you do, leave cost log retention blank too, or
+                older executions lose their cost breakdown.
               </FieldHelp>
             </Label>
             <Input
@@ -988,6 +1035,9 @@ export function SettingsForm({
               render={({ field }) => (
                 <label className="flex items-center gap-2 text-sm">
                   <input
+                    // The ref lets a refused save focus and scroll to this box
+                    // when escalation is on with no address (t-791).
+                    ref={field.ref}
                     type="checkbox"
                     checked={field.value}
                     onChange={(e) => field.onChange(e.target.checked)}
@@ -1034,6 +1084,9 @@ export function SettingsForm({
                 </Button>
               </div>
               {emailError && <p className="text-xs text-red-600">{emailError}</p>}
+              {errors.escalationEnabled && (
+                <p className="text-xs text-red-600">{errors.escalationEnabled.message}</p>
+              )}
               {escalationEmails.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 pt-1">
                   {escalationEmails.map((email) => (

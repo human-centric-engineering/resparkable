@@ -16,16 +16,37 @@ import type { StorageProvider, StorageProviderType } from '@/lib/storage/provide
 import { createS3ProviderFromEnv } from '@/lib/storage/providers/s3';
 import { createVercelBlobProviderFromEnv } from '@/lib/storage/providers/vercel-blob';
 import { createLocalProviderFromEnv } from '@/lib/storage/providers/local';
+import { excludeOrgKeys, scopeStorageToOrg } from '@/lib/storage/org-scoped';
 import { logger } from '@/lib/logging';
 
 let storageClient: StorageProvider | null = null;
+/** `storageClient` behind `excludeOrgKeys`, built once so callers share one instance. */
+let unboundClient: StorageProvider | null = null;
 let initWarningLogged = false;
+
+/** Options for {@link getStorageClient}. */
+export interface StorageClientOptions {
+  /**
+   * Bind the client to one org (§109 t-736): every key it is handed must sit
+   * under `orgs/{orgId}/`, and signing passes the org down to the provider.
+   * Omit it for keys no org owns (avatars); the unbound client then refuses
+   * any key under the reserved `orgs/` root. See `lib/storage/org-scoped.ts`.
+   */
+  orgId?: string;
+}
 
 /**
  * Get the configured storage provider (singleton pattern)
  *
  * Returns null if no storage is configured and not in development mode.
  * In development, falls back to local filesystem storage.
+ *
+ * With `options.orgId`, returns the provider wrapped so it refuses any key
+ * outside that org's prefix (built per call). Without it, returns the
+ * provider wrapped so it refuses any key under the reserved `orgs/` root —
+ * an org's files are reachable only through that org's client. The provider
+ * itself stays org-free, so this resolver is also the seam a per-tenant
+ * backend (research §5B rungs 2/4) would hang off, without v1 building one.
  *
  * @returns StorageProvider instance or null
  *
@@ -35,9 +56,23 @@ let initWarningLogged = false;
  * if (storage) {
  *   await storage.upload(buffer, { key: 'avatars/123.jpg', contentType: 'image/jpeg' });
  * }
+ *
+ * const orgStorage = getStorageClient({ orgId });
+ * await orgStorage?.upload(buffer, { key: `orgs/${orgId}/report.pdf`, contentType: 'application/pdf' });
  * ```
  */
-export function getStorageClient(): StorageProvider | null {
+export function getStorageClient(options: StorageClientOptions = {}): StorageProvider | null {
+  const provider = getProvider();
+  if (!provider) return null;
+  if (options.orgId !== undefined) {
+    return scopeStorageToOrg(provider, options.orgId);
+  }
+  unboundClient ??= excludeOrgKeys(provider);
+  return unboundClient;
+}
+
+/** The process-wide provider, created on first use. */
+function getProvider(): StorageProvider | null {
   // Return cached instance if available
   if (storageClient) {
     return storageClient;
@@ -176,5 +211,6 @@ export function getStorageProviderName(): string | null {
  */
 export function resetStorageClient(): void {
   storageClient = null;
+  unboundClient = null;
   initWarningLogged = false;
 }

@@ -4,7 +4,7 @@ Admin interface for managing the Model Context Protocol (MCP) server that expose
 
 ## Architecture
 
-The MCP server uses **JSON-RPC 2.0** over **Streamable HTTP** transport (protocol version `2024-11-05`). External AI clients (Claude Desktop, Cursor, etc.) connect via bearer token authentication.
+The MCP server uses **JSON-RPC 2.0** over **Streamable HTTP** transport (protocol version `2024-11-05`). External AI clients that can send an `Authorization` header (Claude Code, Cursor, custom agents) connect via bearer token authentication; sign-in-only clients such as Claude Desktop cannot connect until OAuth lands (#820). See [Client Configuration](../orchestration/mcp.md#client-configuration).
 
 **Security model:** Default-deny. Nothing is exposed until explicitly added and enabled.
 
@@ -62,7 +62,7 @@ Self-service API key management with SHA-256 hashing.
 
 | Field               | Required | Notes                                                           |
 | ------------------- | -------- | --------------------------------------------------------------- |
-| Name                | Yes      | Descriptive label (e.g. "Claude Desktop")                       |
+| Name                | Yes      | Descriptive label (e.g. "Cursor")                               |
 | Scopes              | Yes (≥1) | `tools:list`, `tools:execute`, `resources:read`, `prompts:read` |
 | Expiry              | No       | Optional datetime; expired keys are auto-rejected               |
 | Rate Limit Override | No       | Per-key requests/min override                                   |

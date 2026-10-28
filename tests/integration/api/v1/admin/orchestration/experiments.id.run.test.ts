@@ -37,12 +37,14 @@ const {
   mockVariantUpdate,
   mockTxFindUnique,
   mockTxUpdate,
+  mockTxDatasetFindFirst,
 } = vi.hoisted(() => ({
   mockEvalSessionCreate: vi.fn(),
   mockEvalRunCreate: vi.fn(),
   mockVariantUpdate: vi.fn(),
   mockTxFindUnique: vi.fn(),
   mockTxUpdate: vi.fn(),
+  mockTxDatasetFindFirst: vi.fn(),
 }));
 
 vi.mock('@/lib/db/client', () => {
@@ -52,6 +54,7 @@ vi.mock('@/lib/db/client', () => {
     aiEvaluationSession: { create: (...args: unknown[]) => mockEvalSessionCreate(...args) },
     aiEvaluationRun: { create: (...args: unknown[]) => mockEvalRunCreate(...args) },
     aiExperimentVariant: { update: (...args: unknown[]) => mockVariantUpdate(...args) },
+    aiDataset: { findFirst: (...args: unknown[]) => mockTxDatasetFindFirst(...args) },
     aiExperiment: {
       findFirst: (...args: unknown[]) => mockTxFindUnique(...args),
       update: (...args: unknown[]) => mockTxUpdate(...args),
@@ -121,6 +124,21 @@ function makeExperimentWithAgent(overrides: Record<string, unknown> = {}) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/**
+ * The dataset table the in-transaction read sees. The route reads the bound
+ * dataset on its own, through the dataset's visibility — not included, where
+ * the owner layer (§115) would refuse it before the route could name it. The
+ * fake is owner-aware, so a route that dropped the visibility clause would be
+ * handed a foreign dataset and these tests would see it run.
+ */
+function bindDataset(
+  dataset: { id: string; userId: string | null; contentHash: string; caseCount: number } | null
+) {
+  mockTxDatasetFindFirst.mockImplementation(
+    ownerScopedFindFirst(dataset ? [dataset] : []) as never
+  );
+}
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 function makeContext(id = EXPERIMENT_ID): RouteContext {
@@ -143,6 +161,7 @@ async function parseJson<T>(response: Response): Promise<T> {
 describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    bindDataset(null);
     // Outer findFirst: the 404 check, which also settles the audit basis, so it
     // selects `createdBy` too. Omitting the column here is not "owned by
     // nobody" — it is "owner unknown", which the basis helper answers with a
@@ -218,6 +237,59 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       const response = await POST(makePostRequest(), makeContext());
 
       expect(response.status).toBe(400);
+    });
+  });
+
+  describe('a variant pinned to an agent version (#857)', () => {
+    // Stored before create refused pins. The run path can only load the live
+    // agent, so running it would score both arms against the same config.
+    beforeEach(() => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      mockTxFindUnique.mockResolvedValue(
+        makeExperiment({
+          variants: [
+            { id: 'v1', label: 'Control', agentVersionId: 'ver-1' },
+            { id: 'v2', label: 'Variant A', agentVersionId: null },
+          ],
+        })
+      );
+    });
+
+    it('is refused with a 400 that names the pin', async () => {
+      const response = await POST(makePostRequest(), makeContext());
+
+      expect(response.status).toBe(400);
+      const data = await parseJson<{ error: { code: string; message: string } }>(response);
+      expect(data.error.code).toBe('VALIDATION_ERROR');
+      expect(data.error.message).toMatch(/pins a variant to a saved agent version/);
+    });
+
+    it('writes no evaluation session or run and leaves the experiment a draft', async () => {
+      await POST(makePostRequest(), makeContext());
+
+      expect(mockEvalSessionCreate).not.toHaveBeenCalled();
+      expect(mockEvalRunCreate).not.toHaveBeenCalled();
+      expect(mockVariantUpdate).not.toHaveBeenCalled();
+      expect(mockTxUpdate).not.toHaveBeenCalled();
+    });
+
+    it('is refused on the dataset-driven path too', async () => {
+      bindDataset({ id: 'ds-1', userId: ADMIN_ID, contentHash: 'h', caseCount: 3 });
+      mockTxFindUnique.mockResolvedValue(
+        makeExperiment({
+          datasetId: 'ds-1',
+          metricConfigs: [{ slug: 'judge_agent' }],
+          variants: [
+            { id: 'v1', label: 'Control', agentVersionId: 'ver-1' },
+            { id: 'v2', label: 'Variant A', agentVersionId: 'ver-2' },
+          ],
+        })
+      );
+
+      const response = await POST(makePostRequest(), makeContext());
+
+      expect(response.status).toBe(400);
+      expect(mockEvalRunCreate).not.toHaveBeenCalled();
     });
   });
 
@@ -342,10 +414,13 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       return makeExperiment({
         datasetId: 'ds-1',
         metricConfigs: [{ slug: 'judge_agent', config: { agentSlug: 'eval-judge-relevance' } }],
-        dataset: { id: 'ds-1', userId: ADMIN_ID, contentHash: 'h-abc', caseCount: 12 },
         ...overrides,
       });
     }
+
+    beforeEach(() => {
+      bindDataset({ id: 'ds-1', userId: ADMIN_ID, contentHash: 'h-abc', caseCount: 12 });
+    });
 
     it('creates one AiEvaluationRun per variant when datasetId + metricConfigs are set', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
@@ -385,8 +460,7 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
 
     it('falls back to the legacy session path when datasetId is null', async () => {
       vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-      // datasetId omitted, dataset relation null
-      mockTxFindUnique.mockResolvedValue(makeExperiment({ datasetId: null, dataset: null }));
+      mockTxFindUnique.mockResolvedValue(makeExperiment({ datasetId: null }));
 
       await POST(makePostRequest(), makeContext());
 
@@ -467,17 +541,13 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
         createdBy: ADMIN_ID,
         datasetId: 'ds-foreign',
         metricConfigs: [{ slug: 'judge_agent', config: { agentSlug: 'eval-judge-relevance' } }],
-        dataset: {
-          id: 'ds-foreign',
-          userId: 'another-admin',
-          contentHash: 'h',
-          caseCount: 12,
-        },
         variants: [
           { id: 'v1', label: 'Control' },
           { id: 'v2', label: 'Variant A' },
         ],
       });
+
+      bindDataset({ id: 'ds-foreign', userId: 'another-admin', contentHash: 'h', caseCount: 12 });
 
       const response = await POST(makePostRequest(), makeContext());
 
@@ -506,8 +576,6 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
         createdBy: ADMIN_ID,
         datasetId: 'ds-orphan',
         metricConfigs: [{ slug: 'judge_agent', config: { agentSlug: 'eval-judge-relevance' } }],
-        // Its dataset was orphaned by the same erasure and nobody claimed it.
-        dataset: { id: 'ds-orphan', userId: null, contentHash: 'h', caseCount: 12 },
         variants: [
           { id: 'v1', label: 'Control' },
           { id: 'v2', label: 'Variant A' },
@@ -522,6 +590,8 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
         createdBy: ADMIN_ID,
       } as never);
       mockTxFindUnique.mockResolvedValue(orphanDatasetExperiment());
+      // Its dataset was orphaned by the same erasure and nobody claimed it.
+      bindDataset({ id: 'ds-orphan', userId: null, contentHash: 'h', caseCount: 12 });
     });
 
     afterEach(() => {
@@ -556,10 +626,8 @@ describe('POST /api/v1/admin/orchestration/experiments/:id/run', () => {
       // The regression guard for the widening. `null` is the only owner value
       // the relaxation may admit; an actual foreign id must stay refused
       // whatever the policy says about unowned rows.
-      mockTxFindUnique.mockResolvedValue({
-        ...orphanDatasetExperiment(),
-        dataset: { id: 'ds-foreign', userId: 'another-admin', contentHash: 'h', caseCount: 12 },
-      });
+      mockTxFindUnique.mockResolvedValue({ ...orphanDatasetExperiment(), datasetId: 'ds-foreign' });
+      bindDataset({ id: 'ds-foreign', userId: 'another-admin', contentHash: 'h', caseCount: 12 });
 
       expect((await POST(makePostRequest(), makeContext())).status).toBe(404);
       expect(mockEvalRunCreate).not.toHaveBeenCalled();

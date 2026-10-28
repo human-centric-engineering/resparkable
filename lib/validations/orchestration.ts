@@ -8,6 +8,12 @@
 
 import { z } from 'zod';
 import {
+  isHalfPrice,
+  missingPriceField,
+  PRICE_PAIR_MESSAGE,
+  splitPriceSchema,
+} from '@/lib/validations/model-pricing';
+import {
   paginationQuerySchema,
   cuidSchema,
   slugSchema,
@@ -15,13 +21,14 @@ import {
   capabilityScopeSchema,
 } from '@/lib/validations/common';
 import { logger } from '@/lib/logging';
+import { BINDING_OWNERS } from '@/lib/orchestration/agents/binding-owner';
 import { checkSafeProviderUrl, isSafeProviderUrl } from '@/lib/security/safe-url';
 import { KNOWN_STEP_TYPES, TASK_TYPES } from '@/types/orchestration';
 import { validateTaskDefaults } from '@/lib/orchestration/llm/model-registry';
 import { reviewSchemaSchema } from '@/lib/orchestration/review-schema/types';
 import { provenanceItemArraySchema } from '@/lib/orchestration/provenance/types';
 import { validateScopes, listValidApiKeyScopes } from '@/lib/auth/api-key-scopes';
-import { jurisdictionSchema } from '@/lib/validations/tenancy';
+import { jurisdictionSchema, orgIdSchema } from '@/lib/validations/tenancy';
 
 // ============================================================================
 // Shared Schemas
@@ -62,9 +69,9 @@ export const capabilityFunctionDefinitionSchema = z.object({
 export const createAgentObjectSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name is required')
-    .max(100, 'Name must be less than 100 characters')
-    .trim(),
+    .max(100, 'Name must be less than 100 characters'),
 
   slug: slugSchema.pipe(z.string().max(100, 'Slug must be less than 100 characters')),
 
@@ -77,9 +84,9 @@ export const createAgentObjectSchema = z.object({
 
   description: z
     .string()
+    .trim()
     .min(1, 'Description is required')
-    .max(5000, 'Description must be less than 5000 characters')
-    .trim(),
+    .max(5000, 'Description must be less than 5000 characters'),
 
   systemInstructions: z
     .string()
@@ -265,20 +272,28 @@ export const createAgentSchema = createAgentObjectSchema.superRefine((data, ctx)
  * `updateAgentSchema` below wraps it with the keyword-mode refinement.
  */
 export const updateAgentObjectSchema = z.object({
+  /**
+   * Who decides a platform agent's provider and model (t-798): `'platform'`
+   * hands them back to the platform's pick, `'org'` keeps them as they are.
+   * Nullable so an echo of what GET returned validates; the route reads
+   * `null` as no request. Not a registry field — the PATCH route handles it.
+   */
+  bindingOwner: z.enum(BINDING_OWNERS).nullable().optional(),
+
   name: z
     .string()
+    .trim()
     .min(1, 'Name cannot be empty')
     .max(100, 'Name must be less than 100 characters')
-    .trim()
     .optional(),
 
   slug: slugSchema.pipe(z.string().max(100, 'Slug must be less than 100 characters')).optional(),
 
   description: z
     .string()
+    .trim()
     .min(1, 'Description cannot be empty')
     .max(5000, 'Description must be less than 5000 characters')
-    .trim()
     .optional(),
 
   systemInstructions: z
@@ -522,7 +537,7 @@ export const instructionsRevertSchema = z.object({
  * "{source.slug}-copy".
  */
 export const cloneAgentBodySchema = z.object({
-  name: z.string().min(1).max(100).trim().optional(),
+  name: z.string().trim().min(1).max(100).optional(),
   slug: slugSchema.pipe(z.string().max(100)).optional(),
 });
 
@@ -575,23 +590,23 @@ export const createCapabilitySchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Name is required')
-      .max(100, 'Name must be less than 100 characters')
-      .trim(),
+      .max(100, 'Name must be less than 100 characters'),
 
     slug: capabilitySlugSchema,
 
     description: z
       .string()
+      .trim()
       .min(1, 'Description is required')
-      .max(5000, 'Description must be less than 5000 characters')
-      .trim(),
+      .max(5000, 'Description must be less than 5000 characters'),
 
     category: z
       .string()
+      .trim()
       .min(1, 'Category is required')
-      .max(50, 'Category must be less than 50 characters')
-      .trim(),
+      .max(50, 'Category must be less than 50 characters'),
 
     // `description` and `parameters` are REQUIRED, matching the read validator
     // (`capabilityFunctionDefinitionSchema`). A write replaces the whole JSON
@@ -675,25 +690,25 @@ export const updateCapabilitySchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Name cannot be empty')
       .max(100, 'Name must be less than 100 characters')
-      .trim()
       .optional(),
 
     slug: capabilitySlugSchema.optional(),
 
     description: z
       .string()
+      .trim()
       .min(1, 'Description cannot be empty')
       .max(5000, 'Description must be less than 5000 characters')
-      .trim()
       .optional(),
 
     category: z
       .string()
+      .trim()
       .min(1, 'Category cannot be empty')
       .max(50, 'Category must be less than 50 characters')
-      .trim()
       .optional(),
 
     // Required within the object for the same reason as create: the column is
@@ -1413,8 +1428,8 @@ export const workflowVersionSnapshotSchema = workflowDefinitionSchema;
 export const publishWorkflowSchema = z.object({
   changeSummary: z
     .string()
-    .max(500, 'Change summary must be less than 500 characters')
     .trim()
+    .max(500, 'Change summary must be less than 500 characters')
     .optional(),
 });
 
@@ -1439,8 +1454,8 @@ export const rollbackWorkflowSchema = z.object({
   targetVersionId: workflowVersionIdSchema,
   changeSummary: z
     .string()
-    .max(500, 'Change summary must be less than 500 characters')
     .trim()
+    .max(500, 'Change summary must be less than 500 characters')
     .optional(),
 });
 
@@ -1468,17 +1483,17 @@ export const dryRunWorkflowBodySchema = z
 export const createWorkflowSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name is required')
-    .max(100, 'Name must be less than 100 characters')
-    .trim(),
+    .max(100, 'Name must be less than 100 characters'),
 
   slug: slugSchema.pipe(z.string().max(100, 'Slug must be less than 100 characters')),
 
   description: z
     .string()
+    .trim()
     .min(1, 'Description is required')
-    .max(5000, 'Description must be less than 5000 characters')
-    .trim(),
+    .max(5000, 'Description must be less than 5000 characters'),
 
   workflowDefinition: workflowDefinitionSchema,
 
@@ -1512,18 +1527,18 @@ export const createWorkflowSchema = z.object({
 export const updateWorkflowSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name cannot be empty')
     .max(100, 'Name must be less than 100 characters')
-    .trim()
     .optional(),
 
   slug: slugSchema.pipe(z.string().max(100, 'Slug must be less than 100 characters')).optional(),
 
   description: z
     .string()
+    .trim()
     .min(1, 'Description cannot be empty')
     .max(5000, 'Description must be less than 5000 characters')
-    .trim()
     .optional(),
 
   draftDefinition: workflowDefinitionSchema.nullable().optional(),
@@ -1561,9 +1576,9 @@ export const chatMessageSchema = z.object({
 
   message: z
     .string()
+    .trim()
     .min(1, 'Message is required')
-    .max(50000, 'Message must be less than 50000 characters')
-    .trim(),
+    .max(50000, 'Message must be less than 50000 characters'),
 
   contextType: z.string().max(50).optional(),
 
@@ -1604,14 +1619,14 @@ export const evaluationSessionSchema = z.object({
 
   title: z
     .string()
+    .trim()
     .min(1, 'Title is required')
-    .max(200, 'Title must be less than 200 characters')
-    .trim(),
+    .max(200, 'Title must be less than 200 characters'),
 
   description: z
     .string()
-    .max(5000, 'Description must be less than 5000 characters')
     .trim()
+    .max(5000, 'Description must be less than 5000 characters')
     .optional(),
 
   status: evaluationStatusSchema.default('draft'),
@@ -1645,9 +1660,9 @@ const documentScopeSchema = z.enum(['system', 'app']);
 export const knowledgeSearchSchema = z.object({
   query: z
     .string()
+    .trim()
     .min(1, 'Search query is required')
-    .max(1000, 'Search query must be less than 1000 characters')
-    .trim(),
+    .max(1000, 'Search query must be less than 1000 characters'),
 
   chunkType: chunkTypeSchema.optional(),
 
@@ -1676,9 +1691,9 @@ export const knowledgeSearchSchema = z.object({
 export const documentUploadSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name is required')
-    .max(200, 'Name must be less than 200 characters')
-    .trim(),
+    .max(200, 'Name must be less than 200 characters'),
 
   fileName: z
     .string()
@@ -1769,9 +1784,9 @@ export const providerConfigSchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Name is required')
-      .max(100, 'Name must be less than 100 characters')
-      .trim(),
+      .max(100, 'Name must be less than 100 characters'),
 
     slug: slugSchema.pipe(z.string().max(50, 'Slug must be less than 50 characters')),
 
@@ -1824,9 +1839,9 @@ export const updateProviderConfigSchema = z
   .object({
     name: z
       .string()
+      .trim()
       .min(1, 'Name cannot be empty')
       .max(100, 'Name must be less than 100 characters')
-      .trim()
       .optional(),
 
     slug: slugSchema.pipe(z.string().max(50, 'Slug must be less than 50 characters')).optional(),
@@ -1896,16 +1911,16 @@ const PROFILE_TEXT_MAX = 10_000;
 export const agentProfileFormSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name is required')
-    .max(100, 'Name must be less than 100 characters')
-    .trim(),
+    .max(100, 'Name must be less than 100 characters'),
 
   slug: slugSchema.pipe(z.string().max(80, 'Slug must be less than 80 characters')),
 
   description: z
     .string()
-    .max(500, 'Description must be less than 500 characters')
     .trim()
+    .max(500, 'Description must be less than 500 characters')
     .nullable()
     .optional(),
 
@@ -1932,9 +1947,9 @@ export const agentProfileFormSchema = z.object({
 export const updateAgentProfileSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name cannot be empty')
     .max(100, 'Name must be less than 100 characters')
-    .trim()
     .optional(),
 
   // Slug intentionally not patchable — keeps URL identifiers stable; rename
@@ -1942,8 +1957,8 @@ export const updateAgentProfileSchema = z.object({
 
   description: z
     .string()
-    .max(500, 'Description must be less than 500 characters')
     .trim()
+    .max(500, 'Description must be less than 500 characters')
     .nullable()
     .optional(),
 
@@ -2014,98 +2029,114 @@ const paramProfileSchema = z.enum(['openai-legacy', 'openai-reasoning', 'anthrop
 const capabilitySchema = z.enum(['chat', 'reasoning', 'embedding', 'audio', 'image', 'moderation']);
 const embeddingQualitySchema = z.enum(['high', 'medium', 'budget']);
 
+function requirePricePair(
+  data: { inputCostPerMillionTokens?: number | null; outputCostPerMillionTokens?: number | null },
+  ctx: z.RefinementCtx
+): void {
+  if (!isHalfPrice(data.inputCostPerMillionTokens, data.outputCostPerMillionTokens)) return;
+  ctx.addIssue({
+    code: 'custom',
+    path: [missingPriceField(data.inputCostPerMillionTokens)],
+    message: PRICE_PAIR_MESSAGE,
+  });
+}
+
 /** POST body for creating a provider model. */
-export const createProviderModelSchema = z.object({
-  name: z
-    .string()
-    .min(1, 'Name is required')
-    .max(100, 'Name must be less than 100 characters')
-    .trim(),
+export const createProviderModelSchema = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1, 'Name is required')
+      .max(100, 'Name must be less than 100 characters'),
 
-  slug: slugSchema.pipe(z.string().max(80, 'Slug must be less than 80 characters')),
+    slug: slugSchema.pipe(z.string().max(80, 'Slug must be less than 80 characters')),
 
-  providerSlug: z
-    .string()
-    .min(1, 'Provider slug is required')
-    .max(50, 'Provider slug must be less than 50 characters')
-    .regex(
-      /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
-      'Provider slug must be lowercase alphanumeric with hyphens'
-    )
-    .trim(),
+    providerSlug: z
+      .string()
+      .trim()
+      .min(1, 'Provider slug is required')
+      .max(50, 'Provider slug must be less than 50 characters')
+      .regex(
+        /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
+        'Provider slug must be lowercase alphanumeric with hyphens'
+      ),
 
-  modelId: z
-    .string()
-    .min(1, 'Model ID is required')
-    .max(100, 'Model ID must be less than 100 characters')
-    .trim(),
+    modelId: z
+      .string()
+      .trim()
+      .min(1, 'Model ID is required')
+      .max(100, 'Model ID must be less than 100 characters'),
 
-  description: z
-    .string()
-    .min(1, 'Description is required')
-    .max(2000, 'Description must be less than 2000 characters')
-    .trim(),
+    description: z
+      .string()
+      .trim()
+      .min(1, 'Description is required')
+      .max(2000, 'Description must be less than 2000 characters'),
 
-  capabilities: z.array(capabilitySchema).min(1).default(['chat']),
-  tierRole: tierRoleSchema,
-  deploymentProfiles: deploymentProfilesSchema.default(['hosted']),
-  reasoningDepth: ratingLevelSchema,
-  latency: latencyLevelSchema,
-  costEfficiency: ratingLevelSchema,
-  contextLength: contextLengthLevelSchema,
-  toolUse: toolUseLevelSchema,
-  paramProfile: paramProfileSchema.nullable().optional(),
-  bestRole: z
-    .string()
-    .min(1, 'Best role is required')
-    .max(200, 'Best role must be less than 200 characters')
-    .trim(),
+    capabilities: z.array(capabilitySchema).min(1).default(['chat']),
+    tierRole: tierRoleSchema,
+    deploymentProfiles: deploymentProfilesSchema.default(['hosted']),
+    reasoningDepth: ratingLevelSchema,
+    latency: latencyLevelSchema,
+    costEfficiency: ratingLevelSchema,
+    contextLength: contextLengthLevelSchema,
+    toolUse: toolUseLevelSchema,
+    paramProfile: paramProfileSchema.nullable().optional(),
+    bestRole: z
+      .string()
+      .trim()
+      .min(1, 'Best role is required')
+      .max(200, 'Best role must be less than 200 characters'),
 
-  // Embedding-specific (optional)
-  dimensions: z.number().int().positive().optional(),
-  schemaCompatible: z.boolean().optional(),
-  costPerMillionTokens: z.number().nonnegative().optional(),
-  hasFreeTier: z.boolean().optional(),
-  local: z.boolean().default(false),
-  quality: embeddingQualitySchema.optional(),
-  strengths: z.string().max(500).trim().optional(),
-  setup: z.string().max(500).trim().optional(),
+    // Embedding-specific (optional)
+    dimensions: z.number().int().positive().optional(),
+    schemaCompatible: z.boolean().optional(),
+    costPerMillionTokens: z.number().nonnegative().optional(),
+    inputCostPerMillionTokens: splitPriceSchema.optional(),
+    outputCostPerMillionTokens: splitPriceSchema.optional(),
+    hasFreeTier: z.boolean().optional(),
+    local: z.boolean().default(false),
+    quality: embeddingQualitySchema.optional(),
+    strengths: z.string().trim().max(500).optional(),
+    setup: z.string().trim().max(500).optional(),
 
-  isActive: z.boolean().default(true),
+    isActive: z.boolean().default(true),
 
-  metadata: metadataSchema,
-});
+    metadata: metadataSchema,
+  })
+  .superRefine(requirePricePair);
 
 /** PATCH body for updating a provider model. All fields optional. */
 export const updateProviderModelSchema = z.object({
   name: z
     .string()
+    .trim()
     .min(1, 'Name is required')
     .max(100, 'Name must be less than 100 characters')
-    .trim()
     .optional(),
 
   slug: slugSchema.pipe(z.string().max(80, 'Slug must be less than 80 characters')).optional(),
 
   providerSlug: z
     .string()
+    .trim()
     .min(1, 'Provider slug is required')
     .max(50, 'Provider slug must be less than 50 characters')
-    .trim()
     .optional(),
 
   modelId: z
     .string()
+    .trim()
     .min(1, 'Model ID is required')
     .max(100, 'Model ID must be less than 100 characters')
-    .trim()
     .optional(),
 
   description: z
     .string()
+    .trim()
     .min(1, 'Description is required')
     .max(2000, 'Description must be less than 2000 characters')
-    .trim()
     .optional(),
 
   capabilities: z.array(capabilitySchema).min(1).optional(),
@@ -2119,20 +2150,22 @@ export const updateProviderModelSchema = z.object({
   paramProfile: paramProfileSchema.nullable().optional(),
   bestRole: z
     .string()
+    .trim()
     .min(1, 'Best role is required')
     .max(200, 'Best role must be less than 200 characters')
-    .trim()
     .optional(),
 
   // Embedding-specific (optional)
   dimensions: z.number().int().positive().nullable().optional(),
   schemaCompatible: z.boolean().nullable().optional(),
   costPerMillionTokens: z.number().nonnegative().nullable().optional(),
+  inputCostPerMillionTokens: splitPriceSchema.nullable().optional(),
+  outputCostPerMillionTokens: splitPriceSchema.nullable().optional(),
   hasFreeTier: z.boolean().nullable().optional(),
   local: z.boolean().optional(),
   quality: embeddingQualitySchema.nullable().optional(),
-  strengths: z.string().max(500).trim().nullable().optional(),
-  setup: z.string().max(500).trim().nullable().optional(),
+  strengths: z.string().trim().max(500).nullable().optional(),
+  setup: z.string().trim().max(500).nullable().optional(),
 
   isActive: z.boolean().optional(),
 
@@ -2145,56 +2178,60 @@ export const updateProviderModelSchema = z.object({
  * from the top-level envelope so the operator can't accidentally
  * mix providers in one batch.
  */
-const bulkProviderModelRowSchema = z.object({
-  modelId: z
-    .string()
-    .min(1, 'Model ID is required')
-    .max(100, 'Model ID must be less than 100 characters')
-    .trim(),
-  name: z
-    .string()
-    .min(1, 'Name is required')
-    .max(100, 'Name must be less than 100 characters')
-    .trim(),
-  description: z
-    .string()
-    .max(2000, 'Description must be less than 2000 characters')
-    .trim()
-    .default(''),
-  capabilities: z.array(capabilitySchema).min(1).default(['chat']),
-  tierRole: tierRoleSchema,
-  deploymentProfiles: deploymentProfilesSchema.default(['hosted']),
-  reasoningDepth: ratingLevelSchema,
-  latency: latencyLevelSchema,
-  costEfficiency: ratingLevelSchema,
-  contextLength: contextLengthLevelSchema,
-  toolUse: toolUseLevelSchema,
-  paramProfile: paramProfileSchema.nullable().optional(),
-  bestRole: z
-    .string()
-    .min(1, 'Best role is required')
-    .max(200, 'Best role must be less than 200 characters')
-    .trim(),
-  dimensions: z.number().int().positive().optional(),
-  schemaCompatible: z.boolean().optional(),
-  costPerMillionTokens: z.number().nonnegative().optional(),
-  hasFreeTier: z.boolean().optional(),
-  local: z.boolean().default(false),
-  quality: embeddingQualitySchema.optional(),
-  strengths: z.string().max(500).trim().optional(),
-  setup: z.string().max(500).trim().optional(),
-});
+const bulkProviderModelRowSchema = z
+  .object({
+    modelId: z
+      .string()
+      .trim()
+      .min(1, 'Model ID is required')
+      .max(100, 'Model ID must be less than 100 characters'),
+    name: z
+      .string()
+      .trim()
+      .min(1, 'Name is required')
+      .max(100, 'Name must be less than 100 characters'),
+    description: z
+      .string()
+      .trim()
+      .max(2000, 'Description must be less than 2000 characters')
+      .default(''),
+    capabilities: z.array(capabilitySchema).min(1).default(['chat']),
+    tierRole: tierRoleSchema,
+    deploymentProfiles: deploymentProfilesSchema.default(['hosted']),
+    reasoningDepth: ratingLevelSchema,
+    latency: latencyLevelSchema,
+    costEfficiency: ratingLevelSchema,
+    contextLength: contextLengthLevelSchema,
+    toolUse: toolUseLevelSchema,
+    paramProfile: paramProfileSchema.nullable().optional(),
+    bestRole: z
+      .string()
+      .trim()
+      .min(1, 'Best role is required')
+      .max(200, 'Best role must be less than 200 characters'),
+    dimensions: z.number().int().positive().optional(),
+    schemaCompatible: z.boolean().optional(),
+    costPerMillionTokens: z.number().nonnegative().optional(),
+    inputCostPerMillionTokens: splitPriceSchema.optional(),
+    outputCostPerMillionTokens: splitPriceSchema.optional(),
+    hasFreeTier: z.boolean().optional(),
+    local: z.boolean().default(false),
+    quality: embeddingQualitySchema.optional(),
+    strengths: z.string().trim().max(500).optional(),
+    setup: z.string().trim().max(500).optional(),
+  })
+  .superRefine(requirePricePair);
 
 export const bulkCreateProviderModelsSchema = z.object({
   providerSlug: z
     .string()
+    .trim()
     .min(1, 'Provider slug is required')
     .max(50, 'Provider slug must be less than 50 characters')
     .regex(
       /^[a-z0-9]+(?:-[a-z0-9]+)*$/,
       'Provider slug must be lowercase alphanumeric with hyphens'
-    )
-    .trim(),
+    ),
   models: z
     .array(bulkProviderModelRowSchema)
     .min(1, 'At least one model is required')
@@ -2515,7 +2552,7 @@ export const listConversationsQuerySchema = paginationQuerySchema.extend({
 
 /** Update conversation schema (PATCH /admin/orchestration/conversations/[id]). */
 export const updateConversationSchema = z.object({
-  title: z.string().min(1).max(200).trim().optional(),
+  title: z.string().trim().min(1).max(200).optional(),
   tags: z.array(z.string().trim().min(1).max(100)).max(20, 'At most 20 tags').optional(),
   isActive: z.boolean().optional(),
 });
@@ -2641,6 +2678,22 @@ export const costBreakdownQuerySchema = z
     }
   );
 
+/**
+ * Per-org usage query (GET /admin/orchestration/costs/orgs, §110 t-790).
+ *
+ * `period` is a UTC calendar month, `YYYY-MM`; omitted, it is the current
+ * one. The year starts at 1000: `Date.UTC` reads 0–99 as 1900–1999, so a
+ * year below 100 would report one period and sum another. `orgId` narrows
+ * the answer to one org.
+ */
+export const orgUsageQuerySchema = z.object({
+  period: z
+    .string()
+    .regex(/^[1-9]\d{3}-(0[1-9]|1[0-2])$/, 'period must be a month in the form YYYY-MM')
+    .optional(),
+  orgId: orgIdSchema.optional(),
+});
+
 /** List evaluations query (GET /admin/orchestration/evaluations). */
 export const listEvaluationsQuerySchema = paginationQuerySchema.extend({
   agentId: cuidSchema.optional(),
@@ -2660,14 +2713,14 @@ export const createEvaluationSchema = z.object({
 
   title: z
     .string()
+    .trim()
     .min(1, 'Title is required')
-    .max(200, 'Title must be less than 200 characters')
-    .trim(),
+    .max(200, 'Title must be less than 200 characters'),
 
   description: z
     .string()
-    .max(5000, 'Description must be less than 5000 characters')
     .trim()
+    .max(5000, 'Description must be less than 5000 characters')
     .optional(),
 
   metadata: metadataSchema,
@@ -2684,14 +2737,14 @@ export const updateEvaluationSchema = z
   .object({
     title: z
       .string()
+      .trim()
       .min(1, 'Title is required')
       .max(200, 'Title must be less than 200 characters')
-      .trim()
       .optional(),
     description: z
       .string()
-      .max(5000, 'Description must be less than 5000 characters')
       .trim()
+      .max(5000, 'Description must be less than 5000 characters')
       .optional(),
     status: z.enum(['draft', 'in_progress', 'archived']).optional(),
     startedAt: z.string().datetime().optional(),
@@ -2789,12 +2842,16 @@ export const searchConfigSchema = z.object({
     .optional(),
 });
 
+const escalationEmailAddressSchema = z.string().email('Each entry must be a valid email address');
+
 /** Escalation notification routing configuration. */
 export const escalationConfigSchema = z.object({
-  emailAddresses: z
-    .array(z.string().email('Each entry must be a valid email address'))
-    .min(1, 'At least one email address is required')
-    .max(20, 'At most 20 email addresses'),
+  // Empty is readable, though never writable: erasing the list's only
+  // recipient leaves it empty and keeps the webhook (t-791), and a stored
+  // value this read rejects is one the form cannot show — so its next save
+  // would silently drop the webhook too (#553). The write schema below still
+  // requires an address.
+  emailAddresses: z.array(escalationEmailAddressSchema).max(20, 'At most 20 email addresses'),
   // Syntax only — deliberately NOT the SSRF refine. This schema is what READS
   // the stored config, and a value that fails here is a value the settings API
   // cannot return, the form cannot display, and the operator therefore cannot
@@ -2820,6 +2877,10 @@ export const escalationConfigSchema = z.object({
  * Cloud-metadata hosts stay blocked regardless.
  */
 export const escalationConfigWriteSchema = escalationConfigSchema.extend({
+  emailAddresses: z
+    .array(escalationEmailAddressSchema)
+    .min(1, 'At least one email address is required')
+    .max(20, 'At most 20 email addresses'),
   webhookUrl: z
     .string()
     .url('Must be a valid URL')
@@ -2842,6 +2903,26 @@ export const escalationConfigWriteSchema = escalationConfigSchema.extend({
     )
     .optional(),
 });
+
+/**
+ * Whether a cost-log window covers an execution window. `null` means "keep for
+ * ever" on either side.
+ *
+ * Asymmetric on purpose: cost logs kept for ever always cover, but executions
+ * kept for ever do not survive a finite cost-log window — the breakdown under
+ * them empties out once the logs age past it (#839). Same rule as
+ * `incoherentRetentionPair` on the org route and `warnOnIncoherentRetention`.
+ */
+export function costLogsOutliveExecutions(
+  costLogRetentionDays: number | null,
+  executionRetentionDays: number | null
+): boolean {
+  if (costLogRetentionDays === null) return true;
+  return executionRetentionDays !== null && costLogRetentionDays >= executionRetentionDays;
+}
+
+const RETENTION_PAIR_MESSAGE =
+  'Cost log retention must be at least as long as execution retention, or the cost breakdown empties out for executions you are still keeping. Lengthen it, or leave it blank to keep cost logs for ever.';
 
 export const updateOrchestrationSettingsSchema = z
   .object({
@@ -2901,6 +2982,14 @@ export const updateOrchestrationSettingsSchema = z
       .int()
       .positive('Webhook retention must be a positive number of days')
       .max(365, 'Webhook retention must be at most 365 days')
+      .nullable()
+      .optional(),
+    /** `null` prunes dead-lettered deliveries on `webhookRetentionDays`. */
+    webhookDlqRetentionDays: z
+      .number()
+      .int()
+      .positive('Failed webhook retention must be a positive number of days')
+      .max(365, 'Failed webhook retention must be at most 365 days')
       .nullable()
       .optional(),
     costLogRetentionDays: z
@@ -3025,6 +3114,7 @@ export const updateOrchestrationSettingsSchema = z
       v.outputGuardMode !== undefined ||
       v.citationGuardMode !== undefined ||
       v.webhookRetentionDays !== undefined ||
+      v.webhookDlqRetentionDays !== undefined ||
       v.costLogRetentionDays !== undefined ||
       v.auditLogRetentionDays !== undefined ||
       v.executionRetentionDays !== undefined ||
@@ -3056,17 +3146,15 @@ export const updateOrchestrationSettingsSchema = z
    * This catches the whole-form save the settings UI sends. A patch that
    * carries only one of the two is checked against the persisted value in the
    * settings route — the schema can't see the current row from here.
+   *
+   * Executions kept for ever (`null`) need cost logs kept for ever too.
    */
   .refine(
     (v) =>
-      v.costLogRetentionDays == null ||
-      v.executionRetentionDays == null ||
-      v.costLogRetentionDays >= v.executionRetentionDays,
-    {
-      message:
-        'Cost log retention must be at least as long as execution retention, or the cost breakdown empties out for executions you are still keeping',
-      path: ['costLogRetentionDays'],
-    }
+      v.costLogRetentionDays === undefined ||
+      v.executionRetentionDays === undefined ||
+      costLogsOutliveExecutions(v.costLogRetentionDays, v.executionRetentionDays),
+    { message: RETENTION_PAIR_MESSAGE, path: ['costLogRetentionDays'] }
   );
 
 // ============================================================================
@@ -4255,4 +4343,10 @@ export const listAuditLogQuerySchema = paginationQuerySchema.extend({
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
   q: z.string().trim().min(1).max(100).optional(),
+  /**
+   * Rows made inside a support session (§121 t-825): `only` those, or `none`
+   * of them. `supportGrantId` narrows to one grant's rows.
+   */
+  support: z.enum(['only', 'none']).optional(),
+  supportGrantId: z.cuid().optional(),
 });

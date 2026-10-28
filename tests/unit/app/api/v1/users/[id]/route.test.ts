@@ -64,6 +64,7 @@ vi.mock('@/lib/db/client', () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    org: { findUnique: vi.fn() },
     // PATCH writes the role and the install-org membership in one
     // transaction (§106 ruling a); the transaction client is the double.
     orgMembership: { upsert: vi.fn() },
@@ -71,9 +72,9 @@ vi.mock('@/lib/db/client', () => ({
   },
 }));
 
-// Mock eraseUser — assert called, don't execute real erasure
-vi.mock('@/lib/privacy/erase-user', () => ({
-  eraseUser: vi.fn(),
+// Mock requestUserErasure — assert called, don't run the claim or the real erasure
+vi.mock('@/lib/privacy/erasure-requests', () => ({
+  requestUserErasure: vi.fn(),
 }));
 
 // Mock route logger
@@ -94,7 +95,7 @@ vi.mock('@/lib/api/context', async () => {
 import { headers } from 'next/headers';
 import { auth } from '@/lib/auth/config';
 import { prisma } from '@/lib/db/client';
-import { eraseUser } from '@/lib/privacy/erase-user';
+import { requestUserErasure } from '@/lib/privacy/erasure-requests';
 import { resolveApiKey } from '@/lib/auth/api-keys';
 import {
   registerAuthorizationPolicy,
@@ -1674,7 +1675,7 @@ describe('PATCH /api/v1/users/[id]', () => {
  * next/headers headers, set session via vi.mocked(auth.api.getSession)) is
  * reused here — no changes to the existing mocks are needed.
  *
- * eraseUser is mocked at the module level (see vi.mock('@/lib/privacy/erase-user')
+ * requestUserErasure is mocked at the module level (see vi.mock('@/lib/privacy/erasure-requests')
  * above) so the real erasure pipeline never runs in these tests.
  */
 describe('DELETE /api/v1/users/[id]', () => {
@@ -1683,8 +1684,12 @@ describe('DELETE /api/v1/users/[id]', () => {
     vi.mocked(headers).mockResolvedValue(new Headers());
     // Default: admin caller for DELETE (withAdminAuth requires ADMIN role)
     vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
-    // Default: eraseUser resolves (no return value needed — route ignores it)
-    vi.mocked(eraseUser).mockResolvedValue(undefined as any);
+    // Default: the erasure finishes in the request
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'erased',
+      receiptId: 'receipt-1',
+      erasedAt: new Date('2026-10-19T10:00:00Z'),
+    });
   });
 
   it('should return 400 CANNOT_DELETE_SELF when session.user.id matches the target id', async () => {
@@ -1705,8 +1710,8 @@ describe('DELETE /api/v1/users/[id]', () => {
     expect(data.success).toBe(false);
     expect(data.error.code).toBe('CANNOT_DELETE_SELF');
 
-    // eraseUser must NOT have been called — self-delete is blocked before erasure
-    expect(eraseUser).not.toHaveBeenCalled();
+    // requestUserErasure must NOT have been called — self-delete is blocked before erasure
+    expect(requestUserErasure).not.toHaveBeenCalled();
     // findUnique must NOT have been reached — self check precedes DB lookup
     expect(prisma.user.findUnique).not.toHaveBeenCalled(); // test-review:accept no_arg_called — error-path guard: self-delete check fires before DB access
   });
@@ -1736,14 +1741,14 @@ describe('DELETE /api/v1/users/[id]', () => {
     const response = await DELETE(mockRequest, { params });
     const data = await parseResponse<ErrorResponse>(response);
 
-    // Assert — admin-target guard fires after findUnique, before eraseUser
+    // Assert — admin-target guard fires after findUnique, before requestUserErasure
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
     expect(data.error.code).toBe('CANNOT_DELETE_ADMIN');
     expect(data.error.message).toBe('Cannot delete an admin account. Demote the user first.');
 
-    // eraseUser must NOT have been called
-    expect(eraseUser).not.toHaveBeenCalled();
+    // requestUserErasure must NOT have been called
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
   it('should return 404 when target user does not exist', async () => {
@@ -1766,11 +1771,11 @@ describe('DELETE /api/v1/users/[id]', () => {
     expect(data.success).toBe(false);
     expect(data.error.code).toBe('NOT_FOUND');
 
-    // eraseUser must NOT have been called — user didn't exist
-    expect(eraseUser).not.toHaveBeenCalled();
+    // requestUserErasure must NOT have been called — user didn't exist
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 
-  it('should call eraseUser with the correct arguments and return 200 { id, deleted: true } for a USER target', async () => {
+  it('should call requestUserErasure with the correct arguments and return 200 { id, deleted: true } for a USER target', async () => {
     // Arrange — admin deletes a regular USER target
     const adminUser = mockAdminUser();
     const adminId = adminUser.user.id;
@@ -1801,14 +1806,13 @@ describe('DELETE /api/v1/users/[id]', () => {
     expect(data.success).toBe(true);
     expect(data.data).toMatchObject({ id: targetUserId, deleted: true });
 
-    // Assert — eraseUser was called exactly once with the right contract arguments.
-    // The route passes target email (not session email) and admin id as actorUserId.
-    // This is the key behavioral proof: the handler passes the TARGET's email and
-    // the ADMIN's id, not any echo of the mock's return value.
-    expect(eraseUser).toHaveBeenCalledOnce();
-    expect(eraseUser).toHaveBeenCalledWith({
+    // Assert — requestUserErasure was called exactly once with the right contract arguments:
+    // the TARGET's id and the ADMIN's id as actorUserId, not any echo of the
+    // mock's return value. No `userEmail`: it is deprecated, and the receipt
+    // reads the stored address itself (t-797).
+    expect(requestUserErasure).toHaveBeenCalledOnce();
+    expect(requestUserErasure).toHaveBeenCalledWith({
       userId: targetUserId,
-      userEmail: targetUser.email,
       actorUserId: adminId,
       reason: 'admin_action',
     });
@@ -1820,7 +1824,7 @@ describe('DELETE /api/v1/users/[id]', () => {
     });
   });
 
-  it('returns 500 INTERNAL_ERROR when eraseUser rejects — the error propagates through the guard wrapper and the delete is not silently swallowed', async () => {
+  it('returns 500 INTERNAL_ERROR when requestUserErasure rejects — the error propagates through the guard wrapper and the delete is not silently swallowed', async () => {
     // Arrange — admin deletes a valid USER target, but the erasure service fails
     const adminUser = mockAdminUser();
     vi.mocked(auth.api.getSession).mockResolvedValue(adminUser);
@@ -1831,7 +1835,7 @@ describe('DELETE /api/v1/users/[id]', () => {
       email: 'doomed@example.com',
       role: 'USER',
     } as never);
-    vi.mocked(eraseUser).mockRejectedValue(new Error('erase failed'));
+    vi.mocked(requestUserErasure).mockRejectedValue(new Error('erase failed'));
 
     // Act
     const response = await DELETE({} as NextRequest, { params: createMockParams(targetUserId) });
@@ -1841,6 +1845,65 @@ describe('DELETE /api/v1/users/[id]', () => {
     expect(response.status).toBe(500);
     expect(data.success).toBe(false);
     expect(data.error.code).toBe('INTERNAL_ERROR');
+  });
+
+  it('returns 409 CONFLICT when another attempt already holds the erasure (in_progress)', async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    const targetUserId = 'cmjbv4i3x00044wsloputgwaf';
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      id: targetUserId,
+      name: 'Pending User',
+      email: 'pending@example.com',
+      role: 'USER',
+    } as never);
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'in_progress',
+      requestedAt: new Date('2026-10-19T09:00:00Z'),
+    });
+
+    const response = await DELETE({} as NextRequest, { params: createMockParams(targetUserId) });
+    const data = await parseResponse<ErrorResponse>(response);
+
+    expect(response.status).toBe(409);
+    expect(data.success).toBe(false);
+    expect(data.error.code).toBe('CONFLICT');
+    expect(requestUserErasure).toHaveBeenCalledOnce();
+    // The deletion has not happened here, so it must not be logged as done.
+    expect(mockLogger.info).not.toHaveBeenCalledWith('User deleted by admin', expect.anything());
+  });
+
+  it('returns 202 { id, pending: true, requestedAt } when the erasure did not finish within the request budget (t-845)', async () => {
+    const adminUser = mockAdminUser();
+    const adminId = adminUser.user.id;
+    vi.mocked(auth.api.getSession).mockResolvedValue(adminUser);
+    const targetUserId = 'cmjbv4i3x00055wsloputgwag';
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      id: targetUserId,
+      name: 'Slow User',
+      email: 'slow@example.com',
+      role: 'USER',
+    } as never);
+    vi.mocked(requestUserErasure).mockResolvedValue({
+      status: 'pending',
+      requestedAt: new Date('2026-10-20T11:59:55.000Z'),
+    });
+
+    const response = await DELETE({} as NextRequest, { params: createMockParams(targetUserId) });
+    const data = await parseResponse<SuccessResponse>(response);
+
+    expect(response.status).toBe(202);
+    expect(data).toEqual({
+      success: true,
+      data: { id: targetUserId, pending: true, requestedAt: '2026-10-20T11:59:55.000Z' },
+    });
+    expect(data.data).not.toHaveProperty('deleted');
+    expect(requestUserErasure).toHaveBeenCalledOnce();
+    // Logged as pending, not as done.
+    expect(mockLogger.info).toHaveBeenCalledWith(
+      'User deletion pending; the maintenance tick finishes it',
+      { deletedUserId: targetUserId, adminId }
+    );
+    expect(mockLogger.info).not.toHaveBeenCalledWith('User deleted by admin', expect.anything());
   });
 
   it('should hit CANNOT_DELETE_SELF before the role check when the caller is both self and an ADMIN account', async () => {
@@ -1866,9 +1929,9 @@ describe('DELETE /api/v1/users/[id]', () => {
     expect(data.success).toBe(false);
     expect(data.error.code).toBe('CANNOT_DELETE_SELF');
 
-    // Neither findUnique (role check prereq) nor eraseUser should be reached
+    // Neither findUnique (role check prereq) nor requestUserErasure should be reached
     expect(prisma.user.findUnique).not.toHaveBeenCalled(); // test-review:accept no_arg_called — guard-order proof: self check fires first, DB not reached
-    expect(eraseUser).not.toHaveBeenCalled();
+    expect(requestUserErasure).not.toHaveBeenCalled();
   });
 });
 
@@ -2035,5 +2098,104 @@ describe('GET /api/v1/users/[id] — the read decision is the policy’s', () =>
     const response = await GET({} as NextRequest, { params: createMockParams(OTHER_ID) });
 
     expect(response.status).toBe(200);
+  });
+});
+
+// t-837: the platform role is platform standing. A fork's policy may admit an
+// org's OWNER/ADMIN to the admin guard, but that must not let them promote
+// anyone — themselves included — to platform ADMIN through this route.
+describe('PATCH /api/v1/users/[id] — platform role floor', () => {
+  const TARGET_ID = 'cmjbv4i3x00006wsloputgwuz';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(headers).mockResolvedValue(new Headers());
+    vi.mocked(resolveApiKey).mockResolvedValue(null);
+    vi.mocked(prisma.$transaction).mockImplementation(((fn: (tx: typeof prisma) => unknown) =>
+      fn(prisma)) as never);
+    vi.mocked(prisma.orgMembership.upsert).mockResolvedValue({} as never);
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      id: TARGET_ID,
+      name: 'Target',
+      email: 'target@example.com',
+      role: 'USER',
+      accountType: 'HUMAN',
+    } as never);
+    vi.mocked(prisma.user.update).mockImplementation((async (args: {
+      data: Record<string, unknown>;
+    }) => ({ id: TARGET_ID, name: 'Target', role: 'USER', ...args.data })) as never);
+  });
+
+  afterEach(() => {
+    __resetAuthorizationPolicyForTests();
+  });
+
+  /**
+   * A fork policy that lets a non-platform-admin through every admin question
+   * and reads them unrestricted, as one admitting an org's admins to the admin
+   * surfaces would.
+   */
+  function registerWideningPolicy() {
+    registerAuthorizationPolicy({
+      ...DEFAULT_AUTHORIZATION_POLICY,
+      canAdminister: async () => true,
+      subjectScope: async () => ({}),
+    });
+  }
+
+  function patch(body: Record<string, unknown>) {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', url: 'http://localhost:3000/api/v1/users/id', body }),
+      { params: createMockParams(TARGET_ID) }
+    );
+  }
+
+  it('refuses a non-platform-admin changing a role, even when the policy admits them', async () => {
+    registerWideningPolicy();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAuthenticatedUser('USER'));
+
+    const response = await patch({ role: 'ADMIN' });
+
+    expect(response.status).toBe(403);
+    expect((await parseResponse<ErrorResponse>(response)).error.code).toBe('FORBIDDEN');
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.orgMembership.upsert).not.toHaveBeenCalled();
+  });
+
+  it('still lets that caller edit the fields that are not the role', async () => {
+    // The control: the 403 above is about the role, not "this caller is refused".
+    registerWideningPolicy();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAuthenticatedUser('USER'));
+
+    const response = await patch({ name: 'Renamed' });
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(prisma.user.update).mock.calls[0]?.[0]).toMatchObject({
+      data: { name: 'Renamed' },
+    });
+  });
+
+  it('lets that caller send the role the user already has', async () => {
+    registerWideningPolicy();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAuthenticatedUser('USER'));
+
+    const response = await patch({ role: 'USER', name: 'Renamed' });
+
+    expect(response.status).toBe(200);
+    // An unchanged role writes no install-org row (at `multi` that would make
+    // a customer org's member a member of the vendor's org).
+    expect(prisma.orgMembership.upsert).not.toHaveBeenCalled();
+  });
+
+  it('lets a platform admin change the role under the same policy', async () => {
+    registerWideningPolicy();
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+
+    const response = await patch({ role: 'ADMIN' });
+
+    expect(response.status).toBe(200);
+    expect(vi.mocked(prisma.user.update).mock.calls[0]?.[0]).toMatchObject({
+      data: { role: 'ADMIN' },
+    });
   });
 });

@@ -32,7 +32,7 @@ is a new value.
 
 | Axis          | Question                                                           | Supplied by                    | State today                                                                                                                                                                                    |
 | ------------- | ------------------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Tier**      | Is this principal platform staff, a customer's admin, or a member? | #366                           | `scope.tier` is carried; nothing in core populates it. A fork branches on it in its own policy.                                                                                                |
+| **Tier**      | Is this principal platform staff, a customer's admin, or a member? | #366, §111                     | **Ships the mechanism** (§111 t-810): a surface declares `tier: 'org'` and the guards pass it as `scope.tier`. No core surface declares it yet. See [Admin tiers](#admin-tiers).               |
 | **Ownership** | Within one tenant, over _whose_ rows?                              | #367                           | `scope.ownership` (`'own' \| 'team' \| 'all'`) is carried; `canRead` / `subjectScope` are the faces that answer it.                                                                            |
 | **Org**       | Which tenant's rows exist at all?                                  | Multi-tenancy programme (§106) | **Ships.** The guard enters an org per request; `viewer.orgId` / `viewer.orgRole` carry it and `scope.org` repeats it. Between-tenant isolation is enforced by RLS (§107), not by this policy. |
 
@@ -79,7 +79,8 @@ A platform credential — an `admin`-scoped API key — enters **no** org: no
   routes can ask, with and without org facts, and asserts identical answers.
 - **is a session grant.** An `api-key` principal never takes the arm, whatever
   `orgRole` the entry projected onto it: a key is narrower than its owner
-  (#542) and only the `admin` scope administers, through the platform check.
+  (#542) and only the `admin` scope administers, through the platform check —
+  and only while the key's owner is a platform admin (#746).
 - **reads the ownerless `this-row` of a resource that carries their org** —
   answered _before_ the once-per-kind diagnostic, because an org resource with
   no `ownerId` is a fork's steady state, not a misconfigured resolver.
@@ -107,6 +108,176 @@ The comparison is guarded on the resource side explicitly because
 fork seam's docblock warns about. A fork's own org policy must guard it the same
 way.
 
+### A support session presents as an org ADMIN (§121 t-824)
+
+A platform admin entering a customer org under its support grant
+([support-access.md](../tenancy/support-access.md#entering-under-a-grant-t-824))
+is, for the length of the entry, **an org ADMIN of that org who is not a
+platform admin**. The guards build that principal (`orgRole: 'ADMIN'`, the
+entered `orgId`) with the **default user role in place of the platform role**
+(`presentedRole`, `lib/auth/support-principal.ts`), and hand the handler a
+session whose `user.role` is replaced the same way (`presentedSession`).
+`sessionPrincipal` does likewise for the admin layout and the maintenance
+bypass.
+
+That is what makes it hold for every policy rather than core's alone. A
+`support` flag the default policy checked would be ignored by a fork whose
+`canAdminister` is `isPlatformAdmin(viewer)`, which would then hand support
+the whole console inside the customer's org. Presenting a non-platform role
+needs no policy to cooperate: `isPlatformAdmin(viewer)` answers false, org
+arms answer as for the org's own ADMIN, and a handler's
+`isPlatformAdmin(session.user)` is false too. `tests/unit/lib/auth/guards-support.test.ts`
+pins the fork-policy case. The stored `User.role` is never changed.
+
+A policy that wants to know it is talking to support reads
+`getTenantContext()?.source === 'support'` (and `.support` for the grant) —
+the principal does not carry it, deliberately.
+
+## Admin tiers
+
+Every admin surface is the **platform's** unless it says otherwise. An org
+`OWNER`/`ADMIN` may use a surface that declares itself the org's, and nothing
+else; a platform admin uses everything, as before. Undeclared means platform,
+fork surfaces included, so an upgrade opens nothing a fork did not opt into,
+and opening a surface is a one-line diff a reviewer sees. The roster lives in
+[`lib/auth/admin-tier.ts`](../../lib/auth/admin-tier.ts) (§111 t-810).
+
+**How a surface declares it:**
+
+| Surface  | Declaration                                                   | Read by                                                               |
+| -------- | ------------------------------------------------------------- | --------------------------------------------------------------------- |
+| API      | `withAdminAuth(handler, { tier: 'org', ownership: … })`       | the guard, which passes `scope.tier: 'org'` to `canAdminister`        |
+| Page     | its route pattern in `ORG_TIER_ADMIN_PAGES` (`/admin/x/[id]`) | the admin layout on a full load; `AdminTierGate` on in-app navigation |
+| Nav item | `tier: 'org'` on the `NavItem` (`lib/admin-nav/registry.ts`)  | the sidebar, which shows an org viewer only those items               |
+
+A page cannot declare itself in its own file, because Next.js refuses unknown
+exports from a `page.tsx`, and a check a page has to remember to call is
+fail-open for every page that forgets. So pages are listed centrally. A pattern
+names one page and not the pages below it.
+
+**What the default policy does with it.** `canAdminister` admits an org
+`OWNER`/`ADMIN` when `scope.tier === 'org'`, as a session, with org facts on
+the principal, **and only at `multi`**. At `single` the arm admits nobody.
+Nothing isolates an org's rows there, and a session can act in a non-install
+org it owns (`POST /api/v1/orgs/switch` is not mode-gated), so admitting that
+owner would hand them every row the surface reads. An API key never takes the
+arm, and `withAdminAuth`'s scope floor refuses a non-`admin` key before the
+policy is asked. A tier the default policy does not know (`'team'`) admits
+nobody.
+
+**Where the refusal actually happens.** The API is the authority. Admin pages
+are shells over `serverFetch` calls, and each call reaches a guard that asks
+the policy with that route's own tier. The admin layout refuses an undeclared
+page on a full load. It learns the page from the `x-sunrise-pathname` header,
+which `proxy.ts` sets on every request and overwrites if a client sent one; a
+missing header counts as a platform page. Next.js does not re-render a layout
+on in-app navigation, so `AdminTierGate` re-checks the pathname on each one and
+sends an org viewer away from a platform page. That is the reader's refusal,
+not a security boundary. A database check in `proxy.ts` would make it one, and
+Next.js advises against database checks in the proxy, because it runs on every
+route, prefetches included.
+
+**What opening a surface costs.** An org admin's rows are narrowed to their own
+(`subjectScope` answers `{ userId }`), so every route that admits them owes an
+`ownership` declaration. The guard refuses an undeclared one under test and
+logs it elsewhere. The roster test enforces the same thing at review time.
+`writesSharedSettings` still refuses a shared-settings write from outside the
+install org, so `tier: 'org'` widens admission only.
+
+**The roster is pinned.** `tests/unit/scripts/ci/admin-tier-roster.test.ts`
+(always-run) pins both lists. It fails when:
+
+- a route declares `tier: 'org'` without being listed in `ORG_TIER_ADMIN_ROUTES`;
+- a route is listed without declaring it;
+- a route passes a `tier` the scanner cannot read as the literal;
+- an org-tier route has no `ownership`;
+- a listed page has no `page.tsx`;
+- a core nav item marked org-tier points at a page that isn't listed.
+
+**What core opens (§111 t-811).** The customer's sections from the
+[control-plane map](../architecture/multi-tenancy.md#the-control-plane-which-admin-surfaces-are-whose):
+agents, workflows, triggers, knowledge, conversations, evaluations (with
+datasets and runs), experiments, event subscriptions, MCP keys and approvals.
+That is their pages, their nav items, and every API route those pages call,
+traced from each page's actual fetches. The roster is the list; the map is
+the reasoning behind it.
+
+- **Shared configuration is read, never written.** The agent form and the
+  knowledge pages need capabilities, agent profiles, providers, provider
+  models, embedding models, graders and tags, so those `GET`s are org-tier.
+  Their writes keep `writesSharedSettings` and are not org-tier. An org admin's
+  provider list omits each row's `baseUrl`, `apiKeyEnvVar` and `metadata`,
+  which are the operator's infrastructure. The usage counts on these lists
+  (agents per capability, model, tag or profile) cover their own org only:
+  how many of another tenant's agents use a shared row is a platform admin's
+  delete check, not theirs to know. The settings singleton, the
+  knowledge seed, the tags page and the patterns knowledge stay platform-only,
+  and their controls are hidden where shared settings are read-only (the seed
+  button, the workflow builder's pattern "Learn more").
+- **An org admin's MCP key may run slower than the server, never faster.**
+  `rateLimitOverride` on a key they create or edit may lower the server's
+  `globalRateLimit`, not raise it (`assertKeyRateLimitAllowed`).
+- **Each opened route declares its ownership.** Routes over a person's rows
+  (conversations, evaluations, runs, datasets, experiments, executions, webhook
+  subscriptions, the admin chat turn) are keyed on the caller: `'self'`. Routes
+  over the org's configuration (agents, workflows, triggers, knowledge
+  documents, MCP keys) and the shared-config reads make no ownership decision:
+  `'nothing'`, with the reason. Row isolation bounds both to the entered org,
+  and the owner layer still checks every enforced personal model below them.
+- **A route that acts beyond the entered org tells its two callers apart.**
+  `administersPlatform(principal)` (`lib/auth/admin-viewer.ts`) asks the policy
+  the admin layout's platform question. The provider test routes use it: an org
+  admin may test only a provider their org is approved for, in their own org,
+  while a platform admin keeps the install-org probe.
+- **The mixed pages are split per viewer, not assigned** (§111 t-812). The
+  orchestration dashboard, costs, the executions list and the MCP landing are
+  on the page roster, and each asks `adminPageViewerTier()`
+  (`lib/auth/admin-page-viewer.ts`, the layout's platform question, cached per
+  request and shared with the layout) and renders its platform-ops half for a
+  platform viewer only. Analytics is on the roster too, but every figure on it
+  is the org's, so it has no half to split and does not ask. An org admin gets
+  the org's half; the routes behind it (costs, its summary and alerts, the
+  model catalogue, the dashboard stats and the analytics routes) are
+  org-tier, and the routes behind the platform-ops half stay undeclared, so
+  they refuse them. The MCP landing shows them the API Keys card alone, which
+  is their nav route to the keys page. The overview stays platform-only, since
+  every figure on it is install-wide; `/admin` sends an org admin to the
+  orchestration dashboard instead. The playbook's control-plane map says how
+  each page splits.
+
+**If you replace `canAdminister`,** handle `scope.tier`. A policy that ignores
+it admits nobody new: org admins stay locked out of every surface, which is the
+safe failure. The other direction is not safe. A policy that admits on
+`viewer.orgRole` alone (the old `canAdminister: isOrgAdmin` one-liner) admits
+an org admin to every platform surface, roster or not. Gate it on
+`scope.tier === 'org'`.
+
+**A fork's own pages** (t-817) are listed in `lib/app/admin-tier.ts`, not in
+`ORG_TIER_ADMIN_PAGES`: its `initAppOrgTierAdminPages()` calls
+`registerOrgTierAdminPage(pattern)`, and `orgTierAdminPages()`
+(`lib/auth/org-tier-admin-pages.ts`) returns core's list and the fork's. Its
+routes and nav items already declare in the fork's own files, so opening a
+fork page edits no core file.
+
+- **One realm.** The init runs lazily on the server, at the admin layout's
+  first read. The layout hands the list to `<AdminTierGate>` and
+  `<AdminHeader>` as a prop, so the browser never builds a list of its own
+  that could disagree with the one the layout admitted by.
+- **Its own sections only.** The registrar throws on a dynamic first segment
+  and on any of `CORE_ADMIN_SECTIONS`, so the fork's list cannot reach a core
+  page, platform or org.
+- **All-or-nothing.** If the init throws, the fork's pages roll back and none
+  of them open; the roster test fails on that, rather than passing an empty
+  list.
+- **No shadowing.** `adminPageTier()` matches patterns without seeing the
+  tree, so a `[x]` segment would also name a literal page beside it, which
+  Next.js serves instead. The roster test fails for any page a listed
+  pattern names that is not itself listed, core's and the fork's alike.
+
+`lib/auth/admin-tier.ts` imports nothing, so the scaffold can import the
+registrar from it and `proxy.ts` its header name without either pulling the
+fork's scaffold in.
+
 ---
 
 ## The seam
@@ -120,7 +291,7 @@ count** — three ask `canAdminister`, one asks `canRead`:
 | Chokepoint                             | Face            | What it gates                                                                                                                                                                                |
 | -------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `withAdminAuth` (`lib/auth/guards.ts`) | `canAdminister` | 262 handler wrappings across 190 files, 257 of them under `/api/v1/admin`                                                                                                                    |
-| `app/admin/layout.tsx`                 | `canAdminister` | The whole `/admin` page tree                                                                                                                                                                 |
+| `app/admin/layout.tsx`                 | `canAdminister` | The whole `/admin` page tree, asked with `tier: 'org'` on a page listed in `ORG_TIER_ADMIN_PAGES` ([Admin tiers](#admin-tiers))                                                              |
 | `components/maintenance-wrapper.tsx`   | `canAdminister` | The maintenance-mode bypass — an access decision, not chrome, because getting past that page reaches the whole site                                                                          |
 | `withAuth` (`lib/auth/guards.ts`)      | `canRead`       | 23 handler wrappings. Asked on **every** one of them; all but one declare no `resource` resolver, so it is asked about `{ kind: 'nothing' }`. The exception is `app/api/v1/users/[id]` (GET) |
 
@@ -344,9 +515,10 @@ answer, not a replacement for a boundary core has already decided.
 **The marker cannot see past the route.** The `ownership` declaration below is
 about the handler; a route that declares `{ decidedBy: 'nothing' }` and calls a
 library function that reads every row is exactly as leaky as it was before. The
-standing example is `lib/orchestration/backup/exporter.ts:93`, reached by
-`GET /api/v1/admin/orchestration/backup/export`, which reads every webhook
-subscription's `url` and `emailAddress` with no owner filter. What changed is
+standing example is the webhook-subscription read in
+`lib/orchestration/backup/exporter.ts` (`readConfig`), reached by
+`GET /api/v1/admin/orchestration/backup/export`, which reads every
+subscription's `url` and `emailAddress` in the org with no owner filter. What changed is
 that the route now has to say so in its own source, which is the difference
 between an unreviewed omission and a reviewed decision. Closing it properly
 needs a control at the query, which is the tenancy chokepoint in
@@ -371,8 +543,9 @@ should go through the helper and does not yet, which must name the issue or
 task that closes it and is reported as stale the moment the file starts
 importing the helper. The first pass (t-692) measured 54 files touching the
 three models — 23 through the helpers, 29 by design, and two known gaps:
-`approvals/history` (#773) and the analytics service, which t-694 has since
-moved through the helper, so the roster now carries **one**. Three earlier
+`approvals/history` and the analytics service. t-694 moved the analytics
+service through the helper and #773 moved approval history, so the roster
+carries **none**. Three earlier
 coverage claims on this page were each written from the files their author had
 read and each was wrong; this is what replaces them. **It raises the floor; it
 is not a proof** — a file that imports the helper and runs an unscoped query
@@ -521,9 +694,9 @@ export const GET = withAdminAuth(
 );
 ```
 
-**Make the security clause unclobberable.** `webhooks/route.ts:26-29` does the
-equivalent by putting `createdBy` in the literal and _assigning_ the optional
-filters onto it. Either shape is fine; a spread with the owner clause first is
+**Make the security clause unclobberable.** `webhooks/route.ts` does the
+equivalent by putting the visibility fragment and the optional filters side by
+side in an `AND`. Either shape is fine; a spread with the owner clause first is
 not.
 
 **Count with the same `where` as the query.** A total computed without the filter
@@ -615,17 +788,19 @@ site, which gaps you have accepted.
 declared `onDelete: SetNull`**, every one of which can hold a row an Art. 17
 erasure detached, plus the models whose rows are born ownerless.
 
-**Four models have a read path that asks the policy about it**, and those four
+**Six models have a read path that asks the policy about it**, and those six
 are what the guards precompute. The rest are admin-global — every admin reads
 every row — so there is no owner clause for an orphan to fall outside of, and
 nothing to precompute:
 
-| Model                 | Owner column | `onDelete` | A null owner means             |
-| --------------------- | ------------ | ---------- | ------------------------------ |
-| `AiConversation`      | `userId`     | `Cascade`  | born ownerless — inbound       |
-| `AiWorkflowExecution` | `userId`     | `Cascade`  | born ownerless — scheduled     |
-| `AiDataset`           | `userId`     | `SetNull`  | an Art. 17 erasure detached it |
-| `AiExperiment`        | `createdBy`  | `SetNull`  | an Art. 17 erasure detached it |
+| Model                   | Owner column                                              | `onDelete` | A null owner means                                             |
+| ----------------------- | --------------------------------------------------------- | ---------- | -------------------------------------------------------------- |
+| `AiConversation`        | `userId`                                                  | `Cascade`  | born ownerless — inbound                                       |
+| `AiWorkflowExecution`   | `userId`                                                  | `Cascade`  | born ownerless — scheduled                                     |
+| `AiDataset`             | `userId`                                                  | `SetNull`  | an Art. 17 erasure detached it                                 |
+| `AiExperiment`          | `createdBy`                                               | `SetNull`  | an Art. 17 erasure detached it                                 |
+| `AiWebhookDelivery`     | `subscriptionId` (owned through `subscription.createdBy`) | `SetNull`  | its subscription was deleted                                   |
+| `AiWebhookSubscription` | `createdBy`                                               | `SetNull`  | an Art. 17 erasure detached it, and it kept delivering (t-782) |
 
 **Born ownerless and left ownerless are disjoint by database constraint**, which
 is why the helpers give them different names — `'system'` versus `'orphan'` — and
@@ -635,7 +810,7 @@ null from the start, because erasing the user would have deleted the row; a
 correspondence and a de-attributed test fixture are not the same thing to read.
 
 Either way, a `where` clause keyed on the caller answers "not yours" for all
-four, which turns a deliberately retained row into an unreachable one — invisible
+five, which turns a deliberately retained row into an unreachable one — invisible
 to every admin, deletable by none, pruned by nothing.
 
 **So `UNATTRIBUTED_READ_KINDS` is a consequence, not a roster**, and that is what
@@ -713,12 +888,14 @@ same failure direction, one call.
 model's visible _set_ comes from a helper in `lib/orchestration/access/`, one
 module per model. That directory is the roster:
 
-| Model                 | Owner column | Helper                                            | Bases it can return           | Reaches the policy |
-| --------------------- | ------------ | ------------------------------------------------- | ----------------------------- | ------------------ |
-| `AiConversation`      | `userId`     | `lib/orchestration/access/conversation-access.ts` | `owner` / `shared` / `system` | from the record    |
-| `AiWorkflowExecution` | `userId`     | `lib/orchestration/access/execution-access.ts`    | `owner` / `system`            | from the record    |
-| `AiDataset`           | `userId`     | `lib/orchestration/access/dataset-access.ts`      | `owner` / `orphan`            | from the record    |
-| `AiExperiment`        | `createdBy`  | `lib/orchestration/access/experiment-access.ts`   | `owner` / `orphan`            | from the record    |
+| Model                   | Owner column             | Helper                                                    | Bases it can return           | Reaches the policy |
+| ----------------------- | ------------------------ | --------------------------------------------------------- | ----------------------------- | ------------------ |
+| `AiConversation`        | `userId`                 | `lib/orchestration/access/conversation-access.ts`         | `owner` / `shared` / `system` | from the record    |
+| `AiWorkflowExecution`   | `userId`                 | `lib/orchestration/access/execution-access.ts`            | `owner` / `system`            | from the record    |
+| `AiDataset`             | `userId`                 | `lib/orchestration/access/dataset-access.ts`              | `owner` / `orphan`            | from the record    |
+| `AiExperiment`          | `createdBy`              | `lib/orchestration/access/experiment-access.ts`           | `owner` / `orphan`            | from the record    |
+| `AiWebhookDelivery`     | `subscription.createdBy` | `lib/orchestration/access/webhook-delivery-access.ts`     | `owner` / `orphan`            | from the record    |
+| `AiWebhookSubscription` | `createdBy`              | `lib/orchestration/access/webhook-subscription-access.ts` | `owner` / `orphan`            | from the record    |
 
 **Four production call sites read the record directly rather than through a
 helper, and each is a shape a `where` fragment cannot serve.** The conversation
@@ -741,7 +918,7 @@ answering the same question through `mayReadUnattributed` and a
 `*_RESOURCE_KIND` constant, and nothing in the tree put the two side by side.
 
 Executions moved onto the record in t-685, conversations in t-686, and datasets
-and experiments in t-687, which finished the axis. All four helpers are
+and experiments in t-687, which finished the axis; webhook deliveries joined in §109 t-739, and webhook subscriptions in t-782 (a delivery's visibility nests its subscription's). Every helper is
 **synchronous** — that is what the eager resolution bought, and what lets the
 live-engine snapshot build fragments inline inside a larger object. None of them
 declares a resource-kind constant any more: the record's keys _are_
@@ -845,9 +1022,9 @@ whole table is honest and still leaky.
 
 Row-level security removes both for the _between_-tenant axis: a query that
 forgets its `where` returns zero rows, wherever it was written. The equivalent
-for this axis is a control at the Prisma client — the tenancy chokepoint in
-`lib/db/client.ts`, which is where the org axis is going and where a read-side
-owner predicate belongs with it. Until then:
+for this axis is the owner chokepoint at the Prisma client (below), which
+refuses a narrowed caller's unnarrowed read wherever it was written. It is
+switched on model by model, so on a model it does not enforce yet:
 
 - Treat a new owner-scoped list route as needing a test that **a second user's
   rows are absent**. Asserting the caller's own rows are present passes just as
@@ -855,6 +1032,237 @@ owner predicate belongs with it. Until then:
 - Prefer `{ decidedBy: 'policy' }` to `{ decidedBy: 'nothing' }` when the route
   reads anything owned. `'nothing'` is a claim about the whole call tree beneath
   the handler, and it is the one the marker cannot check.
+
+### The subject context and the owner classification (§115)
+
+§115 moves the owner check to the query. Two inputs (t-800), and the check
+that reads them ([The owner chokepoint](#the-owner-chokepoint), t-801):
+
+- **`lib/auth/subject-context.ts` — whose rows this call stack may read.** Both
+  guards run every handler inside `runAsSubject()`, carrying the principal they
+  built. `getSubjectReadScope()` answers `none` (no guard entered one), `subject`
+  with the policy's `SubjectFilter` (`{ userId }` narrowed, `{}` not), or
+  `admitted`. The policy is asked lazily and at most once per request (a failed
+  answer is not kept — the next read asks again); a `'policy'` route hands over
+  the answer it already has, so `session.subjectFilter` and the data layer
+  cannot disagree. The scope follows the async subtree, so a
+  streamed body or an interactive `$transaction` keeps it and a maintenance job
+  never has one. Work that acts for someone other than the caller once
+  started — `resumeApprovedExecution`, which runs the execution's owner's
+  workflow, not the approver's — declares a crossing itself (below), so every
+  caller gets the same answer whether or not it had a subject.
+- **Who enters no subject, on purpose.** Background jobs, and the credential
+  routes that never consulted the policy — MCP, embed, webhook and inbound
+  triggers, approval tokens. Their credential is not a person the policy
+  narrows, so "no subject" (not narrowed) is the honest answer there.
+- **`runAcrossOwners(reason, fn)` — the deliberate crossing.** For code that
+  must read other members' personal rows for a narrowed caller (an org-wide
+  aggregate, an org backup). Logs the reason at info, like `runAsSystem`, when
+  it crosses something — the first read inside it that the owner layer would
+  have checked, for a caller the policy narrowed — and once per reason per
+  request (a crossing around a per-row helper is one line, not one per row). A
+  platform admin's export crosses nothing and logs nothing. It lifts only the
+  owner check, never the org wall. Outside a
+  subject it does nothing. Core's crossings are listed under
+  [The owner chokepoint](#the-owner-chokepoint).
+- **`lib/db/owner-classification.ts` — which models are personal, and how the
+  owner is reached.** A user column (`AiConversation.userId`,
+  `AiWebhookSubscription.createdBy`) or a relation to a personal parent
+  (`AiMessage` → `conversation`). A model is personal because the routes already
+  scope it to its owner — the access helpers above are the evidence — so agents,
+  workflows, knowledge and cost logs are `not-personal`, each with its reason.
+  `tests/unit/lib/db/owner-classification.test.ts` parses every schema file —
+  core's and the fork tiers' — and fails on an unclassified model linked to a
+  user or to a personal model.
+- **A fork classifies its own models in `lib/app/owner-classification.ts`**
+  (t-807), never by editing `OWNER_CLASSIFICATION`. The scaffold ships empty;
+  fill `initAppOwnerClassification()` with one `registerAppOwnerClassification()`
+  call, using the same row shape core does:
+
+  ```ts
+  registerAppOwnerClassification({
+    tier: 'app',
+    models: {
+      AppJournalEntry: { kind: 'personal', owner: { column: 'userId' }, enforced: true },
+      AppInvoice: { kind: 'not-personal', because: 'Org billing record; userId is who raised it.' },
+    },
+  });
+  ```
+
+  The registry runs that init once, lazily, before its first read — in the
+  runtime that builds the Prisma client — and `ownerClassificationOf()`,
+  `personalModels()` and `enforcedModels()` return core's rows plus the fork's.
+  So a fork row marked `enforced` is checked by the owner layer exactly as a core
+  one is, and the coverage test holds `app.prisma` and `framework-*.prisma` to
+  the same rules. The rules a fork row meets:
+  - **Personal only if the fork's routes already scope it to its owner**, for
+    the reason core's are — and its routes must comply before it is marked
+    `enforced`, or the layer refuses reads the product means to allow.
+  - **A `through` child needs its parent enforced first**; the client throws
+    at construction otherwise, as it does for core.
+  - **Core models cannot be reclassified**, and a model one tier classified
+    cannot be taken by another. Either row is dropped with an error log and the
+    first classification stands — the log is the only signal.
+  - **No `alsoVisible`.** Its one arm, `active-share`, is the conversation
+    share's rule and names that model's columns; a fork row carrying it is
+    dropped.
+  - **No `ownerless` kind.** The kinds are core's closed list
+    (`UNATTRIBUTED_READ_KINDS`), each the policy's answer for one core model's
+    orphans; a fork row carrying one is dropped. A fork model whose owner can be
+    missing has its ownerless rows readable by no narrowed caller.
+  - **A throwing init is rolled back** and every fork model is left
+    unclassified — unchecked by the data layer, guarded by the fork's routes as
+    before, and named by the test. Do not import `@/lib/db` from the seam: it
+    runs while that client is being built.
+
+  A framework tier registers with `tier: 'framework'` from a function the
+  leaf's `initAppOwnerClassification()` calls.
+
+The webhook-subscription read above is personal by this classification, so
+when its model is enforced the exporter has to name its crossing with
+`runAcrossOwners` — an org backup is a deliberate read of every admin's
+subscriptions, and saying so is the point.
+
+### The owner chokepoint
+
+`lib/db/owner-extension.ts` (`withOwnerChecks`) is the second `$extends` layer
+on the client `lib/db/client.ts` exports, over the tenancy layer. **It acts only
+for a narrowed caller** — `getSubjectReadScope()` answered `subject` with a
+`userId` — and only on models whose classification says `enforced: true`. For
+anyone else (a platform admin, an `admin` API key, a job, a guard-less route, a
+read inside `runAcrossOwners`) it sends the query it was handed, unchanged;
+`tests/unit/lib/db/owner-extension.test.ts` compares the SQL with and without it.
+
+**Enforced:** `AiUserMemory` (t-801), `AiConversation` and `AiMessage` (t-802),
+`AiWorkflowExecution`, `AiEvaluationSession`, `AiEvaluationLog`, `AiDataset`,
+`AiDatasetCase`, `AiEvaluationRun` and `AiEvaluationCaseResult` (t-803). The
+personal models still classified but not enforced — `AiApiKey`,
+`AiMessageEmbedding`, `AiWebhookSubscription`, `AiWebhookDelivery`,
+`AiExperiment`, `AiExperimentVariant` — are narrowed by their routes alone.
+
+| Operation                                                              | Rule                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `findMany`, `count`, `aggregate`, `groupBy`                            | The `where` must **confine** the read: every row it can match is one the caller may read. Otherwise refused before any SQL.                                                                                                                                                                                                   |
+| `findUnique` (and `OrThrow`)                                           | Runs whatever the filter. The row returned is refused if it is someone else's, or ownerless and the caller may not read that kind. For a model whose row cannot decide alone — owned `through` a parent, or with a share arm — the read runs narrowed instead, and a miss asks whether a foreign row matched, to refuse it.   |
+| `findFirst` (and `OrThrow`)                                            | An unconfined `where` has the caller's readable predicate added, so it returns the caller's first match or none — never whichever row the database found first.                                                                                                                                                               |
+| `update`, `upsert`, `delete`, `updateManyAndReturn`                    | They return the row they write, so the `where` must confine them. Otherwise refused before any SQL: checking the row afterwards would be after the write.                                                                                                                                                                     |
+| An `include` / `select` / `_count` of an enforced model, from any root | That relation must carry its own confining `where`. `user.findUnique({ include: { aiUserMemories: true } })` is refused. The exception is the ownership relation followed out of a checked read: a conversation's `messages`, a message's `conversation`.                                                                     |
+| A to-one `include` / `select` of an enforced model                     | It cannot carry a `where`. When the target's own owner column decides a row (a run's `dataset`, a variant's `evaluationRun`), that column is selected with it and the row returned is refused if the caller may not read it. A to-one reaching a `through` owner or a share model (a case result's `datasetCase`) is refused. |
+
+**Confines**, as a tree: every key of a `where` is a conjunct, so one confining
+conjunct (at any depth under `AND`) confines the whole; an `OR` confines only
+when every arm does; `NOT` never does. A leaf confines when it pins the owner
+to the caller (`userId: me`, `{ equals: me }`, `{ in: [me] }`, or through the
+owner relation, `user: { id: me }` / `user: { is: { id: me } }`), or to null for a
+model with an `ownerless` kind the caller may read
+(`session.unattributedReads`). A compound unique key (`userId_agentId_key`) is
+read as its fields. A child owned `through` a parent is analysed as the parent's
+predicate under the relation, so it inherits the parent's arms. A
+conversation's share arm confines when it selects only live shares
+(`share: { revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }`),
+the shape `conversationVisibilityWhere` emits — so a list built from that
+fragment passes as it is, and a message read through it
+(`conversation: conversationVisibilityWhere(session)`) does too.
+
+**A share counts only on a `withAdminAuth` request.** A share is its owner's
+consent for an admin to view the thread, and every such read is audit-logged
+([conversation access](../security/conversation-access.md)) — it is not consent
+to other members. So the guard enters the subject with `readsShared` set only
+for `withAdminAuth`; on a `withAuth` route, for any caller, the share arm
+neither confines a filter nor joins the narrowed predicate, and another
+member's shared thread read by id is refused. A fork that adds a surface a
+share should reach (a compliance-officer route, say) enters it with
+`readsShared: true` and audits the read there.
+
+The expiry bound is checked against the clock with 60 seconds of slack, so
+**build the visibility fragment for each query** rather than once per request
+and reused across slow awaits: a fragment older than that is refused as
+`unconfined-filter`.
+
+```ts
+// Confined — passes
+prisma.aiUserMemory.findMany({ where: { userId: session.user.id, agentId } });
+prisma.aiUserMemory.findMany({ where: { AND: [{ agentId }, { ...session.subjectFilter }] } });
+// Not confined — refused for a narrowed caller
+prisma.aiUserMemory.findMany({ where: { agentId } });
+prisma.aiUserMemory.findMany({ where: { OR: [{ userId: me }, { agentId }] } });
+```
+
+**A refusal throws `OwnerReadRefusedError`, in every environment.** There is no
+log-only mode: that records a leak rather than stopping it. `handleAPIError`
+answers it with the same 404 body a missing row gets, so a refusal does not
+confirm the row exists; the log line carries the model and operation. Code that
+genuinely must read across owners for a narrowed caller wraps the read in
+`runAcrossOwners(reason, fn)`.
+
+**A `'policy'` route that relies on the layer is not an ownership gap.** A read
+the layer checked and passed for this caller counts as the route having used the
+policy's answer, so a handler that never touches `session.subjectFilter` but
+whose personal reads are confined is not reported. That holds only while every
+personal read in the route was one the layer checks: a read of a personal model
+not enforced yet (an experiment, say) was narrowed by nothing but the route, so
+the route is reported as before.
+
+**Not checked:** whether a write is allowed (changing another member's row is
+the route's `canAdminister` decision — the layer refuses only the row a
+returning write would hand back), and writes that return nothing the caller did
+not send (`create`, `updateMany`, `deleteMany`); relation filters that only test existence
+(`aiAgent.findMany({ where: { userMemories: { some: … } } })` returns agents);
+and raw SQL, which arrives with no model. Every raw read of an enforced table is
+listed, with its reason, in `tests/unit/lib/db/owner-raw-sql-manifest.test.ts`,
+which fails on an unlisted one.
+
+**Proving it agrees with the routes.** `tests/unit/lib/db/owner-parity.test.ts`
+runs every principal through the default policy, safe mode and a delegating fork
+policy, and asserts `canRead` on a subject, a list filtered to that subject and
+a row that subject owns all get the same answer. The two-member scenarios in
+`scripts/smoke/tenancy-isolation.ts` ([16b] memory, [16c] conversations and
+messages, [16d] workflow runs) prove it against real Postgres, as the
+restricted role. `tests/unit/lib/orchestration/access/owner-layer-agreement.test.ts`
+holds the access helpers and the layer together: `executionVisibilityWhere`,
+`datasetVisibilityWhere` and `conversationVisibilityWhere` confine on the layer
+for every policy answer, the layer's readable predicate is the helper's, and
+every row of the ownerless roster (`ownerless-surfaces.ts`) names how the layer
+treats its reads — confined, checked by id, a declared crossing, no subject, or
+writes only.
+
+**Core's own crossings.** Each names its reason, and is logged when it crosses.
+
+- **Counts and figures, never a row:** per-agent conversation and evaluation
+  counts (the agents list and compare), the workflows list's run count per
+  workflow, a capability's execution times across evaluations, the workflow
+  cost estimate over past runs, and the analytics figures. The analytics reads
+  that quote message text — popular topics, unanswered questions, content gaps,
+  recent negative feedback — do not cross: for a narrowed caller they read
+  through `conversationVisibilityWhere`, so an org admin sees words only from
+  threads they could open. A fork that wants its org admins to read members'
+  words widens the policy for them.
+- **Work that acts for someone else:** resuming an approved execution, and every
+  maintenance job (`runScopedJob`) — a tick fired from an admin's session acts
+  for the org, not the admin.
+- **The approver nomination:** approve, reject and cancel read the run through
+  `acrossOwnersForApproval` (`execution-access.ts`), because the nomination is
+  in the run's trace and no `where` can say it. They answer 404 unless the
+  caller may see the run or the trace names them, and act across owners only for
+  a named approver.
+- **A dataset delete** sees anyone's queued or running run on it, and names the
+  run only to its owner.
+- **Exports:** the subject-data export when an admin exports someone else, and
+  the org export.
+
+**A run's cases, after its dataset changes hands.** A case result reaches its
+dataset case through a to-one the layer refuses, so run results, pairwise
+verdicts and failure seeds read the cases in a second query through
+`datasetVisibilityWhere` (`lib/orchestration/evaluations/datasets/scored-cases.ts`).
+When another member has since claimed the run's (orphaned) dataset, the run keeps
+its scores and outputs and its cases come back absent.
+
+**Cost:** 0.3–3 µs per read, measured (design doc, Spike register item 8).
+
+**For a fork.** Fork code reading an enforced model for a narrowed caller
+without confining the query now throws, and the route answers 404. That is the
+intended signal: confine the query with `session.subjectFilter`, or name the
+crossing.
 
 ---
 
@@ -873,9 +1281,11 @@ detail GET/PATCH/DELETE (`webhooks/[id]/route.ts`), the test action
 (`[id]/test`), the deliveries list (`[id]/deliveries`), the DLQ list, stats and
 replay through the relation (`webhooks/dlq/route.ts`, `dlq/stats`,
 `dlq/replay`), and two post-fetch comparisons on individual deliveries
-(`deliveries/[id]`, `deliveries/[id]/retry`) — **twelve sites across nine
-files**, all spelling `createdBy: session.user.id` by hand. That is the shape
-`subjectScope` + `canRead` replace with one rule.
+(`deliveries/[id]`, `deliveries/[id]/retry`). They used to be **twelve sites
+across nine files**, all spelling `createdBy: session.user.id` by hand; since
+t-782 every one goes through `webhookSubscriptionVisibilityWhere` or
+`webhookDeliveryVisibilityWhere`, which is also what lets a subscription whose
+creator was erased stay manageable.
 
 **And that qualifier is load-bearing, which is the real lesson.** This paragraph
 first read "every read of `AiWebhookSubscription`", and that was false:
@@ -922,27 +1332,36 @@ shared configuration rather than personal work product — stay admin-global, wh
 is the next section.
 
 **That qualifier is load-bearing here too**, for the same reason it is in the
-webhooks section above: `agents/compare/route.ts` counts `AiEvaluationSession`
+webhooks section above: `agents/compare/route.ts`, through
+`lib/orchestration/agents/agent-comparison.ts`, counts `AiEvaluationSession`
 per agent, twice, with no owner clause. This paragraph first read "every route
 over those three models", and that was false because of exactly that one file,
-two directories away. Twice on one page now: a roster read off a directory
+filed in another tree altogether (`lib/orchestration/agents/`, called from
+`app/api/.../agents/compare/`). Twice on one page now: a roster read off a directory
 misses the call site filed somewhere else.
 
-**Those counts are install-wide on purpose rather than by omission** (t-682). The
-screen compares two _shared_ agents, so the figures are about the agents, not
-about the viewer; narrowing them would rank two agents by how much the caller
-happened to use them. The route declares `{ decidedBy: 'nothing' }` saying so,
-and its tests pin the absence of an owner clause, so a later tidy-up has to
-delete a test that explains why not.
+**Those counts are org-wide, and cross owners inside the org on purpose**
+(t-682, t-688). The org boundary is row isolation, not a clause: every model the
+comparison reads carries `orgId`, so at `multi` the policy bounds each count and
+sum to the caller's org, and another org's agent is a 404. No agent is shared
+between orgs (slugs are per org, t-708; each org has its own platform agents,
+§116), so there is no shared agent whose figures could mix two tenants. Within
+the org the figures count every owner's rows, because the screen compares two
+agents; narrowing them would rank two agents by how much the caller happened to
+use them. The queries live in `lib/orchestration/agents/agent-comparison.ts`,
+whose header carries the reasoning; the route declares `{ decidedBy: 'nothing' }`
+saying so; its tests pin the absence of an owner clause, so a later tidy-up has
+to change a test that explains why not; and `scripts/smoke/tenancy-isolation.ts`
+([3b]) proves the org boundary against real Postgres, reading two orgs' spend,
+conversations and evaluations as a narrowed org admin of one of them.
 
-**And the same route is a third instance of the roster problem, found while
-fixing the second.** It reads four narrowable aggregates, not two: besides the
+**The same route was a third instance of the roster problem, found while fixing
+the second.** It reads four owner-bearing aggregates, not two: besides the
 evaluation counts, `aiConversation.count` and — the one first missed —
-`aiCostLog.aggregate`. `AiCostLog` carries an indexed `userId`, read owner-scoped
-in `lib/privacy/export-sources.ts` for Art. 15, and the comparison sums spend by
-`agentId` alone. Under a customer tier that reports another tenant's spend on a
-shared agent, which is the sharpest of the four. **The missed call site was in
-`lib/privacy/`** — a directory nobody auditing an admin route thinks to read.
+`aiCostLog.aggregate`. `AiCostLog` carries an indexed `userId`, read
+owner-scoped in `lib/privacy/export-sources.ts` for Art. 15, and the comparison
+sums spend by `agentId` alone. **The missed call site was in `lib/privacy/`** —
+a directory nobody auditing an admin route thinks to read.
 
 ### The families that record `createdBy` and never read it
 
@@ -954,8 +1373,8 @@ noting it followed that precedent deliberately.
 **Stamping `createdBy` on write is not scoping, and the two are indistinguishable
 to a grep.** `createdBy: session.user.id` inside a `create`'s `data` is
 attribution; the same eight characters inside a `where` are a boundary. In the
-webhooks routes, twelve of the thirteen occurrences are the second kind and one
-is the first. That is why "we filter by `createdBy` here" is not a claim a reviewer can
+webhooks routes, twelve of the thirteen occurrences were the second kind and one
+the first, until t-782 moved the twelve into a helper. That is why "we filter by `createdBy` here" is not a claim a reviewer can
 check by searching, and why the rule wants a named function.
 
 **That is correct today and it is not a bug list.** Single-tenant Sunrise has one
@@ -984,6 +1403,9 @@ the vendor's, and `prompts` is **neither until `McpExposedPrompt` is scoped**,
 because it is served from a process-global cache to every MCP client under a
 global name namespace and a global cap. Do not summarise that page from this
 one; go and read it.
+
+The mechanism that places a surface in a plane is the tier: see
+[Admin tiers](#admin-tiers).
 
 ---
 

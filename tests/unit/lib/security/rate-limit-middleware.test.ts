@@ -517,6 +517,7 @@ describe('applyRateLimit', () => {
       RATE_LIMIT_TIERS.api.reset(tokenA);
       RATE_LIMIT_TIERS.api.reset(tokenB);
       vi.mocked(prisma.aiApiKey.findFirst).mockResolvedValue({
+        scopes: [],
         id: 'row_a',
         expiresAt: null,
       } as never);
@@ -608,6 +609,7 @@ describe('applyRateLimit', () => {
       const path = '/api/v1/test-apikey-cold/resource';
       await exhaust(path, 100, { 'x-forwarded-for': ip });
       vi.mocked(prisma.aiApiKey.findFirst).mockResolvedValue({
+        scopes: [],
         id: 'row_cold',
         expiresAt: null,
       } as never);
@@ -661,6 +663,7 @@ describe('applyRateLimit', () => {
       RATE_LIMIT_TIERS.api.reset(keyToken);
       resetRateLimitCredentialBudget(ip);
       vi.mocked(prisma.aiApiKey.findFirst).mockResolvedValue({
+        scopes: [],
         id: 'row_c',
         expiresAt: null,
       } as never);
@@ -695,6 +698,7 @@ describe('applyRateLimit', () => {
       RATE_LIMIT_TIERS.api.reset(keyToken);
       resetRateLimitCredentialBudget(ip);
       vi.mocked(prisma.aiApiKey.findFirst).mockResolvedValueOnce({
+        scopes: [],
         id: 'row_e',
         expiresAt: null,
       } as never);
@@ -758,6 +762,7 @@ describe('applyRateLimit', () => {
       const ipToken = `mw:api:api-key:ip:${ip}`;
       RATE_LIMIT_TIERS.api.reset(ipToken);
       vi.mocked(prisma.aiApiKey.findFirst).mockResolvedValue({
+        scopes: [],
         id: 'row_f',
         expiresAt: null,
       } as never);

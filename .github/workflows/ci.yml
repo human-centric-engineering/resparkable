@@ -385,7 +385,7 @@ jobs:
       # Repo-wide, not diff-scoped: both invariants are meant to hold at zero,
       # so the whole-tree count IS the check. A diff-scoped version cannot see a
       # pre-existing violation until someone re-touches those exact lines, which
-      # is how 16 of them survived in a suite the previous check called clean.
+      # is how 16 of them survived in a fork the previous check called clean (#936).
       - name: Hand-rolled router mocks
         if: needs.config.outputs.code == 'true'
         run: |
@@ -429,10 +429,39 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .next/cache
-          key: next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          # run_attempt so a re-run saves too: an exact primary-key hit skips the
+          # save, which would leave a cache the bound below discarded unreplaced.
+          key: next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ github.sha }}-${{ github.run_attempt }}
           restore-keys: |
             next-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
             next-${{ runner.os }}-
+      # Each saved cache is the one restored plus whatever this build wrote, and
+      # nothing trims it until package-lock.json changes. On Sunrise it grew from
+      # ~0.5GB to ~2GB (compressed) between two lockfile changes; a downstream
+      # fork's reached 5.5GB and a Build ran 37 minutes before being cancelled
+      # (#856). Past the limit, start cold: this build then saves a fresh cache.
+      # `CI_NEXT_CACHE_MAX_MB` changes the limit (.context/architecture/ci.md,
+      # Knob 6).
+      - name: Bound the Next.js build cache
+        env:
+          MAX_MB: ${{ vars.CI_NEXT_CACHE_MAX_MB || '2048' }}
+        run: |
+          if [[ ! "$MAX_MB" =~ ^[0-9]+$ ]]; then
+            echo "::warning::CI_NEXT_CACHE_MAX_MB='$MAX_MB' is not a whole number of MB; using 2048."
+            MAX_MB=2048
+          fi
+          if [[ ! -d .next/cache ]]; then
+            echo "No Next.js build cache was restored; this build starts cold."
+            exit 0
+          fi
+          size_mb=$(du -sm .next/cache | cut -f1)
+          # 10# forces base 10: a leading zero (`08`) would otherwise read as octal.
+          if (( size_mb > 10#$MAX_MB )); then
+            rm -rf .next/cache
+            echo "::notice::Next.js build cache was ${size_mb}MB, over the ${MAX_MB}MB limit (CI_NEXT_CACHE_MAX_MB). Discarded it: this build starts cold and saves a fresh cache."
+          else
+            echo "Next.js build cache: ${size_mb}MB, within the ${MAX_MB}MB limit."
+          fi
       - run: npm ci
       - run: npm run build
 
@@ -450,6 +479,13 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
+    # A test run is not guaranteed to end. A vi.mock async factory that closes
+    # an import cycle deadlocks its worker during module evaluation, before any
+    # test starts, so no vitest timeout fires and the job would sit for GitHub's
+    # six-hour default (#843). A shard takes 2-4 minutes on Sunrise; 30 leaves a
+    # larger fork's suite room. `CI_TEST_TIMEOUT_MINUTES` raises it without
+    # editing this file (.context/architecture/ci.md, Knob 5).
+    timeout-minutes: ${{ fromJSON(vars.CI_TEST_TIMEOUT_MINUTES || '30') }}
     # prisma generate (postinstall) needs DATABASE_URL defined; it does not
     # connect, so a placeholder is fine — no Postgres service on this job.
     #
@@ -510,6 +546,10 @@ jobs:
       needs.config.outputs.code == 'true' &&
       needs.config.outputs.test_scope == 'changed' &&
       github.event_name == 'pull_request'
+    # Capped for the same reason as `test-full` (#843), at twice the default:
+    # a lockfile or vitest-config change makes `--changed` select the whole
+    # suite, unsharded, in this one job.
+    timeout-minutes: ${{ fromJSON(vars.CI_TEST_TIMEOUT_MINUTES || '60') }}
     # No Postgres service — see the note on `test-full`. DATABASE_URL is kept
     # for prisma generate (postinstall), which does not connect.
     env:
@@ -584,6 +624,15 @@ jobs:
       # the unit suite mocks Prisma, so it never runs them
       # (see .context/privacy/data-export.md).
       - run: npx tsx scripts/smoke/export.ts
+      # Proves a webhook / event-hook delivery records where it was sent and
+      # survives its subscription's deletion — the FK's ON DELETE SET NULL,
+      # which the unit suite's mocked Prisma never exercises (§109 t-739).
+      - run: npx tsx scripts/smoke/delivery-destination.ts
+      # Proves erasure redacts a person from delivery payloads (found by JSON
+      # containment, through their conversations and runs) and clears
+      # colleagues' email subscriptions to them — raw SQL the unit suite's
+      # mocked Prisma never runs (t-783, t-786).
+      - run: npx tsx scripts/smoke/erasure-deliveries.ts
       # Proves the org-identity invariant on a FRESH database — migrate then
       # seed, the order a new install runs — which is the case the unit tests
       # cannot reach and the one the 001 seed exists to keep true
@@ -688,9 +737,9 @@ jobs:
     name: Docker Build + Stack Smoke
     runs-on: ubuntu-latest
     needs: config
-    # This job now starts containers, so a hung health-wait would otherwise burn
-    # the six-hour default. (First timeout-minutes in the repo — the other jobs
-    # only run processes that end on their own.)
+    # This job starts containers, so a hung health-wait would otherwise burn
+    # the six-hour default. The test jobs carry a cap too: a vitest worker can
+    # deadlock before any test starts (#843).
     timeout-minutes: 30
     # Decoupled from the checks so an image break surfaces in parallel rather
     # than after the long test run. On PRs it runs only when Docker-relevant
@@ -1051,7 +1100,8 @@ jobs:
             "${{ needs.lockfile.result }}"; do
             # Allow-list, not a deny-list. Testing for `failure` let
             # `cancelled` through — a job killed by its own `timeout-minutes`
-            # (the docker job carries 30), or a run cancelled while this job's
+            # (docker and the test jobs carry one), or a run cancelled while
+            # this job's
             # `if: always()` still fires, reported "CI passed" for gates that
             # never finished. Same shape as the `skipped` hole this file's
             # change-detection fix closes, so it gets the same treatment.

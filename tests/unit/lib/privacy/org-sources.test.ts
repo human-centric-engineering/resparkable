@@ -3,10 +3,14 @@
  *
  * The org-subject counterpart of `export-sources.test.ts`: holds the org
  * manifest level with every `orgId` column in the schema, so a table cannot
- * join an org without someone deciding what the org receives from it. Today
- * that is five models; when row isolation (§107) adds `orgId` to the
- * tenant-owned models this test names every one of them until it is
- * classified — as a source, or as an exclusion with a reason.
+ * join an org without someone deciding what the org receives from it. Core's
+ * models are declared in `org-sources.ts`; a fork's are registered through
+ * `lib/app/org-export.ts` (§109 t-737) and unioned in here, so a fork table is
+ * held to the same rule rather than exempted from it.
+ *
+ * It also holds every `orgId` model to an explicit `onDelete` on its `Org`
+ * relation: org erasure deletes the `Org` row and relies on the cascade, so a
+ * model without one either outlives the org's erasure or blocks it.
  *
  * ---------------------------------------------------------------------------
  * IF THIS TEST IS FAILING
@@ -14,8 +18,11 @@
  * You added an `orgId` column. Add the model to `ORG_DATA_SOURCES` with a
  * disposition (`export` for the org's own records — use Prisma `omit` for
  * credential columns; `attribution` for identity-only rows), or to
- * `ORG_EXCLUDED_SOURCES` with the reason the reader is shown. Deleting the
- * row ships a short answer to a customer. See `.context/privacy/org-export.md`.
+ * `ORG_EXCLUDED_SOURCES` with the reason the reader is shown. In a fork,
+ * register it from `lib/app/org-export.ts` instead — never edit the core list.
+ * Deleting the row ships a short answer to a customer. Give its `Org` relation
+ * `onDelete: Cascade` (or `SetNull` for a record that must outlive the org).
+ * See `.context/privacy/org-export.md`.
  *
  * The scan is exercised against a synthetic schema as well as the real one,
  * so the rule is shown to fire — in vanilla Sunrise every `orgId` model is
@@ -26,7 +33,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 
 const prismaMock = vi.hoisted(() => {
   // The named delegates the hand-written tests reach for, plus a fallback
@@ -53,6 +60,12 @@ vi.mock('@/lib/tenancy/context', () => ({ isMultiTenant: vi.fn(() => false) }));
 const { isMultiTenant } = await import('@/lib/tenancy/context');
 
 const { ORG_DATA_SOURCES, ORG_EXCLUDED_SOURCES } = await import('@/lib/privacy/org-sources');
+const {
+  getAccountedAppOrgModels,
+  registerAppOrgSources,
+  appOrgDeclarationsFailed,
+  __resetAppOrgSourceRegistryForTests,
+} = await import('@/lib/privacy/org-source-registry');
 
 const SCHEMA_DIR = path.join(process.cwd(), 'prisma', 'schema');
 const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
@@ -63,15 +76,41 @@ const MODEL_OPEN = /^model\s+(\w+)\s*\{/;
  */
 const ORG_ID_FIELD = /^\s*orgId\s+String/;
 
+/**
+ * The relation that ties a model's `orgId` to `Org`, with its `onDelete`
+ * captured when present. Relation lines name the `Org` type and list `orgId`
+ * among their `fields` — alone, or in a composite key. `prisma format` keeps
+ * an attribute on one line, so a line scan sees the whole relation.
+ */
+const ORG_RELATION = /^\s*\w+\s+Org\??\s+@relation\(.*fields:\s*\[[^\]]*\borgId\b[^\]]*\]/;
+const ON_DELETE = /onDelete:\s*(\w+)/;
+/**
+ * The two policies under which org erasure neither fails nor leaves a row
+ * pointing at a deleted org: delete with the org, or detach from it. SetNull
+ * KEEPS the rows — right for a record that must outlive the org (`AiCostLog`,
+ * a billing record), wrong for the org's own data. This rule cannot tell the
+ * two apart; choosing SetNull is a retention decision its author owns.
+ */
+const ERASURE_SAFE = new Set(['Cascade', 'SetNull']);
+
 interface SchemaFile {
   name: string;
   contents: string;
 }
 
-/** Every model declaring an `orgId` column, and every model name, from the given sources. */
-function scanSchemaFiles(files: SchemaFile[]): { orgLinked: Set<string>; allModels: Set<string> } {
+/**
+ * Every model declaring an `orgId` column, every model name, and the
+ * `onDelete` each model's `Org` relation declares (`null` for a relation with
+ * none; absent for no relation at all), from the given sources.
+ */
+function scanSchemaFiles(files: SchemaFile[]): {
+  orgLinked: Set<string>;
+  allModels: Set<string>;
+  orgOnDelete: Map<string, string | null>;
+} {
   const orgLinked = new Set<string>();
   const allModels = new Set<string>();
+  const orgOnDelete = new Map<string, string | null>();
   for (const file of files) {
     let currentModel: string | null = null;
     for (const line of file.contents.split('\n')) {
@@ -85,10 +124,22 @@ function scanSchemaFiles(files: SchemaFile[]): { orgLinked: Set<string>; allMode
         currentModel = null;
         continue;
       }
-      if (currentModel && ORG_ID_FIELD.test(line)) orgLinked.add(currentModel);
+      if (!currentModel) continue;
+      if (ORG_ID_FIELD.test(line)) orgLinked.add(currentModel);
+      // Read the code, not a trailing comment: `// TODO onDelete: Cascade` on a
+      // relation Prisma applies as Restrict must not pass.
+      const code = line.replace(/\/\/.*$/, '');
+      if (ORG_RELATION.test(code)) {
+        const policy = ON_DELETE.exec(code)?.[1] ?? null;
+        const previous = orgOnDelete.get(currentModel);
+        // Two Org relations over orgId: keep the unsafe one, so neither hides the other.
+        const previousSafe =
+          previous !== undefined && previous !== null && ERASURE_SAFE.has(previous);
+        if (previous === undefined || previousSafe) orgOnDelete.set(currentModel, policy);
+      }
     }
   }
-  return { orgLinked, allModels };
+  return { orgLinked, allModels, orgOnDelete };
 }
 
 function readSchemaFiles(): SchemaFile[] {
@@ -102,12 +153,44 @@ function undeclaredOrgModels(orgLinked: Set<string>, declared: Set<string>): str
   return [...orgLinked].filter((model) => !declared.has(model)).sort();
 }
 
-describe('org-data source manifest', () => {
-  const { orgLinked, allModels } = scanSchemaFiles(readSchemaFiles());
-  const declared = new Set([
+/**
+ * Every model accounted for: core's manifest, unioned with what a fork
+ * registered. A union, not a count — a fork adds a model and a registration
+ * and is done, without editing this file.
+ */
+function declaredModels(): Set<string> {
+  return new Set([
+    ...ORG_DATA_SOURCES.map((source) => source.model),
+    ...ORG_EXCLUDED_SOURCES.map((source) => source.model),
+    ...getAccountedAppOrgModels(),
+  ]);
+}
+
+/** Fork-registered models that are also in core's manifest — a fork must not claim one. */
+function shadowedCoreModels(): string[] {
+  const core = new Set([
     ...ORG_DATA_SOURCES.map((source) => source.model),
     ...ORG_EXCLUDED_SOURCES.map((source) => source.model),
   ]);
+  return [...getAccountedAppOrgModels()].filter((model) => core.has(model)).sort();
+}
+
+/** `orgId` models whose `Org` relation is missing or declares no erasure-safe `onDelete`. */
+function unsafeOnErasure(
+  orgLinked: Set<string>,
+  orgOnDelete: Map<string, string | null>
+): string[] {
+  return [...orgLinked]
+    .filter((model) => {
+      const policy = orgOnDelete.get(model);
+      return policy === undefined || policy === null || !ERASURE_SAFE.has(policy);
+    })
+    .sort();
+}
+
+describe('org-data source manifest', () => {
+  const { orgLinked, allModels, orgOnDelete } = scanSchemaFiles(readSchemaFiles());
+  const declared = declaredModels();
 
   describe('the scan itself', () => {
     it('finds the schema files', () => {
@@ -164,6 +247,38 @@ describe('org-data source manifest', () => {
         ...ORG_EXCLUDED_SOURCES.map((source) => source.model),
       ];
       expect(new Set(models).size).toBe(models.length);
+    });
+
+    it('accepts every declaration this checkout’s seam makes', () => {
+      // A rejected fork row is dropped with a log, and the export then refuses
+      // every org — in production, at the first export. This is where it turns
+      // red at build time instead: vanilla registers nothing, so it passes; a
+      // fork with a malformed or clashing row fails here, and the log above the
+      // failure says which row and why.
+      __resetAppOrgSourceRegistryForTests();
+      expect(appOrgDeclarationsFailed()).toBe(false);
+    });
+
+    it('has no fork registration shadowing a core manifest model', () => {
+      // The registry cannot check this itself without importing the core
+      // manifest and its Prisma client, so the guard does — a fork claiming a
+      // core model would export it twice or exclude a table core exports.
+      expect(shadowedCoreModels()).toEqual([]);
+    });
+
+    it('gives every orgId model an Org relation that cascades or detaches on erasure', () => {
+      // Org erasure deletes the Org row and lets the database cascade; it does
+      // not walk a manifest. No relation: the rows outlive the erasure, holding
+      // an org id nothing resolves. The default (Restrict): erasure fails.
+      const unsafe = unsafeOnErasure(orgLinked, orgOnDelete);
+      expect(
+        unsafe,
+        unsafe.length === 0
+          ? ''
+          : `These models carry an orgId but their Org relation is missing or has no ` +
+              `onDelete: Cascade / SetNull, so org erasure would leave or refuse their rows: ` +
+              `${unsafe.join(', ')}. See .context/privacy/org-erasure.md.`
+      ).toEqual([]);
     });
 
     it('covers pending invitations, which have no orgId column', () => {
@@ -225,6 +340,149 @@ describe('org-data source manifest', () => {
       const scan = scanSchemaFiles(fixture);
       expect(undeclaredOrgModels(scan.orgLinked, new Set([...declared, 'AppWidget']))).toEqual([]);
     });
+
+    describe('a fork model registered through the app seam', () => {
+      afterEach(() => __resetAppOrgSourceRegistryForTests());
+
+      /**
+       * A clean registry with the seam's own init already run, so the test's
+       * rows land on top of whatever this checkout's `initAppOrgSources()`
+       * registers rather than having that init run after them, and collide.
+       */
+      const freshRegistry = (): void => {
+        __resetAppOrgSourceRegistryForTests();
+        getAccountedAppOrgModels();
+      };
+
+      it('is accepted once registered as a source', () => {
+        freshRegistry();
+        registerAppOrgSources({
+          tier: 'app',
+          sources: [
+            {
+              model: 'AppWidget',
+              section: 'widgets',
+              disposition: 'export',
+              description: 'Widgets the organisation configured.',
+              fetch: () => Promise.resolve([]),
+            },
+          ],
+        });
+        const scan = scanSchemaFiles(fixture);
+        expect(undeclaredOrgModels(scan.orgLinked, declaredModels())).toEqual([]);
+      });
+
+      it('is accepted once registered as an exclusion', () => {
+        freshRegistry();
+        registerAppOrgSources({
+          tier: 'app',
+          excluded: [
+            { model: 'AppWidget', reason: 'Render cache rebuilt from rows the export carries.' },
+          ],
+        });
+        const scan = scanSchemaFiles(fixture);
+        expect(undeclaredOrgModels(scan.orgLinked, declaredModels())).toEqual([]);
+      });
+
+      it('still fails when a different fork model is registered instead', () => {
+        freshRegistry();
+        registerAppOrgSources({
+          tier: 'app',
+          excluded: [{ model: 'AppGadget', reason: 'Not the model the schema adds, on purpose.' }],
+        });
+        const scan = scanSchemaFiles(fixture);
+        expect(undeclaredOrgModels(scan.orgLinked, declaredModels())).toEqual(['AppWidget']);
+      });
+
+      it('is flagged when it shadows a core manifest model', () => {
+        freshRegistry();
+        registerAppOrgSources({
+          tier: 'app',
+          excluded: [
+            { model: 'AiAgent', reason: 'A fork claiming a core model, which it must not.' },
+          ],
+        });
+        expect(shadowedCoreModels()).toEqual(['AiAgent']);
+      });
+    });
+
+    describe('the erasure rule', () => {
+      const relationFixture = (relation: string): SchemaFile[] => [
+        {
+          name: 'app.prisma',
+          contents: [
+            'model AppWidget {',
+            '  id    String @id',
+            '  orgId String?',
+            relation,
+            '}',
+          ].join('\n'),
+        },
+      ];
+
+      it.each([
+        [
+          'Cascade',
+          '  org   Org?   @relation(fields: [orgId], references: [id], onDelete: Cascade)',
+        ],
+        [
+          'SetNull',
+          '  org   Org?   @relation(fields: [orgId], references: [id], onDelete: SetNull)',
+        ],
+        [
+          'a required relation',
+          '  org   Org    @relation(fields: [orgId], references: [id], onDelete: Cascade)',
+        ],
+        [
+          'a composite key',
+          '  org   Org    @relation(fields: [orgId, key], references: [id, key], onDelete: Cascade)',
+        ],
+      ])('accepts %s', (_label, relation) => {
+        const scan = scanSchemaFiles(relationFixture(relation));
+        expect(unsafeOnErasure(scan.orgLinked, scan.orgOnDelete)).toEqual([]);
+      });
+
+      it.each([
+        [
+          'no onDelete (Restrict by default)',
+          '  org   Org?   @relation(fields: [orgId], references: [id])',
+        ],
+        [
+          'Restrict',
+          '  org   Org?   @relation(fields: [orgId], references: [id], onDelete: Restrict)',
+        ],
+        [
+          'NoAction',
+          '  org   Org?   @relation(fields: [orgId], references: [id], onDelete: NoAction)',
+        ],
+        ['no relation at all', '  note  String?'],
+        [
+          'an onDelete only in a trailing comment',
+          '  org   Org?   @relation(fields: [orgId], references: [id]) // TODO onDelete: Cascade',
+        ],
+        [
+          'a second Org relation that is unsafe',
+          '  org   Org?   @relation("a", fields: [orgId], references: [id], onDelete: Cascade)\n' +
+            '  org2  Org?   @relation("b", fields: [orgId], references: [id])',
+        ],
+        [
+          'an unsafe Org relation before a safe one',
+          '  org   Org?   @relation("a", fields: [orgId], references: [id])\n' +
+            '  org2  Org?   @relation("b", fields: [orgId], references: [id], onDelete: Cascade)',
+        ],
+      ])('names a model with %s', (_label, relation) => {
+        const scan = scanSchemaFiles(relationFixture(relation));
+        expect(unsafeOnErasure(scan.orgLinked, scan.orgOnDelete)).toEqual(['AppWidget']);
+      });
+
+      it('reads the real schema’s relations at all', () => {
+        // Guard on the guard: a relation regex that matched nothing would
+        // name every model, and one that matched everything would name none.
+        expect(orgOnDelete.size).toBe(orgLinked.size);
+        expect(orgOnDelete.get('AiCostLog')).toBe('SetNull');
+        expect(orgOnDelete.get('AiAgent')).toBe('Cascade');
+      });
+    });
   });
 
   describe('what the sources ask Prisma for', () => {
@@ -240,6 +498,8 @@ describe('org-data source manifest', () => {
     };
     const MAPPED_SOURCES = new Set(['AiEventHook']);
     const lowerFirst = (name: string) => name[0].toLowerCase() + name.slice(1);
+    // Core's sources only: a fork's `fetch` is its own, with no core delegate
+    // behind it, so these assertions about core's queries do not apply to it.
     const tenantOwnedExports = ORG_DATA_SOURCES.filter(
       (source) =>
         source.disposition === 'export' && !['OrgMembership', 'Verification'].includes(source.model)

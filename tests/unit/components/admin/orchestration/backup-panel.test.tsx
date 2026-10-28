@@ -104,7 +104,7 @@ describe('BackupPanel', () => {
 
     await waitFor(() => {
       expect(globalThis.fetch).toHaveBeenCalledWith(
-        '/api/v1/admin/orchestration/backup/export',
+        '/api/v1/admin/orchestration/backup/export?shared=true',
         expect.objectContaining({ method: 'POST' })
       );
     });
@@ -140,6 +140,88 @@ describe('BackupPanel', () => {
     await waitFor(() => {
       expect(screen.getByText(/export failed: 500/i)).toBeInTheDocument();
     });
+  });
+
+  it('shows the API’s own message when the export is refused', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          success: false,
+          error: { code: 'FORBIDDEN', message: 'The shared part moves only in the install org' },
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    render(<BackupPanel />);
+    await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('The shared part moves only in the install org')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/export failed/i)).not.toBeInTheDocument();
+  });
+
+  it('falls back to the status when a refused export has a non-JSON body', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response('<html>Forbidden</html>', { status: 403 }));
+
+    render(<BackupPanel />);
+    await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Export failed: 403')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to the status when the JSON body is not an API error envelope', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ error: 'nope' }), { status: 403 }));
+
+    render(<BackupPanel />);
+    await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Export failed: 403')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to the status when the failure envelope carries no message', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: false, error: { code: 'FORBIDDEN' } }), {
+        status: 403,
+      })
+    );
+
+    render(<BackupPanel />);
+    await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Export failed: 403')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to the status when a non-ok response carries a success envelope', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { message: 'not an error' } }), {
+        status: 502,
+      })
+    );
+
+    render(<BackupPanel />);
+    await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Export failed: 502')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('not an error')).not.toBeInTheDocument();
   });
 
   // ── Import via file input ──────────────────────────────────────────────────
@@ -226,6 +308,38 @@ describe('BackupPanel', () => {
 
     await waitFor(() => screen.getByText('Import successful'));
     expect(screen.queryByText(/settings updated/i)).not.toBeInTheDocument();
+  });
+
+  it('lists the shared settings as not restored when the import skipped them', async () => {
+    mockPost.mockResolvedValue(
+      makeImportResult({
+        settingsUpdated: false,
+        sharedSkipped: true,
+        warnings: ['Shared settings not imported: 1 capabilities.'],
+      })
+    );
+
+    const { container } = render(<BackupPanel />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(input, makeFile(makeBackupJson()));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText('Shared settings not restored (see the warning below)')
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByText('Shared settings not imported: 1 capabilities.')).toBeInTheDocument();
+  });
+
+  it('does not mention shared settings when the import did not skip them', async () => {
+    mockPost.mockResolvedValue(makeImportResult({ sharedSkipped: false }));
+
+    const { container } = render(<BackupPanel />);
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(input, makeFile(makeBackupJson()));
+
+    await waitFor(() => screen.getByText('Import successful'));
+    expect(screen.queryByText(/shared settings not restored/i)).not.toBeInTheDocument();
   });
 
   // ── Drag and drop ──────────────────────────────────────────────────────────
@@ -388,34 +502,115 @@ describe('BackupPanel', () => {
       expect(screen.getByText(/settings updated/i)).toBeInTheDocument();
     });
   });
-  // ── Read-only outside the install org ──────────────────────────────────────
+  // ── Shared-settings choice (§109 t-738) ────────────────────────────────────
 
-  describe('read-only outside the install org (§107 t-753)', () => {
-    it('replaces the import drop zone with an explanation, keeps export, and the editable panel shows the zone', async () => {
-      // Contrast: same component, no provider -> import UI present
-      const editable = render(<BackupPanel />);
-      expect(screen.getByText('Import Configuration')).toBeInTheDocument();
-      expect(screen.getByText(/drop a backup json file here/i)).toBeInTheDocument();
-      expect(editable.container.querySelector('input[type="file"]')).not.toBeNull();
-      editable.unmount();
+  describe('include shared settings', () => {
+    it('shows the checkbox ticked by default', () => {
+      render(<BackupPanel />);
 
-      const { container } = render(
+      expect(screen.getByRole('checkbox', { name: /include shared settings/i })).toBeChecked();
+    });
+
+    it('exports with ?shared=false after the box is unticked', async () => {
+      const user = userEvent.setup();
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+      render(<BackupPanel />);
+      await user.click(screen.getByRole('checkbox', { name: /include shared settings/i }));
+      await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+      await waitFor(() => {
+        expect(globalThis.fetch).toHaveBeenCalledWith(
+          '/api/v1/admin/orchestration/backup/export?shared=false',
+          expect.objectContaining({ method: 'POST' })
+        );
+      });
+      clickSpy.mockRestore();
+    });
+
+    it('imports with ?shared=true by default', async () => {
+      mockPost.mockResolvedValue(makeImportResult());
+
+      const { container } = render(<BackupPanel />);
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      await userEvent.upload(input, makeFile(makeBackupJson()));
+
+      await waitFor(() => expect(screen.getByText('Import successful')).toBeInTheDocument());
+      expect(mockPost).toHaveBeenCalledWith(
+        '/api/v1/admin/orchestration/backup/import?shared=true',
+        { body: { version: 1, agents: [] } }
+      );
+    });
+
+    it('imports with ?shared=false after the box is unticked', async () => {
+      mockPost.mockResolvedValue(makeImportResult({ settingsUpdated: false, sharedSkipped: true }));
+      const user = userEvent.setup();
+
+      const { container } = render(<BackupPanel />);
+      await user.click(screen.getByRole('checkbox', { name: /include shared settings/i }));
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      await user.upload(input, makeFile(makeBackupJson()));
+
+      await waitFor(() => expect(screen.getByText('Import successful')).toBeInTheDocument());
+      expect(mockPost).toHaveBeenCalledWith(
+        '/api/v1/admin/orchestration/backup/import?shared=false',
+        expect.anything()
+      );
+    });
+  });
+
+  // ── Customer org at multi (shared part cannot move) ────────────────────────
+
+  describe('read-only outside the install org (§109 t-738)', () => {
+    function renderReadOnly() {
+      return render(
         <SharedSettingsAccessProvider readOnly canSwitch>
           <BackupPanel />
         </SharedSettingsAccessProvider>
       );
+    }
 
-      // Gated: import heading, drop zone, file input
-      expect(screen.queryByText('Import Configuration')).not.toBeInTheDocument();
-      expect(screen.queryByText(/drop a backup json file here/i)).not.toBeInTheDocument();
-      expect(container.querySelector('input[type="file"]')).toBeNull();
-      // Survives: replacement text and export
+    it('drops the checkbox, explains the scope, and keeps export and import available', () => {
+      const { container } = renderReadOnly();
+
+      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
       expect(
-        screen.getByText(/importing replaces shared settings too, so it runs from the install/i)
+        screen.getByText(/backups from this organisation cover its own agents, workflows/i)
       ).toBeInTheDocument();
-      expect(screen.getByText('Export Configuration')).toBeInTheDocument();
+      expect(screen.getByText('Import Configuration')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /drop a backup/i })).toBeInTheDocument();
+      expect(container.querySelector('input[type="file"]')).not.toBeNull();
       expect(screen.getByRole('button', { name: /download backup/i })).toBeEnabled();
-      expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('exports with no query string', async () => {
+      const user = userEvent.setup();
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+      renderReadOnly();
+      await user.click(screen.getByRole('button', { name: /download backup/i }));
+
+      await waitFor(() => {
+        expect(globalThis.fetch).toHaveBeenCalledWith(
+          '/api/v1/admin/orchestration/backup/export',
+          expect.objectContaining({ method: 'POST' })
+        );
+      });
+      clickSpy.mockRestore();
+    });
+
+    it('imports with no query string', async () => {
+      mockPost.mockResolvedValue(makeImportResult({ settingsUpdated: false, sharedSkipped: true }));
+
+      const { container } = renderReadOnly();
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      await userEvent.upload(input, makeFile(makeBackupJson()));
+
+      await waitFor(() => expect(screen.getByText('Import successful')).toBeInTheDocument());
+      expect(mockPost).toHaveBeenCalledWith(
+        '/api/v1/admin/orchestration/backup/import',
+        expect.anything()
+      );
     });
   });
 });

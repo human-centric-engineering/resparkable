@@ -35,23 +35,16 @@
  *    no cascade can make them. The rule is `settleGroupsAfterErasure` in
  *    `services/membership.ts`, and this file only calls it.
  *
- * ## The registration hazard, stated plainly
+ * ## Registration
  *
- * `lib/privacy/erasure-hooks.ts` is a **plain module-scoped `Map`** with no
- * lazy re-init, and `eraseUser()` runs in the route realm. Under Next 16 +
- * Turbopack, `instrumentation.ts` is a separate module graph (sunrise#462), so a
- * hook registered at boot **may not be present when erasure actually runs**.
- * #462 fixed exactly this for the context-contributor and capability registries
- * by making them `globalThis`-backed; the erasure registry was not part of that
- * change and there is no point in the erasure route's import graph a fork can
- * reach. Filed as ask #34.
+ * Registered from `lib/app/erasure.ts`, which core runs itself before it first
+ * reads the hook registry, in whatever process is erasing somebody. It used to
+ * be registered at boot from `initResparkable()`, which only covers a process
+ * that booted the app. The braces are still B1, B8 and B9, which are database
+ * constraints and cannot fail to run; this hook is the belt.
  *
- * So: register at boot, and be honest that this is a belt over braces rather
- * than the braces. The braces are B1, B8 and B9, which are database
- * constraints and cannot fail to run.
- *
- * **Succession raises the stakes of that caveat.** If the hook is missing when
- * erasure runs, a group whose only member was erased is left behind with no
+ * **Succession is why the hook matters.** If it were missing when erasure
+ * ran, a group whose only member was erased would be left behind with no
  * members. No route can open it and no subject-access request reaches it. The
  * membership row still cascades (B13) and `createdByUserId` still nulls out
  * (B11), so the erased person's identity leaves either way, but their content

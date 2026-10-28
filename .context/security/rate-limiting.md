@@ -102,7 +102,7 @@ How the dispatcher identifies the caller when building the bucket token. Token f
 
 **Why fallbacks exist.** Rate-limiting is best-effort defense in depth — if we can't identify the caller more precisely (auth provider down, session not yet established, missing header), we still want _some_ bucket rather than letting the request through unlimited. The fallback to IP gives unauthenticated/can't-resolve traffic a per-IP cap without changing the rule's intent for authenticated callers.
 
-**The key space is open to forks.** These four are the built-in strategies; an app/fork registers its own (an org, a workspace, a device id) via `registerRateLimitKeyResolver()` — see [App / Fork Extension](#app--fork-extension). A custom resolver returns the identifier segment (`org:123`) or `null` for the same IP fallback as the built-ins; a resolver that throws is logged as an error and falls back to IP (a fork bug must be loud, but must not fail open or take the API down). Identifiers must come from something the caller cannot freely choose. Compositing with `getClientIP()` is **not** a substitute for that: a caller who can vary the label mints a fresh bucket per request whatever else is in the token, so the cap never engages — see the example's comment.
+**The key space is open to forks.** These four are the built-in strategies; an app/fork registers its own (a workspace, a device id) via `registerRateLimitKeyResolver()` — see [App / Fork Extension](#app--fork-extension). A custom resolver returns the identifier segment (`org:123`) or `null` for the same IP fallback as the built-ins; a resolver that throws is logged as an error and falls back to IP (a fork bug must be loud, but must not fail open or take the API down). Identifiers must come from something the caller cannot freely choose. Compositing with `getClientIP()` is **not** a substitute for that: a caller who can vary the label mints a fresh bucket per request whatever else is in the token, so the cap never engages — see the example's comment.
 
 **Credential strategies key on what the credential resolves to, never on the header.** `api-key` and `embed-token` look the presented value up (`lib/security/rate-limit-credentials.ts`) and key on the stored row's id; a value that names no live credential (unknown, revoked, expired, inactive, an embed token or MCP key whose org cannot be entered, or a format Sunrise does not issue) gets the IP bucket. The `Authorization` header is parsed exactly as the routes parse it (a case-sensitive `Bearer ` prefix).
 
@@ -114,6 +114,48 @@ How the dispatcher identifies the caller when building the bucket token. Token f
 The check is only "does this credential exist and is it live" — scopes and origin checks stay with the route's own resolver, which still refuses a bad credential.
 
 **Session resolution failure is a behaviour, not a panic.** When `auth.api.getSession` throws (DB outage, etc.), the dispatcher catches the error and falls back to IP keying — it does NOT propagate the auth error as the request's response. Route handlers that require authentication surface their own 401 downstream.
+
+## Per-Org Request Cap
+
+Every key strategy above identifies a **caller**. At `TENANCY_MODE=multi` that lets an org with many users or keys use as much capacity as all of them together. An org's `Org.settings.quotas.requestsPerMinute` (§110 t-789) is one number that caps the whole tenant, enforced by `applyRateLimit` as a **second counter on top of the matched rule** (`lib/security/org-request-cap.ts`):
+
+1. The matched rule's per-caller check runs first, exactly as before. If it refuses, the request gets the 429 and the org's count does not go up, so one caller can use at most its own limit of the org's cap.
+2. Then, if the caller acts for an org, the request is counted in that org's window, keyed by org id in `lib/security/org-request-cap.ts` (not a section-limiter token). Over the cap, it gets the same 429 envelope, with `X-RateLimit-Limit` set to the org's cap.
+
+Per-caller fairness inside the org still applies, because both counters must pass.
+
+**Where the org comes from: a verified principal, never a header.** `applyRateLimit` runs before the proxy strips and rewrites `x-sunrise-org`, so that header at this point is whatever the client sent, and it is ignored. The org is:
+
+| Strategy                       | Org counted                                                                                                                                  |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session-user`                 | the org the guard will enter: the fork's tenant resolver's answer, computed from the request here, else the session's `activeOrgId`          |
+| `api-key` (`sk_`)              | the key row's `orgId`; an `admin`-scoped key, and an unbound key at `multi`, have none                                                       |
+| `api-key` (MCP)                | the key row's `orgId`, from the same lookup that checks the org can be entered                                                               |
+| `embed-token`                  | none: the token is public (it is in the embedding page), so counting it would let anyone hold the tenant at its cap and lock out its members |
+| `ip`, any fallback, custom key | none, so the request is not counted                                                                                                          |
+
+The credential lookups already read these rows, so working out the org costs no extra query.
+
+**A user is counted only against an org they can enter.** Neither a session's org nor a key's column is a membership: a removed member's session still names the org, and a resolver names an org by hostname whoever is calling. So for a session, or a user API key's owner, the membership is checked the way the guards check it (present, org `ACTIVE`) before the request is counted. The answer is cached for 30 seconds per user and org, and the check is made only for an org that has a cap. Someone who cannot enter the org is refused by the guard anyway, and counting them would let a former member, or anyone visiting the org's hostname, hold it at its cap.
+
+**A user API key on a session-keyed route still counts.** Every `withAuth` route accepts `Authorization: Bearer sk_…`, and the catch-all rule keys on the session. So when the request carries an `sk_` key, the key is looked up (through the same cache and per-IP lookup budget as the `api-key` strategy) for its org, and that org is counted, ahead of the session's, as `withAuth` reads the key first. The request's own bucket is unchanged: the user's with a session, the IP's without. An MCP key is ignored there, since those routes refuse it.
+
+**When nothing is counted:** at `single`; when the org has no `requestsPerMinute`; when no org could be worked out; when the user cannot enter the org; and on the ways out of a full org:
+
+- **`/api/v1/admin/**`**, the platform operator's control plane. A tenant's traffic must not lock the operator out of `PATCH /api/v1/admin/orgs/[id]`, which is where a full cap is raised, and the operator's support work inside a customer's org should not be charged to that customer.
+- **`/api/v1/orgs` and `/api/v1/orgs/switch`**, so a member of two orgs whose session names the full one can still list their orgs and move to the other. An org's own sub-routes (`/api/v1/orgs/[id]/…`) are counted.
+
+The admin exemption is by path. That holds while only platform admins reach that surface, which is the default authorization policy; a fork that admits org admins there lets that traffic past its tenants' caps.
+
+A refused request's `Retry-After` is the moment the sliding estimate next has room, not the end of the minute.
+
+MCP and webhook traffic **is** counted: it is the tenant's own credentials calling.
+
+**Setting it.** `PATCH /api/v1/admin/orgs/[id]` `{ settings: { quotas: { requestsPerMinute } } }` (a whole number, 1–100,000), or `writeOrgQuotas()` from a fork's billing code. At `multi` only the install org may write `quotas` (see [Costs → Per-org monthly budget cap](../admin/orchestration-costs.md#per-org-monthly-budget-cap) for the rule and the audit entry). `quotas` is replaced whole, so a write that sets one cap and leaves out the other removes the one left out.
+
+**Caching and staleness.** Each org's cap, including "no cap", is cached for 30 seconds, so a request makes no database read while its org's entry is warm. The PATCH route clears the entry in its own process (`forgetOrgRequestCap(orgId)`; call it after `writeOrgQuotas()` too). The cache is held on `globalThis` so that clear reaches the proxy's copy. **Other instances can enforce the old cap for up to 30 seconds.** If the cap cannot be read, the org counter is skipped with a warning, and the per-caller limits still apply.
+
+**It is per process**, like every section tier. With N instances an org can get up to N × its cap; see [Distributed Deployments](#distributed-deployments). Each org's window is a sliding estimate from this minute's count and the last minute's, weighted by how much of the last minute is still inside the window. A check is the same small amount of work whatever the cap. Each process keeps at most 10,000 cached caps, memberships and windows. An evicted window starts again at zero, so beyond that many capped orgs active in one process, the least recently used can briefly get a fresh cap's worth of requests.
 
 ## Per-Flow Sub-Caps (handler-applied)
 
@@ -298,6 +340,8 @@ import {
 } from '@/lib/security/rate-limit-policy';
 import { getClientIP } from '@/lib/security/ip';
 import { SECURITY_CONSTANTS } from '@/lib/security/constants';
+import { auth } from '@/lib/auth/config';
+import { currentWorkspaceFor } from '@/lib/app/workspaces'; // your own code
 
 export function registerAppRateLimits(): void {
   // 1. (optional) register an app-specific section tier
@@ -328,19 +372,22 @@ export function registerAppRateLimits(): void {
   //    a real cap; a mintable bucket is no cap at all.
   //
   //    This mirrors the built-in 'session-user' strategy, which resolves the
-  //    session rather than trusting a header. The org is on the session
-  //    already (`session.session.activeOrgId`, §106 — chosen at sign-in,
-  //    changed by POST /api/v1/orgs/switch); resolvers run on the hot path,
+  //    session rather than trusting a header. Resolvers run on the hot path,
   //    so prefer a signed cookie or token you can verify without I/O where
   //    you have one.
-  registerRateLimitKeyResolver('org', async (request) => {
+  //
+  //    A cap for a whole org is not this: it is built in. Set the org's
+  //    `quotas.requestsPerMinute` (see "Per-Org Request Cap"). A fork that
+  //    already registered an 'org' resolver from an earlier version of this
+  //    recipe still boots; 'org' is not a built-in key name.
+  registerRateLimitKeyResolver('workspace', async (request) => {
     const session = await auth.api.getSession({ headers: request.headers });
-    const orgId = session?.session?.activeOrgId;
-    return orgId ? `org:${orgId}` : null;
+    const workspaceId = session?.user?.id ? await currentWorkspaceFor(session.user.id) : null;
+    return workspaceId ? `workspace:${workspaceId}` : null;
   });
 
   // 3. point an app path at a tier (built-in or app) and a key (built-in or app)
-  registerRateLimitRule({ match: /^\/api\/v1\/billing\//, tier: 'billing', key: 'org' });
+  registerRateLimitRule({ match: /^\/api\/v1\/billing\//, tier: 'billing', key: 'workspace' });
 }
 ```
 

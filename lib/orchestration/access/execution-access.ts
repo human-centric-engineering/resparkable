@@ -101,6 +101,7 @@
 
 import type { Prisma } from '@prisma/client';
 import type { AuthenticatedSession } from '@/lib/auth/guards';
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 
 /** Why an admin may see an execution. */
 export type ExecutionAccessBasis = 'owner' | 'system';
@@ -165,9 +166,35 @@ export function adminCanViewExecution(
  * ```
  */
 export function executionVisibilityWhere(
-  session: AuthenticatedSession
+  // Only what it reads, so the leakage harness can call it without a whole
+  // session (as `conversationVisibilityWhere`). Spelled inline:
+  // `scripts/ci/ownerless-surfaces.ts` recognises a helper by
+  // `AuthenticatedSession` appearing in its parameter's type.
+  session: Pick<AuthenticatedSession, 'unattributedReads'> & {
+    user: Pick<AuthenticatedSession['user'], 'id'>;
+  }
 ): Prisma.AiWorkflowExecutionWhereInput {
   const mine = { userId: session.user.id };
 
   return session.unattributedReads.execution ? { OR: [mine, { userId: null }] } : mine;
+}
+
+/**
+ * Run `fn` across owners, for the approve, reject and cancel routes' approver
+ * nomination (the carve-out in this module's header).
+ *
+ * The nomination is in the run's own trace, so those routes read the row
+ * before they can know whether the caller may act on it, and a named approver
+ * then acts on a run they may not otherwise read. The owner layer
+ * (`lib/db/owner-extension.ts`) would refuse both for a narrowed caller, and
+ * the nomination is not something a `where` can express. So the routes say
+ * so, under this one reason: they read through it, answer 404 unless the
+ * caller may see the run or the trace names them, and act through it only for
+ * a nominated approver.
+ */
+export function acrossOwnersForApproval<T>(fn: () => Promise<T>): Promise<T> {
+  return runAcrossOwners(
+    "approval: a run's trace names its approvers, so the row is read before the nomination is checked",
+    fn
+  );
 }

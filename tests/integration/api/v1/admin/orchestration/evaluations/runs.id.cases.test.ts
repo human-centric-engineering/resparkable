@@ -37,6 +37,7 @@ vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiEvaluationRun: { findFirst: vi.fn() },
     aiEvaluationCaseResult: { findMany: vi.fn() },
+    aiDatasetCase: { findMany: vi.fn() },
   },
 }));
 
@@ -70,8 +71,12 @@ function makeCaseResult(position: number) {
     errorCode: null,
     latencyMs: 100,
     costUsd: 0.001,
-    datasetCase: { input: 'in', expectedOutput: 'out', metadata: null },
+    datasetCaseId: `case-${position}`,
   };
+}
+
+function makeDatasetCase(position: number) {
+  return { id: `case-${position}`, input: 'in', expectedOutput: 'out', metadata: null };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -147,15 +152,54 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs/:id/cases', () => {
       makeCaseResult(0),
       makeCaseResult(1),
     ] as never);
+    vi.mocked(prisma.aiDatasetCase.findMany).mockResolvedValue([
+      makeDatasetCase(0),
+      makeDatasetCase(1),
+    ] as never);
 
     const response = await GET(makeGetRequest(RUN_ID), makeParams(RUN_ID));
 
     expect(response.status).toBe(200);
     const data = await parseJson<{
-      data: { items: unknown[]; nextCursor: number | null };
+      data: { items: Array<{ datasetCase: unknown }>; nextCursor: number | null };
     }>(response);
     expect(data.data.items).toHaveLength(2);
+    expect(data.data.items[0].datasetCase).toEqual({
+      input: 'in',
+      expectedOutput: 'out',
+      metadata: null,
+    });
     expect(data.data.nextCursor).toBe(null);
+  });
+
+  it("reads the results through the caller's run, and the cases through the dataset's visibility", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+    vi.mocked(prisma.aiEvaluationRun.findFirst).mockResolvedValue({
+      id: RUN_ID,
+      status: 'completed',
+    } as never);
+    vi.mocked(prisma.aiEvaluationCaseResult.findMany).mockResolvedValue([
+      makeCaseResult(0),
+      makeCaseResult(1),
+    ] as never);
+    // The dataset has since become another admin's: only one case comes back.
+    vi.mocked(prisma.aiDatasetCase.findMany).mockResolvedValue([makeDatasetCase(0)] as never);
+
+    const response = await GET(makeGetRequest(RUN_ID), makeParams(RUN_ID));
+
+    expect(vi.mocked(prisma.aiEvaluationCaseResult.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ runId: RUN_ID, run: { userId: ADMIN_ID } }),
+      })
+    );
+    expect(vi.mocked(prisma.aiDatasetCase.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ['case-0', 'case-1'] }, dataset: expect.anything() },
+      })
+    );
+    const data = await parseJson<{ data: { items: Array<{ datasetCase: unknown }> } }>(response);
+    expect(data.data.items[0].datasetCase).not.toBeNull();
+    expect(data.data.items[1].datasetCase).toBeNull();
   });
 
   it('sets nextCursor when more results exist than the limit', async () => {
@@ -170,6 +214,7 @@ describe('GET /api/v1/admin/orchestration/evaluations/runs/:id/cases', () => {
       makeCaseResult(1),
       makeCaseResult(2),
     ] as never);
+    vi.mocked(prisma.aiDatasetCase.findMany).mockResolvedValue([] as never);
 
     const response = await GET(makeGetRequest(RUN_ID, { limit: '2' }), makeParams(RUN_ID));
 

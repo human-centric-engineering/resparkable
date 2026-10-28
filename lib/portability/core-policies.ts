@@ -55,7 +55,30 @@ export const corePolicies: TransferPolicySet = {
       // Without this, an "overwrite on conflict" import would be a one-file
       // privilege escalation: hand-edit `role` to `admin`, import your own
       // bundle, done.
-      regenerate: ['email', 'emailVerified', 'role', 'accountType', 'image'],
+      //
+      // `signupOrgId` and the erasure columns (Sunrise 0.15.0) are the target's
+      // too. Written from a bundle, the first would place the person in another
+      // org on this installation, and the second would schedule the importing
+      // account's own deletion.
+      regenerate: [
+        'email',
+        'emailVerified',
+        'role',
+        'accountType',
+        'image',
+        'signupOrgId',
+        'erasureRequestedAt',
+        'erasureRequestedBy',
+        'erasureReason',
+        'erasureAttempts',
+        'erasureNextAttemptAt',
+      ],
+      softRefsIgnored: {
+        signupOrgId:
+          'The org this person signed up into, on the source installation. ' +
+          'Regenerated, never imported: the target decides which org an ' +
+          'account belongs to.',
+      },
       jsonOpaque: {
         preferences:
           'Notification and display settings — booleans, locale strings and ' +
@@ -693,6 +716,10 @@ export const corePolicies: TransferPolicySet = {
           'Identifies the row an admin changed, across every admin-editable ' +
           'table. Retained verbatim so the log still reads correctly against ' +
           'the environment it describes.',
+        supportOrgId:
+          'The org a support session acted in (§121), kept without a foreign ' +
+          'key so the row still says where it happened after the org is gone. ' +
+          'Export-only, so it is never written back.',
       },
       jsonOpaque: {
         changes: 'Before and after values for the edited fields.',
@@ -756,6 +783,13 @@ export const corePolicies: TransferPolicySet = {
       reason:
         'Which organisations a person belongs to. Decided by the installation ' +
         'the account lands in (sign-up or invitation), not by a file.',
+    },
+    {
+      model: 'OrgSupportGrant',
+      owner: 'core',
+      reason:
+        "An organisation's consent for vendor support to enter it. A record " +
+        'about an org on this installation, not something an account carries.',
     },
     {
       model: 'AiWorkflowStepDispatch',

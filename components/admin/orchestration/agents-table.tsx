@@ -145,7 +145,12 @@ export function AgentsTable({ initialAgents, initialMeta }: AgentsTableProps) {
   );
   const [isLoading, setIsLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  const [exportNotice, setExportNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // The notice describes one export; it goes when the selection it described does.
+  useEffect(() => {
+    setExportNotice(null);
+  }, [selected]);
   const [deleteTarget, setDeleteTarget] = useState<AiAgentListItem | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [duplicateSource, setDuplicateSource] = useState<AiAgent | null>(null);
@@ -372,6 +377,7 @@ export function AgentsTable({ initialAgents, initialMeta }: AgentsTableProps) {
   const handleExportSelected = useCallback(async () => {
     if (selected.size === 0) return;
     setListError(null);
+    setExportNotice(null);
     try {
       const res = await fetch(API.ADMIN.ORCHESTRATION.AGENTS_EXPORT, {
         method: 'POST',
@@ -379,7 +385,17 @@ export function AgentsTable({ initialAgents, initialMeta }: AgentsTableProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agentIds: [...selected] }),
       });
-      if (!res.ok) throw new Error('export failed');
+      if (!res.ok) {
+        // A 400 explains itself (e.g. a selection of only built-in agents, #721).
+        if (res.status === 400) {
+          const body = await parseApiResponse<unknown>(res).catch(() => null);
+          if (body && !body.success) {
+            setListError(body.error.message);
+            return;
+          }
+        }
+        throw new Error('export failed');
+      }
 
       // Prefer the server-supplied filename, fall back to a timestamped default.
       const disposition = res.headers.get('Content-Disposition') ?? '';
@@ -395,6 +411,15 @@ export function AgentsTable({ initialAgents, initialMeta }: AgentsTableProps) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+
+      // Built-in agents are left out of the file (#721); say so rather than let
+      // the admin assume every selected agent was exported.
+      const skipped = Number(res.headers.get('X-Skipped-System-Agents') ?? 0);
+      if (Number.isInteger(skipped) && skipped > 0) {
+        setExportNotice(
+          `${skipped} built-in ${skipped === 1 ? 'agent was' : 'agents were'} left out of the export. Every install has its own built-in agents.`
+        );
+      }
     } catch {
       setListError('Export failed. Try again in a moment.');
     }
@@ -881,6 +906,15 @@ export function AgentsTable({ initialAgents, initialMeta }: AgentsTableProps) {
       {listError && (
         <div className="border-destructive/50 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm">
           {listError}
+        </div>
+      )}
+
+      {exportNotice && (
+        <div
+          role="status"
+          className="text-muted-foreground bg-muted/40 rounded-md border px-3 py-2 text-sm"
+        >
+          {exportNotice}
         </div>
       )}
 

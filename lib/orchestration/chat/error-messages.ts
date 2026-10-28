@@ -18,6 +18,16 @@ const ERROR_MAP: Record<string, UserFacingError> = {
     message: 'This agent has reached its monthly budget.',
     action: 'Contact an admin to increase the limit or switch to a local model.',
   },
+  org_budget_exceeded: {
+    title: 'Monthly Budget Reached',
+    message: 'Your organisation has reached its monthly AI budget.',
+    action: 'Contact a platform admin to raise the limit or switch to a local model.',
+  },
+  global_budget_exceeded: {
+    title: 'Monthly Budget Reached',
+    message: 'This platform has reached its monthly AI budget.',
+    action: 'Contact a platform admin to raise the limit or switch to a local model.',
+  },
   budget_exceeded_per_turn: {
     title: 'Response Cost Limit Reached',
     message: "This response stopped early to stay within the agent's per-turn cost limit.",

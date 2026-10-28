@@ -1,9 +1,9 @@
 # Fork Init Seams
 
-Fourteen of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
+Eighteen of the `lib/app/*` scaffolds Sunrise ships are reached the same way: a
 core registry runs the fork's `initApp*()` function **once, lazily, before its
 first read**. (Most of `lib/app/` is not this — the majority of those files are
-value and config scaffolds with no init function at all, and two of the sixteen
+value and config scaffolds with no init function at all, and two of the twenty
 `initApp*` exports are different shapes; see below.)
 That lets a fork accumulate registrations at module-import time without a startup
 hook, and without core needing to know which bundle realm got there first.
@@ -52,28 +52,32 @@ Three properties come with it:
 | Seam file (`lib/app/`)             | Init function                        | Registry                                                    | On a throw                     |
 | ---------------------------------- | ------------------------------------ | ----------------------------------------------------------- | ------------------------------ |
 | `account-sections.ts`              | `initAppAccountSections`             | `lib/account-sections/registry.ts`                          | roll back, log, degrade        |
+| `admin-tier.ts`                    | `initAppOrgTierAdminPages`           | `lib/auth/admin-tier.ts`                                    | roll back, log, degrade        |
 | `authorization.ts`                 | `initAppAuthorizationPolicy`         | `lib/auth/authorization.ts`                                 | roll back, log, **safe mode**  |
 | `capabilities.ts`                  | `initAppCapabilities`                | `lib/orchestration/capabilities/registry.ts`                | roll back, log, **re-raise**   |
 | `context-contributors.ts`          | `initAppContextContributors`         | `lib/orchestration/chat/context-builder.ts`                 | roll back, log, degrade        |
 | `data-export.ts`                   | `initAppSubjectSources`              | `lib/privacy/subject-source-registry.ts`                    | roll back, log, **remembered** |
+| `erasure.ts`                       | `initAppErasureHooks`                | `lib/privacy/erasure-hooks.ts`                              | roll back, log, degrade        |
 | `evaluations.ts`                   | `initAppGraders`                     | `lib/orchestration/evaluations/graders/registry.ts`         | roll back, log, degrade        |
 | `guard-event-contributors.ts`      | `initAppGuardEventContributors`      | `lib/orchestration/chat/guard-events.ts`                    | roll back, log, degrade        |
 | `guard-floor-contributors.ts`      | `initAppGuardFloorContributors`      | `lib/orchestration/chat/guard-floor.ts`                     | roll back, log, degrade        |
 | `jobs.ts`                          | `initAppJobs`                        | `lib/orchestration/maintenance/app-jobs.ts`                 | roll back, log, degrade        |
 | `knowledge-access-contributors.ts` | `initAppKnowledgeAccessContributors` | `lib/orchestration/knowledge/resolveAgentDocumentAccess.ts` | roll back, log, degrade        |
 | `mcp-resources.ts`                 | `initAppMcpResources`                | `lib/orchestration/mcp/resource-registry.ts`                | roll back, log, degrade        |
+| `org-export.ts`                    | `initAppOrgSources`                  | `lib/privacy/org-source-registry.ts`                        | roll back, log, **remembered** |
+| `owner-classification.ts`          | `initAppOwnerClassification`         | `lib/db/owner-classification.ts`                            | roll back, log, degrade        |
 | `platform-agents.ts`               | `initAppPlatformAgents`              | `lib/orchestration/agents/platform-agents.ts`               | roll back, log, degrade        |
 | `provider-credentials.ts`          | `initAppProviderCredentials`         | `lib/orchestration/llm/provider-credentials.ts`             | roll back, log, **refuse**     |
 | `user-created.ts`                  | `initAppUserCreatedHooks`            | `lib/auth/user-created-hooks.ts`                            | roll back, log, degrade        |
 
 ## The other family: `registerApp*`
 
-Three scaffolds are reached by a **direct call from the one core module that
+Four scaffolds are reached by a **direct call from the one core module that
 needs them**, not through `createAppInitGate`. Different mechanism, identical
 failure if the wiring is lost — a scaffold nothing imports is dead wiring, and
 every fork's registrations in it silently never run. `fork-init-seams.test.ts`
-guards them by import detection and pins the count at **three**, so adding a
-fourth is a deliberate edit rather than a silent one.
+guards them by import detection and pins the count at **four**, so adding a
+fifth is a deliberate edit rather than a silent one.
 
 | Edit this file       | Export                           | Called by                                                                                  |
 | -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -82,7 +86,7 @@ fourth is a deliberate edit rather than a silent one.
 | `llm-providers.ts`   | `registerAppProviderEligibility` | `ensureWired()` in `lib/orchestration/llm/provider-eligibility.ts`, lazily on first use    |
 | `tenant-resolver.ts` | `registerAppTenantResolver`      | `proxy.ts`, at module scope (§106 — the resolver runs on every request; Web-standard only) |
 
-The third is the one to read if you are adding a fourth. It was originally wired
+The third is the one to read if you are adding a fifth. It was originally wired
 as a module-load side effect of its consumer, which made registration depend on
 **who imported what**: a second consumer that did not import the first ran with
 no rule registered and silently got an unfiltered answer. Wiring from the module
@@ -111,14 +115,27 @@ module registries do not cross Next's bundle boundaries. A throw there fails the
 module's evaluation, so nothing reads the partial registry — loud, and a
 different shape.
 
-### The three that do more than degrade
+`admin-tier.ts` → `initAppOrgTierAdminPages()` **is** in the family. Its gate is
+in `lib/auth/org-tier-admin-pages.ts`, and it runs on the server only, at the
+admin layout's first read. The tier gate and the header in the browser are
+handed the list the layout built rather than running the init themselves: a
+list each realm built for itself could differ (an init that reads a
+server-only env var), and the browser would then turn away an org admin the
+layout admitted. Its rollback fails closed: every fork page goes back to being
+the platform's.
+
+### The seams that do more than degrade
 
 **`subject-sources` remembers.** Degrading is right for a seam whose absence is
 visible — a missing nav section is missing. It is wrong for a subject-access
 export: `collectAppSubjectData()` is a separate static import unaffected by the
 throw, so the bundle would still carry the tier's rows while `meta.app` described
 none of them. `exportUserData()` refuses rather than shipping a bundle whose own
-manifest contradicts its contents.
+manifest contradicts its contents. **`org-sources` remembers too**, for the
+org export: `exportOrgData()` refuses every org while the fork's
+`initAppOrgSources()` is known to have thrown, or to have registered a row the
+registry rejected that no other declaration covers, because a bundle without the fork's tables would read as
+complete.
 
 **`authorization` closes the door.** Every other seam on this list rolls back to
 "Sunrise's own behaviour", and for every other seam that is the safe answer. It
@@ -144,24 +161,33 @@ that appears at boot and then vanishes leaves the deployment looking healthy.
 
 `init: () => void` does **not** stop you writing `export async function
 initAppJobs()` — TypeScript lets a function returning anything satisfy a `void`
-return, so it compiles. The gate then sees the promise rather than the work: it
-latches `'ok'` the instant the call returns, the rollback has nothing to roll
-back, and registrations made after your first `await` land outside the gate
-entirely.
+return, so it compiles. The gate cannot vouch for one: the call returns before
+the work does, registrations made after your first `await` land outside the
+rollback, and a later rejection happens after the gate has already answered.
 
 This is easier to reach than it sounds, because core sets the pattern:
 `lib/app/bootstrap.ts` ships `export async function initApp()`, and every fork's
 copy is async. That one is the **boot** hook and is meant to be async; the lazy
 registry seams are not.
 
-**Lint catches this, and it is the guard to rely on**:
+**So the gate refuses an async seam, as if it had thrown** (#739): it rolls back
+what the init registered, settles `'failed'`, logs that the seam must be
+synchronous, and runs `onFailure`. A rejection that arrives later is logged
+rather than reaching the process. It used to log and report `'ok'` instead,
+which mattered most for the seams that do more than degrade: they act only from
+`onFailure`, so an async `initAppAuthorizationPolicy` that rejected left the
+install on Sunrise's default policy rather than safe mode, with nothing saying
+so. Refusing does break an async seam that happened to register everything
+before its first `await` — it was outside the guarantee either way, and a
+failure at boot is the cheaper way to find out.
+
+Two limits. Refusing rather than awaiting is deliberate: every read through the
+gate is synchronous, so there is nothing to await in. And the gate has no hold
+on code that runs after it answers, so a registration your continuation makes
+_after_ the rollback can still land. **Lint is the guard to rely on**:
 `@typescript-eslint/no-misused-promises` rejects `init: <async fn>` at the gate
-call site, so an async seam fails `npm run lint` in your fork. Sunrise does not
-refuse an async seam at runtime — refusing would break a fork whose seam
-otherwise works, and rolling back mid-flight would race the continuation. It
-logs, loudly, that the guarantee does not apply, and attaches a handler so a
-rejection reaches the log rather than the process. Do the async work elsewhere
-and register synchronously.
+call site, so an async seam fails `npm run lint` in your fork. Do the async work
+elsewhere and register synchronously.
 
 ## What this does NOT cover
 

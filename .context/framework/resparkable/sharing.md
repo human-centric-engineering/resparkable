@@ -304,11 +304,11 @@ The scrub reads the address from the transaction (`ErasureTxContext` carries onl
 
 It deliberately does **not** delete comments. `authorUserId` is CASCADE, so `user.delete()` takes them a moment later; deleting them here as well would be a second definition of what erasure means, and two definitions drift.
 
-### The registration hazard, said plainly
+### Registration
 
-`lib/privacy/erasure-hooks.ts` is a plain module-scoped `Map`, and `eraseUser()` runs in the route realm while `initResparkable()` runs at boot. Under Next 16 + Turbopack those are different module graphs — the split sunrise#462 fixed for the contributor and capability registries and did not reach here. **A boot-registered erasure hook may not be present when erasure actually runs.** There is no point in the erasure route's import graph a fork can reach, so this is filed as ask #44 and carried.
+The hook is registered from `lib/app/erasure.ts`. Core runs that seam itself before it first reads the hook registry, in whatever process is erasing somebody, so the hook does not depend on the app having booted there. Until Sunrise 0.15.0 the registry was a plain module-scoped `Map` and a boot-time registration could be missing when erasure ran (ask #44, fixed upstream as sunrise#691).
 
-It is tolerable only because of the table above: what rides on the hook is an unaccepted invite and some blobs, not the brain.
+Even so, what rides on the hook is an unaccepted invite and some blobs, not the brain.
 
 ### Art. 15's other direction
 

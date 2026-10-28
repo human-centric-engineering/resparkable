@@ -287,6 +287,27 @@ describe('RunDetailView', () => {
     });
   });
 
+  describe('a case whose dataset is no longer visible', () => {
+    it('says the input is not available, in the row and the drill-in, and still shows the output', async () => {
+      // The API answers `datasetCase: null` when another admin has since
+      // claimed the run's dataset (§115 t-803).
+      makeFetchMock(
+        () => buildRun({ status: 'completed' }),
+        () => [{ ...buildCases()[0], datasetCase: null }]
+      );
+      const user = userEvent.setup();
+      render(<RunDetailView runId="run-1" />);
+
+      const cell = await screen.findByText(/no longer see the dataset/);
+      await user.click(cell);
+
+      expect(await screen.findByText(/Case #1/)).toBeInTheDocument();
+      expect(screen.getAllByText(/no longer see the dataset/)).toHaveLength(2);
+      expect(screen.queryByText(/Expected output/i)).not.toBeInTheDocument();
+      expect(screen.getByText('The order ships in 3 days.')).toBeInTheDocument();
+    });
+  });
+
   describe('Cancel run button', () => {
     it('is visible while status is queued or running', async () => {
       makeFetchMock(() => buildRun({ status: 'running' }));
@@ -474,6 +495,41 @@ describe('RunDetailView', () => {
       expect(
         screen.getByText(/Note: all_cases_failed \(no_provider_configured\)/)
       ).toBeInTheDocument();
+    });
+
+    // A run failed before aggregation carries only a note (and `error` for a
+    // preflight failure), with no metricSlugs or stats to tabulate (#922).
+    it.each([
+      [{ note: 'preflight_failed', error: 'exact_match needs expectedOutput on case 2' }],
+      [{ note: 'dataset_changed_post_submit', expectedHash: 'a', currentHash: 'b' }],
+      [{ note: 'invalid_metric_configs' }],
+    ])('renders a run failed before aggregation (%o) without a metrics table', async (summary) => {
+      makeFetchMock(() => buildRun({ status: 'failed', summary }));
+      render(<RunDetailView runId="run-1" />);
+      await screen.findByText(/^Summary$/);
+
+      expect(screen.getByText(`Note: ${summary.note}`)).toBeInTheDocument();
+      expect(screen.getByText(/No metrics were aggregated/)).toBeInTheDocument();
+      expect(screen.queryByRole('columnheader', { name: 'Mean' })).not.toBeInTheDocument();
+      if ('error' in summary) {
+        expect(screen.getByText(summary.error)).toBeInTheDocument();
+      }
+    });
+
+    it('shows what was thrown when the worker crashed on the run', async () => {
+      makeFetchMock(() =>
+        buildRun({
+          status: 'failed',
+          summary: { error: 'worker_unexpected_error', message: 'Error: connection reset' },
+        })
+      );
+      render(<RunDetailView runId="run-1" />);
+      await screen.findByText(/^Summary$/);
+
+      expect(
+        screen.getByText('worker_unexpected_error: Error: connection reset')
+      ).toBeInTheDocument();
+      expect(screen.getByText(/No metrics were aggregated/)).toBeInTheDocument();
     });
 
     it('shows an empty-cases hint when there are no case results', async () => {

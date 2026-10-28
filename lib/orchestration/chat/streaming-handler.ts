@@ -23,6 +23,7 @@
 import type { AiAgent, AiAgentProfile, AiConversation, AiMessage, Prisma } from '@/types/prisma';
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
+import { keepRunningAfterResponse } from '@/lib/api/after-response';
 import type {
   ChatEvent,
   Citation,
@@ -48,14 +49,32 @@ import {
   assertModelSupportsAttachments,
   getProviderWithFallbacks,
   getProviderIfBreakerClosed,
+  isLocalProvider,
   type AttachmentCapability,
 } from '@/lib/orchestration/llm/provider-manager';
 import { fallbackCallContext } from '@/lib/orchestration/llm/provider-eligibility';
 import { resolveAgentProviderAndModel } from '@/lib/orchestration/llm/agent-resolver';
 import { resolveEffectivePrompt } from '@/lib/orchestration/agents/resolve-effective-prompt';
 import { touchAgentLastActive } from '@/lib/orchestration/agents/touch-last-active';
-import { isRequestFault, ProviderError, type LlmProvider } from '@/lib/orchestration/llm/provider';
-import { calculateCost, checkBudget, logCost } from '@/lib/orchestration/llm/cost-tracker';
+import {
+  isRequestFault,
+  ProviderError,
+  SPEND_CAP_CODES,
+  type LlmProvider,
+} from '@/lib/orchestration/llm/provider';
+import {
+  SpendCapExceededError,
+  spendCapRefusal,
+  withPaidCallHold,
+  type PaidCallHold,
+  type SpendCap,
+} from '@/lib/orchestration/llm/spend-caps';
+import {
+  calculateCost,
+  checkBudget,
+  logCost,
+  type BudgetStatus,
+} from '@/lib/orchestration/llm/cost-tracker';
 import { resolveMaxCostPerTurn } from '@/lib/orchestration/llm/cost-caps';
 import { withAgentBudgetLock } from '@/lib/orchestration/llm/budget-mutex';
 import { dispatchWebhookEvent } from '@/lib/orchestration/webhooks/dispatcher';
@@ -93,7 +112,14 @@ import {
 import { getUserFacingError } from '@/lib/orchestration/chat/error-messages';
 import { queueMessageEmbedding } from '@/lib/orchestration/chat/message-embedder';
 import { emitHookEvent } from '@/lib/orchestration/hooks/registry';
-import { summarizeMessages, isPlaceholderSummary } from '@/lib/orchestration/chat/summarizer';
+import {
+  summarizeMessages,
+  isPlaceholderSummary,
+  clipForSummary,
+  countWithinChunkBudget,
+  splitGapNote,
+  withGapNote,
+} from '@/lib/orchestration/chat/summarizer';
 import { isEmbedUserId, userIdForUserRef } from '@/lib/embed/auth';
 import { hintScope } from '@/lib/orchestration/scope';
 import {
@@ -122,6 +148,9 @@ import {
 } from '@/lib/orchestration/tracing';
 import {
   MAX_HISTORY_MESSAGES,
+  HISTORY_LOAD_LIMIT,
+  SUMMARY_CATCHUP_MESSAGES,
+  SUMMARY_MAX_CALLS_PER_TURN,
   SUMMARY_LOOKAHEAD_MESSAGES,
   MAX_TOOL_ITERATIONS,
   type ChatRequest,
@@ -296,6 +325,40 @@ type AgentWithProfile = AiAgent & {
   versions: Array<{ id: string }>;
 };
 
+/** Where the stored summary's pin sits in the conversation's total order. */
+interface HistoryPin {
+  id: string;
+  createdAt: Date;
+}
+
+/**
+ * `where` for the rows strictly after `pin` in the conversation's total order
+ * (`createdAt`, then `id`). One definition, shared by the read from the pin and
+ * the count of what a newest-rows read did not reach, so the two cannot
+ * disagree about which rows follow it.
+ */
+function rowsAfterPin(pin: HistoryPin) {
+  return {
+    OR: [{ createdAt: { gt: pin.createdAt } }, { createdAt: pin.createdAt, id: { gt: pin.id } }],
+  };
+}
+
+/** What a read from the pin returns. */
+interface HistoryFromPin {
+  rows: AiMessage[];
+  /** More than the load limit follow the pin; `rows` is the oldest of them. */
+  overflow: boolean;
+  /** The last row fetched, error markers included — what to advance a pin past. */
+  lastFetched: HistoryPin | null;
+}
+
+/** What a newest-rows read returns. */
+interface NewestHistory {
+  rows: AiMessage[];
+  /** An upper bound on the rows older than `rows` that nothing describes. */
+  omitted: number;
+}
+
 interface PersistMessageParams {
   conversationId: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -326,9 +389,11 @@ interface PersistMessageParams {
  *
  * The same fragment serves as the create data and as the ownership filter on
  * load, so a visitor reaches only conversations created under their own id.
- * (The per-user cap does not apply to a visitor.) Hook events name their
- * caller with it too, so a subscriber that reads `userId` as a `User` never
- * gets a visitor id, and sees the visitor as the conversation row does.
+ * (The per-user cap does not apply to a visitor.) Hook events and the
+ * per-turn budget webhook name their caller with it too, so a subscriber that
+ * reads `userId` as a `User` never gets a visitor id, and sees the visitor as
+ * the conversation row does. It also lets erasure and subject access find the
+ * delivery after the conversation is gone (t-792).
  */
 function conversationOwner(
   userId: string
@@ -390,15 +455,24 @@ export class StreamingChatHandler {
     // backends — one trace per turn, not fragmented roots. `manualStatus`
     // lets the inner manage error status without breaking the SSE consumer
     // contract (the iterator yields error events; never rejects).
-    yield* withSpanGenerator(
-      SPAN_CHAT_TURN,
-      {
-        [GEN_AI_OPERATION_NAME]: 'chat',
-        [RESPARKABLE_USER_ID]: request.userId,
-        [RESPARKABLE_AGENT_SLUG]: request.agentSlug,
-      },
-      (chatSpan) => this.runInner(chatSpan, request),
-      { manualStatus: true }
+    //
+    // `withPaidCallHold` gives the turn its own hold on paid calls, which the
+    // turn sets if it goes on, on a local model, past a reached budget cap.
+    // From then the provider gate refuses every paid call the turn makes —
+    // tools, the summarizer and embeddings as well as the main stream.
+    const hold: PaidCallHold = { cap: null };
+    yield* withPaidCallHold(
+      hold,
+      withSpanGenerator(
+        SPAN_CHAT_TURN,
+        {
+          [GEN_AI_OPERATION_NAME]: 'chat',
+          [RESPARKABLE_USER_ID]: request.userId,
+          [RESPARKABLE_AGENT_SLUG]: request.agentSlug,
+        },
+        (chatSpan) => this.runInner(chatSpan, request, hold),
+        { manualStatus: true }
+      )
     );
   }
 
@@ -413,7 +487,8 @@ export class StreamingChatHandler {
    */
   private async *runInner(
     chatSpan: Span,
-    request: ChatRequest
+    request: ChatRequest,
+    hold: PaidCallHold
   ): AsyncGenerator<ChatEvent, void, unknown> {
     const log =
       request.requestId || request.visitorId
@@ -430,6 +505,9 @@ export class StreamingChatHandler {
     // shared credential, slug + identity for a per-org one.
     let resolvedBreakerKey: string | null = null;
     let chatSpanError: unknown = undefined;
+    // The agent and its latest budget reading, for the `budget_exceeded`
+    // webhook when a spend cap ends the turn from inside the provider gate.
+    let budgetNotice: { agent: BudgetNoticeAgent; budget: BudgetStatus } | null = null;
     try {
       registerBuiltInCapabilities();
 
@@ -450,6 +528,7 @@ export class StreamingChatHandler {
       // Per-agent mutex prevents TOCTOU race between concurrent budget reads.
       // See lib/orchestration/llm/budget-mutex.ts for accepted over-run tolerance.
       const budget = await withAgentBudgetLock(agent.id, () => checkBudget(agent.id));
+      budgetNotice = { agent, budget };
 
       // Budget warning at 80%
       if (
@@ -472,34 +551,18 @@ export class StreamingChatHandler {
         };
       }
 
-      if (!budget.withinBudget) {
-        const limitStr = budget.limit !== null ? `$${budget.limit.toFixed(2)}` : 'its';
-        yield errorEvent(
-          'budget_exceeded',
-          `This agent has reached its monthly budget of ${limitStr}. Contact an admin to increase the limit or switch to a local model.`
-        );
-        // Resolve the actor name out-of-band so the synchronous chat-stream
-        // path doesn't block the SSE `error` event we yielded above. The
-        // webhook dispatcher creates the delivery row inside this call,
-        // so ordering against subsequent failures is fine.
-        //
-        // An embed visitor is not a `User` (#705, t-765): the payload names
-        // them as `embedVisitorId` and carries no `actorUserId`, the field a
-        // receiver would look up as one, and no name lookup is made for them.
-        void (async () => {
-          const actorUserId = userIdForUserRef(request.userId);
-          const actorUserName = await resolveUserDisplayName(actorUserId);
-          await dispatchWebhookEvent('budget_exceeded', {
-            agentId: agent.id,
-            agentSlug: agent.slug,
-            agentName: agent.name,
-            ...(actorUserId ? { actorUserId } : { embedVisitorId: request.userId }),
-            actorUserName,
-            conversationId,
-            usedUsd: budget.spent,
-            limitUsd: budget.limit,
-          });
-        })();
+      // A cap that has been reached stops paid calls, not free ones: an agent
+      // whose primary is local still answers on it, and a cap of 0 means "no
+      // paid calls". The turn holds paid calls instead (`hold`), and the
+      // provider gate refuses each one it would make — a fallback, a failover
+      // mid-stream, a tool, the summarizer. (The org and global caps are
+      // enforced at the gate in any case; the agent's cap is known only here.)
+      if (!budget.withinBudget && (await isLocalProvider(resolvedBinding.providerSlug))) {
+        hold.cap = budgetRefusal(budget).cap;
+      } else if (!budget.withinBudget) {
+        const refusal = budgetRefusal(budget);
+        yield errorEvent(refusal.code, refusal.message);
+        notifyBudgetExceeded({ agent, budget, cap: refusal.cap, request, conversationId });
         return;
       }
 
@@ -512,8 +575,9 @@ export class StreamingChatHandler {
       //
       // Lazy resolution: most turns have no cap to enforce, and the
       // resolution requires reading the settings singleton. We defer
-      // that I/O until the first LLM cost is recorded, then cache
-      // the result for the rest of the loop. Agents that explicitly
+      // that I/O until the first LLM cost is recorded — or the first
+      // summariser call, which checks its own spend against the cap
+      // before it starts — then cache the result for the rest of the turn. Agents that explicitly
       // set their own cap skip the settings lookup entirely.
       let maxCostPerTurnUsd: number | undefined | null = null; // null = "not yet resolved"
       const resolvePerTurnCap = async (): Promise<number | undefined> => {
@@ -683,15 +747,56 @@ export class StreamingChatHandler {
       );
       conversationId = conversation.id;
       setSpanAttributes(chatSpan, { [RESPARKABLE_CONVERSATION_ID]: conversation.id });
-      const history = await this.loadHistory(conversation.id);
+      // The stored summary, if there is a usable one. A pin with no text behind
+      // it covers nothing, whatever it says — and neither does a pin behind the
+      // placeholder. Rows written before #654 persisted `fellBack` results
+      // unconditionally, so live conversations exist whose `summary` IS
+      // `[Summary unavailable …]`; folding one forward would carry the apology
+      // into every future summary.
+      let storedSummary: string | null =
+        conversation.summary && !isPlaceholderSummary(conversation.summary)
+          ? conversation.summary
+          : null;
+      // What the database holds for the pin right now. Every write below is a
+      // compare-and-set against it, so a concurrent turn that moved the pin is
+      // never overwritten with a summary built from the old one.
+      let casPin: string | null = conversation.summaryUpToMessageId ?? null;
+      // History is read from the pin onward, so the summary always sees every
+      // row after the point it covers (#655). Without a pin — or when its row is
+      // gone — it is the newest rows, and what lies before them is announced.
+      const summaryPin =
+        storedSummary && conversation.summaryUpToMessageId
+          ? await this.resolvePin(
+              conversation.id,
+              request.userId,
+              conversation.summaryUpToMessageId
+            )
+          : null;
+      let history: AiMessage[];
+      let historyOverflow = false;
+      let lastFetched: HistoryPin | null = null;
+      let omittedBeforeHistory = 0;
+      if (summaryPin) {
+        const read = await this.loadHistoryFromPin(conversation.id, request.userId, summaryPin);
+        history = read.rows;
+        historyOverflow = read.overflow;
+        lastFetched = read.lastFetched;
+      } else {
+        const read = await this.loadNewestHistory(conversation.id, request.userId, null);
+        history = read.rows;
+        omittedBeforeHistory = read.omitted;
+      }
 
       // Enforce message-per-conversation cap using actual DB count
-      // (loadHistory returns at most 200 rows, so history.length can't
-      // detect conversations that exceed 200 messages).
+      // (a history read returns at most HISTORY_LOAD_LIMIT rows, so
+      // history.length can't detect conversations that exceed it).
       const maxMessages = capSettings?.maxMessagesPerConversation ?? null;
       if (maxMessages !== null) {
         const messageCount = await prisma.aiMessage.count({
-          where: { conversationId: conversation.id },
+          where: {
+            conversationId: conversation.id,
+            conversation: conversationOwner(request.userId),
+          },
         });
         if (messageCount >= maxMessages) {
           throw new ChatError(
@@ -855,11 +960,13 @@ export class StreamingChatHandler {
       //
       // The summary covers a **prefix** of the conversation, and
       // `conversation.summaryUpToMessageId` names the newest message inside it.
-      // Reuse therefore asks *"does that prefix already include everything this
-      // turn has to drop?"* — not *"is the boundary identical?"*. The boundary
-      // is the edge of a sliding window and moves by about two messages a turn,
-      // so the equality check this replaced could never hold and every turn past
-      // the window paid for a fresh summarisation (#654).
+      // History is read from that pin onward (#655), so the rows loaded are
+      // exactly the ones the summary does not describe. After a summarisation the
+      // pin sits a lookahead past what the turn needed, so the next few turns'
+      // rows stay within the cap and nothing runs — which is what the equality
+      // check this replaced could never achieve: the boundary of a sliding window
+      // moves by about two messages a turn, so every turn past the window paid
+      // for a fresh summarisation (#654).
       //
       // `historyDropCount` is then handed to the message builder so the prompt
       // drops exactly what the summary covers. Two boundaries that have to agree
@@ -868,13 +975,14 @@ export class StreamingChatHandler {
       let summarizerSideEffect: SideEffectModelUsage | undefined;
       let historyDropCount = 0;
       let summaryCoversCount = 0;
+
       // `historyRows` is indexed INTERCHANGEABLY with `history` below — the
-      // summary's coverage index is found in one and sliced out of the other,
-      // and the pin is read back from the third. Keep this a strict 1:1 `map`:
+      // summary's pin is read back from `history`, and the rows the summariser
+      // sees are sliced out of `historyRows`. Keep this a strict 1:1 `map`:
       // adding a `filter` here desynchronises the two and the summary silently
       // covers the wrong messages. (A boundary that has to agree with another
       // one is the exact shape #654 was; this is the last of them.)
-      const historyRows = history.map((m) => {
+      const toHistoryRow = (m: AiMessage) => {
         // Rehydrate tool_calls the assistant requested on this turn so
         // the next LLM call's history has them. Persisted in metadata
         // because `AiMessage` has no scalar column for them; without
@@ -892,177 +1000,278 @@ export class StreamingChatHandler {
           toolCallId: m.toolCallId,
           ...(toolCalls ? { toolCalls } : {}),
         };
-      });
+      };
+
+      // Summariser budget for this turn. Every call is one the user waits behind
+      // and pays for, so: at most SUMMARY_MAX_CALLS_PER_TURN of them in total,
+      // their cost counts toward the per-turn cap (it seeds `turnCostUsd` below),
+      // none starts once the client has gone, and none starts once their spend
+      // alone has reached the cap. What was done is persisted per call, so the
+      // next turn carries on (#655).
+      let summariserCalls = 0;
+      let summariserCostUsd = 0;
+      const summariserAllowed = async (): Promise<boolean> => {
+        if (summariserCalls >= SUMMARY_MAX_CALLS_PER_TURN || request.signal?.aborted) return false;
+        const turnCap = await resolvePerTurnCap();
+        return turnCap === undefined || summariserCostUsd < turnCap;
+      };
+
+      /** One summariser call, with the options every call carries. */
+      const runSummariser = async (
+        rows: ReturnType<typeof toHistoryRow>[],
+        previousSummary?: string
+      ) => {
+        summariserCalls += 1;
+        const result = await summarizeMessages(
+          clipForSummary(rows),
+          resolvedBinding.providerSlug,
+          resolvedFallbackProviders,
+          {
+            ...(previousSummary ? { previousSummary } : {}),
+            ...(resolvedBinding.provenance ? { provenance: resolvedBinding.provenance } : {}),
+            // The roster table in `.context/orchestration/capabilities.md`
+            // names this boundary as carrying the caller's tags. It has to
+            // actually carry them, or the doc is asserting something false
+            // about the line it was written for.
+            ...(request.costLogMetadata ? { costLogMetadata: request.costLogMetadata } : {}),
+            // Real foreign keys, both of them. The literals that used to sit
+            // here (`'system'` / `'summary'`) violated each one, so every
+            // summary's cost row was rejected and swallowed — see #654.
+            agentId: agent.id,
+            conversationId: conversation.id,
+            // The summary is spend this user's turn caused, so it is
+            // attributed to them like the turn itself — see #654 for what
+            // happens when this boundary drops a cost row's real keys.
+            userId: userIdForUserRef(request.userId),
+            ...(request.signal ? { signal: request.signal } : {}),
+          }
+        );
+        // Money is spent whether or not the text was usable (an empty completion
+        // is a fallback that still cost tokens), and so is the call's side-effect row.
+        if (typeof result.costUsd === 'number') summariserCostUsd += result.costUsd;
+        if (result.model) {
+          const prev = summarizerSideEffect;
+          const sum = (a: number | undefined, b: number | undefined): number | undefined =>
+            typeof a === 'number' || typeof b === 'number' ? (a ?? 0) + (b ?? 0) : undefined;
+          const inputTokens = sum(prev?.inputTokens, result.inputTokens);
+          const outputTokens = sum(prev?.outputTokens, result.outputTokens);
+          const costUsd = sum(prev?.costUsd, result.costUsd);
+          summarizerSideEffect = {
+            kind: 'summarizer',
+            model: result.model,
+            ...(result.provider ? { provider: result.provider } : {}),
+            callCount: (prev?.callCount ?? 0) + 1,
+            ...(typeof inputTokens === 'number' ? { inputTokens } : {}),
+            ...(typeof outputTokens === 'number' ? { outputTokens } : {}),
+            ...(typeof costUsd === 'number' ? { costUsd } : {}),
+          };
+        }
+        return result;
+      };
+
+      // Persist a summary and its pin TOGETHER, and only if the pin is still the
+      // one this turn read: a concurrent turn may have moved it, and pairing this
+      // turn's text with that turn's pin (or the reverse) would claim coverage
+      // nothing has. Losing the race discards this fold; this turn still uses it.
+      let persistable = true;
+      const persistSummary = async (summary: string, pinId: string): Promise<boolean> => {
+        if (!persistable || request.signal?.aborted) return false;
+        const written = await prisma.aiConversation.updateMany({
+          where: {
+            id: conversation.id,
+            ...conversationOwner(request.userId),
+            summaryUpToMessageId: casPin,
+          },
+          data: { summary, summaryUpToMessageId: pinId },
+        });
+        if (written.count === 0) {
+          persistable = false;
+          return false;
+        }
+        casPin = pinId;
+        return true;
+      };
+
+      // What the stored text says it may not describe is kept OUT of what the
+      // summariser is given and put back by us afterwards, so a model that
+      // paraphrases a summary cannot paraphrase the gap away.
+      let stored = storedSummary ? splitGapNote(storedSummary) : { gap: 0, body: '' };
+
+      // Catch-up. More than the load limit of rows follow the pin — a long
+      // summariser outage, or a run of turns that wrote a great many rows (one
+      // parallel tool dispatch saves a row per call). What was read is the oldest
+      // of them, so fold part of it into the summary, move the pin, and read
+      // again, until everything after the pin fits. The summary always covers a
+      // contiguous prefix; nothing is skipped (#655).
+      let currentPin = summaryPin;
+      const advanceTo = async (pin: HistoryPin, summary: string): Promise<boolean> => {
+        if (!(await persistSummary(summary, pin.id))) return false;
+        currentPin = pin;
+        const next = await this.loadHistoryFromPin(
+          conversation.id,
+          request.userId,
+          pin,
+          userMessage?.id
+        );
+        history = next.rows;
+        historyOverflow = next.overflow;
+        lastFetched = next.lastFetched;
+        return true;
+      };
+      let markerSkips = 0;
+      while (historyOverflow && currentPin && !request.signal?.aborted) {
+        // Rows as many as fit one call once clipped, never more than the
+        // configured pass size, and at least one so the pin can move.
+        const rows = history.map(toHistoryRow);
+        const take = Math.min(SUMMARY_CATCHUP_MESSAGES, countWithinChunkBudget(rows));
+        if (take === 0) {
+          // Everything read was an error marker: nothing to summarise, nothing to
+          // lose. Move the pin past them so the next read gets further.
+          // Bounded like the calls are: each skip is a write and a read.
+          markerSkips += 1;
+          if (
+            markerSkips > SUMMARY_MAX_CALLS_PER_TURN * 4 ||
+            !lastFetched ||
+            !(await advanceTo(lastFetched, storedSummary ?? ''))
+          ) {
+            break;
+          }
+          continue;
+        }
+        if (!(await summariserAllowed())) break;
+        yield { type: 'status', message: 'Summarizing conversation history...' };
+        const folded = await runSummariser(rows.slice(0, take), stored.body);
+        if (folded.fellBack) break;
+        const last = history[take - 1];
+        const text = withGapNote(splitGapNote(folded.summary).body, stored.gap);
+        if (!(await advanceTo({ id: last.id, createdAt: last.createdAt }, text))) break;
+        storedSummary = text;
+        stored = splitGapNote(text);
+      }
+      // Still more rows after the pin than one read holds — the summariser could
+      // not run, the call budget was spent, the client left, or a concurrent turn
+      // moved the pin. The stored summary stays exactly as it is; show the newest
+      // rows and announce the ones between the pin and them. Explicit, not
+      // silent; the next turn picks up from the pin as persisted.
+      const catchUpIncomplete = historyOverflow;
+      if (catchUpIncomplete) {
+        const newest = await this.loadNewestHistory(
+          conversation.id,
+          request.userId,
+          currentPin,
+          userMessage?.id
+        );
+        history = newest.rows;
+        omittedBeforeHistory = newest.omitted;
+      }
+
+      const historyRows = history.map(toHistoryRow);
       const effectiveMessageCap =
         typeof agent.maxHistoryMessages === 'number' && agent.maxHistoryMessages >= 0
           ? agent.maxHistoryMessages
           : MAX_HISTORY_MESSAGES;
 
       // The minimum number of leading rows that must leave the prompt for it to
-      // respect the cap. Zero means the whole history fits and the summary — if
-      // one is stored — is simply not needed this turn.
+      // respect the cap. Zero means the whole history fits. A stored summary is
+      // still rendered then — it describes the rows before the first one loaded.
       //
-      // Note this keys on the CAP, not on the load window, so an agent whose
-      // `maxHistoryMessages` is >= the 200 rows `loadHistory` returns never
-      // summarises at all and loses everything past 200 silently. Pre-existing,
-      // unchanged here, and filed as #655 — the trigger wants to be
-      // `min(cap, loadLimit)`.
-      const requiredDrop = Math.max(0, historyRows.length - effectiveMessageCap);
+      // At least one when the read did not reach everything: rows older than the
+      // newest window are in nothing, and only a summary — pinned inside what was
+      // read, with the gap recorded in its text — makes later turns read from a
+      // pin and stops the gap re-announcing forever. Without it a cap at or above
+      // the load limit never summarises at all (#655).
+      const requiredDrop = Math.max(
+        omittedBeforeHistory > 0 && historyRows.length > 0 ? 1 : 0,
+        historyRows.length - effectiveMessageCap
+      );
 
-      if (requiredDrop > 0) {
-        // A pin with no text behind it covers nothing, whatever it says — and
-        // neither does a pin behind the placeholder. Rows written before #654
-        // persisted `fellBack` results unconditionally, so live conversations
-        // exist whose `summary` IS `[Summary unavailable …]`; folding one
-        // forward would carry the apology into every future summary.
-        const storedSummary = isPlaceholderSummary(conversation.summary)
-          ? null
-          : conversation.summary;
-        // How far into THIS window the stored summary reaches. `-1` means
-        // "nothing in the loaded rows", which covers both no summary at all and
-        // a pin older than the 200 rows `loadHistory` returns. Those need the
-        // same treatment — fold from index 0 — and in the second case the stored
-        // text still has to be carried forward or everything before the window
-        // is lost with the rows.
-        const coveredIdx =
-          storedSummary && conversation.summaryUpToMessageId
-            ? history.findIndex((m) => m.id === conversation.summaryUpToMessageId)
-            : -1;
+      // Nothing new is summarised: keep the stored text as it is, drop only what
+      // the cap demands (the builder applies that), and say what is not covered.
+      const keepStoredSummary = (): void => {
+        conversationSummary = storedSummary ?? undefined;
+        historyDropCount = Math.max(0, historyRows.length - effectiveMessageCap);
+        // The stored summary describes only rows older than anything loaded, so
+        // it covers none of what is dropped *here*: the builder labels it without
+        // a count and announces the dropped rows as omitted.
+        summaryCoversCount = 0;
+      };
 
-        if (storedSummary && coveredIdx >= requiredDrop - 1) {
-          // Already covered — no LLM call. This is the branch #654 could never
-          // reach. Drop to the summary's own boundary, not the cap's: the
-          // lookahead messages are inside the summary, and leaving them verbatim
-          // as well would put the same content in the prompt twice.
-          conversationSummary = storedSummary;
-          historyDropCount = coveredIdx + 1;
-          summaryCoversCount = coveredIdx + 1;
+      if (catchUpIncomplete || requiredDrop === 0) {
+        // The stored summary, if any, is rendered either way — it describes the
+        // rows before the first one loaded, and rendering it is what stops them
+        // being lost when the cap is raised or the summary was kept (#655). A
+        // catch-up that could not finish drops only the cap's own rows.
+        keepStoredSummary();
+      } else if (!(await summariserAllowed())) {
+        keepStoredSummary();
+      } else {
+        // Extend the prefix past what this turn needs, so the next few turns'
+        // rows still fit the cap and no call is needed.
+        // The lookahead never takes more than half the agent's window.
+        // Unclamped, a small `maxHistoryMessages` loses everything: at a cap
+        // of 4, a fixed 10-message lookahead summarises all 5 loaded rows and
+        // the prompt gets ZERO verbatim history — including the assistant
+        // turn the user is replying to — and it recurs every third turn.
+        // `maxHistoryMessages` is validated `min(0).max(500)`, so small caps
+        // are a supported configuration, not a misuse.
+        //
+        // At the default cap of 50 this is `min(10, 25)` = 10, so the reuse
+        // win is untouched. Cap `0` — the documented stateless agent — clamps
+        // to 0, which is exactly the pure-summary view that setting asks for.
+        //
+        // **The reuse win does not survive at caps of 1-3.** A lookahead of 0
+        // or 1 is exhausted by the next turn's two new messages, so those
+        // agents summarise on every turn — the #654 cadence, for them
+        // unchanged. That is inherent, not a gap: with a two-message window
+        // there is no room to summarise ahead AND keep anything verbatim, and
+        // keeping the last exchange is worth more. What DID change for them is
+        // the price — each call now folds ~2 new messages into the stored
+        // text instead of re-deriving the whole prefix. Do not read the
+        // "one call serves ~5 turns" figure as covering these agents.
+        const lookahead = Math.min(SUMMARY_LOOKAHEAD_MESSAGES, Math.floor(effectiveMessageCap / 2));
+        // And no further than one call's character budget allows: rows already
+        // clipped can still add up to more than a summariser can take, and a call
+        // that always fails is paid for again every turn. Rows past it are left
+        // for the next turn, which reads from the pin this one persists.
+        const targetIdx = Math.min(
+          requiredDrop - 1 + lookahead,
+          historyRows.length - 1,
+          countWithinChunkBudget(historyRows) - 1
+        );
+
+        yield { type: 'status', message: 'Summarizing conversation history...' };
+        const summarizeResult = await runSummariser(
+          historyRows.slice(0, targetIdx + 1),
+          stored.body
+        );
+
+        if (summarizeResult.fellBack || request.signal?.aborted) {
+          // The summariser did not run. Persisting now would overwrite a good
+          // summary with a placeholder *and* record it as covering messages
+          // that nothing describes — permanently, from one transient provider
+          // error. Keep what is stored and let the next turn try again.
+          //
+          // Never the placeholder: on this path `summarizeResult.summary` is the
+          // stored body when there is one and the placeholder when there is not,
+          // and the placeholder is not a summary.
+          keepStoredSummary();
         } else {
-          // Extend the prefix past what this turn needs, so the next few turns
-          // take the branch above instead of paying for another call.
-          // The lookahead never takes more than half the agent's window.
-          // Unclamped, a small `maxHistoryMessages` loses everything: at a cap
-          // of 4, a fixed 10-message lookahead summarises all 5 loaded rows and
-          // the prompt gets ZERO verbatim history — including the assistant
-          // turn the user is replying to — and it recurs every third turn.
-          // `maxHistoryMessages` is validated `min(0).max(500)`, so small caps
-          // are a supported configuration, not a misuse.
-          //
-          // At the default cap of 50 this is `min(10, 25)` = 10, so the reuse
-          // win is untouched. Cap `0` — the documented stateless agent — clamps
-          // to 0, which is exactly the pure-summary view that setting asks for.
-          //
-          // **The reuse win does not survive at caps of 1-3.** A lookahead of 0
-          // or 1 is exhausted by the next turn's two new messages, so those
-          // agents summarise on every turn — the #654 cadence, for them
-          // unchanged. That is inherent, not a gap: with a two-message window
-          // there is no room to summarise ahead AND keep anything verbatim, and
-          // keeping the last exchange is worth more. What DID change for them is
-          // the price — each call now folds ~2 new messages into the stored
-          // text instead of re-deriving the whole prefix. Do not read the
-          // "one call serves ~5 turns" figure as covering these agents.
-          const lookahead = Math.min(
-            SUMMARY_LOOKAHEAD_MESSAGES,
-            Math.floor(effectiveMessageCap / 2)
+          // Rows the read never reached — the stored text's own gap, plus any
+          // rows older than the newest window — are written into the saved text
+          // by us, at its head, where the next fold leaves them alone.
+          const text = withGapNote(
+            splitGapNote(summarizeResult.summary).body,
+            stored.gap + omittedBeforeHistory
           );
-          const targetIdx = Math.min(requiredDrop - 1 + lookahead, historyRows.length - 1);
-          const newlyCovered = historyRows.slice(coveredIdx + 1, targetIdx + 1);
-
-          yield { type: 'status', message: 'Summarizing conversation history...' };
-          const summarizeResult = await summarizeMessages(
-            newlyCovered,
-            resolvedBinding.providerSlug,
-            resolvedFallbackProviders,
-            {
-              ...(storedSummary ? { previousSummary: storedSummary } : {}),
-              ...(resolvedBinding.provenance ? { provenance: resolvedBinding.provenance } : {}),
-              // The roster table in `.context/orchestration/capabilities.md`
-              // names this boundary as carrying the caller's tags. It has to
-              // actually carry them, or the doc is asserting something false
-              // about the line it was written for.
-              ...(request.costLogMetadata ? { costLogMetadata: request.costLogMetadata } : {}),
-              // Real foreign keys, both of them. The literals that used to sit
-              // here (`'system'` / `'summary'`) violated each one, so every
-              // summary's cost row was rejected and swallowed — see #654.
-              agentId: agent.id,
-              conversationId: conversation.id,
-              // The summary is spend this user's turn caused, so it is
-              // attributed to them like the turn itself — see #654 for what
-              // happens when this boundary drops a cost row's real keys.
-              userId: userIdForUserRef(request.userId),
-            }
-          );
-          conversationSummary = summarizeResult.summary;
-
-          if (summarizeResult.fellBack) {
-            // The summariser did not run. Persisting now would overwrite a good
-            // summary with a placeholder *and* record it as covering messages
-            // that nothing describes — permanently, from one transient provider
-            // error. Keep what is stored, drop only what the cap demands, and
-            // let the next turn try again.
-            //
-            // `requiredDrop` flat, with no `Math.max` against the stored
-            // coverage: reaching this branch at all means the stored summary
-            // covered less than the cap demands, so it could never be the
-            // larger of the two.
-            //
-            // What that costs, stated plainly: the messages between the stored
-            // summary's boundary and `requiredDrop` leave this one turn's
-            // prompt with nothing standing in for them. It is the least-bad of
-            // three options — keeping them would breach the agent's configured
-            // cap, and persisting the placeholder would lose the good summary
-            // permanently instead of for one turn. It is also strictly better
-            // than the behaviour it replaces, which represented *every* dropped
-            // message with `[Summary unavailable]` and then wrote that down.
-            historyDropCount = requiredDrop;
-            // The stored summary still only covers what it always did, which is
-            // LESS than we are about to drop. Say so, rather than letting the
-            // prompt claim the gap is summarised.
-            //
-            // `coveredIdx + 1` is 0 in TWO different situations, and they are
-            // not the same: there is no stored summary at all, or there is one
-            // whose pin has scrolled out of the 200-row window — the case the
-            // extend branch above goes out of its way to fold forward. In the
-            // second, the text is real context describing messages older than
-            // anything loaded, so it still belongs in the prompt; it just covers
-            // none of what is being dropped *here*, which is why the builder
-            // labels it without a count. Passing `undefined` for the text is
-            // what distinguishes them.
-            summaryCoversCount = coveredIdx + 1;
-            // Never the placeholder: on this path `summarizeResult.summary` is
-            // the stored text when there is one and the placeholder when there
-            // is not, and the placeholder is not a summary.
-            conversationSummary = storedSummary ?? undefined;
-          } else {
-            historyDropCount = targetIdx + 1;
-            summaryCoversCount = targetIdx + 1;
-            if (summarizeResult.model) {
-              summarizerSideEffect = {
-                kind: 'summarizer',
-                model: summarizeResult.model,
-                ...(summarizeResult.provider ? { provider: summarizeResult.provider } : {}),
-                callCount: 1,
-                ...(typeof summarizeResult.inputTokens === 'number'
-                  ? { inputTokens: summarizeResult.inputTokens }
-                  : {}),
-                ...(typeof summarizeResult.outputTokens === 'number'
-                  ? { outputTokens: summarizeResult.outputTokens }
-                  : {}),
-                ...(typeof summarizeResult.costUsd === 'number'
-                  ? { costUsd: summarizeResult.costUsd }
-                  : {}),
-              };
-            }
-            // Persist for future turns, pinned to the newest message the
-            // summary now covers.
-            await prisma.aiConversation.update({
-              where: { id: conversation.id },
-              data: {
-                summary: conversationSummary,
-                summaryUpToMessageId: history[targetIdx].id,
-              },
-            });
-          }
+          conversationSummary = text;
+          historyDropCount = targetIdx + 1;
+          summaryCoversCount = targetIdx + 1;
+          // The gap is now part of the summary's own text, so it is not also
+          // announced as omitted rows.
+          omittedBeforeHistory = 0;
+          // Persist for future turns, pinned to the newest message the summary
+          // now covers (a lost compare-and-set just skips it).
+          await persistSummary(text, history[targetIdx].id);
         }
       }
 
@@ -1137,6 +1346,7 @@ export class StreamingChatHandler {
         maxHistoryMessages: agent.maxHistoryMessages,
         historyDropCount,
         conversationSummaryCovers: summaryCoversCount,
+        omittedBeforeHistory,
       });
       let messages: LlmMessage[] = initialMessages;
 
@@ -1154,7 +1364,12 @@ export class StreamingChatHandler {
       // force-search loop. No-op unless the capability is actually enabled this
       // turn. See .context/orchestration/knowledge.md.
       const knowledgeSearchEnabled = toolDefinitions.some((t) => t.name === SEARCH_KNOWLEDGE_SLUG);
-      const isFirstUserTurn = !history.some((m) => m.role === 'user');
+      // A stored summary means earlier turns exist, even when the rows read from
+      // its pin onward hold no user message.
+      const isFirstUserTurn =
+        !conversationSummary &&
+        omittedBeforeHistory === 0 &&
+        !history.some((m) => m.role === 'user');
       const forcedToolChoice: LlmToolChoice | undefined = !knowledgeSearchEnabled
         ? undefined
         : agent.knowledgeRetrievalMode === 'every_turn'
@@ -1307,16 +1522,16 @@ export class StreamingChatHandler {
        * fire-and-forget `logCost` write so the check never depends on
        * the DB write completing.
        *
-       * Limitation: only LLM cost is summed here. Tool capabilities
-       * that invoke their own LLMs (`search_knowledge_base` embedding,
-       * the rolling summariser) log their own cost rows but do not
-       * return `costUsd` from `CapabilityResult`, so they are not
-       * counted toward the per-turn cap in this version. The runaway
-       * cases this guard targets (reflect/orchestrator/tool loops that
-       * keep round-tripping the chat LLM) are still fully covered. See
-       * `.context/orchestration/chat.md`.
+       * Seeded with what the rolling summariser already spent this turn
+       * (`summariserCostUsd`), which runs before the first LLM iteration.
+       * Tool capabilities that invoke their own LLMs (`search_knowledge_base`
+       * embedding) log their own cost rows but do not return `costUsd`
+       * from `CapabilityResult`, so they are not counted toward the
+       * per-turn cap in this version. The runaway cases this guard targets
+       * (reflect/orchestrator/tool loops that keep round-tripping the chat
+       * LLM) are still fully covered. See `.context/orchestration/chat.md`.
        */
-      let turnCostUsd = 0;
+      let turnCostUsd = summariserCostUsd;
 
       let iteration = 0;
       while (iteration < MAX_TOOL_ITERATIONS) {
@@ -1490,7 +1705,12 @@ export class StreamingChatHandler {
                 // one agent's `maxTokens` being too low is not evidence about
                 // provider health, and at `failureThreshold: 5` a couple of
                 // bad turns would open it for every other agent on that slug.
-                if (isRequestFault(streamErr)) {
+                // A spend cap refusing a paid provider is a request fault too,
+                // but one a LOCAL fallback can still serve, since the caps
+                // never refuse a local call; it goes on to failover below,
+                // which passes over every paid candidate the caps refuse.
+                const capRefused = streamErr instanceof SpendCapExceededError;
+                if (isRequestFault(streamErr) && !capRefused) {
                   setSpanStatus(llmSpan, { code: 'error', message: streamErr.message });
                   // Discard what was streamed. A structured extraction only
                   // trips this after yielding the fragment of JSON it managed
@@ -1533,7 +1753,8 @@ export class StreamingChatHandler {
                   throw streamErr;
                 }
 
-                getBreaker(currentBreakerKey).recordFailure();
+                // A reached cap says nothing about the provider's health.
+                if (!capRefused) getBreaker(currentBreakerKey).recordFailure();
 
                 // Pick the next fallback BEFORE telling the client a retry is
                 // coming (§120 t-744 review). A candidate whose credential's
@@ -1544,6 +1765,9 @@ export class StreamingChatHandler {
                 // just failed (it may sit in the fallback list too, when it was
                 // the one getProviderWithFallbacks chose) must not be retried.
                 let next: { slug: string; provider: LlmProvider; breakerKey: string } | null = null;
+                // Set when a spend cap passes over a paid candidate: if nothing
+                // is left, the cap is why the turn ends.
+                let capRefusal: SpendCapExceededError | null = capRefused ? streamErr : null;
                 if (streamRetries <= MAX_STREAM_RETRIES) {
                   // A fallback without a recorded provenance is still gated AS a
                   // fallback, as getProviderWithFallbacks gates one.
@@ -1557,7 +1781,17 @@ export class StreamingChatHandler {
                     triedSlugs.add(candidate);
                     try {
                       const acquired = await getProviderIfBreakerClosed(candidate, fallbackOrigin);
-                      if (acquired) {
+                      const refusal = acquired
+                        ? await spendCapRefusal(candidate, acquired.provider.isLocal === true)
+                        : null;
+                      if (refusal) {
+                        capRefusal = refusal;
+                        log.warn('Skipping fallback provider — a monthly spend cap refuses it', {
+                          agentSlug: request.agentSlug,
+                          provider: candidate,
+                          cap: refusal.cap,
+                        });
+                      } else if (acquired) {
                         next = { slug: candidate, ...acquired };
                       } else {
                         log.warn('Skipping fallback provider — circuit breaker open', {
@@ -1586,6 +1820,13 @@ export class StreamingChatHandler {
                     code: 'error',
                     message: streamErr instanceof Error ? streamErr.message : 'stream failed',
                   });
+                  if (capRefusal) {
+                    // The turn ends on the cap, as the request-fault branch
+                    // ends one: what was streamed is discarded, and the outer
+                    // catch persists the error marker and sends the webhook.
+                    yield { type: 'content_reset', reason: 'request_fault' };
+                    throw capRefusal;
+                  }
                   throw streamErr;
                 }
                 const nextSlug = next.slug;
@@ -1973,6 +2214,7 @@ export class StreamingChatHandler {
               agentId: agent.id,
               agentSlug: agent.slug,
               conversationId: conversation.id,
+              ...conversationOwner(request.userId),
               usedUsd: turnCostUsd,
               limitUsd: terminalCap,
               iteration,
@@ -2090,6 +2332,7 @@ export class StreamingChatHandler {
             agentId: agent.id,
             agentSlug: agent.slug,
             conversationId: conversation.id,
+            ...conversationOwner(request.userId),
             usedUsd: turnCostUsd,
             limitUsd: turnCap,
             iteration,
@@ -2107,13 +2350,16 @@ export class StreamingChatHandler {
         // Re-check budget before the next tool-loop iteration (locked to
         // prevent TOCTOU overruns when concurrent requests hit the same agent).
         const midBudget = await withAgentBudgetLock(agent.id, () => checkBudget(agent.id));
+        budgetNotice = { agent, budget: midBudget };
         if (!midBudget.withinBudget) {
-          const limitStr = midBudget.limit !== null ? `$${midBudget.limit.toFixed(2)}` : 'its';
-          yield errorEvent(
-            'budget_exceeded',
-            `This agent has reached its monthly budget of ${limitStr}. Contact an admin to increase the limit or switch to a local model.`
-          );
-          return;
+          const refusal = budgetRefusal(midBudget);
+          // Held, as before the turn, while the turn is on a local provider.
+          if (currentProvider.isLocal) {
+            hold.cap = refusal.cap;
+          } else {
+            yield errorEvent(refusal.code, refusal.message);
+            return;
+          }
         }
 
         // Tool call path — dispatch all tool calls from this turn.
@@ -2743,13 +2989,20 @@ export class StreamingChatHandler {
         // contain internal details (env var names, provider slugs, base URLs)
         // that must not reach the browser.
         const safe = getUserFacingError(err.code);
+        if (err instanceof SpendCapExceededError && budgetNotice) {
+          notifyBudgetExceeded({ ...budgetNotice, cap: err.cap, request, conversationId });
+        }
         // Same reason the generic path below does it. This branch returns
         // early, so without it a provider failure that exhausted its
         // fallbacks — or a request fault like `truncated_no_output`, which
         // now ends the turn here rather than failing over — leaves the user
         // message unanswered on reload.
         await persistErrorMarker(err.code);
-        yield errorEvent(err.code, safe.message);
+        // A spend cap ends with the words a refusal before the turn uses.
+        yield errorEvent(
+          err.code,
+          err instanceof SpendCapExceededError ? refusalText(err.code) : safe.message
+        );
         return;
       }
       // Not on a client abort — see `isClientAbort`.
@@ -2874,31 +3127,122 @@ export class StreamingChatHandler {
     return conversation;
   }
 
-  private async loadHistory(conversationId: string): Promise<AiMessage[]> {
-    // Fetch the 200 most recent messages (desc) then reverse to
-    // chronological order. Previous `asc + take: 200` loaded the
-    // oldest 200 — wrong for conversations with >200 messages.
-    // Secondary sort on `id` ensures deterministic ordering for
-    // messages persisted in the same millisecond.
-    const messages = await prisma.aiMessage.findMany({
-      where: { conversationId },
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: 200,
+  /**
+   * The summary pin's position, or `null` when its row no longer exists.
+   *
+   * `userId` here and on the history reads below is the caller the conversation
+   * was loaded for, and its owner (`loadOrCreateConversation` matched it):
+   * naming it is what confines the read for the owner layer
+   * (`lib/db/owner-extension.ts`).
+   */
+  private async resolvePin(
+    conversationId: string,
+    userId: string,
+    pinId: string
+  ): Promise<HistoryPin | null> {
+    const row = await prisma.aiMessage.findFirst({
+      where: { id: pinId, conversationId, conversation: conversationOwner(userId) },
+      select: { id: true, createdAt: true },
     });
-    // Drop error markers. They exist so the CLIENT can show a failed turn
-    // instead of an unanswered question; this history is only ever used to
-    // rebuild the prompt (`historyRows`, the summary threshold, the
-    // first-turn check) and never returned to a caller. Feeding
-    // "[An error occurred and the response could not be completed.]" back to
-    // the model burns context and invites imitation, for the rest of the
-    // conversation. Excluded in JS rather than the `where` because the flag
-    // lives in a JSON column.
-    return messages
-      .filter((m) => {
-        const metadata = (m.metadata ?? null) as MessageMetadata | null;
-        return metadata?.error !== true;
-      })
-      .reverse();
+    return row ? { id: row.id, createdAt: row.createdAt } : null;
+  }
+
+  /**
+   * Drop error markers. They exist so the CLIENT can show a failed turn instead
+   * of an unanswered question; this history is only ever used to rebuild the
+   * prompt (`historyRows`, the summary threshold, the first-turn check) and
+   * never returned to a caller. Feeding "[An error occurred and the response
+   * could not be completed.]" back to the model burns context and invites
+   * imitation, for the rest of the conversation. Excluded in JS rather than the
+   * `where` because the flag lives in a JSON column.
+   */
+  private withoutErrorMarkers(messages: AiMessage[]): AiMessage[] {
+    return messages.filter((m) => {
+      const metadata = (m.metadata ?? null) as MessageMetadata | null;
+      return metadata?.error !== true;
+    });
+  }
+
+  /**
+   * The rows after `pin`, oldest first.
+   *
+   * Reading from the summary's pin onward — rather than the newest N rows and
+   * hoping the pin is among them — is what guarantees the summary sees every row
+   * after the point it covers, however many a turn wrote (#655). The summary
+   * describes everything up to and including the pin, so the pin row itself is
+   * not returned. `overflow` says more than {@link HISTORY_LOAD_LIMIT} rows
+   * follow it: what came back is the OLDEST of them, and the caller folds them
+   * into the summary and reads again.
+   *
+   * Ordered `createdAt` then `id`, the same total order as the newest-first read.
+   * `excludeId` is the turn's own user message: a re-read made after it was
+   * persisted would otherwise return it and the prompt would carry it twice.
+   */
+  private async loadHistoryFromPin(
+    conversationId: string,
+    userId: string,
+    pin: HistoryPin,
+    excludeId?: string
+  ): Promise<HistoryFromPin> {
+    const fetched = await prisma.aiMessage.findMany({
+      where: {
+        conversationId,
+        conversation: conversationOwner(userId),
+        ...rowsAfterPin(pin),
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      // One extra row, so exactly the limit is not mistaken for an overflow.
+      take: HISTORY_LOAD_LIMIT + 1,
+    });
+    const kept = fetched.slice(0, HISTORY_LOAD_LIMIT);
+    const last = kept[kept.length - 1];
+    return {
+      rows: this.withoutErrorMarkers(kept),
+      overflow: fetched.length > HISTORY_LOAD_LIMIT,
+      lastFetched: last ? { id: last.id, createdAt: last.createdAt } : null,
+    };
+  }
+
+  /**
+   * The newest {@link HISTORY_LOAD_LIMIT} rows, oldest first. Used when there is
+   * no pin (or its row is gone), and as the fallback when the rows after a pin
+   * could not all be folded in.
+   *
+   * `omitted` is an upper bound on the rows this read did not reach that nothing
+   * describes — everything older than the window, or, given `afterPin`, only
+   * what follows the pin (older rows are the summary's). It counts error
+   * markers too, which a read never shows, so it can overstate; the prompt says
+   * "up to". `excludeId` is the turn's own user message, which a read made after
+   * it was persisted would otherwise return and the prompt would carry twice.
+   */
+  private async loadNewestHistory(
+    conversationId: string,
+    userId: string,
+    afterPin: HistoryPin | null,
+    excludeId?: string
+  ): Promise<NewestHistory> {
+    const scope = {
+      conversationId,
+      conversation: conversationOwner(userId),
+      ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      // Never a row the pin already covers, whatever has been written since.
+      ...(afterPin ? rowsAfterPin(afterPin) : {}),
+    };
+    // Secondary sort on `id` ensures deterministic ordering for messages
+    // persisted in the same millisecond.
+    const fetched = await prisma.aiMessage.findMany({
+      where: scope,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // One extra row, so exactly the limit is not mistaken for a truncation.
+      take: HISTORY_LOAD_LIMIT + 1,
+    });
+    const unseen =
+      fetched.length > HISTORY_LOAD_LIMIT ? await prisma.aiMessage.count({ where: scope }) : 0;
+    return {
+      rows: this.withoutErrorMarkers(fetched.slice(0, HISTORY_LOAD_LIMIT)).reverse(),
+      omitted: Math.max(0, unseen - HISTORY_LOAD_LIMIT),
+    };
   }
 
   /**
@@ -3109,6 +3453,86 @@ function isClientAbort(err: unknown, signal?: AbortSignal): boolean {
 
 function errorEvent(code: string, message: string): ChatEvent {
   return { type: 'error', code, message };
+}
+
+/** A budget refusal: the code and words a turn ends with, and which cap stopped it. */
+interface BudgetRefusalReason {
+  code: (typeof SPEND_CAP_CODES)[SpendCap];
+  cap: SpendCap;
+  message: string;
+}
+
+/**
+ * The words a turn ends with when a budget cap stops it: the error registry's
+ * message and action for the code, so a refusal before the turn and one the
+ * provider gate makes part way through say the same thing, and the admin chat
+ * (which maps the code through the registry itself) agrees with both.
+ */
+function refusalText(code: string): string {
+  const { message, action } = getUserFacingError(code);
+  return action ? `${message} ${action}` : message;
+}
+
+/**
+ * The code and words for a turn `checkBudget` refused, naming the cap that
+ * did it (§110 t-788). The global cap first, then the org's, then the agent's:
+ * the widest cap is the one no admin of this agent or org can lift, so it is
+ * the one worth saying. The org and global messages name no amount — the
+ * reader may be an embed visitor, and those caps are not theirs to know.
+ */
+function budgetRefusal(budget: BudgetStatus): BudgetRefusalReason {
+  const cap: SpendCap = budget.globalCapExceeded
+    ? 'global'
+    : budget.orgCapExceeded
+      ? 'org'
+      : 'agent';
+  const code = SPEND_CAP_CODES[cap];
+  return { code, cap, message: refusalText(code) };
+}
+
+/** The agent fields the `budget_exceeded` webhook names. */
+type BudgetNoticeAgent = Pick<AgentWithProfile, 'id' | 'slug' | 'name'>;
+
+/**
+ * Send the `budget_exceeded` webhook for a turn a budget cap ended, whether it
+ * was refused before it started or stopped by the provider gate part way.
+ * `usedUsd` / `limitUsd` are the agent's; `cap` says which cap it was.
+ *
+ * The actor's name is resolved out-of-band so the chat stream does not wait
+ * on it; the dispatcher creates the delivery row inside this call. An embed
+ * visitor is not a `User` (#705, t-765): the payload names them as
+ * `embedVisitorId` and carries no `actorUserId`, the field a receiver would
+ * look up as one, and no name lookup is made for them.
+ */
+function notifyBudgetExceeded(args: {
+  agent: BudgetNoticeAgent;
+  budget: BudgetStatus;
+  cap: SpendCap;
+  request: ChatRequest;
+  conversationId: string | null;
+}): void {
+  const { agent, budget, cap, request, conversationId } = args;
+  // Kept alive past the response (t-903): the refused turn's stream closes at
+  // once, while the name lookup is still in flight.
+  keepRunningAfterResponse(
+    (async () => {
+      const actorUserId = userIdForUserRef(request.userId);
+      const actorUserName = await resolveUserDisplayName(actorUserId);
+      await dispatchWebhookEvent('budget_exceeded', {
+        agentId: agent.id,
+        agentSlug: agent.slug,
+        agentName: agent.name,
+        ...(actorUserId ? { actorUserId } : { embedVisitorId: request.userId }),
+        actorUserName,
+        conversationId,
+        usedUsd: budget.spent,
+        limitUsd: budget.limit,
+        cap,
+      });
+    })(),
+    'Webhook dispatch for budget_exceeded',
+    { agentId: agent.id }
+  );
 }
 
 /**

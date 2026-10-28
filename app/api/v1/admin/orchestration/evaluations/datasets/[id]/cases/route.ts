@@ -46,7 +46,11 @@ export const GET = withAdminAuth<{ id: string }>(
     if (!basis) throw new NotFoundError(`Dataset ${id.data} not found`);
 
     const cases = await prisma.aiDatasetCase.findMany({
-      where: { datasetId: id.data, ...(cursor !== undefined ? { position: { gt: cursor } } : {}) },
+      where: {
+        datasetId: id.data,
+        dataset: datasetVisibilityWhere(session),
+        ...(cursor !== undefined ? { position: { gt: cursor } } : {}),
+      },
       orderBy: { position: 'asc' },
       take: limit + 1,
     });

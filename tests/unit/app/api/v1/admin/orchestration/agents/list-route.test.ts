@@ -43,7 +43,7 @@ vi.mock('@/lib/db/client', () => ({
 }));
 
 vi.mock('@/lib/orchestration/llm/cost-tracker', () => ({
-  getMonthToDateGlobalSpend: vi.fn().mockResolvedValue(0),
+  getGlobalCapState: vi.fn().mockResolvedValue({ cap: null, spent: 0, exceeded: false }),
 }));
 
 vi.mock('@/lib/security/ip', () => ({

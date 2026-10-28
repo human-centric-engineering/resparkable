@@ -23,6 +23,7 @@ vi.mock('@/lib/db/client', () => ({
     aiKnowledgeDocument: { findMany: vi.fn() },
     aiEvaluationRun: { findMany: vi.fn() },
     aiEvaluationCaseResult: { findMany: vi.fn() },
+    aiDatasetCase: { findMany: vi.fn() },
   },
 }));
 
@@ -40,8 +41,29 @@ import { loadFailureSeed, loadKbSeed } from '@/lib/orchestration/evaluations/syn
 
 const mockedResolveAccess = vi.mocked(resolveAgentDocumentAccess);
 
+/** The caller's dataset visibility, as the route passes it. */
+const VISIBLE = { userId: 'u-1' };
+
+interface ResultFixture {
+  datasetCaseId: string;
+  datasetCase?: { input: unknown; expectedOutput: string | null };
+}
+
+/**
+ * The case read answers from the case results the test just returned: each
+ * fixture row carries the case it scored, as the old include did.
+ */
+async function casesFromResults(args: { where: { id: { in: string[] } } }) {
+  const last = vi.mocked(prisma.aiEvaluationCaseResult.findMany).mock.results.at(-1);
+  const rows = ((await last?.value) ?? []) as ResultFixture[];
+  return rows
+    .filter((r) => r.datasetCase !== undefined && args.where.id.in.includes(r.datasetCaseId))
+    .map((r) => ({ id: r.datasetCaseId, metadata: null, ...r.datasetCase }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(prisma.aiDatasetCase.findMany).mockImplementation(casesFromResults as never);
 });
 
 describe('loadKbSeed — full-access mode', () => {
@@ -200,7 +222,7 @@ describe('loadFailureSeed — no data', () => {
   it('returns [] when no completed runs exist for the agent', async () => {
     vi.mocked(prisma.aiEvaluationRun.findMany).mockResolvedValue([] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toEqual([]);
     expect(vi.mocked(prisma.aiEvaluationCaseResult.findMany)).not.toHaveBeenCalled();
   });
@@ -209,6 +231,32 @@ describe('loadFailureSeed — no data', () => {
 describe('loadFailureSeed — score filtering', () => {
   beforeEach(() => {
     vi.mocked(prisma.aiEvaluationRun.findMany).mockResolvedValue([{ id: 'run-1' }] as never);
+  });
+
+  it("reads results through the caller's runs and cases through the dataset visibility, skipping a case it cannot see", async () => {
+    vi.mocked(prisma.aiEvaluationCaseResult.findMany).mockResolvedValue([
+      {
+        datasetCaseId: 'case-visible',
+        metricScores: { 'eval-judge-relevance': { score: 0.1, reasoning: 'r' } },
+        datasetCase: { input: 'mine', expectedOutput: null },
+      },
+      // Its dataset is now another admin's: the case read does not return it.
+      { datasetCaseId: 'case-gone', metricScores: { 'eval-judge-relevance': { score: 0.1 } } },
+    ] as never);
+
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
+
+    expect(vi.mocked(prisma.aiEvaluationCaseResult.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ run: { userId: 'u-1' } }),
+      })
+    );
+    expect(vi.mocked(prisma.aiDatasetCase.findMany)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ['case-visible', 'case-gone'] }, dataset: VISIBLE },
+      })
+    );
+    expect(result.map((f) => f.caseId)).toEqual(['case-visible']);
   });
 
   it('returns only cases whose mean metricScore is below the 0.6 threshold', async () => {
@@ -230,7 +278,7 @@ describe('loadFailureSeed — score filtering', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
 
     expect(result).toHaveLength(1);
     expect(result[0].caseId).toBe('case-bad');
@@ -250,7 +298,7 @@ describe('loadFailureSeed — score filtering', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result[0].reasoning).toContain('really bad');
   });
 
@@ -266,7 +314,7 @@ describe('loadFailureSeed — score filtering', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect((result[0].reasoning ?? '').length).toBeLessThan(longReason.length);
     expect(result[0].reasoning?.endsWith('…')).toBe(true);
   });
@@ -285,7 +333,7 @@ describe('loadFailureSeed — score filtering', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result.filter((r) => r.caseId === 'case-dup')).toHaveLength(1);
   });
 });
@@ -307,7 +355,7 @@ describe('loadFailureSeed — score threshold boundary', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
 
     // Score of 0.6 is NOT less than 0.6 — must NOT be returned as a failure
     expect(result).toHaveLength(0);
@@ -324,7 +372,7 @@ describe('loadFailureSeed — score threshold boundary', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     expect(result[0].caseId).toBe('case-just-below');
   });
@@ -347,7 +395,7 @@ describe('loadFailureSeed — invalid score values (NaN / Infinity)', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(0);
   });
 
@@ -363,7 +411,7 @@ describe('loadFailureSeed — invalid score values (NaN / Infinity)', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(0);
   });
 
@@ -380,7 +428,7 @@ describe('loadFailureSeed — invalid score values (NaN / Infinity)', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     expect(result[0].score).toBeCloseTo(0.3, 6);
   });
@@ -401,7 +449,7 @@ describe('loadFailureSeed — metricScores shape guards', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(0);
   });
 
@@ -415,7 +463,7 @@ describe('loadFailureSeed — metricScores shape guards', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(0);
   });
 
@@ -432,7 +480,7 @@ describe('loadFailureSeed — metricScores shape guards', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     // mean(0.1, 0.5) = 0.3 → below threshold
     expect(result[0].score).toBeCloseTo(0.3, 6);
@@ -458,7 +506,7 @@ describe('loadFailureSeed — expectedOutput null', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     expect(result[0].expectedOutput).toBeNull();
   });
@@ -479,7 +527,12 @@ describe('loadFailureSeed — limit early-break', () => {
     }));
     vi.mocked(prisma.aiEvaluationCaseResult.findMany).mockResolvedValue(candidates as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', limit: 8 });
+    const result = await loadFailureSeed({
+      agentId: 'a-1',
+      userId: 'u-1',
+      datasetWhere: VISIBLE,
+      limit: 8,
+    });
 
     // Exactly the limit — NOT 12
     expect(result).toHaveLength(8);
@@ -494,7 +547,7 @@ describe('loadFailureSeed — candidates query throws', () => {
       new Error('candidates db error')
     );
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toEqual([]);
   });
 });
@@ -514,7 +567,7 @@ describe('loadFailureSeed — stringifyInput variants', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     // The code transforms the object to JSON — assert the transformation, not just presence
     expect(result[0].input).toBe('{"q":"hello"}');
@@ -530,7 +583,7 @@ describe('loadFailureSeed — stringifyInput variants', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     expect(result[0].input).toBe('');
   });
@@ -545,7 +598,7 @@ describe('loadFailureSeed — stringifyInput variants', () => {
       },
     ] as never);
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toHaveLength(1);
     expect(result[0].input).toBe('');
   });
@@ -555,7 +608,7 @@ describe('loadFailureSeed — error handling', () => {
   it('falls back to [] when the runs query throws', async () => {
     vi.mocked(prisma.aiEvaluationRun.findMany).mockRejectedValue(new Error('db down'));
 
-    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1' });
+    const result = await loadFailureSeed({ agentId: 'a-1', userId: 'u-1', datasetWhere: VISIBLE });
     expect(result).toEqual([]);
   });
 });
@@ -564,7 +617,7 @@ describe('loadFailureSeed — cross-user isolation', () => {
   it('scopes the past-runs query to the caller userId so admin B cannot pull admin A runs', async () => {
     vi.mocked(prisma.aiEvaluationRun.findMany).mockResolvedValue([] as never);
 
-    await loadFailureSeed({ agentId: 'shared-agent', userId: 'caller-id' });
+    await loadFailureSeed({ agentId: 'shared-agent', userId: 'caller-id', datasetWhere: VISIBLE });
 
     const args = vi.mocked(prisma.aiEvaluationRun.findMany).mock.calls[0][0];
     expect(args?.where).toMatchObject({

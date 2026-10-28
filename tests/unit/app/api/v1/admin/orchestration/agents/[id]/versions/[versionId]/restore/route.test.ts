@@ -63,6 +63,7 @@ import { prisma } from '@/lib/db/client';
 import { invalidateAgentAccess } from '@/lib/orchestration/knowledge/resolveAgentDocumentAccess';
 import { mockAdminUser, mockUnauthenticatedUser } from '@/tests/helpers/auth';
 import { POST } from '@/app/api/v1/admin/orchestration/agents/[id]/versions/[versionId]/restore/route';
+import { updateAgentObjectSchema } from '@/lib/validations/orchestration';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────
 
@@ -421,6 +422,101 @@ describe('POST /agents/:id/versions/:versionId/restore', () => {
     expect(txVersionFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: { agentId: AGENT_ID }, orderBy: { version: 'desc' } })
     );
+  });
+
+  describe('a version saved on inherit (t-820)', () => {
+    async function restoreSnapshot(snapshot: Record<string, unknown>) {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent() as never);
+      vi.mocked(prisma.aiAgentVersion.findFirst).mockResolvedValue(
+        makeVersion({ snapshot: { ...makeVersion().snapshot, ...snapshot } })
+      );
+      const txAgentUpdate = vi.fn().mockResolvedValue(makeAgent());
+      vi.mocked(prisma.$transaction).mockImplementation(async (callback) =>
+        callback({
+          aiAgent: { update: txAgentUpdate },
+          aiAgentVersion: {
+            findFirst: vi.fn().mockResolvedValue({ version: 2 }),
+            create: vi.fn().mockResolvedValue({}),
+          },
+        } as never)
+      );
+      const response = await POST(
+        makeRequest(AGENT_ID, VERSION_ID),
+        makeParams(AGENT_ID, VERSION_ID)
+      );
+      return { response, txAgentUpdate };
+    }
+
+    it('restores an empty provider and model, putting the agent back on inherit', async () => {
+      const { response, txAgentUpdate } = await restoreSnapshot({ provider: '', model: '' });
+
+      expect(response.status).toBe(200);
+      expect(txAgentUpdate.mock.calls[0][0].data).toMatchObject({ provider: '', model: '' });
+    });
+
+    it('restores a named provider and model as before', async () => {
+      const { response, txAgentUpdate } = await restoreSnapshot({
+        provider: 'openai',
+        model: 'gpt-5',
+      });
+
+      expect(response.status).toBe(200);
+      expect(txAgentUpdate.mock.calls[0][0].data).toMatchObject({
+        provider: 'openai',
+        model: 'gpt-5',
+      });
+    });
+
+    it('still refuses a snapshot whose provider is not a string', async () => {
+      const { response, txAgentUpdate } = await restoreSnapshot({ provider: 42 });
+
+      expect(response.status).toBe(400);
+      expect(txAgentUpdate).not.toHaveBeenCalled();
+    });
+
+    it('leaves the PATCH body refusing an empty provider or model', () => {
+      expect(updateAgentObjectSchema.safeParse({ provider: '' }).success).toBe(false);
+      expect(updateAgentObjectSchema.safeParse({ model: '' }).success).toBe(false);
+    });
+  });
+
+  it('makes the binding the org’s when the restore brings back another provider or model (t-798)', async () => {
+    // The clean-up agent picks its own binding; an org's own agent does not.
+    const cleanup = { isSystem: true, slug: 'cleanup-agent', bindingOwner: 'platform' };
+    const restoreWith = async (
+      snapshot: Record<string, unknown>,
+      agent: Record<string, unknown> = cleanup
+    ) => {
+      vi.mocked(auth.api.getSession).mockResolvedValue(mockAdminUser());
+      vi.mocked(prisma.aiAgent.findUnique).mockResolvedValue(makeAgent(agent) as never);
+      vi.mocked(prisma.aiAgentVersion.findFirst).mockResolvedValue(
+        makeVersion({ snapshot: { ...makeVersion().snapshot, ...snapshot } })
+      );
+      const txAgentUpdate = vi.fn().mockResolvedValue(makeAgent());
+      vi.mocked(prisma.$transaction).mockImplementation(async (callback) =>
+        callback({
+          aiAgent: { update: txAgentUpdate },
+          aiAgentVersion: {
+            findFirst: vi.fn().mockResolvedValue({ version: 2 }),
+            create: vi.fn().mockResolvedValue({}),
+          },
+        } as never)
+      );
+      await POST(makeRequest(AGENT_ID, VERSION_ID), makeParams(AGENT_ID, VERSION_ID));
+      return txAgentUpdate.mock.calls[0][0].data as Record<string, unknown>;
+    };
+
+    expect((await restoreWith({ provider: 'openai', model: 'gpt-5' })).bindingOwner).toBe('org');
+    // The same binding as now: the platform keeps it.
+    expect(await restoreWith({})).not.toHaveProperty('bindingOwner');
+    // Any other agent keeps no owner, whatever the restore brings back.
+    expect(
+      await restoreWith(
+        { provider: 'openai', model: 'gpt-5' },
+        { isSystem: false, slug: 'mine', bindingOwner: null }
+      )
+    ).not.toHaveProperty('bindingOwner');
   });
 
   it('coerces null JSON columns to Prisma.JsonNull and restores knowledgeAccessMode', async () => {

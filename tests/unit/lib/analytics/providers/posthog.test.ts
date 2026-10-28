@@ -1,7 +1,11 @@
 // @vitest-environment happy-dom
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { PostHogProvider, createPostHogProvider } from '@/lib/analytics/providers/posthog';
+import {
+  PostHogProvider,
+  reducePostHogLocation,
+  createPostHogProvider,
+} from '@/lib/analytics/providers/posthog';
 
 // Mock PostHog instance
 interface MockPostHogInstance {
@@ -112,6 +116,7 @@ describe('lib/analytics/providers/posthog', () => {
           capture_pageview: false,
           capture_pageleave: true,
           disable_session_recording: true,
+          before_send: expect.any(Function),
           loaded: expect.any(Function),
         });
       });
@@ -673,6 +678,115 @@ describe('lib/analytics/providers/posthog', () => {
       expect(provider).toBeInstanceOf(PostHogProvider);
       expect(provider.getApiKey()).toBe('phc_test123');
       expect(provider.getHost()).toBe('https://eu.i.posthog.com');
+    });
+  });
+
+  describe('page address (t-780)', () => {
+    const TOKEN = 'Xk9fQ2mZp4LrT7vB1nWc8sYd';
+    const EMAIL_QS = 'email=jane%40example.com';
+    const TOKENED = `https://app.example.com/s/${TOKEN}?${EMAIL_QS}&utm_source=news#top`;
+    const REDUCED = 'https://app.example.com/s/[param]?utm_source=news';
+
+    afterEach(() => {
+      window.history.pushState({}, '', '/');
+    });
+
+    it('sends a page view with no path token or query email', async () => {
+      const provider = new PostHogProvider({ apiKey: 'phc_test123' });
+      await provider.init();
+
+      await provider.page('Shared', { url: TOKENED, path: `/s/${TOKEN}`, referrer: TOKENED });
+
+      const sent = JSON.stringify(vi.mocked(mockPostHog.capture).mock.calls);
+      expect(sent).not.toContain(TOKEN);
+      expect(sent).not.toContain('jane');
+      expect(mockPostHog.capture).toHaveBeenCalledWith(
+        '$pageview',
+        expect.objectContaining({ $current_url: REDUCED, $pathname: '/s/[param]' })
+      );
+    });
+
+    it('falls back to the reduced current address', async () => {
+      window.history.pushState({}, '', `/s/${TOKEN}?${EMAIL_QS}`);
+      const provider = new PostHogProvider({ apiKey: 'phc_test123' });
+      await provider.init();
+
+      await provider.page();
+
+      expect(JSON.stringify(vi.mocked(mockPostHog.capture).mock.calls)).not.toContain(TOKEN);
+    });
+
+    it('reduces every address PostHog attaches by itself, via before_send', () => {
+      const event = reducePostHogLocation({
+        event: '$autocapture',
+        properties: {
+          $current_url: TOKENED,
+          $referrer: TOKENED,
+          $pathname: `/s/${TOKEN}`,
+          $session_entry_url: TOKENED,
+          plan: 'pro',
+          url: TOKENED, // not one of PostHog's own `$` properties: the caller's
+        },
+        $set_once: { $initial_current_url: TOKENED, $initial_pathname: `/s/${TOKEN}` },
+      });
+
+      expect(event?.properties).toEqual({
+        $current_url: REDUCED,
+        $referrer: REDUCED,
+        $pathname: '/s/[param]',
+        $session_entry_url: REDUCED,
+        plan: 'pro',
+        url: TOKENED,
+      });
+      expect(event?.$set_once).toEqual({
+        $initial_current_url: REDUCED,
+        $initial_pathname: '/s/[param]',
+      });
+      expect(reducePostHogLocation(null)).toBeNull();
+    });
+
+    it("reduces autocapture's link targets in $elements and $elements_chain", () => {
+      const event = reducePostHogLocation({
+        event: '$autocapture',
+        properties: {
+          $elements: [
+            { tag_name: 'a', attr__href: `/s/${TOKEN}/download?${EMAIL_QS}` },
+            { tag_name: 'a', attr__href: 'mailto:jane@example.com' },
+            { tag_name: 'div' },
+          ],
+          $elements_chain: `a:href="/s/${TOKEN}/download?${EMAIL_QS}"nth-child="1";div:nth-child="2"`,
+        },
+      });
+
+      expect(event?.properties?.$elements).toEqual([
+        { tag_name: 'a', attr__href: '/s/[param]/download' },
+        { tag_name: 'a', attr__href: '' },
+        { tag_name: 'div' },
+      ]);
+      expect(event?.properties?.$elements_chain).toBe(
+        'a:href="/s/[param]/download"nth-child="1";div:nth-child="2"'
+      );
+    });
+
+    it("leaves PostHog's $direct referrer sentinel as it is", () => {
+      const event = reducePostHogLocation({
+        event: '$pageview',
+        properties: { $referrer: '$direct', $referring_domain: '$direct' },
+        $set_once: { $initial_referrer: '$direct' },
+      });
+
+      expect(event?.properties).toEqual({ $referrer: '$direct', $referring_domain: '$direct' });
+      expect(event?.$set_once).toEqual({ $initial_referrer: '$direct' });
+    });
+
+    it('wires before_send into init', async () => {
+      const provider = new PostHogProvider({ apiKey: 'phc_test123' });
+      await provider.init();
+
+      expect(mockPostHog.init).toHaveBeenCalledWith(
+        'phc_test123',
+        expect.objectContaining({ before_send: reducePostHogLocation })
+      );
     });
   });
 });

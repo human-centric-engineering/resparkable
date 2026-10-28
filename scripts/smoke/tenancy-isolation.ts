@@ -12,6 +12,22 @@
  *   - every tenant-owned read the admin list endpoints sit on answers A's
  *     rows and none of B's — after asserting the population is non-empty,
  *     since an absence assertion passes for free on an empty set;
+ *   - the agent comparison (t-688): as a narrowed org admin of A, A's agent
+ *     reads exactly A's spend, calls, conversations and evaluations — every
+ *     owner's in A, none of a cost row B holds against A's agent — and B's
+ *     agent is not found, which the route answers with a 404;
+ *   - the customer's sections (§111 t-811): as a narrowed org ADMIN of B,
+ *     the reads behind the agents, knowledge documents and conversations
+ *     lists answer B's rows and none of A's — after establishing A's exist —
+ *     the conversations list only the admin's own thread, and A's agent by
+ *     id is not found, which the route answers with a 404;
+ *   - the mixed pages (§111 t-812): as a narrowed org ADMIN of B, after
+ *     establishing A's figures are non-zero, the reads behind the dashboard,
+ *     costs, analytics and executions pages answer B's figures and none of
+ *     A's — spend, budget alerts, today's request count, conversation counts
+ *     and quoted questions, and the execution list;
+ *   - the budget caps (§110 t-788): the global spend total, asked from A,
+ *     counts B's cost row, and an org cap stops A's agent and not B's;
  *   - the raw-SQL paths: vector search (`searchKnowledge`), cost reports
  *     (`getCostSummary` / `getCostBreakdown`), conversation semantic search
  *     (`searchConversationEmbeddings`), and the message embedder's INSERT,
@@ -58,12 +74,35 @@
  *     org entered at all; from the install org and a system scope they
  *     write; and the guard's option, called with an unbound admin API key,
  *     lets a write through from no org;
+ *   - two members of one org (§115 t-801): the owner layer, under a real
+ *     narrowed principal built as the guards build one and answered by the
+ *     real policy. A member reads their own memories through the
+ *     `read_user_memory` capability and is refused the other member's —
+ *     through the capability, an unnarrowed list, a count and a lookup by id;
+ *     the org's OWNER, narrowed too, is refused the list; a platform admin
+ *     and a declared crossing see both. Conversations and messages (t-802):
+ *     a narrowed org ADMIN lists and reads by id neither member's thread or
+ *     message, keeps a thread shared with them, keeps an inbound thread
+ *     exactly when the policy admits ownerless reads, and is refused an
+ *     unnarrowed list or count;
  *   - a person's export and erasure (§107 t-748): a member of A and B, with
  *     a conversation and a memory in each, exports from inside A (a session)
  *     and from no org (an admin API key), and the bundle holds both orgs'
  *     rows and no one else's; one person erased from inside A and another
  *     from no org leave no conversation or memory in either org, and an
  *     erasure hook sees the person's rows in both;
+ *   - the orchestration backup (§109 t-738): A's own part, exported in A and
+ *     imported into B from inside A and from no org, changes only B's rows —
+ *     A's agent and workflows and every shared row are untouched, A's
+ *     workflow lands in B under a free slug, and a bundle's shared part
+ *     imported without asking is skipped;
+ *   - support access (§121 t-824): a platform admin who is a member of
+ *     neither org is refused entry to B before it grants support, enters it
+ *     as support ADMIN under B's open grant and sees B's rows and none of
+ *     A's, and is refused again after the grant expires, after its granter
+ *     is demoted, after revocation, and into A, which granted nothing; under
+ *     a READ_ONLY grant a write is refused by the guard's rule and B's agents
+ *     are unchanged;
  *   - the org export and erasure (§106 t-735, t-730): B's export, asked
  *     from inside A (an admin's session) and from no org (an admin API key),
  *     holds B's rows and none of A's; B, holding a knowledge base with
@@ -99,6 +138,14 @@ import {
   runAsSystem,
 } from '@/lib/tenancy/context';
 import { createOrg } from '@/lib/tenancy/lifecycle';
+import { enterSessionOrg, isOrgRefusal } from '@/lib/tenancy/entry';
+import {
+  grantSupportAccess,
+  listSupportActivity,
+  revokeSupportGrant,
+} from '@/lib/tenancy/support-grants';
+import { logAdminAction } from '@/lib/orchestration/audit/admin-audit-logger';
+import { isRefusedReadOnlyWrite } from '@/lib/auth/support-principal';
 import {
   agentProfileUsage,
   capabilityAgentUsage,
@@ -119,7 +166,7 @@ import { eraseOrg } from '@/lib/privacy/erase-org';
 import { exportUserData } from '@/lib/privacy/export-user';
 import { eraseUser } from '@/lib/privacy/erase-user';
 import { registerErasureCleanupHook } from '@/lib/privacy/erasure-hooks';
-import { writeOrgProviderPolicy } from '@/lib/tenancy/org-settings';
+import { writeOrgProviderPolicy, writeOrgQuotas } from '@/lib/tenancy/org-settings';
 import { forgetOrgProviderPolicy } from '@/lib/orchestration/llm/org-provider-policy';
 import { hashApiKey } from '@/lib/auth/api-keys';
 import { resolveApiKey } from '@/lib/auth/api-keys';
@@ -135,7 +182,20 @@ import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
 import { searchKnowledge } from '@/lib/orchestration/knowledge/search';
 import { backfillMissingEmbeddings } from '@/lib/orchestration/chat/message-embedder';
 import { searchConversationEmbeddings } from '@/lib/orchestration/chat/conversation-semantic-search';
-import { getCostBreakdown, getCostSummary } from '@/lib/orchestration/llm/cost-reports';
+import {
+  getBudgetAlerts,
+  getCostBreakdown,
+  getCostSummary,
+} from '@/lib/orchestration/llm/cost-reports';
+import { getEngagementMetrics, getPopularTopics } from '@/lib/orchestration/analytics';
+import type { AuthenticatedSession } from '@/lib/auth/guards';
+import { checkBudget, getMonthToDateGlobalSpend } from '@/lib/orchestration/llm/cost-tracker';
+import {
+  assertWithinSpendCaps,
+  forgetOrgCap,
+  SpendCapExceededError,
+  utcMonthStart,
+} from '@/lib/orchestration/llm/spend-caps';
 import { signHookPayload } from '@/lib/orchestration/hooks/signing';
 import { POST as inboundPost } from '@/app/api/v1/inbound/[channel]/[slug]/route';
 import { withAdminAuth } from '@/lib/auth/guards';
@@ -146,7 +206,10 @@ import { callMcpTool, clearMcpToolCache } from '@/lib/orchestration/mcp/tool-reg
 import { generateCases } from '@/lib/orchestration/evaluations/synthesis/case-generator';
 import { processPendingEvaluationRuns } from '@/lib/orchestration/evaluations/run-worker';
 import { hashDatasetCases } from '@/lib/orchestration/evaluations/datasets/hash';
-import { platformAgentsForOrg } from '@/lib/orchestration/agents/platform-agents';
+import {
+  listPlatformAgents,
+  platformAgentsForOrg,
+} from '@/lib/orchestration/agents/platform-agents';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import {
   invalidateAgentAccess,
@@ -163,7 +226,21 @@ import {
   PATTERNS_TAG_SLUG,
 } from '@/lib/orchestration/knowledge/patterns-knowledge';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
-import { DEFAULT_ORG_ROLE } from '@/lib/tenancy/roles';
+import { exportOrchestrationConfig } from '@/lib/orchestration/backup/exporter';
+import { importOrchestrationConfig } from '@/lib/orchestration/backup/importer';
+import { DEFAULT_ORG_ROLE, ORG_ADMIN_ROLE, ORG_OWNER_ROLE } from '@/lib/tenancy/roles';
+import {
+  conversationVisibilityWhere,
+  deploymentWideConversationWhere,
+} from '@/lib/orchestration/access/conversation-access';
+import { executionVisibilityWhere } from '@/lib/orchestration/access/execution-access';
+import { runScopedJob } from '@/lib/orchestration/maintenance/job-scope';
+import { DEFAULT_USER_ROLE, PLATFORM_ADMIN_ROLE } from '@/lib/auth/roles';
+import { subjectScope, type AuthorizationPrincipal } from '@/lib/auth/authorization';
+import { resolveUnattributedReads } from '@/lib/auth/orphan-reads';
+import { runAcrossOwners, runAsSubject } from '@/lib/auth/subject-context';
+import { ReadUserMemoryCapability } from '@/lib/orchestration/capabilities/built-in/user-memory';
+import { getAgentComparisonStats } from '@/lib/orchestration/agents/agent-comparison';
 
 const PREFIX = 'smoke-iso';
 const stamp = Date.now();
@@ -550,6 +627,28 @@ async function visible(who: string, a: OrgFixture, b: OrgFixture) {
   }));
 }
 
+/**
+ * Run `fn` as `principal`, the way `withAuth` / `withAdminAuth` do: the real
+ * policy answers the filter and the ownerless reads, and the owner layer reads
+ * them from the subject context. `readsShared` defaults to `withAdminAuth`'s
+ * answer; pass `false` for a `withAuth` route.
+ */
+async function asPrincipal<T>(
+  principal: AuthorizationPrincipal,
+  fn: () => Promise<T>,
+  { readsShared = true }: { readsShared?: boolean } = {}
+): Promise<T> {
+  return runAsSubject(
+    {
+      principal,
+      resolveFilter: () => subjectScope(principal),
+      unattributedReads: await resolveUnattributedReads(principal),
+      readsShared,
+    },
+    fn
+  );
+}
+
 async function main(): Promise<void> {
   if (!(await dbReachable())) {
     console.log('smoke:tenancy-isolation skipped — no database reachable.');
@@ -651,6 +750,509 @@ async function main(): Promise<void> {
       "B's `support` is the only `support` B can see"
     );
 
+    // ── The agent comparison: one org's figures, every owner's (t-688) ─────
+    // `GET /agents/compare` sums spend, tokens and calls and counts
+    // conversations and evaluations per agent with no org clause and no owner
+    // clause. Row isolation is what bounds it to the caller's org; inside the
+    // org it crosses owners by decision. Driven as the guard drives it: the
+    // org entered from a session, then a narrowed org admin — who owns none of
+    // the rows counted — as the subject.
+    console.log("\n[3b] the agent comparison: A's figures for A's agent, and no B");
+    for (const f of [a, b]) {
+      await runAsOrg(f.orgId, () =>
+        prisma.aiEvaluationSession.createMany({
+          data: [
+            { userId: f.ownerId, agentId: f.agentId, title: `${PREFIX} eval`, status: 'draft' },
+            {
+              userId: f.ownerId,
+              agentId: f.agentId,
+              title: `${PREFIX} eval`,
+              status: 'completed',
+            },
+          ],
+        })
+      );
+    }
+    // A row the schema cannot stop: a cost log in B naming A's agent. The
+    // foreign key checks the agent exists, not which org it is in, so only the
+    // policy keeps this out of A's total — the assertion that fails if the
+    // bound were the agent id rather than the org.
+    const strayCostLog = await runAsOrg(b.orgId, () =>
+      prisma.aiCostLog.create({
+        data: {
+          agentId: a.agentId,
+          model: 'smoke-model',
+          provider: 'smoke',
+          operation: 'chat',
+          inputTokens: 1000,
+          outputTokens: 1000,
+          inputCostUsd: 5,
+          outputCostUsd: 5,
+          totalCostUsd: 10,
+        },
+      })
+    );
+    try {
+      // What each agent has, in its own org — the population is non-empty (fp6).
+      // Read past the policy with the org named as a clause, so the truth does
+      // not lean on the bound the comparison is being tested for: a policy that
+      // leaked B's rows into A would move the comparison and not this.
+      const truthOf = (f: OrgFixture) =>
+        runAsSystem('smoke: an agent’s figures in its own org', async () => {
+          const where = { agentId: f.agentId, orgId: f.orgId };
+          const cost = await prisma.aiCostLog.aggregate({
+            where,
+            _sum: { totalCostUsd: true },
+            _count: true,
+          });
+          return {
+            costUsd: cost._sum.totalCostUsd ?? 0,
+            calls: cost._count,
+            conversations: await prisma.aiConversation.count({ where }),
+            evaluations: await prisma.aiEvaluationSession.count({ where }),
+            completed: await prisma.aiEvaluationSession.count({
+              where: { ...where, status: 'completed' },
+            }),
+          };
+        });
+      const truthA = await truthOf(a);
+      const truthB = await truthOf(b);
+      check(
+        truthB.costUsd > 0 && truthB.conversations > 0 && truthB.evaluations === 2,
+        `B has spend, conversations and evaluations of its own (${JSON.stringify(truthB)})`
+      );
+      const stray = await runAsSystem('smoke: the stray cost row exists', () =>
+        prisma.aiCostLog.findUnique({
+          where: { id: strayCostLog.id },
+          select: { orgId: true, agentId: true },
+        })
+      );
+      check(
+        stray?.orgId === b.orgId && stray.agentId === a.agentId,
+        `the stray cost row names A's agent and was stamped with B's org (${JSON.stringify(stray)})`
+      );
+      // Bounded by agent id alone, A's total would take the stray row in.
+      const unboundedCostA = await runAsSystem('smoke: A’s agent’s spend in every org', () =>
+        prisma.aiCostLog.aggregate({ where: { agentId: a.agentId }, _sum: { totalCostUsd: true } })
+      );
+      check(
+        Math.abs((unboundedCostA._sum.totalCostUsd ?? 0) - (truthA.costUsd + 10)) < 1e-9,
+        "the stray row is the only spend on A's agent outside A"
+      );
+
+      const cmpAdminUser = await prisma.user.create({
+        data: {
+          name: `${PREFIX} compare admin`,
+          email: `${PREFIX}-cmpadmin-${stamp}@example.com`,
+        },
+      });
+      await prisma.orgMembership.create({
+        data: { orgId: a.orgId, userId: cmpAdminUser.id, role: ORG_ADMIN_ROLE },
+      });
+      const cmpAdmin: AuthorizationPrincipal = {
+        userId: cmpAdminUser.id,
+        role: DEFAULT_USER_ROLE,
+        credential: 'session',
+        orgId: a.orgId,
+        orgRole: ORG_ADMIN_ROLE,
+      };
+      const compareAsA = (agentId: string) =>
+        runAsOrg(a.orgId, () => asPrincipal(cmpAdmin, () => getAgentComparisonStats(agentId)), {
+          source: 'session',
+          role: ORG_ADMIN_ROLE,
+        });
+
+      const own = await compareAsA(a.agentId);
+      check(
+        own !== null &&
+          Math.abs(own.totalCostUsd - truthA.costUsd) < 1e-9 &&
+          own.llmCallCount === truthA.calls &&
+          own.conversationCount === truthA.conversations &&
+          own.evaluations.total === truthA.evaluations &&
+          own.evaluations.completed === truthA.completed,
+        `A's org admin reads A's agent's figures, exactly A's (${JSON.stringify(own && { cost: own.totalCostUsd, calls: own.llmCallCount, conversations: own.conversationCount, evaluations: own.evaluations })} vs ${JSON.stringify(truthA)})`
+      );
+      check(
+        own !== null && own.conversationCount > 0 && own.evaluations.total === 2,
+        'the counts cross owners inside A: the org admin owns none of the conversations or evaluations counted'
+      );
+      // The control for the line above: the same principal, the same org, the
+      // same counts without `runAcrossOwners` — refused. So the owner layer is
+      // in force for this caller, and the counts above are the crossing's.
+      const refusedCount = /Refused Ai(Conversation|EvaluationSession)\.count/;
+      await rejects(
+        () =>
+          runAsOrg(
+            a.orgId,
+            () =>
+              asPrincipal(cmpAdmin, () =>
+                prisma.aiConversation.count({ where: { agentId: a.agentId } })
+              ),
+            { source: 'session', role: ORG_ADMIN_ROLE }
+          ),
+        refusedCount,
+        'the same org admin is refused the conversation count outside the crossing'
+      );
+      await rejects(
+        () =>
+          runAsOrg(
+            a.orgId,
+            () =>
+              asPrincipal(cmpAdmin, () =>
+                prisma.aiEvaluationSession.count({ where: { agentId: a.agentId } })
+              ),
+            { source: 'session', role: ORG_ADMIN_ROLE }
+          ),
+        refusedCount,
+        'the same org admin is refused the evaluation count outside the crossing'
+      );
+      check(
+        (await compareAsA(b.agentId)) === null,
+        "B's agent is not found from A, so the route answers 404"
+      );
+    } finally {
+      await runAsSystem('smoke: remove the stray cost row', () =>
+        prisma.aiCostLog.deleteMany({ where: { id: strayCostLog.id } })
+      );
+    }
+
+    // ── B's org admin in the customer's sections (§111 t-811) ──────────────
+    // t-811 opens the agents, knowledge and conversations pages, and the
+    // routes behind them, to an org OWNER/ADMIN. What keeps another org out
+    // is not the route: it is row isolation under the org the guard entered,
+    // and the owner layer under the narrowed principal the policy hands an
+    // org admin. So this drives the reads those routes make — the agents
+    // list, the knowledge documents list, the conversations list through
+    // `conversationVisibilityWhere`, and the agent detail's by-id read — as
+    // the guard runs them: B entered from a session, a real narrowed org
+    // ADMIN of B as the subject. The guard itself cannot run here (it reads
+    // Next's request headers); which callers it admits to these routes is
+    // `tests/integration/api/v1/admin/orchestration/org-tier-admission.test.ts`'s.
+    console.log("\n[3c] B's org admin: the customer's sections answer B's rows, and no A");
+    {
+      // A's rows exist first, so the absences below are not free (fp6).
+      const aRows = await runAsSystem('smoke: A’s rows exist', async () => ({
+        agent: await prisma.aiAgent.count({ where: { id: a.agentId, orgId: a.orgId } }),
+        document: await prisma.aiKnowledgeDocument.count({
+          where: { id: a.documentId, orgId: a.orgId },
+        }),
+        conversation: await prisma.aiConversation.count({
+          where: { id: a.conversationId, orgId: a.orgId },
+        }),
+      }));
+      check(
+        aRows.agent === 1 && aRows.document === 1 && aRows.conversation === 1,
+        `A has an agent, a knowledge document and a conversation (${JSON.stringify(aRows)})`
+      );
+
+      const orgAdminUser = await prisma.user.create({
+        data: { name: `${PREFIX} b org admin`, email: `${PREFIX}-borgadmin-${stamp}@example.com` },
+      });
+      await prisma.orgMembership.create({
+        data: { orgId: b.orgId, userId: orgAdminUser.id, role: ORG_ADMIN_ROLE },
+      });
+      const orgAdmin: AuthorizationPrincipal = {
+        userId: orgAdminUser.id,
+        role: DEFAULT_USER_ROLE,
+        credential: 'session',
+        orgId: b.orgId,
+        orgRole: ORG_ADMIN_ROLE,
+      };
+      const asBAdmin = <T>(fn: () => Promise<T>) =>
+        runAsOrg(b.orgId, () => asPrincipal(orgAdmin, fn), {
+          source: 'session',
+          role: ORG_ADMIN_ROLE,
+        });
+      // The org admin's own thread in B, beside the one B's owner holds: the
+      // list must show theirs, and neither B's owner's nor anything of A's.
+      const ownThread = await runAsOrg(b.orgId, () =>
+        prisma.aiConversation.create({
+          data: { userId: orgAdminUser.id, agentId: b.agentId, title: `${PREFIX} b admin thread` },
+          select: { id: true },
+        })
+      );
+
+      try {
+        // GET /agents: its query, with the per-agent conversation count across
+        // owners that the route takes inside `runAcrossOwners`.
+        const agentIds = await asBAdmin(() =>
+          runAcrossOwners('smoke: agent list, a conversation count per agent', () =>
+            prisma.aiAgent.findMany({
+              where: { deletedAt: null },
+              include: { _count: { select: { capabilities: true, conversations: true } } },
+            })
+          )
+        ).then((rows) => rows.map((r) => r.id));
+        check(
+          agentIds.includes(b.agentId) && !agentIds.includes(a.agentId),
+          `B's org admin lists B's agent and not A's (${agentIds.length} agents)`
+        );
+
+        // GET /knowledge/documents: its query, unfiltered.
+        const documentIds = await asBAdmin(() =>
+          prisma.aiKnowledgeDocument.findMany({
+            where: {},
+            include: { _count: { select: { chunks: true } } },
+          })
+        ).then((rows) => rows.map((r) => r.id));
+        check(
+          documentIds.includes(b.documentId) && !documentIds.includes(a.documentId),
+          `B's org admin lists B's knowledge document and not A's (${documentIds.length} documents)`
+        );
+
+        // GET /conversations: the visibility clause the route builds from the
+        // session, with the policy's answer about ownerless threads.
+        const visibility = conversationVisibilityWhere({
+          user: { id: orgAdminUser.id },
+          unattributedReads: await resolveUnattributedReads(orgAdmin),
+        });
+        const threadIds = await asBAdmin(() =>
+          prisma.aiConversation.findMany({
+            where: visibility,
+            include: { _count: { select: { messages: true } } },
+          })
+        ).then((rows) => rows.map((r) => r.id));
+        check(
+          threadIds.includes(ownThread.id) &&
+            !threadIds.includes(b.conversationId) &&
+            !threadIds.includes(a.conversationId),
+          `B's org admin lists their own thread in B, not B's owner's and not A's (${JSON.stringify(threadIds)})`
+        );
+
+        // GET /agents/[id] for A's agent: the route's by-id read finds nothing,
+        // which it answers with a 404.
+        const aAgentFromB = await asBAdmin(() =>
+          prisma.aiAgent.findUnique({
+            where: { id: a.agentId },
+            include: {
+              grantedTags: { select: { tagId: true } },
+              grantedDocuments: { select: { documentId: true } },
+            },
+          })
+        );
+        check(
+          aAgentFromB === null,
+          "A's agent by id is not found from B, so the route answers 404"
+        );
+        // The control: the same read finds B's own agent.
+        const bAgentFromB = await asBAdmin(() =>
+          prisma.aiAgent.findUnique({ where: { id: b.agentId }, select: { id: true } })
+        );
+        check(bAgentFromB?.id === b.agentId, "the same read finds B's own agent");
+      } finally {
+        // Later sections count B's members and rows ([20]'s erasure expects
+        // its one member), so this section leaves B as it found it.
+        await runAsSystem('smoke: remove [3c]’s org admin', async () => {
+          await prisma.aiConversation.deleteMany({ where: { id: ownThread.id } });
+          await prisma.orgMembership.deleteMany({ where: { userId: orgAdminUser.id } });
+          await prisma.user.deleteMany({ where: { id: orgAdminUser.id } });
+        });
+      }
+    }
+
+    // ── B's org admin on the mixed pages (§111 t-812) ──────────────────────
+    // The dashboard, costs, analytics and executions pages open to an org
+    // admin with their org's half. Their routes run in the org the guard
+    // entered, so what keeps A's figures off B's pages is row isolation under
+    // that org and the owner layer under the narrowed principal. So this
+    // drives each page's reads as the guard runs them: B entered from a
+    // session, a real narrowed org ADMIN of B as the subject. Which routes
+    // admit them, and which refuse them, is
+    // `tests/integration/api/v1/admin/orchestration/org-tier-admission.test.ts`'s.
+    console.log("\n[3d] B's org admin on the mixed pages: B's figures, none of A's");
+    {
+      const monthStart = new Date();
+      monthStart.setUTCDate(1);
+      monthStart.setUTCHours(0, 0, 0, 0);
+      const todayStart = new Date();
+      todayStart.setUTCHours(0, 0, 0, 0);
+      // Each org's own figures, read in the system scope, so a page that
+      // reads B's answers B's and one that leaks A's answers more (fp6).
+      const figures = (orgId: string, agentId: string) =>
+        runAsSystem('smoke: an org’s own figures', async () => ({
+          agentMonthSpend:
+            (
+              await prisma.aiCostLog.aggregate({
+                where: { orgId, agentId, createdAt: { gte: monthStart } },
+                _sum: { totalCostUsd: true },
+              })
+            )._sum.totalCostUsd ?? 0,
+          requestsToday: await prisma.aiCostLog.count({
+            where: { orgId, createdAt: { gte: todayStart } },
+          }),
+          executions: await prisma.aiWorkflowExecution.count({ where: { orgId } }),
+          conversations: await prisma.aiConversation.count({ where: { orgId } }),
+        }));
+      const aFigures = await figures(a.orgId, a.agentId);
+      check(
+        aFigures.agentMonthSpend > 0 &&
+          aFigures.requestsToday > 0 &&
+          aFigures.executions > 0 &&
+          aFigures.conversations > 0,
+        `A's spend, requests, executions and conversations are non-zero (${JSON.stringify(aFigures)})`
+      );
+
+      const orgAdminUser = await prisma.user.create({
+        data: { name: `${PREFIX} b mixed admin`, email: `${PREFIX}-bmixed-${stamp}@example.com` },
+      });
+      await prisma.orgMembership.create({
+        data: { orgId: b.orgId, userId: orgAdminUser.id, role: ORG_ADMIN_ROLE },
+      });
+      const orgAdmin: AuthorizationPrincipal = {
+        userId: orgAdminUser.id,
+        role: DEFAULT_USER_ROLE,
+        credential: 'session',
+        orgId: b.orgId,
+        orgRole: ORG_ADMIN_ROLE,
+      };
+      const asBAdmin = <T>(fn: () => Promise<T>) =>
+        runAsOrg(b.orgId, () => asPrincipal(orgAdmin, fn), {
+          source: 'session',
+          role: ORG_ADMIN_ROLE,
+        });
+      // The fields the analytics and visibility readers take from the guard's
+      // session; nothing else of it is read on these paths.
+      const viewer = {
+        user: { id: orgAdminUser.id },
+        principal: orgAdmin,
+        unattributedReads: await resolveUnattributedReads(orgAdmin),
+      };
+      const analyticsSession = viewer as unknown as AuthenticatedSession;
+      // A thread and a run of the admin's own in B, so the reads that show
+      // only what the caller may open have something of B's to show.
+      const ownTopic = `${PREFIX} charlie chinchilla charter ${stamp}`;
+      const ownThread = await runAsOrg(b.orgId, () =>
+        prisma.aiConversation.create({
+          data: {
+            userId: orgAdminUser.id,
+            agentId: b.agentId,
+            title: `${PREFIX} b mixed admin thread`,
+            messages: { create: [{ role: 'user', content: ownTopic }] },
+          },
+          select: { id: true },
+        })
+      );
+      const ownRun = await runAsOrg(b.orgId, () =>
+        prisma.aiWorkflowExecution.create({
+          data: {
+            workflowId: b.workflowId,
+            status: 'completed',
+            inputData: {},
+            executionTrace: [],
+            userId: orgAdminUser.id,
+          },
+          select: { id: true },
+        })
+      );
+      // Both agents over budget, so the alerts have one of each org's to show.
+      const budgets = await runAsSystem('smoke: [3d] agents’ budgets before', () =>
+        prisma.aiAgent.findMany({
+          where: { id: { in: [a.agentId, b.agentId] } },
+          select: { id: true, monthlyBudgetUsd: true },
+        })
+      );
+      await runAsSystem('smoke: [3d] both agents over budget', () =>
+        prisma.aiAgent.updateMany({
+          where: { id: { in: [a.agentId, b.agentId] } },
+          data: { monthlyBudgetUsd: 0.000001 },
+        })
+      );
+
+      try {
+        const bFigures = await figures(b.orgId, b.agentId);
+
+        // Costs page and dashboard spend: the summary and the per-agent breakdown.
+        const summary = await asBAdmin(() => getCostSummary());
+        const summaryAgents = summary.byAgent.map((row) => row.agentId);
+        check(
+          summaryAgents.includes(b.agentId) && !summaryAgents.includes(a.agentId),
+          `the cost summary lists B's agent and not A's (${summaryAgents.length} agents)`
+        );
+        const bRow = summary.byAgent.find((row) => row.agentId === b.agentId);
+        check(
+          Math.abs((bRow?.monthSpend ?? 0) - bFigures.agentMonthSpend) < 1e-9,
+          `B's agent's month spend is B's own (${bRow?.monthSpend} = ${bFigures.agentMonthSpend})`
+        );
+        const breakdown = await asBAdmin(() =>
+          getCostBreakdown({ dateFrom: monthStart, dateTo: new Date(), groupBy: 'agent' })
+        );
+        const breakdownAgents = breakdown.rows.map((row) => row.key);
+        check(
+          breakdownAgents.includes(b.agentId) && !breakdownAgents.includes(a.agentId),
+          "the per-agent cost breakdown holds B's agent and not A's"
+        );
+
+        // Budget alerts, on the dashboard and the costs page.
+        const alerts = await asBAdmin(() => getBudgetAlerts());
+        const alertAgents = alerts.map((alert) => alert.agentId);
+        check(
+          alertAgents.includes(b.agentId) && !alertAgents.includes(a.agentId),
+          "B's org admin is alerted about B's over-budget agent and not A's"
+        );
+
+        // Dashboard stats: today's request count, and the runs it counts.
+        const requestsToday = await asBAdmin(() =>
+          prisma.aiCostLog.count({ where: { createdAt: { gte: todayStart } } })
+        );
+        check(
+          requestsToday === bFigures.requestsToday,
+          `today's request count is B's (${requestsToday} = ${bFigures.requestsToday}, A has ${aFigures.requestsToday})`
+        );
+
+        // Executions page: the list's read, with the guard's visibility clause.
+        const runIds = await asBAdmin(() =>
+          prisma.aiWorkflowExecution.findMany({
+            where: executionVisibilityWhere(viewer),
+            select: { id: true },
+          })
+        ).then((rows) => rows.map((r) => r.id));
+        check(
+          runIds.includes(ownRun.id) && !runIds.includes(a.executionId),
+          `the executions list holds the admin's run in B and not A's (${runIds.length} runs)`
+        );
+
+        // Analytics: a figure across B's members, and words from the admin's own threads.
+        const engagement = await asBAdmin(() => getEngagementMetrics({}, analyticsSession));
+        const bConversations = await runAsSystem(
+          'smoke: B’s conversations, as analytics counts',
+          () =>
+            prisma.aiConversation.count({
+              where: {
+                orgId: b.orgId,
+                createdAt: { gte: new Date(Date.now() - 31 * 86_400_000) },
+                ...deploymentWideConversationWhere(analyticsSession),
+              },
+            })
+        );
+        check(
+          engagement.totalConversations === bConversations,
+          `analytics counts B's conversations across its members (${engagement.totalConversations} = ${bConversations}, A has ${aFigures.conversations})`
+        );
+        const topics = await asBAdmin(() => getPopularTopics({}, analyticsSession));
+        const quoted = topics.map((t) => t.content.toLowerCase());
+        check(
+          quoted.some((q) => q.includes('charlie chinchilla')) &&
+            !quoted.some((q) => q.includes(a.topic)),
+          `popular topics quote the admin's own question in B and nothing of A's (${quoted.length} topics)`
+        );
+      } finally {
+        // Later sections count B's members and rows, and read the agents'
+        // budgets, so this section leaves both orgs as it found them.
+        await runAsSystem('smoke: remove [3d]’s org admin and restore budgets', async () => {
+          for (const agent of budgets) {
+            await prisma.aiAgent.update({
+              where: { id: agent.id },
+              data: { monthlyBudgetUsd: agent.monthlyBudgetUsd },
+            });
+          }
+          await prisma.aiWorkflowExecution.deleteMany({ where: { id: ownRun.id } });
+          await prisma.aiConversation.deleteMany({ where: { id: ownThread.id } });
+          await prisma.orgMembership.deleteMany({ where: { userId: orgAdminUser.id } });
+          await prisma.user.deleteMany({ where: { id: orgAdminUser.id } });
+        });
+      }
+    }
+
     // ── The raw-SQL read paths ─────────────────────────────────────────────
     console.log('\n[4] as org A: the raw-SQL paths');
     const searchA = await runAsOrg(a.orgId, () => searchKnowledge(b.topic, undefined, 10, 1));
@@ -685,6 +1287,60 @@ async function main(): Promise<void> {
       breakdownAgents.includes(a.agentId) && !breakdownAgents.includes(b.agentId),
       "cost breakdown by agent as A carries A's agent and not B's"
     );
+
+    // The global budget cap totals every org (§110 t-788). Read in A's scope,
+    // the policy would hide B's row and make the "global" cap a per-org one.
+    // Both totals from the start of the month: a 24-hour window would reach
+    // into last month just after midnight UTC on the 1st, and fail spuriously.
+    const plainTotalInA = await runAsOrg(a.orgId, async () => {
+      const agg = await prisma.aiCostLog.aggregate({
+        where: { createdAt: { gte: utcMonthStart() } },
+        _sum: { totalCostUsd: true },
+      });
+      return agg._sum.totalCostUsd ?? 0;
+    });
+    const globalFromA = await runAsOrg(a.orgId, () => getMonthToDateGlobalSpend());
+    check(
+      globalFromA >= plainTotalInA + b.costUsd - 1e-9,
+      `global spend asked from A counts B's row (${globalFromA} >= ${plainTotalInA} + ${b.costUsd})`
+    );
+
+    // An org cap stops its own org's turns and not another's (§110 t-788).
+    await writeOrgQuotas(a.orgId, { monthlyBudgetUsd: a.costUsd / 2 });
+    await writeOrgQuotas(b.orgId, { monthlyBudgetUsd: b.costUsd * 10 });
+    forgetOrgCap(a.orgId);
+    forgetOrgCap(b.orgId);
+    const budgetA = await runAsOrg(a.orgId, () => checkBudget(a.agentId));
+    const budgetB = await runAsOrg(b.orgId, () => checkBudget(b.agentId));
+    check(
+      budgetA.orgCapExceeded === true && (budgetA.org?.spent ?? 0) >= a.costUsd,
+      `A's cap, below A's spend, stops A (${JSON.stringify(budgetA.org)})`
+    );
+    check(
+      budgetB.orgCapExceeded === undefined && (budgetB.org?.spent ?? 0) >= b.costUsd,
+      `B's spend is B's alone, under B's cap (${JSON.stringify(budgetB.org)})`
+    );
+    // The call-time gate reads the same caps for every paid vendor call, in
+    // the org the call is made for: A's paid calls stop, B's do not, and A's
+    // local calls are never stopped.
+    const gateRefusal = async (orgId: string, isLocal: boolean) =>
+      runAsOrg(orgId, () => assertWithinSpendCaps('smoke-paid-provider', isLocal)).then(
+        () => null,
+        (err: unknown) => (err instanceof SpendCapExceededError ? err.cap : String(err))
+      );
+    check(
+      (await gateRefusal(a.orgId, false)) === 'org',
+      "the spend gate refuses a paid call in A, over A's cap"
+    );
+    check((await gateRefusal(b.orgId, false)) === null, 'the spend gate admits a paid call in B');
+    check(
+      (await gateRefusal(a.orgId, true)) === null,
+      'the spend gate admits a local call in A, over its cap'
+    );
+    await writeOrgQuotas(a.orgId, null);
+    await writeOrgQuotas(b.orgId, null);
+    forgetOrgCap(a.orgId);
+    forgetOrgCap(b.orgId);
 
     const convSearch = (who: OrgFixture, topic: string) =>
       runAsOrg(who.orgId, () =>
@@ -1002,9 +1658,14 @@ async function main(): Promise<void> {
     const inB = await platformRows(b.orgId);
     const inA = await platformRows(a.orgId);
     const inInstall = await platformRows(INSTALL_ORG_ID);
+    // Every check below derives from the registry, which holds core's agents
+    // and whatever a fork registers through lib/app/platform-agents.ts (#974).
+    // Core's own split is pinned by the unit tests; here only that both lists
+    // are populated, so the absence checks below cannot pass on an empty one.
+    const registered = new Set(listPlatformAgents().map((d) => d.slug));
     check(
-      everyOrg.length === 12 && installOnly.length === 4,
-      `the registry gives every org 12 and the install org 4 more (${everyOrg.length}/${installOnly.length})`
+      everyOrg.length > 0 && installOnly.length > 0,
+      `the registry gives every org ${everyOrg.length} and the install org ${installOnly.length} more`
     );
     check(
       inB.length === everyOrg.length && everyOrg.every((slug) => inB.some((r) => r.slug === slug)),
@@ -1018,13 +1679,12 @@ async function main(): Promise<void> {
       installOnly.every((slug) => !inB.some((r) => r.slug === slug)),
       `B has none of the install-only agents (${installOnly.join(', ')})`
     );
-    // The fork seeds its own system agents into the install org too, so count
-    // only the registry's slugs there, not every isSystem row.
-    const platformSlugs = [...everyOrg, ...installOnly];
+    // By registered slug, not a row count: a fork may seed a system agent of
+    // its own into the install org outside the registry (#973), and that row
+    // is not a platform agent.
     check(
-      platformSlugs.every((slug) => inInstall.some((r) => r.slug === slug)) &&
-        inInstall.filter((r) => platformSlugs.includes(r.slug)).length === platformSlugs.length,
-      `the install org still has all ${everyOrg.length + installOnly.length}`
+      [...registered].every((slug) => inInstall.some((r) => r.slug === slug)),
+      `the install org still has all ${registered.size}`
     );
     check(
       inA.length === everyOrg.length && !inA.some((r) => inB.some((x) => x.id === r.id)),
@@ -1766,12 +2426,20 @@ async function main(): Promise<void> {
     // org is entered, and it lets the write through (ruling, 2026-10-02).
     // The key is resolved from the database; the handler is `createFlag`
     // itself, because the feature-flags route's own logger reads Next's
-    // request headers, which exist only inside a request.
+    // request headers, which exist only inside a request. Its owner is a
+    // platform admin: an admin key works only while its owner is one (#746).
+    const keyAdmin = await prisma.user.create({
+      data: {
+        name: `${PREFIX} key admin`,
+        email: `${PREFIX}-keyadmin-${stamp}@example.com`,
+        role: PLATFORM_ADMIN_ROLE,
+      },
+    });
     const rawAdminKey = `sk_${PREFIX}_${stamp}_${'a'.repeat(40)}`;
     await runAsSystem('smoke: mint an unbound admin key', () =>
       prisma.aiApiKey.create({
         data: {
-          userId: a.ownerId,
+          userId: keyAdmin.id,
           name: `${PREFIX} admin key`,
           keyHash: hashApiKey(rawAdminKey),
           keyPrefix: rawAdminKey.slice(0, 8),
@@ -1820,6 +2488,513 @@ async function main(): Promise<void> {
     // A person belongs to A and B, with a conversation and a memory in each.
     // The self-service route runs in their session's active org, and an admin
     // API key enters none; either way the bundle must hold both orgs' rows.
+    // ── [16b] Two members of A: neither reads the other's memory (§115 t-801)
+    // Same org, same agent, different owners. RLS lets both rows through for
+    // anyone in A; the owner layer is what has to say no.
+    console.log('\n[16b] two members of A: each reads their own memory and none of the other’s');
+    const member = async (label: string) => {
+      const user = await prisma.user.create({
+        data: {
+          name: `${PREFIX} member ${label}`,
+          email: `${PREFIX}-member-${label}-${stamp}@example.com`,
+        },
+      });
+      await prisma.orgMembership.create({
+        data: { orgId: a.orgId, userId: user.id, role: DEFAULT_ORG_ROLE },
+      });
+      const memory = await runAsOrg(a.orgId, () =>
+        prisma.aiUserMemory.create({
+          data: { userId: user.id, agentId: a.agentId, key: `${PREFIX}-fact`, value: label },
+        })
+      );
+      const principal: AuthorizationPrincipal = {
+        userId: user.id,
+        role: DEFAULT_USER_ROLE,
+        credential: 'session',
+        orgId: a.orgId,
+        orgRole: DEFAULT_ORG_ROLE,
+      };
+      return { userId: user.id, memoryId: memory.id, principal };
+    };
+    const m1 = await member('one');
+    const m2 = await member('two');
+    const readMemory = new ReadUserMemoryCapability();
+    const inOrgA = <T>(fn: () => Promise<T>) => runAsOrg(a.orgId, fn);
+    const refusedRead = /Refused AiUserMemory\.(findMany|count|findUnique)/;
+
+    // The population is non-empty, and both rows are in A (fp6).
+    const bothSeen = await asPrincipal(
+      { userId: a.ownerId, role: PLATFORM_ADMIN_ROLE, credential: 'session' },
+      () => inOrgA(() => prisma.aiUserMemory.findMany({ where: { agentId: a.agentId } }))
+    );
+    check(
+      [m1.memoryId, m2.memoryId].every((id) => bothSeen.some((r) => r.id === id)),
+      'a platform admin in A sees both members’ memories'
+    );
+
+    const own = await asPrincipal(m1.principal, () =>
+      inOrgA(() => readMemory.execute({}, { userId: m1.userId, agentId: a.agentId }))
+    );
+    check(
+      own.success && own.data?.memories.length === 1 && own.data.memories[0].value === 'one',
+      'member one reads their own memory through read_user_memory'
+    );
+    await rejects(
+      () =>
+        asPrincipal(m1.principal, () =>
+          inOrgA(() => readMemory.execute({}, { userId: m2.userId, agentId: a.agentId }))
+        ),
+      refusedRead,
+      'member one is refused member two’s memory through read_user_memory'
+    );
+    await rejects(
+      () =>
+        asPrincipal(m1.principal, () =>
+          inOrgA(() => prisma.aiUserMemory.findMany({ where: { agentId: a.agentId } }))
+        ),
+      refusedRead,
+      'member one is refused an unnarrowed list of the agent’s memories'
+    );
+    await rejects(
+      () => asPrincipal(m1.principal, () => inOrgA(() => prisma.aiUserMemory.count())),
+      refusedRead,
+      'member one is refused an unnarrowed count'
+    );
+    await rejects(
+      () =>
+        asPrincipal(m1.principal, () =>
+          inOrgA(() => prisma.aiUserMemory.findUnique({ where: { id: m2.memoryId } }))
+        ),
+      refusedRead,
+      'member one is refused member two’s memory looked up by id'
+    );
+    const ownCount = await asPrincipal(m1.principal, () =>
+      inOrgA(() => prisma.aiUserMemory.count({ where: { userId: m1.userId } }))
+    );
+    check(ownCount === 1, `member one counts their own memory (${ownCount})`);
+    await rejects(
+      () =>
+        asPrincipal(
+          {
+            userId: a.ownerId,
+            role: DEFAULT_USER_ROLE,
+            credential: 'session',
+            orgId: a.orgId,
+            orgRole: ORG_OWNER_ROLE,
+          },
+          () => inOrgA(() => prisma.aiUserMemory.findMany({ where: { agentId: a.agentId } }))
+        ),
+      refusedRead,
+      'A’s OWNER, narrowed like any member, is refused the members’ memories'
+    );
+    const crossed = await asPrincipal(m1.principal, () =>
+      runAcrossOwners('smoke: an org-wide memory count', () =>
+        inOrgA(() => prisma.aiUserMemory.count({ where: { agentId: a.agentId } }))
+      )
+    );
+    check(crossed >= 2, `a declared crossing counts both members’ memories (${crossed})`);
+
+    // ── [16c] …and neither reads the other's conversations (§115 t-802) ───
+    // Each member has a thread with a message in it; member two has also
+    // shared one, and an inbound thread belongs to nobody. A narrowed org
+    // ADMIN sees the shared and (where the policy admits it) the inbound
+    // thread, and nothing of either member's own.
+    console.log(
+      '\n[16c] two members of A: an org ADMIN reads no member’s conversation or message, and keeps shared and ownerless ones'
+    );
+    const thread = (userId: string | null, label: string, extra: { fromAddress?: string } = {}) =>
+      inOrgA(() =>
+        prisma.aiConversation.create({
+          data: {
+            userId,
+            agentId: a.agentId,
+            title: `${PREFIX} ${label}`,
+            ...(extra.fromAddress ? { channel: 'sms', fromAddress: extra.fromAddress } : {}),
+            messages: { create: { role: 'user', content: `${PREFIX} ${label} says hi` } },
+          },
+          include: { messages: { select: { id: true } } },
+        })
+      );
+    const t1 = await thread(m1.userId, 'm1-private');
+    const t2 = await thread(m2.userId, 'm2-private');
+    const tShared = await thread(m2.userId, 'm2-shared');
+    await inOrgA(() =>
+      prisma.aiConversationShare.create({
+        data: { conversationId: tShared.id, expiresAt: new Date(Date.now() + 86_400_000) },
+      })
+    );
+    const tInbound = await thread(null, 'inbound', { fromAddress: `+44${stamp}`.slice(0, 15) });
+    const threadIds = [t1.id, t2.id, tShared.id, tInbound.id];
+    const messageOf = (t: { messages: Array<{ id: string }> }) => t.messages[0].id;
+
+    const orgAdminUser = await prisma.user.create({
+      data: {
+        name: `${PREFIX} org admin`,
+        email: `${PREFIX}-orgadmin-${stamp}@example.com`,
+      },
+    });
+    await prisma.orgMembership.create({
+      data: { orgId: a.orgId, userId: orgAdminUser.id, role: ORG_ADMIN_ROLE },
+    });
+    const orgAdmin: AuthorizationPrincipal = {
+      userId: orgAdminUser.id,
+      role: DEFAULT_USER_ROLE,
+      credential: 'session',
+      orgId: a.orgId,
+      orgRole: ORG_ADMIN_ROLE,
+    };
+    const orgAdminViewer = {
+      user: { id: orgAdminUser.id },
+      unattributedReads: await resolveUnattributedReads(orgAdmin),
+    };
+    const ownerlessAdmitted = orgAdminViewer.unattributedReads.conversation;
+    const refusedConversation = /Refused Ai(Conversation|Message)\.(findMany|count|findUnique)/;
+
+    // The population is non-empty, and every thread and message is in A (fp6).
+    const allThreads = await asPrincipal(
+      { userId: a.ownerId, role: PLATFORM_ADMIN_ROLE, credential: 'session' },
+      () =>
+        inOrgA(() =>
+          prisma.aiConversation.findMany({
+            where: { id: { in: threadIds } },
+            include: { _count: { select: { messages: true } } },
+          })
+        )
+    );
+    check(
+      allThreads.length === 4 && allThreads.every((t) => t._count.messages === 1),
+      'a platform admin in A sees all four threads and their messages'
+    );
+
+    const listed = await asPrincipal(orgAdmin, () =>
+      inOrgA(() =>
+        prisma.aiConversation.findMany({
+          where: { AND: [conversationVisibilityWhere(orgAdminViewer), { id: { in: threadIds } }] },
+          select: { id: true },
+        })
+      )
+    );
+    const visibleIds = new Set(listed.map((t) => t.id));
+    check(
+      !visibleIds.has(t1.id) && !visibleIds.has(t2.id),
+      'the org ADMIN’s conversation list holds neither member’s private thread'
+    );
+    check(visibleIds.has(tShared.id), 'the org ADMIN’s list keeps the thread shared with them');
+    check(
+      visibleIds.has(tInbound.id) === ownerlessAdmitted,
+      `the org ADMIN’s list ${ownerlessAdmitted ? 'keeps' : 'drops'} the ownerless thread, as the policy answers`
+    );
+    const visibleMessages = await asPrincipal(orgAdmin, () =>
+      inOrgA(() =>
+        prisma.aiMessage.findMany({
+          where: {
+            conversationId: { in: threadIds },
+            conversation: conversationVisibilityWhere(orgAdminViewer),
+          },
+          select: { id: true },
+        })
+      )
+    );
+    const visibleMessageIds = new Set(visibleMessages.map((m) => m.id));
+    check(
+      !visibleMessageIds.has(messageOf(t1)) &&
+        !visibleMessageIds.has(messageOf(t2)) &&
+        visibleMessageIds.has(messageOf(tShared)),
+      'the org ADMIN reads the shared thread’s message and neither member’s'
+    );
+    await rejects(
+      () =>
+        asPrincipal(orgAdmin, () =>
+          inOrgA(() => prisma.aiConversation.findMany({ where: { agentId: a.agentId } }))
+        ),
+      refusedConversation,
+      'the org ADMIN is refused an unnarrowed list of the agent’s conversations'
+    );
+    await rejects(
+      () => asPrincipal(orgAdmin, () => inOrgA(() => prisma.aiMessage.count())),
+      refusedConversation,
+      'the org ADMIN is refused an unnarrowed count of messages'
+    );
+    for (const [t, label] of [
+      [t1, 'member one’s'],
+      [t2, 'member two’s'],
+    ] as const) {
+      await rejects(
+        () =>
+          asPrincipal(orgAdmin, () =>
+            inOrgA(() => prisma.aiConversation.findUnique({ where: { id: t.id } }))
+          ),
+        refusedConversation,
+        `the org ADMIN is refused ${label} thread looked up by id`
+      );
+      await rejects(
+        () =>
+          asPrincipal(orgAdmin, () =>
+            inOrgA(() => prisma.aiMessage.findUnique({ where: { id: messageOf(t) } }))
+          ),
+        refusedConversation,
+        `the org ADMIN is refused ${label} message looked up by id`
+      );
+    }
+    const sharedById = await asPrincipal(orgAdmin, () =>
+      inOrgA(async () => ({
+        thread: await prisma.aiConversation.findUnique({
+          where: { id: tShared.id },
+          include: { messages: true },
+        }),
+        message: await prisma.aiMessage.findUnique({ where: { id: messageOf(tShared) } }),
+      }))
+    );
+    check(
+      sharedById.thread?.messages.length === 1 && sharedById.message !== null,
+      'the org ADMIN opens the shared thread and its message by id'
+    );
+    // A share consents to the admin surface only: the same caller on a
+    // `withAuth` route is refused the thread, as any member would be.
+    await rejects(
+      () =>
+        asPrincipal(
+          orgAdmin,
+          () => inOrgA(() => prisma.aiConversation.findUnique({ where: { id: tShared.id } })),
+          { readsShared: false }
+        ),
+      refusedConversation,
+      'the shared thread is refused by id off the admin surface'
+    );
+
+    // Sunrise's default admits only platform staff to ownerless rows, and they
+    // are not narrowed. A fork's policy may admit its org admins too: the same
+    // narrowed admin, answered that way, keeps the inbound thread — and still
+    // reads neither member's.
+    const ownerlessViewer = {
+      user: orgAdminViewer.user,
+      unattributedReads: { ...orgAdminViewer.unattributedReads, conversation: true },
+    };
+    const asAdmittedAdmin = <T>(fn: () => Promise<T>) =>
+      runAsSubject(
+        {
+          principal: orgAdmin,
+          resolveFilter: () => subjectScope(orgAdmin),
+          unattributedReads: ownerlessViewer.unattributedReads,
+          readsShared: true,
+        },
+        fn
+      );
+    const admittedList = await asAdmittedAdmin(() =>
+      inOrgA(() =>
+        prisma.aiConversation.findMany({
+          where: { AND: [conversationVisibilityWhere(ownerlessViewer), { id: { in: threadIds } }] },
+          select: { id: true },
+        })
+      )
+    );
+    const admittedIds = new Set(admittedList.map((t) => t.id));
+    check(
+      admittedIds.has(tInbound.id) &&
+        admittedIds.has(tShared.id) &&
+        !admittedIds.has(t1.id) &&
+        !admittedIds.has(t2.id),
+      'an org ADMIN a policy admits to ownerless threads lists the inbound and shared ones, and no member’s'
+    );
+    const inboundById = await asAdmittedAdmin(() =>
+      inOrgA(() => prisma.aiMessage.findUnique({ where: { id: messageOf(tInbound) } }))
+    );
+    check(inboundById !== null, 'that admin opens the inbound thread’s message by id');
+    await rejects(
+      () =>
+        asAdmittedAdmin(() =>
+          inOrgA(() => prisma.aiConversation.findUnique({ where: { id: t1.id } }))
+        ),
+      refusedConversation,
+      'that admin is still refused member one’s thread by id'
+    );
+
+    const ownMessages = await asPrincipal(m1.principal, () =>
+      inOrgA(() =>
+        prisma.aiMessage.findMany({
+          where: { conversationId: t1.id, conversation: { userId: m1.userId } },
+        })
+      )
+    );
+    check(ownMessages.length === 1, 'member one reads their own thread’s messages');
+    await rejects(
+      () =>
+        asPrincipal(m1.principal, () =>
+          inOrgA(() => prisma.aiMessage.findUnique({ where: { id: messageOf(t2) } }))
+        ),
+      refusedConversation,
+      'member one is refused member two’s message looked up by id'
+    );
+
+    // ── [16d] …nor the other's workflow runs (§115 t-803) ─────────────────
+    // A run each member started and one a schedule started, which nobody
+    // owns. The narrowed org ADMIN lists neither member's run, keeps the
+    // ownerless one where the policy admits it, and is refused an unnarrowed
+    // read; a run count per workflow and a maintenance job fired from their
+    // request read across owners because they say so.
+    console.log(
+      '\n[16d] two members of A: an org ADMIN reads no member’s workflow run, and keeps ownerless ones where admitted'
+    );
+    const run = (userId: string | null) =>
+      inOrgA(() =>
+        prisma.aiWorkflowExecution.create({
+          data: {
+            workflowId: a.workflowId,
+            status: 'completed',
+            inputData: { smoke: PREFIX },
+            executionTrace: [],
+            userId,
+          },
+        })
+      );
+    const r1 = await run(m1.userId);
+    const r2 = await run(m2.userId);
+    const rSystem = await run(null);
+    const runIds = [r1.id, r2.id, rSystem.id];
+    const refusedRun = /Refused AiWorkflowExecution\.(findMany|count|findUnique)/;
+    const executionsAdmitted = orgAdminViewer.unattributedReads.execution;
+
+    // The population is non-empty, and every run is in A (fp6).
+    const allRuns = await asPrincipal(
+      { userId: a.ownerId, role: PLATFORM_ADMIN_ROLE, credential: 'session' },
+      () => inOrgA(() => prisma.aiWorkflowExecution.findMany({ where: { id: { in: runIds } } }))
+    );
+    check(allRuns.length === 3, 'a platform admin in A sees all three runs');
+
+    const listedRuns = await asPrincipal(orgAdmin, () =>
+      inOrgA(() =>
+        prisma.aiWorkflowExecution.findMany({
+          where: { AND: [executionVisibilityWhere(orgAdminViewer), { id: { in: runIds } }] },
+          select: { id: true },
+        })
+      )
+    );
+    const visibleRuns = new Set(listedRuns.map((r) => r.id));
+    check(
+      !visibleRuns.has(r1.id) && !visibleRuns.has(r2.id),
+      'the org ADMIN’s executions list holds neither member’s run'
+    );
+    check(
+      visibleRuns.has(rSystem.id) === executionsAdmitted,
+      `the org ADMIN’s list ${executionsAdmitted ? 'keeps' : 'drops'} the ownerless run, as the policy answers`
+    );
+    await rejects(
+      () =>
+        asPrincipal(orgAdmin, () =>
+          inOrgA(() => prisma.aiWorkflowExecution.findMany({ where: { workflowId: a.workflowId } }))
+        ),
+      refusedRun,
+      'the org ADMIN is refused an unnarrowed list of the workflow’s runs'
+    );
+    await rejects(
+      () => asPrincipal(orgAdmin, () => inOrgA(() => prisma.aiWorkflowExecution.count())),
+      refusedRun,
+      'the org ADMIN is refused an unnarrowed count of runs'
+    );
+    for (const [r, label] of [
+      [r1, 'member one’s'],
+      [r2, 'member two’s'],
+    ] as const) {
+      await rejects(
+        () =>
+          asPrincipal(orgAdmin, () =>
+            inOrgA(() => prisma.aiWorkflowExecution.findUnique({ where: { id: r.id } }))
+          ),
+        refusedRun,
+        `the org ADMIN is refused ${label} run looked up by id`
+      );
+    }
+
+    // A fork's policy that admits its org admins to ownerless runs: the same
+    // narrowed admin keeps the scheduled run, and still no member's.
+    const executionViewer = {
+      user: orgAdminViewer.user,
+      unattributedReads: { ...orgAdminViewer.unattributedReads, execution: true },
+    };
+    const asRunAdmittedAdmin = <T>(fn: () => Promise<T>) =>
+      runAsSubject(
+        {
+          principal: orgAdmin,
+          resolveFilter: () => subjectScope(orgAdmin),
+          unattributedReads: executionViewer.unattributedReads,
+          readsShared: true,
+        },
+        fn
+      );
+    const admittedRuns = await asRunAdmittedAdmin(() =>
+      inOrgA(() =>
+        prisma.aiWorkflowExecution.findMany({
+          where: { AND: [executionVisibilityWhere(executionViewer), { id: { in: runIds } }] },
+          select: { id: true },
+        })
+      )
+    );
+    check(
+      admittedRuns.length === 1 && admittedRuns[0].id === rSystem.id,
+      'an org ADMIN a policy admits to ownerless runs lists the scheduled run, and no member’s'
+    );
+    const systemById = await asRunAdmittedAdmin(() =>
+      inOrgA(() => prisma.aiWorkflowExecution.findUnique({ where: { id: rSystem.id } }))
+    );
+    check(systemById?.id === rSystem.id, 'that admin opens the scheduled run by id');
+    await rejects(
+      () =>
+        asRunAdmittedAdmin(() =>
+          inOrgA(() => prisma.aiWorkflowExecution.findUnique({ where: { id: r1.id } }))
+        ),
+      refusedRun,
+      'that admin is still refused member one’s run by id'
+    );
+
+    const ownRun = await asPrincipal(m1.principal, () =>
+      inOrgA(() => prisma.aiWorkflowExecution.findUnique({ where: { id: r1.id } }))
+    );
+    check(ownRun?.id === r1.id, 'member one opens their own run by id');
+
+    // The declared crossings: a run count per workflow (the workflows list),
+    // and a maintenance job fired from the org ADMIN's request.
+    await rejects(
+      () =>
+        asPrincipal(orgAdmin, () =>
+          inOrgA(() =>
+            prisma.aiWorkflow.findMany({
+              where: { id: a.workflowId },
+              include: { _count: { select: { executions: true } } },
+            })
+          )
+        ),
+      /Refused AiWorkflow\.findMany/,
+      'the org ADMIN is refused a per-workflow run count outside a crossing'
+    );
+    const counted = await asPrincipal(orgAdmin, () =>
+      runAcrossOwners('smoke: a run count per workflow', () =>
+        inOrgA(() =>
+          prisma.aiWorkflow.findUnique({
+            where: { id: a.workflowId },
+            include: { _count: { select: { executions: true } } },
+          })
+        )
+      )
+    );
+    check(
+      (counted?._count.executions ?? 0) >= 3,
+      `a declared crossing counts every member’s runs (${counted?._count.executions})`
+    );
+    const jobCount = await asPrincipal(orgAdmin, () =>
+      runScopedJob({
+        name: 'smoke-runs',
+        scope: 'per-org',
+        run: () => prisma.aiWorkflowExecution.count({ where: { id: { in: runIds } } }),
+        foundWork: () => false,
+      })
+    );
+    // One org: the job's own number. Several: folded into `total`.
+    const jobTotal = typeof jobCount.result === 'number' ? jobCount.result : jobCount.result.total;
+    check(
+      jobTotal === 3,
+      `a maintenance job fired from the org ADMIN’s request reads every run (${JSON.stringify(jobCount.result)})`
+    );
+
     console.log(
       '\n[17] a person in A and B: their export holds both orgs’ rows, and no one else’s'
     );
@@ -1939,7 +3114,6 @@ async function main(): Promise<void> {
         const { receiptId } = await run(() =>
           eraseUser({
             userId: who.userId,
-            userEmail: who.email,
             actorUserId: reason === 'self_service' ? who.userId : a.ownerId,
             reason,
           })
@@ -2019,6 +3193,380 @@ async function main(): Promise<void> {
       check(leaked.length === 0, `B’s export ${label} holds none of A’s`);
     }
 
+    // ── [19b] Orchestration backup: one org's own part, into another ──────
+    // A's backup, exported in A and imported into B, asked from inside A (an
+    // admin's session) and from no org (an admin API key) (§109 t-738). Only
+    // B's rows may change: A's agent and workflow, and the shared rows every
+    // org reads, must not.
+    console.log('\n[19b] backup: A’s own part, imported into B from inside A and from no org');
+    const globalState = () =>
+      runAsSystem('smoke: global config counts', async () => ({
+        capabilities: await prisma.aiCapability.count(),
+        tags: await prisma.knowledgeTag.count(),
+        settingsAt:
+          (
+            await prisma.aiOrchestrationSettings.findUnique({
+              where: { slug: 'global' },
+              select: { updatedAt: true },
+            })
+          )?.updatedAt.getTime() ?? null,
+      }));
+    const aState = () =>
+      runAsSystem('smoke: org A backup rows', async () => ({
+        agentAt: (
+          await prisma.aiAgent.findUniqueOrThrow({
+            where: { id: a.agentId },
+            select: { updatedAt: true },
+          })
+        ).updatedAt.getTime(),
+        workflows: await prisma.aiWorkflow.count({ where: { orgId: a.orgId } }),
+        agents: await prisma.aiAgent.count({ where: { orgId: a.orgId } }),
+      }));
+    for (const [label, run] of askers) {
+      const backup = await run(() =>
+        exportOrchestrationConfig({ orgId: a.orgId, includeShared: false })
+      );
+      check(
+        backup.data.agents.some((agent) => agent.name === 'Support a') &&
+          !backup.data.agents.some((agent) => agent.name === 'Support b'),
+        `A’s backup ${label} holds A’s agent and not B’s`
+      );
+      check(
+        backup.data.workflows.some((wf) => wf.slug === a.workflowSlug) &&
+          !backup.data.workflows.some((wf) => wf.slug === b.workflowSlug),
+        `A’s backup ${label} holds A’s workflow and not B’s`
+      );
+      check(
+        backup.data.capabilities.length === 0 &&
+          backup.data.knowledgeTags.length === 0 &&
+          backup.data.settings === null,
+        `A’s backup ${label}, not asked for the shared part, carries it empty`
+      );
+
+      const globalsBefore = await globalState();
+      const aBefore = await aState();
+      let result: Awaited<ReturnType<typeof importOrchestrationConfig>> | null = null;
+      try {
+        result = await run(() =>
+          importOrchestrationConfig(backup, b.ownerId, { orgId: b.orgId, includeShared: false })
+        );
+      } catch (err) {
+        check(
+          false,
+          `importing A’s backup into B ${label} — it threw: ${err instanceof Error ? err.message : String(err)}`
+        );
+        continue;
+      }
+      check(true, `importing A’s backup into B ${label} completed`);
+      // B's `support` already exists (t-708: the same slug in each org), so it
+      // is updated in B; A's copy of the slug must not be touched.
+      const bSupport = await runAsOrg(b.orgId, () =>
+        prisma.aiAgent.findFirst({
+          where: { slug: 'support' },
+          select: { name: true, orgId: true },
+        })
+      );
+      check(
+        bSupport?.name === 'Support a' && bSupport.orgId === b.orgId,
+        `B’s \`support\` now carries A’s config and is still B’s (${bSupport?.name})`
+      );
+      const aAfter = await aState();
+      check(
+        aAfter.agentAt === aBefore.agentAt &&
+          aAfter.workflows === aBefore.workflows &&
+          aAfter.agents === aBefore.agents,
+        `A’s agent and workflows are untouched ${label}`
+      );
+      // A's workflow slug is unique across every org, so B takes a free one —
+      // and the second asker imports the SAME bundle into B again, which must
+      // update that copy (found by its `importedFromSlug` marker), not add one.
+      const renamed = result.warnings.some((w) =>
+        w.startsWith(`Workflow '${a.workflowSlug}' imported as`)
+      );
+      const copiesInB = await runAsOrg(b.orgId, () =>
+        prisma.aiWorkflow.findMany({
+          where: { name: `${PREFIX} workflow a` },
+          select: { slug: true, orgId: true },
+        })
+      );
+      const [copyInB] = copiesInB;
+      check(
+        copiesInB.length === 1 &&
+          copyInB.slug !== a.workflowSlug &&
+          copyInB.orgId === b.orgId &&
+          (renamed || result.workflows.updated > 0),
+        `A’s workflow is in B once, under a free slug (${copiesInB.map((c) => c.slug).join(', ')}), ${renamed ? 'created' : 'updated on the repeat import'}`
+      );
+      const globalsAfter = await globalState();
+      check(
+        JSON.stringify(globalsAfter) === JSON.stringify(globalsBefore),
+        `no shared row changed ${label}`
+      );
+    }
+
+    // A bundle that DOES carry a shared part, imported into B without asking:
+    // the shared part is skipped and said so, and no shared row changes.
+    const fullBackup = await exportOrchestrationConfig({ orgId: a.orgId, includeShared: true });
+    check(
+      fullBackup.data.capabilities.length > 0 || fullBackup.data.settings !== null,
+      'a backup asked for the shared part carries it'
+    );
+    const globalsBeforeShared = await globalState();
+    const sharedResult = await importOrchestrationConfig(fullBackup, b.ownerId, {
+      orgId: b.orgId,
+      includeShared: false,
+    });
+    check(
+      sharedResult.sharedSkipped &&
+        sharedResult.capabilities.created + sharedResult.capabilities.updated === 0,
+      'imported into B without asking, the shared part is skipped and reported'
+    );
+    check(
+      JSON.stringify(await globalState()) === JSON.stringify(globalsBeforeShared),
+      'and no shared row changed'
+    );
+
+    // ── [19c] Support access: entry only under B's open grant (§121 t-824) ─
+    // A platform admin who is a member of neither org, entered into B through
+    // the real `enterSessionOrg` against the real grant table — the read the
+    // guards make on every request. While admitted, the reads run as the
+    // guard runs them (source `support`, B's org) under RLS. The cookie path
+    // of the guard itself needs a request, which a script does not have; the
+    // order it refuses a READ_ONLY write in (before the handler) is the unit
+    // tests' (`tests/unit/lib/auth/guards-support.test.ts`). Here the guard's
+    // own predicate decides, and the table is read to show nothing landed.
+    console.log('\n[19c] support access: a platform admin enters B only under its open grant');
+    const supporter = await prisma.user.create({
+      data: {
+        name: `${PREFIX} vendor support`,
+        email: `${PREFIX}-support-${stamp}@example.com`,
+        role: PLATFORM_ADMIN_ROLE,
+      },
+    });
+    const supportUser = { id: supporter.id, role: PLATFORM_ADMIN_ROLE };
+    const enterB = (now?: Date) => enterSessionOrg(supportUser, b.orgId, null, prisma, now);
+    const describeEntry = (entry: Awaited<ReturnType<typeof enterB>>) =>
+      isOrgRefusal(entry) ? `refused: ${entry.refused}` : `entered as ${entry.source}`;
+
+    const beforeGrant = await enterB();
+    check(
+      isOrgRefusal(beforeGrant),
+      `before B grants anything, the platform admin is refused (${describeEntry(beforeGrant)})`
+    );
+
+    const ownerOfB = { userId: b.ownerId, orgId: b.orgId, orgRole: ORG_OWNER_ROLE };
+    const { grant: adminGrant } = await runAsOrg(
+      b.orgId,
+      () => grantSupportAccess(b.orgId, { reason: `${PREFIX} smoke`, durationHours: 1 }, ownerOfB),
+      { source: 'session' }
+    );
+    const during = await enterB();
+    check(
+      !isOrgRefusal(during) &&
+        during.source === 'support' &&
+        during.orgId === b.orgId &&
+        during.role === ORG_ADMIN_ROLE &&
+        during.support?.grantId === adminGrant.id,
+      `under B's open grant, the platform admin enters B as support ADMIN (${describeEntry(during)})`
+    );
+    if (!isOrgRefusal(during)) {
+      const seenAsSupport = await runAsOrg(b.orgId, () => visible(b.orgId, b, a), {
+        source: 'support',
+        role: during.role,
+        support: during.support,
+      });
+      check(
+        seenAsSupport.agents.includes(b.agentId) &&
+          seenAsSupport.documents.includes(b.documentId) &&
+          seenAsSupport.conversations.includes(b.conversationId),
+        'as support in B, B’s agent, document and conversation are there'
+      );
+      const leakedToSupport = Object.values(seenAsSupport)
+        .flat()
+        .filter((id) =>
+          [
+            a.agentId,
+            a.documentId,
+            ...a.chunkIds,
+            a.conversationId,
+            ...a.messageIds,
+            a.executionId,
+            a.costLogId,
+          ].includes(id)
+        );
+      check(
+        leakedToSupport.length === 0,
+        `as support in B, nothing of A (${leakedToSupport.length} leaked)`
+      );
+    }
+    const afterExpiry = await enterB(new Date(adminGrant.expiresAt.getTime() + 1_000));
+    check(
+      isOrgRefusal(afterExpiry),
+      `a second after the grant expires, the same session is refused (${describeEntry(afterExpiry)})`
+    );
+
+    // The granter demoted: consent from someone who no longer speaks for B
+    // admits nobody (owner ruling, 2026-10-16). Put back straight after.
+    await runAsSystem('smoke: demote B’s owner', () =>
+      prisma.orgMembership.update({
+        where: { orgId_userId: { orgId: b.orgId, userId: b.ownerId } },
+        data: { role: ORG_ADMIN_ROLE },
+      })
+    );
+    const granterDemoted = await enterB();
+    await runAsSystem('smoke: restore B’s owner', () =>
+      prisma.orgMembership.update({
+        where: { orgId_userId: { orgId: b.orgId, userId: b.ownerId } },
+        data: { role: ORG_OWNER_ROLE },
+      })
+    );
+    check(
+      isOrgRefusal(granterDemoted),
+      `with the granter no longer B’s OWNER, the grant admits nobody (${describeEntry(granterDemoted)})`
+    );
+
+    await revokeSupportGrant(b.orgId, adminGrant.id, { userId: b.ownerId });
+    const afterRevoke = await enterB();
+    check(
+      isOrgRefusal(afterRevoke),
+      `after B revokes the grant, the platform admin is refused (${describeEntry(afterRevoke)})`
+    );
+
+    const intoA = await enterSessionOrg(supportUser, a.orgId, null, prisma);
+    check(
+      isOrgRefusal(intoA),
+      `A granted nothing, so the platform admin is refused entry to A (${describeEntry(intoA)})`
+    );
+
+    // A READ_ONLY grant: admitted for reads, a write refused before it runs.
+    const { grant: readOnlyGrant } = await runAsOrg(
+      b.orgId,
+      () =>
+        grantSupportAccess(
+          b.orgId,
+          { reason: `${PREFIX} smoke read-only`, level: 'READ_ONLY', durationHours: 1 },
+          ownerOfB
+        ),
+      { source: 'session' }
+    );
+    const readOnlyEntry = await enterB();
+    check(
+      !isOrgRefusal(readOnlyEntry) && readOnlyEntry.support?.level === 'READ_ONLY',
+      `under a READ_ONLY grant, the platform admin enters B (${describeEntry(readOnlyEntry)})`
+    );
+    const agentsInB = () => runAsOrg(b.orgId, () => prisma.aiAgent.count(), { source: 'support' });
+    const agentsBefore = await agentsInB();
+    const writeRefused =
+      !isOrgRefusal(readOnlyEntry) && isRefusedReadOnlyWrite(readOnlyEntry, 'POST');
+    if (!writeRefused && !isOrgRefusal(readOnlyEntry)) {
+      // What the guard would have let through: the write, as the handler.
+      await runAsOrg(
+        b.orgId,
+        () =>
+          prisma.aiAgent.create({
+            data: {
+              name: `${PREFIX} support write`,
+              slug: `${PREFIX}-support-write-${stamp}`,
+              description: 'smoke fixture',
+              systemInstructions: 'smoke fixture',
+              model: '',
+              provider: 'anthropic',
+            },
+          }),
+        { source: 'support', role: readOnlyEntry.role, support: readOnlyEntry.support }
+      );
+    }
+    check(
+      writeRefused && (await agentsInB()) === agentsBefore,
+      `a READ_ONLY POST is refused by the guard’s rule, and B’s agents are unchanged (${agentsBefore})`
+    );
+    check(
+      !isOrgRefusal(readOnlyEntry) && !isRefusedReadOnlyWrite(readOnlyEntry, 'GET'),
+      'and a READ_ONLY GET is admitted'
+    );
+    await revokeSupportGrant(b.orgId, readOnlyGrant.id, { userId: b.ownerId });
+
+    // ── [19d] Support audit rows: stamped, and read back by their org only (§121 t-825)
+    // `logAdminAction` is what all of the admin routes call, so a row written
+    // through it inside the support entry above is the row any of them would
+    // write. The org's read runs in an org scope, as its route does, and is
+    // the read that has to refuse a grant id from somewhere else.
+    console.log('\n[19d] support audit: rows name the grant, and only B reads them back');
+    const auditName = (what: string) => `${PREFIX} ${what} ${stamp}`;
+    const auditRow = async (entityName: string) => {
+      // Fire-and-forget: wait for the write to land.
+      for (let i = 0; i < 40; i++) {
+        const row = await prisma.aiAdminAuditLog.findFirst({
+          where: { entityName },
+          select: { id: true, supportGrantId: true, supportOrgId: true },
+        });
+        if (row) return row;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      return null;
+    };
+    const supportAction = auditName('support action');
+    const memberAction = auditName('member action');
+    if (!isOrgRefusal(during) && during.support) {
+      await runAsOrg(
+        b.orgId,
+        () =>
+          Promise.resolve(
+            logAdminAction({
+              userId: supporter.id,
+              action: 'agent.update',
+              entityType: 'agent',
+              entityId: b.agentId,
+              entityName: supportAction,
+            })
+          ),
+        { source: 'support', role: during.role, support: during.support }
+      );
+    }
+    await runAsOrg(
+      b.orgId,
+      () =>
+        Promise.resolve(
+          logAdminAction({
+            userId: b.ownerId,
+            action: 'agent.update',
+            entityType: 'agent',
+            entityId: b.agentId,
+            entityName: memberAction,
+          })
+        ),
+      { source: 'session', role: ORG_OWNER_ROLE }
+    );
+    const supportRow = await auditRow(supportAction);
+    const memberRow = await auditRow(memberAction);
+    check(
+      supportRow?.supportGrantId === adminGrant.id && supportRow.supportOrgId === b.orgId,
+      `a row written inside the support entry names B’s grant and B (${JSON.stringify(supportRow)})`
+    );
+    check(
+      memberRow !== null && memberRow.supportGrantId === null && memberRow.supportOrgId === null,
+      `a row written by B’s own owner names no grant (${JSON.stringify(memberRow)})`
+    );
+    const activity = (orgId: string, grantId?: string) =>
+      runAsOrg(orgId, () => listSupportActivity(orgId, { grantId, page: 1, limit: 100 }), {
+        source: 'session',
+        role: ORG_OWNER_ROLE,
+      });
+    const bReads = await activity(b.orgId, adminGrant.id);
+    check(
+      bReads.entries.some((e) => e.id === supportRow?.id) &&
+        !bReads.entries.some((e) => e.id === memberRow?.id),
+      `B reads the support row under its grant, and not its owner’s own (${bReads.total} rows)`
+    );
+    const aNamesBsGrant = await activity(a.orgId, adminGrant.id);
+    const aReadsAll = await activity(a.orgId);
+    check(
+      bReads.total > 0 &&
+        aNamesBsGrant.total === 0 &&
+        !aReadsAll.entries.some((e) => e.id === supportRow?.id),
+      `A naming B’s grant reads nothing (${aNamesBsGrant.total}), and A’s own list holds none of B’s`
+    );
+
     // ── [20] Org erasure: from inside another org, with knowledge documents ─
     // `ai_knowledge_document.knowledgeBaseId` is ON DELETE RESTRICT, and both
     // rows also cascade from the org: erasure must still go through (t-730).
@@ -2089,6 +3637,20 @@ async function main(): Promise<void> {
       `A, erased from no org (an admin API key), is gone, and no row carries its org${nonZero(afterErasingA).length ? ` — left: ${JSON.stringify(nonZero(afterErasingA))}` : ''}`
     );
 
+    // [19d]'s support row outlives B: the grant is gone with the org, and the
+    // vendor's log still says the row was support, in B.
+    const supportRowAfterErasure = await runAsSystem('smoke: read the support audit row', () =>
+      prisma.aiAdminAuditLog.findFirst({
+        where: { entityName: supportAction },
+        select: { supportGrantId: true, supportOrgId: true },
+      })
+    );
+    check(
+      supportRowAfterErasure?.supportGrantId === null &&
+        supportRowAfterErasure.supportOrgId === b.orgId,
+      `after B’s erasure, its support audit row stays, marked as support in B (${JSON.stringify(supportRowAfterErasure)})`
+    );
+
     if (failures > 0) throw new Error(`${failures} check(s) failed`);
     console.log('\n✓ smoke:tenancy-isolation passed');
   } finally {
@@ -2103,6 +3665,9 @@ async function main(): Promise<void> {
         await prisma.aiCostLog.deleteMany({ where: { id: f.costLogId } });
       }
       await prisma.dataErasureReceipt.deleteMany({ where: { id: { in: erasureReceiptIds } } });
+      await prisma.aiAdminAuditLog.deleteMany({
+        where: { entityName: { startsWith: `${PREFIX} ` } },
+      });
       await prisma.org.deleteMany({ where: { slug: { startsWith: `${PREFIX}-` } } });
       await prisma.user.deleteMany({ where: { email: { startsWith: `${PREFIX}-` } } });
       await prisma.knowledgeTag.deleteMany({ where: { slug: { startsWith: `${PREFIX}-` } } });

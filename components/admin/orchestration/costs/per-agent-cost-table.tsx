@@ -44,7 +44,7 @@ function utilisationColour(utilisation: number | null): string {
   return 'bg-emerald-500 dark:bg-emerald-600';
 }
 
-function UtilisationBar({ utilisation }: { utilisation: number | null }) {
+export function UtilisationBar({ utilisation }: { utilisation: number | null }) {
   if (utilisation === null) {
     return <span className="text-muted-foreground text-xs">No budget set</span>;
   }

@@ -5,12 +5,15 @@
  *
  * Test Coverage:
  * - Renders all sub-sections without crashing when all props are null
+ *   (except the alerts: null there means they failed to load)
+ * - A failed alerts load (null) shows a notice in the alerts panel's place
  * - Renders all sub-sections without crashing with populated props
  * - Passes summary to CostSummaryCards and BudgetAlertsList
  * - Passes trend and perModel to CostTrendChart
  * - Passes byAgent rows to PerAgentCostTable and byModel to PerModelBreakdownTable
  * - Passes summary and models to LocalVsCloudPanel
  * - Renders an "Open Settings" link card pointing at /admin/orchestration/settings
+ * - Shows the per-org table only with more than one org (§110 t-790)
  *
  * @see components/admin/orchestration/costs/costs-view.tsx
  */
@@ -87,6 +90,12 @@ vi.mock('@/components/admin/orchestration/costs/pricing-reference', () => ({
   ),
 }));
 
+vi.mock('@/components/admin/orchestration/costs/per-org-usage-table', () => ({
+  PerOrgUsageTable: ({ report }: { report: { orgs: unknown[] } }) => (
+    <div data-testid="per-org-usage-table" data-org-count={report.orgs.length} />
+  ),
+}));
+
 vi.mock('@/components/admin/orchestration/costs/cost-methodology', () => ({
   CostMethodology: () => <div data-testid="cost-methodology" />,
 }));
@@ -94,7 +103,11 @@ vi.mock('@/components/admin/orchestration/costs/cost-methodology', () => ({
 // ─── Imports after mocks ──────────────────────────────────────────────────────
 
 import { CostsView } from '@/components/admin/orchestration/costs/costs-view';
-import type { CostSummary } from '@/lib/orchestration/llm/cost-reports';
+import type {
+  CostSummary,
+  OrgUsageReport,
+  OrgUsageRow,
+} from '@/lib/orchestration/llm/cost-reports';
 import type { ModelInfo } from '@/lib/orchestration/llm/types';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -146,7 +159,9 @@ describe('CostsView', () => {
       );
 
       expect(screen.getByTestId('cost-summary-cards')).toBeInTheDocument();
-      expect(screen.getByTestId('budget-alerts-list')).toBeInTheDocument();
+      // `alerts: null` means they failed to load: the panel is a notice.
+      expect(screen.queryByTestId('budget-alerts-list')).not.toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load budget alerts");
       expect(screen.getByTestId('cost-trend-chart')).toBeInTheDocument();
       expect(screen.getByTestId('per-agent-cost-table')).toBeInTheDocument();
       expect(screen.getByTestId('per-model-breakdown-table')).toBeInTheDocument();
@@ -288,6 +303,137 @@ describe('CostsView', () => {
       const el = screen.getByTestId('pricing-reference');
       expect(el).toHaveAttribute('data-has-fetched-at', 'true');
       expect(el).toHaveAttribute('data-has-models', 'true');
+    });
+  });
+
+  describe('budget alerts that failed to load (#518)', () => {
+    it('shows a notice in the alerts panel’s place and still renders the other panels', () => {
+      render(
+        <CostsView
+          summary={MOCK_SUMMARY}
+          alerts={null}
+          globalCap={null}
+          perModel={PER_MODEL}
+          models={MOCK_MODELS}
+        />
+      );
+
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load budget alerts");
+      expect(screen.queryByTestId('budget-alerts-list')).not.toBeInTheDocument();
+      expect(screen.getByTestId('cost-summary-cards')).toHaveAttribute('data-has-summary', 'true');
+      expect(screen.getByTestId('cost-trend-chart')).toHaveAttribute('data-has-trend', 'true');
+      expect(screen.getByTestId('per-agent-cost-table')).toHaveAttribute('data-has-rows', 'true');
+      expect(screen.getByTestId('local-vs-cloud-panel')).toBeInTheDocument();
+    });
+
+    it('renders a real empty alert list through BudgetAlertsList, with no notice', () => {
+      render(
+        <CostsView
+          summary={MOCK_SUMMARY}
+          alerts={[]}
+          globalCap={null}
+          perModel={PER_MODEL}
+          models={MOCK_MODELS}
+        />
+      );
+
+      expect(screen.getByTestId('budget-alerts-list')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('per-org usage (§110 t-790)', () => {
+    const orgRow = (orgId: string): OrgUsageRow => ({
+      orgId,
+      name: orgId,
+      slug: orgId,
+      status: 'ACTIVE',
+      totalCostUsd: 1,
+      inputTokens: 10,
+      outputTokens: 1,
+      count: 1,
+      monthlyBudgetUsd: null,
+      utilisation: null,
+    });
+    const report = (orgIds: string[]): OrgUsageReport => ({
+      period: '2026-10',
+      periodStart: '2026-10-01T00:00:00.000Z',
+      periodEnd: '2026-11-01T00:00:00.000Z',
+      orgs: orgIds.map(orgRow),
+      detached: null,
+      totals: { totalCostUsd: orgIds.length, inputTokens: 0, outputTokens: 0, count: 0 },
+    });
+    const renderWith = (orgUsage: OrgUsageReport | null) =>
+      render(
+        <CostsView
+          summary={null}
+          alerts={null}
+          globalCap={null}
+          perModel={null}
+          models={null}
+          orgUsage={orgUsage}
+        />
+      );
+
+    it('shows the per-org table when there is more than one org', () => {
+      renderWith(report(['install', 'acme']));
+      expect(screen.getByTestId('per-org-usage-table')).toHaveAttribute('data-org-count', '2');
+    });
+
+    it('hides it with one org, as at single', () => {
+      renderWith(report(['install']));
+      expect(screen.queryByTestId('per-org-usage-table')).not.toBeInTheDocument();
+    });
+
+    it("shows it with one org when an erased org's spend is detached", () => {
+      renderWith({
+        ...report(['install']),
+        detached: { totalCostUsd: 2, inputTokens: 20, outputTokens: 2, count: 1 },
+      });
+      expect(screen.getByTestId('per-org-usage-table')).toHaveAttribute('data-org-count', '1');
+    });
+
+    it('hides it when the usage could not be loaded or was refused', () => {
+      renderWith(null);
+      expect(screen.queryByTestId('per-org-usage-table')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('an org viewer (§111 t-812)', () => {
+    it('shows no per-org table and no link to the budget settings, given both', () => {
+      render(
+        <CostsView
+          summary={MOCK_SUMMARY}
+          alerts={[]}
+          globalCap={null}
+          perModel={PER_MODEL}
+          models={MOCK_MODELS}
+          orgUsage={{
+            period: '2026-10',
+            periodStart: '2026-10-01T00:00:00.000Z',
+            periodEnd: '2026-11-01T00:00:00.000Z',
+            orgs: ['install', 'acme'].map((orgId) => ({
+              orgId,
+              name: orgId,
+              slug: orgId,
+              status: 'ACTIVE',
+              totalCostUsd: 1,
+              inputTokens: 10,
+              outputTokens: 1,
+              count: 1,
+              monthlyBudgetUsd: null,
+              utilisation: null,
+            })),
+            detached: null,
+            totals: { totalCostUsd: 2, inputTokens: 0, outputTokens: 0, count: 0 },
+          }}
+          viewerTier="org"
+        />
+      );
+
+      expect(screen.getByTestId('cost-summary-cards')).toBeInTheDocument();
+      expect(screen.queryByTestId('per-org-usage-table')).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: /open settings/i })).not.toBeInTheDocument();
     });
   });
 });

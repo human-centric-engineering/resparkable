@@ -58,6 +58,7 @@ const FULL_SETTINGS: OrchestrationSettings = {
   approvalDefaultAction: 'deny',
   searchConfig: { keywordBoostWeight: -0.05, vectorWeight: 1.2 },
   webhookRetentionDays: 30,
+  webhookDlqRetentionDays: 120,
   // Cost-log retention must be >= execution retention (#456) or the form
   // refuses to submit — an execution outliving its cost logs shows a total
   // with an empty breakdown.
@@ -80,6 +81,7 @@ const EMPTY_SETTINGS: OrchestrationSettings = {
   approvalDefaultAction: null,
   searchConfig: null,
   webhookRetentionDays: null,
+  webhookDlqRetentionDays: null,
   costLogRetentionDays: null,
   auditLogRetentionDays: null,
   executionRetentionDays: null,
@@ -356,6 +358,57 @@ describe('SettingsForm', () => {
       expect(apiClient.patch).not.toHaveBeenCalled();
     });
 
+    it('blocks submit when executions are kept for ever but cost logs are not (#839)', async () => {
+      // Blank execution retention means "keep for ever", which outlives any
+      // finite cost-log window. The old refine passed whenever either was blank.
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+
+      render(
+        <SettingsForm
+          initialSettings={{
+            ...FULL_SETTINGS,
+            costLogRetentionDays: 90,
+            executionRetentionDays: null,
+          }}
+        />
+      );
+
+      const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+      await act(async () => {
+        fireEvent.submit(form!);
+      });
+
+      expect(
+        await screen.findByText(/leave blank to keep cost logs for ever/i)
+      ).toBeInTheDocument();
+      expect(apiClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('allows submit when cost logs are kept for ever against a finite execution window', async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+
+      render(
+        <SettingsForm
+          initialSettings={{
+            ...FULL_SETTINGS,
+            costLogRetentionDays: null,
+            executionRetentionDays: 90,
+          }}
+        />
+      );
+
+      const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+      await act(async () => {
+        fireEvent.submit(form!);
+      });
+
+      await waitFor(() => {
+        expect(apiClient.patch).toHaveBeenCalled();
+      });
+    });
+
     it('allows submit when the two retention windows are equal', async () => {
       const { apiClient } = await import('@/lib/api/client');
       vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
@@ -377,6 +430,59 @@ describe('SettingsForm', () => {
 
       await waitFor(() => {
         expect(apiClient.patch).toHaveBeenCalled();
+      });
+    });
+  });
+
+  // ── Failed webhook retention (#838) ─────────────────────────────────────
+
+  describe('Failed webhook retention', () => {
+    it('loads the saved window and sends an edited one', async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+      const user = userEvent.setup();
+
+      render(<SettingsForm initialSettings={FULL_SETTINGS} />);
+
+      const input = document.getElementById('webhookDlqRetentionDays');
+      expect(input).toHaveValue(120);
+      await user.clear(input!);
+      await user.type(input!, '200');
+      const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+      await act(async () => {
+        fireEvent.submit(form!);
+      });
+
+      await waitFor(() => {
+        expect(apiClient.patch).toHaveBeenCalledWith(
+          expect.stringContaining('/settings'),
+          expect.objectContaining({
+            body: expect.objectContaining({ webhookDlqRetentionDays: 200 }),
+          })
+        );
+      });
+    });
+
+    it('sends null when cleared, so failures follow the webhook window', async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+      const user = userEvent.setup();
+
+      render(<SettingsForm initialSettings={FULL_SETTINGS} />);
+
+      await user.clear(document.getElementById('webhookDlqRetentionDays')!);
+      const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+      await act(async () => {
+        fireEvent.submit(form!);
+      });
+
+      await waitFor(() => {
+        expect(apiClient.patch).toHaveBeenCalledWith(
+          expect.stringContaining('/settings'),
+          expect.objectContaining({
+            body: expect.objectContaining({ webhookDlqRetentionDays: null }),
+          })
+        );
       });
     });
   });
@@ -788,6 +894,100 @@ describe('SettingsForm', () => {
             }),
           })
         );
+      });
+    });
+
+    // t-791: erasing the list's only recipient leaves it empty with the webhook
+    // kept. Saving that as "off" would drop the webhook without anyone
+    // choosing to, so the form asks for an address instead.
+    describe('enabled with no recipients (t-791)', () => {
+      const emptied: OrchestrationSettings = {
+        ...FULL_SETTINGS,
+        escalationConfig: {
+          emailAddresses: [],
+          webhookUrl: 'https://hooks.example.com/escalate',
+          notifyOnPriority: 'high',
+        },
+      };
+
+      async function submit() {
+        const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+        await act(async () => {
+          fireEvent.submit(form!);
+        });
+      }
+
+      it('refuses to save and asks for an address, rather than PATCHing the config away', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+        render(<SettingsForm initialSettings={emptied} />);
+        expect(
+          screen.getByRole('checkbox', { name: /enable escalation notifications/i })
+        ).toBeChecked();
+
+        await submit();
+
+        expect(
+          await screen.findByText(
+            'Add at least one email address, or turn escalation notifications off.'
+          )
+        ).toBeInTheDocument();
+        expect(apiClient.patch).not.toHaveBeenCalled();
+        // Focused, so on a long page the refusal is not a save that did nothing
+        expect(
+          screen.getByRole('checkbox', { name: /enable escalation notifications/i })
+        ).toHaveFocus();
+      });
+
+      it('clears the error when an address is added, and then saves it with the kept webhook', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={emptied} />);
+        await submit();
+        await screen.findByText(/add at least one email address/i);
+
+        await user.type(screen.getByPlaceholderText(/add email address/i), 'ops@example.com');
+        await user.click(screen.getByRole('button', { name: /^add$/i }));
+
+        expect(screen.queryByText(/add at least one email address/i)).not.toBeInTheDocument();
+        await submit();
+        await waitFor(() => {
+          expect(apiClient.patch).toHaveBeenCalledWith(
+            expect.stringContaining('/settings'),
+            expect.objectContaining({
+              body: expect.objectContaining({
+                escalationConfig: {
+                  emailAddresses: ['ops@example.com'],
+                  notifyOnPriority: 'high',
+                  webhookUrl: 'https://hooks.example.com/escalate',
+                },
+              }),
+            })
+          );
+        });
+      });
+
+      it('saves null once escalation is turned off: the deliberate way to drop it', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={emptied} />);
+
+        await user.click(
+          screen.getByRole('checkbox', { name: /enable escalation notifications/i })
+        );
+        await submit();
+
+        await waitFor(() => {
+          expect(apiClient.patch).toHaveBeenCalledWith(
+            expect.stringContaining('/settings'),
+            expect.objectContaining({
+              body: expect.objectContaining({ escalationConfig: null }),
+            })
+          );
+        });
+        expect(screen.queryByText(/add at least one email address/i)).not.toBeInTheDocument();
       });
     });
 

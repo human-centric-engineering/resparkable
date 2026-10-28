@@ -47,6 +47,11 @@ import {
   type ProviderEligibilityContext,
 } from '@/lib/orchestration/llm/provider-eligibility';
 import { track, trackStream } from '@/lib/orchestration/llm/in-flight-counter';
+import {
+  assertWithinSpendCaps,
+  spendCapRefusal,
+  type SpendCapExceededError,
+} from '@/lib/orchestration/llm/spend-caps';
 import { OpenAiCompatibleProvider } from '@/lib/orchestration/llm/openai-compatible';
 import { forgetProviderRow } from '@/lib/orchestration/llm/org-provider-policy';
 import { hydrateFromDb as hydrateModelRegistryFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
@@ -216,6 +221,40 @@ export async function getProvider(
   context?: ProviderEligibilityContext
 ): Promise<LlmProvider> {
   return acquireProvider(slugOrName, context);
+}
+
+/**
+ * Whether `slugOrName` is a local provider, whose calls cost nothing. `false`
+ * when it cannot be found, so a caller deciding whether a spend cap applies
+ * treats a provider it cannot see as a paid one.
+ *
+ * Read off the provider's row, the same rule {@link buildProviderFromConfig}
+ * builds the client's `isLocal` from, so it asks no credential resolver and
+ * builds no client, and a local row whose credential cannot be resolved is
+ * still local. Slug before name, as `acquireProvider` matches. A provider a
+ * fork registered in code has no row, so only its instance can say.
+ */
+export async function isLocalProvider(slugOrName: string): Promise<boolean> {
+  try {
+    const cached = instanceCache.get(slugOrName);
+    if (isFresh(cached) && cached.config) return isLocalConfig(cached.config);
+    const select = { isLocal: true, providerType: true } as const;
+    const config =
+      (await prisma.aiProviderConfig.findFirst({ where: { slug: slugOrName }, select })) ??
+      (await prisma.aiProviderConfig.findFirst({ where: { name: slugOrName }, select }));
+    if (config) return isLocalConfig(config);
+    return (await acquireProvider(slugOrName, undefined)).isLocal === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether a provider row builds a local client. A Voyage row never does: its
+ * `isLocal` decides only whether its `baseUrl` may be on loopback.
+ */
+function isLocalConfig(config: Pick<AiProviderConfig, 'isLocal' | 'providerType'>): boolean {
+  return config.isLocal && config.providerType !== 'voyage';
 }
 
 /** `getProvider` for any call origin, including an unrecorded fallback. */
@@ -430,7 +469,11 @@ function dispositionOf(prop: string): MethodDisposition | undefined {
  * `assertProviderCallPermitted` against `slug` and `context` (§120 t-741), so
  * the provider eligibility rule applies to every vendor call core makes through
  * the manager, whichever site chose the provider. `passthrough` methods are not
- * gated; that function says why. Throws on an empty `slug`,
+ * gated; that function says why. **Every gated call is then held to the
+ * monthly spend caps** — the org's and the global one — by
+ * `assertWithinSpendCaps` (§110 t-788), so a workflow, an evaluation or a job
+ * cannot spend past a cap chat would have refused; a local provider is
+ * exempt, since it costs nothing. Throws on an empty `slug`,
  * because the alternative — returning the instance unwrapped — is the one way
  * the cache's invariant could quietly fail.
  *
@@ -481,13 +524,14 @@ function withInFlightTracking(
           const task = taskOfMethod(prop as ProviderMethodName);
           return async (...args: unknown[]): Promise<unknown> => {
             await assertProviderCallPermitted(slug, context, task);
+            await assertWithinSpendCaps(slug, target.isLocal === true);
             return track(stateKey, () => fn.apply(target, args) as Promise<unknown>);
           };
         }
         case 'trackStream': {
           const task = taskOfMethod(prop as ProviderMethodName);
           return (...args: unknown[]): AsyncIterable<unknown> =>
-            gatedStream(slug, context, task, () =>
+            gatedStream(slug, context, task, target.isLocal === true, () =>
               trackStream(stateKey, () => fn.apply(target, args) as AsyncIterable<unknown>)
             );
         }
@@ -528,17 +572,19 @@ function withInFlightTracking(
 }
 
 /**
- * A stream that asks the gate before the first chunk. The vendor stream is not
- * even created until the gate permits it, so a refused call opens no
- * connection and the in-flight counter never sees it.
+ * A stream that asks the gates before the first chunk. The vendor stream is not
+ * even created until both permit it, so a refused call opens no connection and
+ * the in-flight counter never sees it.
  */
 async function* gatedStream(
   slug: string,
   context: CallOrigin,
   task: TaskType,
+  isLocal: boolean,
   open: () => AsyncIterable<unknown>
 ): AsyncGenerator<unknown> {
   await assertProviderCallPermitted(slug, context, task);
+  await assertWithinSpendCaps(slug, isLocal);
   yield* open();
 }
 
@@ -642,7 +688,8 @@ export async function testProvider(slugOrName: string): Promise<ProviderTestResu
 
 /**
  * Resolve a provider instance, falling back through a list of
- * alternatives if the primary's circuit breaker is open.
+ * alternatives if the primary's circuit breaker is open, or if it is paid and
+ * a monthly spend cap has been reached (then only a local candidate serves).
  *
  * Returns the resolved provider and the slug that was actually used,
  * so the caller can record success/failure on the correct breaker.
@@ -669,6 +716,7 @@ export async function getProviderWithFallbacks(
   breakerKey?: string;
 }> {
   const candidates = [primarySlug, ...fallbackSlugs];
+  let capRefusal: SpendCapExceededError | null = null;
 
   for (const [index, slug] of candidates.entries()) {
     try {
@@ -685,6 +733,15 @@ export async function getProviderWithFallbacks(
         continue;
       }
       const { provider, breakerKey } = acquired;
+      // A paid candidate a spend cap refuses would fail at its first call, so
+      // pass over it to a candidate that can serve: a local one, which the caps
+      // never refuse (§110 t-788). The refusal is cached state, so asking costs
+      // no query while the caps' entries are warm.
+      const refusal = await spendCapRefusal(slug, provider.isLocal === true);
+      if (refusal) {
+        capRefusal = refusal;
+        continue;
+      }
       if (slug !== primarySlug) {
         logger.info('Using fallback provider', {
           primary: primarySlug,
@@ -702,6 +759,10 @@ export async function getProviderWithFallbacks(
     }
   }
 
+  // A cap that refused a paid candidate refuses every paid one, so when no
+  // candidate could serve, the cap is the answer: deterministic, and not
+  // retried, where `all_providers_exhausted` would be.
+  if (capRefusal) throw capRefusal;
   throw new ProviderError('All providers are unavailable', {
     code: 'all_providers_exhausted',
     retriable: true,
@@ -1118,7 +1179,7 @@ function buildProviderFromConfig(
       type: 'voyage',
       apiKey,
       baseUrl: config.baseUrl ?? undefined,
-      isLocal: false,
+      isLocal: isLocalConfig(config),
       ...(config.timeoutMs != null ? { timeoutMs: config.timeoutMs } : {}),
       ...(config.maxRetries != null ? { maxRetries: config.maxRetries } : {}),
     });

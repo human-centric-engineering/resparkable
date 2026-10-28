@@ -35,11 +35,14 @@ model AiWebhookSubscription {
   // (maxAttempts - 1) entries; the dispatcher only reads the first
   // (maxAttempts - 1) values. Each entry capped at 24h.
   retryBackoffMs Int[]    @default([10000, 60000, 300000])
-  createdBy      String
+  // Null once its creator is erased (t-782): `SetNull`, so an integration an
+  // admin set up keeps running after they leave, and the policy decides who
+  // manages it then (`webhookSubscription` in lib/auth/orphan-reads.ts).
+  createdBy      String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  user       User                @relation("AiWebhookUser", fields: [createdBy], references: [id], onDelete: Cascade)
+  user       User?               @relation("AiWebhookUser", fields: [createdBy], references: [id], onDelete: SetNull)
   deliveries AiWebhookDelivery[]
 
   orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
@@ -52,10 +55,13 @@ model AiWebhookSubscription {
   @@map("ai_webhook_subscription")
 }
 
-// Webhook delivery tracking — records each delivery attempt for audit + retry
+// Webhook delivery tracking — records each delivery attempt for audit + retry.
+// The row is the record of where an event went, so it outlives the
+// subscription that sent it (`SetNull`) and carries its own destination
+// (§109 t-739). See lib/orchestration/webhooks/destination.ts.
 model AiWebhookDelivery {
   id               String    @id @default(cuid())
-  subscriptionId   String
+  subscriptionId   String? // null once the subscription is deleted; the row is kept as the record
   eventType        String
   payload          Json
   status           String    @default("pending") // pending, delivered, failed, exhausted
@@ -65,8 +71,29 @@ model AiWebhookDelivery {
   lastResponseCode Int?
   lastError        String?   @db.Text
   createdAt        DateTime  @default(now())
+  // Set by an erasure that stopped this row (t-809): the event is about the
+  // erased person, or goes to their address. A manual retry and a DLQ replay
+  // refuse it. Its own column so no later `lastError` write can clear it;
+  // `lastError` keeps the human-readable "(not retried: …)" wording.
+  stoppedByErasure Boolean   @default(false)
+  // Bumped by each manual retry or DLQ replay (t-822), never by an automatic
+  // retry. An email send's Resend idempotency key names it, so a retry after a
+  // timeout that Resend in fact accepted is deduplicated, while an admin's
+  // resend is a new send.
+  sendGeneration   Int       @default(0)
 
-  subscription AiWebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  // Where the latest attempt was sent: the URL's origin only (no path, query,
+  // userinfo or fragment), or the email address, trimmed and lower-cased. Null
+  // on rows that predate destination recording and were never backfilled.
+  destination            String? @db.Text
+  // Keyed HMAC of the full destination, so an operator can confirm an exact URL
+  // without the row holding the secret a webhook URL often carries.
+  destinationFingerprint String?
+  // Earlier destinations, when a retry followed an edited subscription:
+  // [{ destination, destinationFingerprint, until }]. Null when there were none.
+  previousDestinations   Json?
+
+  subscription AiWebhookSubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
 
   orgId String? // org this row belongs to (§107); backfilled to the install org, NOT NULL is a later stage
   org   Org?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -75,6 +102,16 @@ model AiWebhookDelivery {
   @@index([subscriptionId])
   @@index([status])
   @@index([nextRetryAt])
+  // Subject access and erasure find a person's notifications by exact address,
+  // now or as an earlier destination (`webhookDeliveriesAddressedTo`): both
+  // halves of that OR indexed, so neither scans the table — inside the erasure
+  // transaction least of all.
+  @@index([destination])
+  @@index([previousDestinations(ops: JsonbPathOps)], type: Gin)
+  // Subject access and erasure also find the deliveries whose payload names a
+  // person — their id, or one of their conversations or runs — by JSON
+  // containment (`lib/privacy/delivery-payloads.ts`, t-783).
+  @@index([payload(ops: JsonbPathOps)], type: Gin)
   @@map("ai_webhook_delivery")
 }
 
@@ -83,20 +120,31 @@ model AiWebhookDelivery {
 /// Fire-and-forget writes — never blocks the request. Tracks agent edits,
 /// workflow changes, knowledge uploads, settings changes, and deletions.
 model AiAdminAuditLog {
-  id         String   @id @default(cuid())
-  userId     String?
-  action     String // e.g. "agent.create", "agent.update", "workflow.delete"
-  entityType String // "agent", "workflow", "capability", "knowledge_document", "settings", "webhook"
-  entityId   String?
-  entityName String? // human-readable name at time of action
-  changes    Json? // { field: { from, to } } diff for updates
-  metadata   Json? // extra context
-  clientIp   String?
-  createdAt  DateTime @default(now())
+  id             String   @id @default(cuid())
+  userId         String?
+  action         String // e.g. "agent.create", "agent.update", "workflow.delete"
+  entityType     String // "agent", "workflow", "capability", "knowledge_document", "settings", "webhook"
+  entityId       String?
+  entityName     String? // human-readable name at time of action
+  changes        Json? // { field: { from, to } } diff for updates
+  metadata       Json? // extra context
+  clientIp       String?
+  // §121 t-825: set when the action was made inside a support session — the
+  // grant it was made under, and the org it was made in. Stamped by
+  // `logAdminAction` from the tenant context. `supportOrgId` has no FK on
+  // purpose, and is not `orgId`: this is the vendor's own log (a system
+  // model), so erasing the org nulls `supportGrantId` but leaves the row
+  // marked as support, naming where it happened.
+  supportGrantId String?
+  supportOrgId   String?
+  createdAt      DateTime @default(now())
 
-  user User? @relation("AiAdminAuditLogUser", fields: [userId], references: [id], onDelete: SetNull)
+  user         User?            @relation("AiAdminAuditLogUser", fields: [userId], references: [id], onDelete: SetNull)
+  supportGrant OrgSupportGrant? @relation(fields: [supportGrantId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([supportGrantId, createdAt])
+  @@index([supportOrgId])
   @@index([action])
   @@index([entityType, entityId])
   @@index([createdAt])

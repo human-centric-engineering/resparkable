@@ -37,6 +37,13 @@ import { API } from '@/lib/api/endpoints';
 import { narrowParamProfile } from '@/lib/orchestration/llm/db-model-adapter';
 import { useTimeout } from '@/lib/hooks/use-timeout';
 import {
+  hasSplitPricing,
+  isHalfPrice,
+  MAX_PRICE_PER_MILLION_TOKENS,
+  missingPriceField,
+  PRICE_PAIR_MESSAGE,
+} from '@/lib/validations/model-pricing';
+import {
   DEPLOYMENT_PROFILES,
   DEPLOYMENT_PROFILE_META,
   MODEL_CAPABILITIES,
@@ -108,50 +115,81 @@ function toSlug(value: string): string {
 // Schema (client-side subset)
 // ---------------------------------------------------------------------------
 
-const modelFormSchema = z.object({
-  name: z.string().min(1, 'Name is required').max(100),
-  slug: z
-    .string()
-    .min(1, 'Slug is required')
-    .max(80)
-    .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-  providerSlug: z.string().min(1, 'Provider slug is required').max(50),
-  modelId: z.string().min(1, 'Model ID is required').max(100),
-  description: z.string().min(1, 'Description is required').max(2000),
-  capabilities: z.array(z.enum(MODEL_CAPABILITIES)).min(1, 'At least one capability is required'),
-  tierRole: z.enum(['thinking', 'worker', 'infrastructure', 'control_plane', 'embedding']),
-  deploymentProfiles: z
-    .array(z.enum(['hosted', 'sovereign']))
-    .min(1, 'At least one deployment profile is required'),
-  reasoningDepth: z.enum(['very_high', 'high', 'medium', 'none']),
-  latency: z.enum(['very_fast', 'fast', 'medium']),
-  costEfficiency: z.enum(['very_high', 'high', 'medium', 'none']),
-  contextLength: z.enum(['very_high', 'high', 'medium', 'n_a']),
-  toolUse: z.enum(['strong', 'moderate', 'none']),
-  // Wire-level parameter convention. `'auto'` is the sentinel for "not set"
-  // (the runtime derives a fallback via `deriveParamProfile`). Radix
-  // Select forbids an empty-string value on `<SelectItem>` so we can't
-  // use `''` as the sentinel even though that's how the column persists
-  // (NULL → "not set"). The submit handler translates `'auto'` → null.
-  paramProfile: z.enum(['auto', 'openai-legacy', 'openai-reasoning', 'anthropic', 'gemini']),
-  bestRole: z.string().min(1, 'Best role is required').max(200),
-  // Embedding-specific
-  dimensions: z
-    .string()
-    .max(10)
-    .refine((v) => v === '' || /^[1-9]\d*$/.test(v), 'Must be a positive whole number'),
-  schemaCompatible: z.boolean(),
-  costPerMillionTokens: z
-    .string()
-    .max(20)
-    .refine((v) => v === '' || /^\d+(\.\d+)?$/.test(v), 'Must be a number'),
-  hasFreeTier: z.boolean(),
-  local: z.boolean(),
-  quality: z.enum(['high', 'medium', 'budget', '']),
-  strengths: z.string().max(500),
-  setup: z.string().max(500),
-  isActive: z.boolean(),
-});
+/**
+ * A price per 1M tokens as typed: empty for "not set", otherwise a number up
+ * to the server's limit, so a too-large figure is caught under its own field
+ * rather than as a generic save error.
+ */
+const priceField = z
+  .string()
+  .max(20)
+  .refine((v) => v === '' || /^\d+(\.\d+)?$/.test(v), 'Must be a number')
+  .refine(
+    (v) => v === '' || Number(v) <= MAX_PRICE_PER_MILLION_TOKENS,
+    `At most ${MAX_PRICE_PER_MILLION_TOKENS} per 1M tokens`
+  );
+
+const modelFormSchema = z
+  .object({
+    name: z.string().min(1, 'Name is required').max(100),
+    slug: z
+      .string()
+      .min(1, 'Slug is required')
+      .max(80)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    providerSlug: z.string().min(1, 'Provider slug is required').max(50),
+    modelId: z.string().min(1, 'Model ID is required').max(100),
+    description: z.string().min(1, 'Description is required').max(2000),
+    capabilities: z.array(z.enum(MODEL_CAPABILITIES)).min(1, 'At least one capability is required'),
+    tierRole: z.enum(['thinking', 'worker', 'infrastructure', 'control_plane', 'embedding']),
+    deploymentProfiles: z
+      .array(z.enum(['hosted', 'sovereign']))
+      .min(1, 'At least one deployment profile is required'),
+    reasoningDepth: z.enum(['very_high', 'high', 'medium', 'none']),
+    latency: z.enum(['very_fast', 'fast', 'medium']),
+    costEfficiency: z.enum(['very_high', 'high', 'medium', 'none']),
+    contextLength: z.enum(['very_high', 'high', 'medium', 'n_a']),
+    toolUse: z.enum(['strong', 'moderate', 'none']),
+    // Wire-level parameter convention. `'auto'` is the sentinel for "not set"
+    // (the runtime derives a fallback via `deriveParamProfile`). Radix
+    // Select forbids an empty-string value on `<SelectItem>` so we can't
+    // use `''` as the sentinel even though that's how the column persists
+    // (NULL → "not set"). The submit handler translates `'auto'` → null.
+    paramProfile: z.enum(['auto', 'openai-legacy', 'openai-reasoning', 'anthropic', 'gemini']),
+    bestRole: z.string().min(1, 'Best role is required').max(200),
+    // Embedding-specific
+    dimensions: z
+      .string()
+      .max(10)
+      .refine((v) => v === '' || /^[1-9]\d*$/.test(v), 'Must be a positive whole number'),
+    schemaCompatible: z.boolean(),
+    costPerMillionTokens: z
+      .string()
+      .max(20)
+      .refine((v) => v === '' || /^\d+(\.\d+)?$/.test(v), 'Must be a number'),
+    // Chat pricing, input and output apart (t-774). Entered as a pair.
+    inputCostPerMillionTokens: priceField,
+    outputCostPerMillionTokens: priceField,
+    hasFreeTier: z.boolean(),
+    local: z.boolean(),
+    quality: z.enum(['high', 'medium', 'budget', '']),
+    strengths: z.string().max(500),
+    setup: z.string().max(500),
+    isActive: z.boolean(),
+  })
+  .superRefine((data, ctx) => {
+    // Only while the pricing section is shown: a hidden field's error would
+    // block Save with nothing on screen, and submit leaves hidden prices alone.
+    if (!hasSplitPricing(data.capabilities)) return;
+    const input = data.inputCostPerMillionTokens || null;
+    const output = data.outputCostPerMillionTokens || null;
+    if (!isHalfPrice(input, output)) return;
+    ctx.addIssue({
+      code: 'custom',
+      path: [missingPriceField(input)],
+      message: PRICE_PAIR_MESSAGE,
+    });
+  });
 
 type ModelFormData = z.infer<typeof modelFormSchema>;
 
@@ -179,6 +217,8 @@ export interface ProviderModelData {
   dimensions?: number | null;
   schemaCompatible?: boolean | null;
   costPerMillionTokens?: number | null;
+  inputCostPerMillionTokens?: number | null;
+  outputCostPerMillionTokens?: number | null;
   hasFreeTier?: boolean | null;
   local?: boolean;
   quality?: string | null;
@@ -254,6 +294,8 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
       dimensions: model?.dimensions?.toString() ?? '',
       schemaCompatible: model?.schemaCompatible ?? false,
       costPerMillionTokens: model?.costPerMillionTokens?.toString() ?? '',
+      inputCostPerMillionTokens: model?.inputCostPerMillionTokens?.toString() ?? '',
+      outputCostPerMillionTokens: model?.outputCostPerMillionTokens?.toString() ?? '',
       hasFreeTier: model?.hasFreeTier ?? false,
       local: model?.local ?? false,
       quality: (model?.quality as ModelFormData['quality']) ?? '',
@@ -268,6 +310,8 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
   const providerSlug = watch('providerSlug');
   const capabilities = watch('capabilities');
   const hasEmbedding = capabilities.includes('embedding');
+  // Chat and reasoning models carry input/output prices (t-774).
+  const hasPricing = hasSplitPricing(capabilities);
   // Subset check: when the selection is non-empty and contains only
   // storage-only capabilities, render a clarifying note so operators
   // know the engine won't invoke this row at runtime.
@@ -322,6 +366,19 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
       local: data.local,
     };
 
+    // Prices: sent as a pair, or cleared as a pair on edit — but only while
+    // the pricing section is shown. A model without chat or reasoning keeps
+    // whatever prices it has (the adapter ignores them for such a row), and
+    // wiping them when the
+    // section is hidden lost a reasoning row's seeded prices.
+    if (hasPricing && data.inputCostPerMillionTokens !== '') {
+      payload.inputCostPerMillionTokens = parseFloat(data.inputCostPerMillionTokens);
+      payload.outputCostPerMillionTokens = parseFloat(data.outputCostPerMillionTokens);
+    } else if (hasPricing && isEdit) {
+      payload.inputCostPerMillionTokens = null;
+      payload.outputCostPerMillionTokens = null;
+    }
+
     // Include embedding fields when embedding capability is set
     if (data.capabilities.includes('embedding')) {
       if (data.dimensions) payload.dimensions = parseInt(data.dimensions, 10);
@@ -336,7 +393,11 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
       // Clear stale embedding fields when capability is removed
       payload.dimensions = null;
       payload.schemaCompatible = null;
-      payload.costPerMillionTokens = null;
+      // `costPerMillionTokens` is cleared only when the edit removes the
+      // embedding capability: then it was the embedding rate, and left in
+      // place it would price chat turns. Otherwise it is a chat row's blended
+      // fallback price, and clearing it unpriced every edited chat model.
+      if (model.capabilities.includes('embedding')) payload.costPerMillionTokens = null;
       payload.hasFreeTier = null;
       payload.quality = null;
       payload.strengths = null;
@@ -778,6 +839,76 @@ export function ProviderModelForm({ model }: ProviderModelFormProps) {
           />
           {errors.bestRole && <p className="text-destructive text-xs">{errors.bestRole.message}</p>}
         </div>
+
+        {/* Chat pricing (t-774) */}
+        {hasPricing && (
+          <div className="space-y-4 rounded-md border p-4">
+            <h3 className="text-sm font-semibold">Chat Pricing</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="inputCostPerMillionTokens">
+                  Input / 1M Tokens (USD){' '}
+                  <FieldHelp title="Input price per million tokens">
+                    <p>
+                      The provider&apos;s published price per million <strong>input</strong> tokens
+                      (the prompt: system instructions, history, retrieved context), in USD.
+                    </p>
+                    <p className="mt-2">
+                      Used to record the cost of each chat turn, and by budgets and cost caps. A
+                      model with a published price in the built-in list or OpenRouter&apos;s
+                      catalogue keeps that price, whatever is set here; this sets the price for
+                      models only the matrix knows, such as dated snapshots and new releases. Set it
+                      together with the output price.
+                    </p>
+                  </FieldHelp>
+                </Label>
+                <Input
+                  id="inputCostPerMillionTokens"
+                  {...register('inputCostPerMillionTokens')}
+                  placeholder="e.g. 3"
+                />
+                {errors.inputCostPerMillionTokens && (
+                  <p className="text-destructive text-xs">
+                    {errors.inputCostPerMillionTokens.message}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="outputCostPerMillionTokens">
+                  Output / 1M Tokens (USD){' '}
+                  <FieldHelp title="Output price per million tokens">
+                    <p>
+                      The provider&apos;s published price per million <strong>output</strong> tokens
+                      (the model&apos;s reply, including any reasoning tokens), in USD. Usually
+                      several times the input price.
+                    </p>
+                    <p className="mt-2">Set it together with the input price.</p>
+                  </FieldHelp>
+                </Label>
+                <Input
+                  id="outputCostPerMillionTokens"
+                  {...register('outputCostPerMillionTokens')}
+                  placeholder="e.g. 15"
+                />
+                {errors.outputCostPerMillionTokens && (
+                  <p className="text-destructive text-xs">
+                    {errors.outputCostPerMillionTokens.message}
+                  </p>
+                )}
+              </div>
+            </div>
+            {model?.costPerMillionTokens != null &&
+              model.inputCostPerMillionTokens == null &&
+              model.outputCostPerMillionTokens == null && (
+                <p className="text-muted-foreground text-xs">
+                  Until these are set, this row&apos;s single blended rate of $
+                  {model.costPerMillionTokens} per million tokens is used for input and output alike
+                  — unless the built-in price list or OpenRouter publishes a price for this model,
+                  which is used instead.
+                </p>
+              )}
+          </div>
+        )}
 
         {/* Embedding-specific fields */}
         {hasEmbedding && (

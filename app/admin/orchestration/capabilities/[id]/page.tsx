@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { notFound } from 'next/navigation';
 
 import {
   CapabilityForm,
@@ -8,10 +7,10 @@ import {
 } from '@/components/admin/orchestration/capability-form';
 import { CapabilityQuarantineCard } from '@/components/admin/orchestration/capability-quarantine-card';
 import { CapabilityStatsPanel } from '@/components/admin/orchestration/capability-stats-panel';
+import { LoadFailedNotice } from '@/components/admin/load-failed-notice';
 import { API } from '@/lib/api/endpoints';
-import { parseApiResponse, serverFetch } from '@/lib/api/server-fetch';
+import { loadServerData, requireServerData } from '@/lib/api/server-load';
 import { resolveQuarantineState } from '@/lib/orchestration/capabilities/dispatcher';
-import { logger } from '@/lib/logging';
 import { SharedSettingsReadOnlyNotice } from '@/components/admin/shared-settings-access';
 import type { AiCapability } from '@/types/prisma';
 
@@ -27,25 +26,16 @@ interface QuarantineAttribution {
  * short-circuits to `{ attribution: null }` when the capability is
  * active, so the page doesn't need its own guard.
  *
- * Returns null on any failure — the card omits attribution rather than
- * blocking the page render.
+ * Returns null on any failure (logged by `loadServerData`) — the card
+ * omits its "quarantined by … at …" line rather than blocking the page.
  */
 async function getQuarantineAttribution(
   capabilityId: string
 ): Promise<QuarantineAttribution | null> {
-  try {
-    const res = await serverFetch(
-      API.ADMIN.ORCHESTRATION.capabilityQuarantineAttribution(capabilityId)
-    );
-    if (!res.ok) return null;
-    const body = await parseApiResponse<{ attribution: QuarantineAttribution | null }>(res);
-    return body.success ? body.data.attribution : null;
-  } catch (err) {
-    logger.error('edit capability page: quarantine attribution fetch failed', err, {
-      capabilityId,
-    });
-    return null;
-  }
+  const result = await loadServerData<{ attribution: QuarantineAttribution | null }>(
+    API.ADMIN.ORCHESTRATION.capabilityQuarantineAttribution(capabilityId)
+  );
+  return result.ok ? result.data.attribution : null;
 }
 
 export const metadata: Metadata = {
@@ -57,57 +47,53 @@ export const metadata: Metadata = {
  * Admin — Edit capability page (Phase 4 Session 4.3).
  *
  * Fetches the capability, its agent-usage list, and the sibling
- * category list in parallel. Missing capability → `notFound()`. The
- * other two fetches tolerate failure — the form degrades to an empty
- * `usedBy` chip card / empty category dropdown rather than throwing.
+ * category list in parallel. A 404 on the capability → `notFound()`;
+ * any other failure throws to the admin error boundary (#518). Only the
+ * capability decides not-found: the other loads never throw. A failed
+ * agent-usage list is passed on as `null`, so the form's "Used by" card
+ * shows `<LoadFailedNotice>` and the quarantine card names no number of
+ * affected agents, rather than stating zero as fact. A failed category
+ * list shows `<LoadFailedNotice>` and leaves the dropdown with only
+ * "+ New category…".
  */
-async function getCapability(id: string): Promise<AiCapability | null> {
-  try {
-    const res = await serverFetch(API.ADMIN.ORCHESTRATION.capabilityById(id));
-    if (!res.ok) return null;
-    const body = await parseApiResponse<AiCapability>(res);
-    return body.success ? body.data : null;
-  } catch (err) {
-    logger.error('edit capability page: capability fetch failed', err, { id });
-    return null;
-  }
+async function getCapability(id: string): Promise<AiCapability> {
+  const { data } = await requireServerData<AiCapability>(
+    API.ADMIN.ORCHESTRATION.capabilityById(id),
+    { notFound: true }
+  );
+  return data;
 }
 
 /**
  * The caller's org's agents using it, by name, and other orgs' as a count
- * (`meta.otherOrgAgentCount`, §107 t-752).
+ * (`meta.otherOrgAgentCount`, §107 t-752). `null` when it can't be loaded
+ * (logged by `loadServerData`). The route 404s for a missing capability
+ * too; that case is left to the capability fetch's `notFound()`.
  */
 async function getUsedBy(
   id: string
-): Promise<{ agents: UsedByAgentSummary[]; otherOrgAgentCount: number }> {
-  const none = { agents: [], otherOrgAgentCount: 0 };
-  try {
-    const res = await serverFetch(API.ADMIN.ORCHESTRATION.capabilityAgents(id));
-    if (!res.ok) return none;
-    const body = await parseApiResponse<UsedByAgentSummary[]>(res);
-    if (!body.success) return none;
-    const other = body.meta && 'otherOrgAgentCount' in body.meta ? body.meta.otherOrgAgentCount : 0;
-    return {
-      agents: body.data,
-      otherOrgAgentCount: typeof other === 'number' && other > 0 ? other : 0,
-    };
-  } catch (err) {
-    logger.error('edit capability page: used-by fetch failed', err, { id });
-    return none;
-  }
+): Promise<{ agents: UsedByAgentSummary[]; otherOrgAgentCount: number } | null> {
+  const result = await loadServerData<UsedByAgentSummary[]>(
+    API.ADMIN.ORCHESTRATION.capabilityAgents(id)
+  );
+  if (!result.ok) return null;
+  const { data, meta } = result;
+  const other =
+    typeof meta === 'object' && meta !== null && 'otherOrgAgentCount' in meta
+      ? meta.otherOrgAgentCount
+      : 0;
+  return {
+    agents: data,
+    otherOrgAgentCount: typeof other === 'number' && other > 0 ? other : 0,
+  };
 }
 
-async function getAvailableCategories(): Promise<string[]> {
-  try {
-    const res = await serverFetch(`${API.ADMIN.ORCHESTRATION.CAPABILITIES}?page=1&limit=100`);
-    if (!res.ok) return [];
-    const body = await parseApiResponse<AiCapability[]>(res);
-    if (!body.success) return [];
-    return Array.from(new Set(body.data.map((c) => c.category).filter(Boolean))).sort();
-  } catch (err) {
-    logger.error('edit capability page: categories fetch failed', err);
-    return [];
-  }
+async function getAvailableCategories(): Promise<string[] | null> {
+  const result = await loadServerData<AiCapability[]>(
+    `${API.ADMIN.ORCHESTRATION.CAPABILITIES}?page=1&limit=100`
+  );
+  if (!result.ok) return null;
+  return Array.from(new Set(result.data.map((c) => c.category).filter(Boolean))).sort();
 }
 
 export default async function EditCapabilityPage({ params }: { params: Promise<{ id: string }> }) {
@@ -117,8 +103,6 @@ export default async function EditCapabilityPage({ params }: { params: Promise<{
     getUsedBy(id),
     getAvailableCategories(),
   ]);
-
-  if (!capability) notFound();
 
   // Audit attribution endpoint short-circuits to null when active, so
   // we just fetch unconditionally.
@@ -149,8 +133,10 @@ export default async function EditCapabilityPage({ params }: { params: Promise<{
         quarantineUntil: quarantineUntilDate ? quarantineUntilDate.toISOString() : null,
       }}
       attribution={quarantineAttribution}
-      affectedAgents={usedBy.agents.map((a) => ({ id: a.id, name: a.name, slug: a.slug }))}
-      otherOrgAffectedCount={usedBy.otherOrgAgentCount}
+      affectedAgents={
+        usedBy ? usedBy.agents.map((a) => ({ id: a.id, name: a.name, slug: a.slug })) : null
+      }
+      otherOrgAffectedCount={usedBy?.otherOrgAgentCount ?? 0}
     />
   );
 
@@ -174,12 +160,14 @@ export default async function EditCapabilityPage({ params }: { params: Promise<{
 
       <SharedSettingsReadOnlyNotice />
 
+      {availableCategories === null && <LoadFailedNotice what="existing capability categories" />}
+
       <CapabilityForm
         mode="edit"
         capability={capability}
-        usedBy={usedBy.agents}
-        otherOrgUsedByCount={usedBy.otherOrgAgentCount}
-        availableCategories={availableCategories}
+        usedBy={usedBy ? usedBy.agents : null}
+        otherOrgUsedByCount={usedBy?.otherOrgAgentCount ?? 0}
+        availableCategories={availableCategories ?? []}
       />
 
       {!isQuarantined && quarantineCard}

@@ -83,6 +83,7 @@ import {
   type TierRole,
   type ToolUseLevel,
 } from '@/types/orchestration';
+import { hasSplitPricing, splitPriceSchema } from '@/lib/validations/model-pricing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -147,6 +148,11 @@ interface ReviewRow {
   contextLength: ContextLengthLevel;
   toolUse: ToolUseLevel;
   bestRole: string;
+  // Live chat prices from the vendor's or OpenRouter's catalogue (t-774),
+  // carried to the new row so it is priced from its first turn. Read-only
+  // here; null when the catalogue gave none.
+  inputCostPerMillionTokens: number | null;
+  outputCostPerMillionTokens: number | null;
 }
 
 // One bucket per inference output. Previously reasoning + moderation +
@@ -197,7 +203,28 @@ function reviewFromCandidate(c: Candidate): ReviewRow {
     contextLength: c.suggested.contextLength,
     toolUse: c.suggested.toolUse,
     bestRole: c.suggested.bestRole,
+    inputCostPerMillionTokens: c.suggested.inputCostPerMillion,
+    outputCostPerMillionTokens: c.suggested.outputCostPerMillion,
   };
+}
+
+/**
+ * A review row's prices for the bulk create: the pair only for a model that
+ * carries input/output prices (chat or reasoning), only when both are known,
+ * and only when both are prices the matrix accepts. A catalogue can carry a
+ * sentinel (OpenRouter lists router entries at -1); sending it would fail
+ * the whole batch, so the row is added unpriced instead (t-774).
+ */
+function pricesFor(row: ReviewRow): {
+  inputCostPerMillionTokens?: number;
+  outputCostPerMillionTokens?: number;
+} {
+  if (!hasSplitPricing(row.capabilities)) return {};
+  const input = splitPriceSchema.safeParse(row.inputCostPerMillionTokens);
+  const output = splitPriceSchema.safeParse(row.outputCostPerMillionTokens);
+  return input.success && output.success
+    ? { inputCostPerMillionTokens: input.data, outputCostPerMillionTokens: output.data }
+    : {};
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -413,6 +440,7 @@ export function DiscoverModelsDialog({
               contextLength: r.contextLength,
               toolUse: r.toolUse,
               bestRole: r.bestRole,
+              ...pricesFor(r),
             })),
           },
         }
@@ -886,6 +914,13 @@ function ReviewCard({
       </button>
       {isOpen && (
         <div className="space-y-3 border-t px-4 py-3">
+          {hasSplitPricing(row.capabilities) && (
+            <p className="text-muted-foreground text-xs">
+              {pricesFor(row).inputCostPerMillionTokens !== undefined
+                ? `Price from the provider's catalogue: $${row.inputCostPerMillionTokens} in / $${row.outputCostPerMillionTokens} out per 1M tokens. Saved with the model.`
+                : 'No usable price in the provider’s catalogue. Set input and output prices on the model after adding it, or its turns are recorded as unpriced.'}
+            </p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Name">
               <Input

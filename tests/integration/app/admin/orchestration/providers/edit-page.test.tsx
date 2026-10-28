@@ -8,7 +8,8 @@
  *
  * Test Coverage:
  * - Mock serverFetch for provider GET
- * - Asserts notFound() called when GET returns null
+ * - Asserts notFound() is called on a 404, and only on a 404: a 500 throws
+ *   to the error boundary instead of reading as a missing provider (#518)
  * - Asserts form is pre-filled with fixture provider name
  *
  * @see app/admin/orchestration/providers/[id]/page.tsx
@@ -17,6 +18,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 
+import { apiFailure, apiSuccess, apiIdRejected } from '@/tests/helpers/api';
+
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 const mockNotFound = vi.fn(() => {
@@ -24,6 +27,7 @@ const mockNotFound = vi.fn(() => {
 });
 
 vi.mock('next/navigation', () => ({
+  unstable_rethrow: vi.fn(),
   notFound: mockNotFound,
   useRouter: vi.fn(() => ({
     push: vi.fn(),
@@ -34,9 +38,10 @@ vi.mock('next/navigation', () => ({
   useSearchParams: () => ({ get: () => null }),
 }));
 
-vi.mock('@/lib/api/server-fetch', () => ({
+// Only the network is faked: the real parseApiResponse and server-load run.
+vi.mock('@/lib/api/server-fetch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/server-fetch')>()),
   serverFetch: vi.fn(),
-  parseApiResponse: vi.fn(),
 }));
 
 vi.mock('@/lib/logging', () => ({
@@ -100,9 +105,8 @@ describe('EditProviderPage (server component)', () => {
   });
 
   it('renders form pre-filled with provider name', async () => {
-    const { serverFetch, parseApiResponse } = await import('@/lib/api/server-fetch');
-    vi.mocked(serverFetch).mockResolvedValue({ ok: true } as Response);
-    vi.mocked(parseApiResponse).mockResolvedValue({ success: true, data: MOCK_PROVIDER });
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    vi.mocked(serverFetch).mockResolvedValue(apiSuccess(MOCK_PROVIDER));
 
     const { default: EditProviderPage } =
       await import('@/app/admin/orchestration/providers/[id]/page');
@@ -116,9 +120,8 @@ describe('EditProviderPage (server component)', () => {
   });
 
   it('renders "Save changes" button in edit mode', async () => {
-    const { serverFetch, parseApiResponse } = await import('@/lib/api/server-fetch');
-    vi.mocked(serverFetch).mockResolvedValue({ ok: true } as Response);
-    vi.mocked(parseApiResponse).mockResolvedValue({ success: true, data: MOCK_PROVIDER });
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    vi.mocked(serverFetch).mockResolvedValue(apiSuccess(MOCK_PROVIDER));
 
     const { default: EditProviderPage } =
       await import('@/app/admin/orchestration/providers/[id]/page');
@@ -131,9 +134,8 @@ describe('EditProviderPage (server component)', () => {
   });
 
   it('slug input is pre-filled and disabled in edit mode', async () => {
-    const { serverFetch, parseApiResponse } = await import('@/lib/api/server-fetch');
-    vi.mocked(serverFetch).mockResolvedValue({ ok: true } as Response);
-    vi.mocked(parseApiResponse).mockResolvedValue({ success: true, data: MOCK_PROVIDER });
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    vi.mocked(serverFetch).mockResolvedValue(apiSuccess(MOCK_PROVIDER));
 
     const { default: EditProviderPage } =
       await import('@/app/admin/orchestration/providers/[id]/page');
@@ -147,13 +149,9 @@ describe('EditProviderPage (server component)', () => {
     });
   });
 
-  it('calls notFound() when provider fetch returns null', async () => {
-    const { serverFetch, parseApiResponse } = await import('@/lib/api/server-fetch');
-    vi.mocked(serverFetch).mockResolvedValue({ ok: false } as Response);
-    vi.mocked(parseApiResponse).mockResolvedValue({
-      success: false,
-      error: { message: 'Not found', code: 'NOT_FOUND' },
-    });
+  it('calls notFound() when the provider does not exist', async () => {
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    vi.mocked(serverFetch).mockResolvedValue(apiFailure(404, 'NOT_FOUND'));
 
     const { default: EditProviderPage } =
       await import('@/app/admin/orchestration/providers/[id]/page');
@@ -163,5 +161,31 @@ describe('EditProviderPage (server component)', () => {
     ).rejects.toThrow('NEXT_NOT_FOUND');
 
     expect(mockNotFound).toHaveBeenCalledOnce();
+  });
+
+  it('calls notFound() for a malformed id, which the API answers 400', async () => {
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    vi.mocked(serverFetch).mockResolvedValue(apiIdRejected());
+
+    const { default: EditProviderPage } =
+      await import('@/app/admin/orchestration/providers/[id]/page');
+
+    await expect(
+      EditProviderPage({ params: Promise.resolve({ id: 'not-a-cuid' }) })
+    ).rejects.toThrow('NEXT_NOT_FOUND');
+  });
+
+  it('throws to the error boundary, not notFound(), when the load fails', async () => {
+    const { serverFetch } = await import('@/lib/api/server-fetch');
+    const { ServerLoadError } = await import('@/lib/api/server-load');
+    vi.mocked(serverFetch).mockResolvedValue(apiFailure(500));
+
+    const { default: EditProviderPage } =
+      await import('@/app/admin/orchestration/providers/[id]/page');
+
+    await expect(
+      EditProviderPage({ params: Promise.resolve({ id: 'prov-edit-id' }) })
+    ).rejects.toBeInstanceOf(ServerLoadError);
+    expect(mockNotFound).not.toHaveBeenCalled();
   });
 });

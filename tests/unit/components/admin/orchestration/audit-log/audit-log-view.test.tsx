@@ -11,15 +11,17 @@
  * - Expand row to reveal change diff JSON
  * - Pagination: next/prev buttons, shows page N / totalPages
  * - Refresh button re-fetches
+ * - Support rows (t-825): badge, expanded explanation, one-grant filter chip, support filter
  * - actionBadgeVariant: .create → default, .update → secondary, .delete → destructive, other → outline
  *
  * @see components/admin/orchestration/audit-log/audit-log-view.tsx
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AuditLogView } from '@/components/admin/orchestration/audit-log/audit-log-view';
+import { logger } from '@/lib/logging';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,10 @@ vi.mock('@/lib/api/endpoints', () => ({
       },
     },
   },
+}));
+
+vi.mock('@/lib/logging', () => ({
+  logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
 // DatePicker → plain native input so existing change-event drivers still work
@@ -71,12 +77,19 @@ function makeEntry(overrides: Record<string, unknown> = {}) {
     clientIp: '127.0.0.1',
     createdAt: '2026-01-15T10:00:00.000Z',
     user: { id: 'user-1', name: 'Alice Admin', email: 'alice@example.com' },
+    supportOrgId: null,
+    supportGrant: null,
     ...overrides,
   };
 }
 
+/** The `meta` `paginatedResponse()` sends, at the view's 25 rows per page. */
+function pageMeta(total: number, page = 1) {
+  return { page, limit: 25, total, totalPages: Math.ceil(total / 25) };
+}
+
 function mockFetchSuccess(entries: unknown[], total = entries.length) {
-  const body = JSON.stringify({ success: true, data: entries, meta: { total } });
+  const body = JSON.stringify({ success: true, data: entries, meta: pageMeta(total) });
   // Use mockImplementation to create a fresh Response per call (body can only be consumed once)
   globalThis.fetch = vi
     .fn()
@@ -87,12 +100,67 @@ function mockFetchSuccess(entries: unknown[], total = entries.length) {
     );
 }
 
+function fetchUrls(): string[] {
+  return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+}
+
+function lastFetchUrl(): string {
+  const urls = fetchUrls();
+  return urls[urls.length - 1];
+}
+
+/**
+ * Freezes `setTimeout`, so the search box's 300ms debounce fires only when a
+ * test calls `flushSearchDebounce()`. Waiting for it in real time raced the
+ * timer when the machine was busy (t-799).
+ *
+ * Testing Library's async helpers — `findBy*`, `waitFor`, and every user-event
+ * call, which runs through the same wrapper — drain with a `setTimeout(0)` that
+ * never fires while timeouts are frozen. These tests therefore drive input with
+ * the synchronous `fireEvent` and wait with `flushUntil`.
+ */
+function freezeTimeouts() {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+}
+
+/** Fires a pending search debounce now; the fetch it triggers is called synchronously. */
+async function flushSearchDebounce() {
+  await act(() => vi.advanceTimersByTimeAsync(300));
+}
+
+/**
+ * Re-checks `assertion` between microtask flushes inside `act`. The mocked
+ * fetch settles on microtasks alone, so this needs no clock, real or fake.
+ */
+async function flushUntil(assertion: () => void) {
+  for (let i = 0; i < 50; i++) {
+    try {
+      assertion();
+      return;
+    } catch {
+      await act(async () => {
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+      });
+    }
+  }
+  assertion();
+}
+
+/** Waits for the in-flight fetch to finish (Refresh is disabled while loading). */
+async function settle() {
+  await flushUntil(() => expect(screen.getByRole('button', { name: /refresh/i })).toBeEnabled());
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('AuditLogView', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mockFetchSuccess([]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -218,46 +286,65 @@ describe('AuditLogView', () => {
   // ── Search filter (server-side via `q` query param) ──────────────────────
 
   it('debounces search input and sends q as a server-side query param', async () => {
-    const user = userEvent.setup();
+    freezeTimeouts();
     mockFetchSuccess([makeEntry()]);
 
     render(<AuditLogView />);
-    await waitFor(() => screen.getByText('Support Bot'));
+    await flushUntil(() => screen.getByText('Support Bot'));
 
-    await user.type(screen.getByPlaceholderText(/filter by action/i), 'workflow');
+    const callsBefore = fetchUrls().length;
+    fireEvent.change(screen.getByPlaceholderText(/filter by action/i), {
+      target: { value: 'workflow' },
+    });
+    // Nothing is sent until the debounce window passes
+    expect(fetchUrls().length).toBe(callsBefore);
 
-    await waitFor(
-      () => {
-        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-        const lastUrl = calls[calls.length - 1][0] as string;
-        expect(lastUrl).toContain('q=workflow');
-      },
-      { timeout: 1500 }
-    );
+    await flushSearchDebounce();
+
+    expect(fetchUrls().slice(callsBefore)).toEqual([expect.stringContaining('q=workflow')]);
+    await settle();
   });
 
-  it('resets to page=1 when search query changes', async () => {
-    const user = userEvent.setup();
-    // Start on page 2 by having 50 entries
+  it('keeps the page when the search is typed and reverted within the debounce window', async () => {
+    freezeTimeouts();
     mockFetchSuccess([makeEntry()], 50);
 
     render(<AuditLogView />);
-    await waitFor(() => screen.getByText(/1 \/ 2/));
+    await flushUntil(() => screen.getByText(/1 \/ 2/));
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    await settle();
+    const callsBefore = fetchUrls().length;
 
-    await user.click(screen.getByRole('button', { name: /next page/i }));
-    await waitFor(() => screen.getByText(/2 \/ 2/), { timeout: 3000 });
+    // The query ends where it started, so nothing resets to page 1
+    const searchInput = screen.getByPlaceholderText(/filter by action/i);
+    fireEvent.change(searchInput, { target: { value: 'ab' } });
+    fireEvent.change(searchInput, { target: { value: ' ' } });
+    await flushSearchDebounce();
 
-    await user.type(screen.getByPlaceholderText(/filter by action/i), 'alice');
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+    expect(fetchUrls().length).toBe(callsBefore);
+  });
 
-    await waitFor(
-      () => {
-        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-        const lastUrl = calls[calls.length - 1][0] as string;
-        expect(lastUrl).toContain('page=1');
-        expect(lastUrl).toContain('q=alice');
-      },
-      { timeout: 1500 }
-    );
+  it('resets to page=1 when search query changes', async () => {
+    freezeTimeouts();
+    // 50 entries at 25 per page → two pages
+    mockFetchSuccess([makeEntry()], 50);
+
+    render(<AuditLogView />);
+    await flushUntil(() => screen.getByText(/1 \/ 2/));
+
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/filter by action/i), {
+      target: { value: 'alice' },
+    });
+    await flushSearchDebounce();
+
+    expect(lastFetchUrl()).toContain('page=1');
+    expect(lastFetchUrl()).toContain('q=alice');
+    expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument();
+    await settle();
   });
 
   // ── Refresh ───────────────────────────────────────────────────────────────
@@ -408,7 +495,7 @@ describe('AuditLogView', () => {
     render(<AuditLogView />);
     await waitFor(() => screen.getByText('Support Bot'));
 
-    await user.click(screen.getByRole('combobox'));
+    await user.click(screen.getAllByRole('combobox')[0]);
 
     expect(await screen.findByRole('option', { name: /all types/i })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /^agents$/i })).toBeInTheDocument();
@@ -435,7 +522,7 @@ describe('AuditLogView', () => {
     const callsBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
 
     // Open the entity type select and choose "Agents"
-    const entityTypeSelect = screen.getByRole('combobox');
+    const entityTypeSelect = screen.getAllByRole('combobox')[0];
     await user.click(entityTypeSelect);
     await user.click(await screen.findByRole('option', { name: /^agents$/i }));
 
@@ -451,36 +538,25 @@ describe('AuditLogView', () => {
   });
 
   it('omits q from the URL when the search input is empty', async () => {
-    const user = userEvent.setup();
+    freezeTimeouts();
     mockFetchSuccess([makeEntry()]);
 
     render(<AuditLogView />);
-    await waitFor(() => screen.getByText('Support Bot'));
+    await flushUntil(() => screen.getByText('Support Bot'));
 
     const searchInput = screen.getByPlaceholderText(/filter by action/i);
-    await user.type(searchInput, 'workflow');
+    fireEvent.change(searchInput, { target: { value: 'workflow' } });
+    await flushSearchDebounce();
+    expect(lastFetchUrl()).toContain('q=workflow');
 
-    // Wait for debounced fetch with q
-    await waitFor(
-      () => {
-        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-        const lastUrl = calls[calls.length - 1][0] as string;
-        expect(lastUrl).toContain('q=workflow');
-      },
-      { timeout: 1500 }
-    );
+    // Clear the search — the next debounced fetch omits q
+    const callsBefore = fetchUrls().length;
+    fireEvent.change(searchInput, { target: { value: '' } });
+    await flushSearchDebounce();
 
-    // Clear the search — next debounced fetch should omit q
-    await user.clear(searchInput);
-
-    await waitFor(
-      () => {
-        const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-        const lastUrl = calls[calls.length - 1][0] as string;
-        expect(lastUrl).not.toContain('q=');
-      },
-      { timeout: 1500 }
-    );
+    expect(fetchUrls().length).toBeGreaterThan(callsBefore);
+    expect(lastFetchUrl()).not.toContain('q=');
+    await settle();
   });
 
   it('falls back to entityId when entityName is null but entityId is present', async () => {
@@ -559,62 +635,335 @@ describe('AuditLogView', () => {
 
   // ── Pagination navigation ──────────────────────────────────────────────────
 
+  // Changing page sets state and fetches in the same commit, and `user.click`
+  // resolves after that commit, so the request and the counter are both there
+  // to assert on straight away — no wait for a re-render.
+
   it('clicking next page button triggers a new fetch with page=2', async () => {
     const user = userEvent.setup();
     // Set total to 50 so there are multiple pages (25 per page → 2 pages)
     mockFetchSuccess([makeEntry()], 50);
     render(<AuditLogView />);
-    await waitFor(() => screen.getByText(/1 \/ 2/));
+    await screen.findByText(/1 \/ 2/);
 
     const nextButton = screen.getByRole('button', { name: /next page/i });
     expect(nextButton).not.toBeDisabled();
+    const callsBefore = fetchUrls().length;
     await user.click(nextButton);
 
-    // Don't rely on "last fetch URL" — under load a debounced search/filter
-    // refetch could interleave. Assert that *some* fetch carried page=2.
-    await waitFor(
-      () => {
-        const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-          (c) => c[0] as string
-        );
-        expect(urls.some((u) => u.includes('page=2'))).toBe(true);
-      },
-      { timeout: 3000 }
-    );
+    expect(fetchUrls().slice(callsBefore)).toEqual([expect.stringContaining('page=2')]);
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+    await settle();
   });
 
   it('clicking prev page button from page 2 triggers fetch with page=1', async () => {
     const user = userEvent.setup();
     mockFetchSuccess([makeEntry()], 50);
     render(<AuditLogView />);
-    await waitFor(() => screen.getByText(/1 \/ 2/));
+    await screen.findByText(/1 \/ 2/);
 
-    // Navigate to page 2 and wait for both the fetch *and* the re-render
-    // to settle before clicking prev — clicking during a pending update
-    // races the React commit and the second click can be dropped.
     await user.click(screen.getByRole('button', { name: /next page/i }));
-    await waitFor(() => screen.getByText(/2 \/ 2/), { timeout: 3000 });
-    await waitFor(
-      () => {
-        const urls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
-          (c) => c[0] as string
-        );
-        expect(urls.some((u) => u.includes('page=2'))).toBe(true);
-      },
-      { timeout: 3000 }
-    );
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
 
-    const callsBefore = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
+    const callsBefore = fetchUrls().length;
     await user.click(screen.getByRole('button', { name: /previous page/i }));
 
-    // Any fetch after the prev-click that carries page=1 — order-independent.
-    await waitFor(
-      () => {
-        const callsAfter = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
-        const newUrls = callsAfter.slice(callsBefore).map((c) => c[0] as string);
-        expect(newUrls.some((u) => u.includes('page=1'))).toBe(true);
-      },
-      { timeout: 3000 }
+    expect(fetchUrls().slice(callsBefore)).toEqual([expect.stringContaining('page=1')]);
+    expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument();
+    await settle();
+  });
+
+  // Regression (t-799): the search debounce also ran on mount, and 300ms later
+  // reset the page to 1, so paging straight after load bounced back.
+  it('stays on page 2 when the search debounce window after load passes', async () => {
+    freezeTimeouts();
+    mockFetchSuccess([makeEntry()], 50);
+    render(<AuditLogView />);
+    await flushUntil(() => screen.getByText(/1 \/ 2/));
+
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    const callsAfterClick = fetchUrls().length;
+    await flushSearchDebounce();
+
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+    expect(fetchUrls().length).toBe(callsAfterClick);
+    await settle();
+  });
+
+  // ── Out-of-order and failed requests ───────────────────────────────────────
+
+  it('ignores a response that arrives after a newer request was made', async () => {
+    const user = userEvent.setup();
+    const json = (entry: ReturnType<typeof makeEntry>) =>
+      new Response(JSON.stringify({ success: true, data: [entry], meta: pageMeta(50) }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    // The late page=2 response. The test waits on the fetch promise and, if the
+    // view goes on to read the body, on that too, so the stale request has had
+    // its chance to write before the assertions run.
+    let releasePage2: () => void = () => {};
+    let page2Fetch: Promise<Response> | undefined;
+    let page2BodyRead: Promise<unknown> | undefined;
+    globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes('page=2')) {
+        return (page2Fetch = new Promise<Response>((resolve) => {
+          releasePage2 = () => {
+            const res = json(makeEntry({ entityName: 'Page Two Row' }));
+            const read = res.json.bind(res);
+            res.json = () => (page2BodyRead = read());
+            resolve(res);
+          };
+        }));
+      }
+      return Promise.resolve(json(makeEntry({ entityName: 'Page One Row' })));
+    });
+
+    render(<AuditLogView />);
+    await screen.findByText('Page One Row');
+
+    // page=2 hangs; going back to page 1 is the newer request and resolves first
+    await user.click(screen.getByRole('button', { name: /next page/i }));
+    await user.click(screen.getByRole('button', { name: /previous page/i }));
+    await settle();
+
+    const logged = vi.mocked(logger.error).mock.calls.length;
+    await act(async () => {
+      releasePage2();
+      await page2Fetch;
+    });
+    await act(async () => {
+      await page2BodyRead;
+    });
+
+    expect(screen.getByText('Page One Row')).toBeInTheDocument();
+    expect(screen.queryByText('Page Two Row')).not.toBeInTheDocument();
+    expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument();
+    expect(vi.mocked(logger.error).mock.calls.length).toBe(logged);
+  });
+
+  it('clears the previous page’s rows when the next page fails to load', async () => {
+    const user = userEvent.setup();
+    globalThis.fetch = vi
+      .fn()
+      .mockImplementation((url: string) =>
+        url.includes('page=2')
+          ? Promise.reject(new TypeError('Failed to fetch'))
+          : Promise.resolve(
+              new Response(
+                JSON.stringify({ success: true, data: [makeEntry()], meta: pageMeta(50) }),
+                { status: 200, headers: { 'Content-Type': 'application/json' } }
+              )
+            )
+      );
+
+    render(<AuditLogView />);
+    await screen.findByText('Support Bot');
+
+    await user.click(screen.getByRole('button', { name: /next page/i }));
+
+    expect(await screen.findByText(/failed to load audit log/i)).toBeInTheDocument();
+    expect(screen.queryByText('Support Bot')).not.toBeInTheDocument();
+    expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument();
+  });
+
+  it('shows and logs the load error when fetch itself rejects', async () => {
+    const failure = new TypeError('Failed to fetch');
+    globalThis.fetch = vi.fn().mockRejectedValue(failure);
+    render(<AuditLogView />);
+
+    expect(await screen.findByText(/failed to load audit log/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /refresh/i })).toBeEnabled();
+    expect(logger.error).toHaveBeenCalledWith('audit log fetch failed', failure);
+  });
+
+  it('shows the load error when the body is not JSON', async () => {
+    globalThis.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response('<html>proxy error</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        })
+      )
     );
+    render(<AuditLogView />);
+
+    expect(await screen.findByText(/failed to load audit log/i)).toBeInTheDocument();
+  });
+
+  it.each([
+    ['data is not an array', { success: true, data: null, meta: pageMeta(1) }],
+    ['meta is missing', { success: true, data: [makeEntry()] }],
+    ['meta has no total', { success: true, data: [makeEntry()], meta: { page: 1 } }],
+  ])('shows the server error instead of rendering when %s', async (_case, payload) => {
+    globalThis.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    );
+    render(<AuditLogView />);
+
+    expect(await screen.findByText(/server returned an error/i)).toBeInTheDocument();
+    expect(screen.queryByText('Support Bot')).not.toBeInTheDocument();
+  });
+
+  // ── Support sessions (t-825) ───────────────────────────────────────────────
+
+  function supportEntry(overrides: Record<string, unknown> = {}) {
+    return makeEntry({
+      supportOrgId: 'org-acme',
+      supportGrant: { id: 'grant-9', level: 'ADMIN', org: { id: 'org-acme', name: 'Acme' } },
+      ...overrides,
+    });
+  }
+
+  it('badges support rows with "Support" and leaves other rows unbadged', async () => {
+    mockFetchSuccess([
+      supportEntry({ id: 'e-s', user: { id: 'u-v', name: 'Vera Vendor', email: 'v@x.com' } }),
+      makeEntry({ id: 'e-n' }),
+    ]);
+    render(<AuditLogView />);
+    await screen.findByText('Vera Vendor');
+
+    const [, supportRow, normalRow] = screen.getAllByRole('row');
+    expect(within(supportRow).getByText('Support')).toBeInTheDocument();
+    expect(within(normalRow).queryByText('Support')).not.toBeInTheDocument();
+  });
+
+  it('explains an admin-level support row when expanded', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([supportEntry()]);
+    render(<AuditLogView />);
+    await user.click(await screen.findByText('Support Bot'));
+
+    expect(
+      screen.getByText('Made during a support session in Acme, under a admin grant.')
+    ).toBeInTheDocument();
+  });
+
+  it('says "read-only" for a READ_ONLY grant', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([
+      supportEntry({
+        supportGrant: { id: 'grant-9', level: 'READ_ONLY', org: { id: 'org-acme', name: 'Acme' } },
+      }),
+    ]);
+    render(<AuditLogView />);
+    await user.click(await screen.findByText('Support Bot'));
+
+    expect(
+      screen.getByText('Made during a support session in Acme, under a read-only grant.')
+    ).toBeInTheDocument();
+  });
+
+  it('names the org id and offers no grant filter when the grant is erased', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([supportEntry({ supportGrant: null })]);
+    render(<AuditLogView />);
+    await user.click(await screen.findByText('Support Bot'));
+
+    expect(
+      screen.getByText('Made during a support session in erased org org-acme.')
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /show this grant.s actions/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not explain or offer the grant button on a normal row', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([makeEntry({ changes: { a: 1 } })]);
+    render(<AuditLogView />);
+    await user.click(await screen.findByText('Support Bot'));
+
+    expect(screen.queryByText(/made during a support session/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /show this grant.s actions/i })
+    ).not.toBeInTheDocument();
+  });
+
+  it('refetches with supportGrantId, shows the chip, and clears it with "Show every grant"', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([supportEntry()], 50);
+    render(<AuditLogView />);
+    await screen.findByText(/1 \/ 2/);
+    await user.click(screen.getByRole('button', { name: /next page/i }));
+    await screen.findByText(/2 \/ 2/);
+    expect(lastFetchUrl()).not.toContain('supportGrantId');
+
+    await user.click(screen.getByText('Support Bot'));
+    await user.click(screen.getByRole('button', { name: /show this grant.s actions/i }));
+
+    expect(lastFetchUrl()).toContain('supportGrantId=grant-9');
+    expect(lastFetchUrl()).toContain('page=1');
+    expect(screen.getByText(/Showing actions under one support grant for/)).toHaveTextContent(
+      'Showing actions under one support grant for Acme'
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Show every grant' }));
+
+    expect(lastFetchUrl()).not.toContain('supportGrantId');
+    expect(screen.queryByText(/Showing actions under one support grant/)).not.toBeInTheDocument();
+    await settle();
+  });
+
+  it('shows "Erased user" for a row whose user was erased', async () => {
+    mockFetchSuccess([supportEntry({ userId: null, user: null })]);
+    render(<AuditLogView />);
+
+    expect(await screen.findByText('Erased user')).toBeInTheDocument();
+  });
+
+  it('drops the grant filter when "Not support sessions" is chosen', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([supportEntry()]);
+    render(<AuditLogView />);
+    await user.click(await screen.findByText('Support Bot'));
+    await user.click(screen.getByRole('button', { name: /show this grant.s actions/i }));
+    expect(lastFetchUrl()).toContain('supportGrantId=grant-9');
+
+    await user.click(screen.getByRole('combobox', { name: 'Support sessions' }));
+    await user.click(await screen.findByRole('option', { name: 'Not support sessions' }));
+
+    await waitFor(() => expect(lastFetchUrl()).toContain('support=none'));
+    expect(lastFetchUrl()).not.toContain('supportGrantId');
+    expect(screen.queryByText(/Showing actions under one support grant/)).not.toBeInTheDocument();
+  });
+
+  it('offers the three support filter options', async () => {
+    const user = userEvent.setup();
+    mockFetchSuccess([makeEntry()]);
+    render(<AuditLogView />);
+    await screen.findByText('Support Bot');
+
+    await user.click(screen.getByRole('combobox', { name: 'Support sessions' }));
+
+    expect(await screen.findByRole('option', { name: 'All actions' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Support sessions only' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Not support sessions' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['Support sessions only', 'only'],
+    ['Not support sessions', 'none'],
+  ])('choosing "%s" sends support=%s', async (label, value) => {
+    const user = userEvent.setup();
+    mockFetchSuccess([makeEntry()]);
+    render(<AuditLogView />);
+    await screen.findByText('Support Bot');
+    expect(lastFetchUrl()).not.toContain('support=');
+
+    await user.click(screen.getByRole('combobox', { name: 'Support sessions' }));
+    await user.click(await screen.findByRole('option', { name: label }));
+
+    await waitFor(() => expect(lastFetchUrl()).toContain(`support=${value}`));
+
+    // Back to "All actions" drops the param again
+    await user.click(screen.getByRole('combobox', { name: 'Support sessions' }));
+    await user.click(await screen.findByRole('option', { name: 'All actions' }));
+    await waitFor(() => expect(lastFetchUrl()).not.toContain('support='));
   });
 });

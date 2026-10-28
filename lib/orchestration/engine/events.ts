@@ -8,6 +8,7 @@
 
 import type { ExecutionEvent, WorkflowStepType } from '@/types/orchestration';
 import { logger } from '@/lib/logging';
+import { keepRunningAfterResponse } from '@/lib/api/after-response';
 import { dispatchWebhookEvent } from '@/lib/orchestration/webhooks/dispatcher';
 import {
   resolveUserDisplayName,
@@ -76,6 +77,14 @@ export function budgetWarning(usedUsd: number, limitUsd: number): ExecutionEvent
   return { type: 'budget_warning', usedUsd, limitUsd };
 }
 
+/** The run a `workflow_budget_exceeded` event is about. */
+export interface BudgetExceededRun {
+  executionId?: string;
+  workflowId?: string;
+  /** The run's owner; `null` for a system-owned run. */
+  userId: string | null;
+}
+
 /**
  * Fires when the per-execution cost cap is breached. Emitted by the
  * engine immediately before `workflow_failed` at all four cap-check
@@ -91,20 +100,26 @@ export function budgetWarning(usedUsd: number, limitUsd: number): ExecutionEvent
  * generic `workflow_failed` webhook still fires from `workflowFailed()`
  * below — subscribers wanting only one notification should listen to the
  * specific event and ignore the generic one.
+ *
+ * `run.userId` is the run's owner, `null` for a system-owned run, as on the
+ * other run events. It names them on the payload itself, so erasure and subject access
+ * still find the delivery once the run is gone (t-792). It is required, `null`
+ * included, so a new call site cannot leave it out by accident.
  */
 export function workflowBudgetExceeded(
   usedUsd: number,
   limitUsd: number,
   failedStepId: string,
-  executionId?: string,
-  workflowId?: string
+  run: BudgetExceededRun
 ): ExecutionEvent {
+  const { executionId, workflowId, userId } = run;
   dispatchWebhookEvent('workflow_budget_exceeded', {
     usedUsd,
     limitUsd,
     failedStepId,
     ...(executionId ? { executionId } : {}),
     ...(workflowId ? { workflowId } : {}),
+    userId,
   }).catch((err) => {
     logger.warn('Webhook dispatch failed for workflow_budget_exceeded', {
       failedStepId,
@@ -146,31 +161,37 @@ export function workflowFailed(
   // Run name lookups + dispatch inside an async IIFE so the synchronous
   // factory can still return the ExecutionEvent immediately. Errors are
   // swallowed with a logger.warn — a webhook failure must never block
-  // the engine's terminal event sequence.
-  void (async () => {
-    try {
-      const [workflow, actorUserName] = await Promise.all([
-        resolveWorkflowDisplay(meta?.workflowId),
-        resolveUserDisplayName(meta?.userId),
-      ]);
-      await dispatchWebhookEvent('workflow_failed', {
-        error,
-        failedStepId,
-        executionId: meta?.executionId,
-        workflowId: meta?.workflowId,
-        workflowSlug: workflow.slug,
-        workflowName: workflow.name,
-        actorUserId: meta?.userId,
-        actorUserName,
-        totalCostUsd: meta?.totalCostUsd,
-        totalTokensUsed: meta?.totalTokensUsed,
-      });
-    } catch (err) {
-      logger.warn('Webhook dispatch failed for workflow_failed', {
-        failedStepId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  })();
+  // the engine's terminal event sequence. Kept alive past the response
+  // (t-903): the run ends here, so the drain's hold ends next, and the name
+  // lookups would otherwise run with nothing holding the invocation open.
+  keepRunningAfterResponse(
+    (async () => {
+      try {
+        const [workflow, actorUserName] = await Promise.all([
+          resolveWorkflowDisplay(meta?.workflowId),
+          resolveUserDisplayName(meta?.userId),
+        ]);
+        await dispatchWebhookEvent('workflow_failed', {
+          error,
+          failedStepId,
+          executionId: meta?.executionId,
+          workflowId: meta?.workflowId,
+          workflowSlug: workflow.slug,
+          workflowName: workflow.name,
+          actorUserId: meta?.userId,
+          actorUserName,
+          totalCostUsd: meta?.totalCostUsd,
+          totalTokensUsed: meta?.totalTokensUsed,
+        });
+      } catch (err) {
+        logger.warn('Webhook dispatch failed for workflow_failed', {
+          failedStepId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })(),
+    'Webhook dispatch for workflow_failed',
+    { executionId: meta?.executionId }
+  );
   return { type: 'workflow_failed', error, failedStepId };
 }
