@@ -1045,6 +1045,16 @@ release process.
   caller's options and copies nothing stored. `AiAgent.providerTools` is
   declared to hold no row ids for account transfer.
 
+  **Erasure deletes grants and group invites by address only for a verified
+  account.** 0.16.0 tells erasure hooks the subject's `email` and
+  `emailVerified`. `scrubGranteeEmail` now uses both instead of re-reading
+  the user row, and for an unverified address deletes nothing and logs how
+  many grants and invites it left: with verification off, anyone can open an
+  account under someone else's address, and erasing it used to revoke what
+  other people had shared with the real owner. Under the production default
+  every account is verified, so nothing changes there. Access, invite
+  acceptance and export still match an unverified address; plan.md phase 66.
+
 - **Merged Sunrise 0.15.0 (135 commits, v0.14.0..v0.15.0).** Seventeen
   migrations, then `npm run db:seed`. Eight take locks that scale with table
   size (the delivery tables, `ai_cost_log`, `ai_admin_audit_log` and `user`;

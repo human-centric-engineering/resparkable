@@ -70,9 +70,15 @@ function check(cond: boolean, msg: string): void {
   console.log(`  ✓ ${msg}`);
 }
 
+// Verified, as accounts are under the production default: the erasure hook
+// deletes grants and invites by address only for a verified one.
 async function makeUser(label: string): Promise<{ id: string; email: string }> {
   return prisma.user.create({
-    data: { name: `${PREFIX} ${label}`, email: `${PREFIX}-${label}-${stamp}@example.com` },
+    data: {
+      name: `${PREFIX} ${label}`,
+      email: `${PREFIX}-${label}-${stamp}@example.com`,
+      emailVerified: true,
+    },
     select: { id: true, email: true },
   });
 }

@@ -119,12 +119,15 @@ export async function cleanupResparkableBlobs(ctx: ErasureExternalContext): Prom
  * The half `granteeUserId`'s foreign key cannot reach: an unaccepted invite has
  * no id to cascade from, only an address.
  *
- * ## Why the email is read from the transaction rather than passed in
+ * ## Only for a verified address
  *
- * `ErasureTxContext` carries only `userId`. Reading the address here works
- * because hooks run **before** `user.delete()` — the row is still there. Doing
- * it any other way would mean core threading an email through a context shape
- * that deliberately holds an id, and the id is the thing that cannot go stale.
+ * Core reads the address and whether it was verified from the user row, inside
+ * this transaction, and passes both in (Sunrise 0.16.0). An unverified address
+ * may be a stranger's inbox: with verification off, anyone can open an account
+ * under someone else's address, and erasing that account would revoke what
+ * other people shared with the real owner. So an unverified address deletes
+ * nothing, and the rows it would have matched are counted in the log for a
+ * person to judge, as core does for contact messages.
  *
  * ## Why this deletes rather than nulls
  *
@@ -143,14 +146,23 @@ export async function cleanupResparkableBlobs(ctx: ErasureExternalContext): Prom
  * possible way for this to not work.
  */
 export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
-  const user = await ctx.tx.user.findUnique({
-    where: { id: ctx.userId },
-    select: { email: true },
-  });
-  // Already gone, or never there. Nothing to match on, and no reason to guess.
-  if (!user) return;
+  const email = ctx.email.trim().toLowerCase();
 
-  const email = user.email.toLowerCase();
+  if (!ctx.emailVerified) {
+    const grantsLeft = await ctx.tx.resparkableGrant.count({ where: { granteeEmail: email } });
+    const groupInvitesLeft = await ctx.tx.resparkableGroupInvite.count({ where: { email } });
+    if (grantsLeft > 0 || groupInvitesLeft > 0) {
+      logger.warn(
+        'Resparkable grants and invites not erased: the account never verified its address',
+        {
+          userId: ctx.userId,
+          grantsLeft,
+          groupInvitesLeft,
+        }
+      );
+    }
+    return;
+  }
 
   // Comments are NOT scrubbed here: `authorUserId` is a hand-written CASCADE
   // (probe B9), so `user.delete()` removes every comment this person wrote a
@@ -308,7 +320,8 @@ export function registerResparkableErasureHook(): void {
     model: 'AiWorkflowExecution',
     anchor: 'intent',
     how:
-      "Queues a PENDING run with the caller's options and the ids it names as `inputData`. " +
-      'Nothing stored is copied.',
+      "Queues a PENDING run whose `inputData` is what its caller passes: an entity's type and id, " +
+      'a work-style override from the request, or nothing for a background job. Nothing stored ' +
+      'is copied.',
   });
 }

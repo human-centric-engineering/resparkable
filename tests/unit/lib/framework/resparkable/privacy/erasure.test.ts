@@ -26,6 +26,10 @@
  *   7. **Group succession runs inside the erasure transaction** (phase 48), so
  *      it commits or rolls back with the erasure. The rule itself is tested in
  *      `services/membership.test.ts`.
+ *   8. **Only a verified address is matched** (Sunrise 0.16.0). An unverified
+ *      one may be a stranger's inbox, so items 1 and 6 delete nothing for it,
+ *      and the rows left are counted in a warning for a person to judge. The
+ *      §16.6 promise holds for a verified account.
  *
  * @see lib/framework/resparkable/privacy/erasure.ts
  */
@@ -54,20 +58,25 @@ import {
   scrubGranteeEmail,
   scrubResparkableInTransaction,
 } from '@/lib/framework/resparkable/privacy/erasure';
+import { logger } from '@/lib/logging';
 import {
   __resetErasureCleanupHooksForTests,
+  getAppStaleWriters,
   getErasureCleanupHooks,
 } from '@/lib/privacy/erasure-hooks';
 
 /** A transaction client with only what the hook is allowed to reach. */
-function tx(email: string | null) {
+function tx() {
   return {
-    user: {
-      findUnique: vi.fn().mockResolvedValue(email === null ? null : { email }),
-      delete: vi.fn(),
+    user: { findUnique: vi.fn(), delete: vi.fn() },
+    resparkableGrant: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      count: vi.fn().mockResolvedValue(2),
     },
-    resparkableGrant: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
-    resparkableGroupInvite: { deleteMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    resparkableGroupInvite: {
+      deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      count: vi.fn().mockResolvedValue(1),
+    },
     resparkableComment: { deleteMany: vi.fn() },
     resparkableSpace: { delete: vi.fn() },
     // The one core table the hook reaches. `McpApiKey.createdBy` is
@@ -107,11 +116,25 @@ describe('registerResparkableErasureHook', () => {
 
     expect(getErasureCleanupHooks()).toHaveLength(1);
   });
+
+  it('declares the workflow-run writer, so the stale-writer test can find it', () => {
+    registerResparkableErasureHook();
+
+    // The run queue writes `inputData`, a column erasure scrubs. Declaring it
+    // here is what keeps core's whole-tree scan from reporting it unlisted.
+    expect(getAppStaleWriters()).toContainEqual(
+      expect.objectContaining({
+        file: 'lib/framework/resparkable/repo/workflow-runs.ts',
+        model: 'AiWorkflowExecution',
+        anchor: 'intent',
+      })
+    );
+  });
 });
 
 describe('scrubGranteeEmail', () => {
   it('deletes grants addressed to the erased person’s email', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
@@ -127,13 +150,13 @@ describe('scrubGranteeEmail', () => {
     });
   });
 
-  it('lower-cases the address before matching', async () => {
-    const client = tx('B@Example.COM');
+  it('trims and lower-cases the address before matching', async () => {
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
       userId: 'user_b',
-      email: 'b@example.com',
+      email: ' B@Example.COM ',
       emailVerified: true,
     });
 
@@ -144,8 +167,8 @@ describe('scrubGranteeEmail', () => {
     });
   });
 
-  it('reads the email from the transaction, before the user row is gone', async () => {
-    const client = tx('b@example.com');
+  it('matches on the address core passes in, without reading the user row', async () => {
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
@@ -154,21 +177,87 @@ describe('scrubGranteeEmail', () => {
       emailVerified: true,
     });
 
-    // `ErasureTxContext` carries only `userId`, and hooks run before
-    // `user.delete()` — so the row is still there to read.
-    expect(client.user.findUnique).toHaveBeenCalledWith({
-      where: { id: 'user_b' },
-      select: { email: true },
-    });
+    // Core reads the address and its verified flag from the user row inside
+    // the erasure transaction. A second read here would be a second source for
+    // the same value.
+    expect(client.user.findUnique).not.toHaveBeenCalled();
   });
 
-  it('deletes group invitations addressed to the same email, lower-cased', async () => {
-    const client = tx('B@Example.COM');
+  it('deletes nothing for an address the account never verified', async () => {
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: false,
+    });
+
+    // With verification off, anyone can open an account under someone else's
+    // address. Deleting by it would revoke what other people shared with the
+    // real owner of that inbox.
+    expect(client.resparkableGrant.deleteMany).not.toHaveBeenCalled();
+    expect(client.resparkableGroupInvite.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('counts what an unverified address would have matched, for a person to judge', async () => {
+    const client = tx();
+
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'B@Example.com',
+      emailVerified: false,
+    });
+
+    expect(client.resparkableGrant.count).toHaveBeenCalledWith({
+      where: { granteeEmail: 'b@example.com' },
+    });
+    expect(client.resparkableGroupInvite.count).toHaveBeenCalledWith({
+      where: { email: 'b@example.com' },
+    });
+  });
+
+  it('warns with the counts it left, since that is the only trace of them', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+
+    await scrubGranteeEmail({
+      tx: tx() as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: false,
+    });
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('never verified'), {
+      userId: 'user_b',
+      grantsLeft: 2,
+      groupInvitesLeft: 1,
+    });
+  });
+
+  it('stays quiet when an unverified address matched nothing', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+    const client = tx();
+    client.resparkableGrant.count.mockResolvedValue(0);
+    client.resparkableGroupInvite.count.mockResolvedValue(0);
+
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: false,
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('deletes group invitations addressed to the same email, lower-cased', async () => {
+    const client = tx();
+
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'B@Example.COM',
       emailVerified: true,
     });
 
@@ -180,25 +269,8 @@ describe('scrubGranteeEmail', () => {
     });
   });
 
-  it('does nothing when the user row is already gone', async () => {
-    const client = tx(null);
-
-    await scrubGranteeEmail({
-      tx: client as never,
-      userId: 'user_b',
-      email: 'b@example.com',
-      emailVerified: true,
-    });
-
-    // Nothing to match on, and no reason to guess. A `deleteMany` with an
-    // undefined email would match on `undefined`, which Prisma reads as "no
-    // filter" — every grant in the installation.
-    expect(client.resparkableGrant.deleteMany).not.toHaveBeenCalled();
-    expect(client.resparkableGroupInvite.deleteMany).not.toHaveBeenCalled();
-  });
-
   it('does not re-delete what the cascade already takes', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
@@ -215,7 +287,7 @@ describe('scrubGranteeEmail', () => {
   });
 
   it('never touches the user row', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await scrubGranteeEmail({
       tx: client as never,
@@ -232,7 +304,7 @@ describe('scrubGranteeEmail', () => {
 
 describe('scrubResparkableInTransaction', () => {
   it('settles the erased person’s groups through the erasure transaction', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await scrubResparkableInTransaction({
       tx: client as never,
@@ -247,7 +319,7 @@ describe('scrubResparkableInTransaction', () => {
   });
 
   it('still scrubs addresses', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await scrubResparkableInTransaction({
       tx: client as never,
@@ -269,7 +341,7 @@ describe('scrubResparkableInTransaction', () => {
     // can retry: a failed request is recoverable, an adminless group is not.
     await expect(
       scrubResparkableInTransaction({
-        tx: tx('b@example.com') as never,
+        tx: tx() as never,
         userId: 'user_b',
         email: 'b@example.com',
         emailVerified: true,
@@ -287,7 +359,7 @@ describe('dropResparkableConnectionKeys', () => {
   }
 
   it('deletes the workspace keys this person minted for themselves', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
 
@@ -305,7 +377,7 @@ describe('dropResparkableConnectionKeys', () => {
     // Deleting an install's service keys because the admin who minted them left
     // would be an outage dressed up as compliance. The person's identity leaves
     // via `SetNull`; the operational credential stays.
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([key('key_service', null)]);
 
     await dropResparkableConnectionKeys({
@@ -322,7 +394,7 @@ describe('dropResparkableConnectionKeys', () => {
     // `{ }` reaches nothing: route 2 of `requireResparkableSpace` finds no
     // space in it and throws, so it is genuinely a workspace-less service key
     // and `SetNull` is the right fate.
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([key('key_odd', {})]);
 
     await dropResparkableConnectionKeys({
@@ -343,7 +415,7 @@ describe('dropResparkableConnectionKeys', () => {
     // guard: it accepts the legacy key and returns a scope with the `owner`
     // role and NO membership check. An orphaned key like this, left behind by
     // `SetNull`, would still reach that workspace.
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([
       key('key_legacy', { resparkableUserId: 'user_b' }),
     ]);
@@ -363,7 +435,7 @@ describe('dropResparkableConnectionKeys', () => {
 
   it('leaves a carrier that fails validation outright', async () => {
     // Not a flat string map, so neither reader can get a workspace out of it.
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([key('key_junk', { nested: { a: 1 } })]);
 
     await dropResparkableConnectionKeys({
@@ -377,7 +449,7 @@ describe('dropResparkableConnectionKeys', () => {
   });
 
   it('takes every workspace-naming key out of a mixed set, and only those', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([
       key('key_personal', { [SPACE_KEY]: 'user_b' }),
       key('key_service', null),
@@ -399,7 +471,7 @@ describe('dropResparkableConnectionKeys', () => {
   });
 
   it('reads only this person’s keys', async () => {
-    const client = tx('b@example.com');
+    const client = tx();
 
     await dropResparkableConnectionKeys({
       tx: client as never,
@@ -417,7 +489,7 @@ describe('dropResparkableConnectionKeys', () => {
   it('runs inside the erasure transaction, as part of the scrub', async () => {
     // Through `ctx.tx`, so a key deletion cannot survive an erasure that rolls
     // back, and cannot be forgotten by a caller that skips this function.
-    const client = tx('b@example.com');
+    const client = tx();
     client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
 

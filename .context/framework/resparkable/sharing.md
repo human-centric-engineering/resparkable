@@ -47,7 +47,7 @@ Two orthogonal facts, deliberately not merged.
 
 **The grantee needs its own foreign key, and it is hand-written.** Nothing cascades to a grant row when the **grantee** is erased, because `userId` is the owner. `ON DELETE SET NULL` would be worse than no constraint at all: it leaves a live grant addressed by `granteeEmail` — retained personal data belonging to an erased person, on a row they cannot reach. So `framework_resparkable_grant_granteeUserId_fkey` is `ON DELETE CASCADE`, written by hand in the migration because `User` lives in a Sunrise-owned file, and guarded by **drift probe B8** (the sibling of B1, which guards the owner cascade).
 
-That FK covers accepted grants. **Unaccepted invites have no `granteeUserId` to hang off**, and are covered by an erasure `scrubInTransaction` hook matching `granteeEmail`. Both halves are needed; neither covers the other. See "Erasure" below for how much rides on each.
+That FK covers accepted grants. **Unaccepted invites have no `granteeUserId` to hang off**, and are covered by an erasure `scrubInTransaction` hook matching `granteeEmail`, for a verified address only. Both halves are needed; neither covers the other. See "Erasure" below for how much rides on each.
 
 ### Why the token is hashed
 
@@ -300,7 +300,7 @@ Almost all of it is Postgres, and that is the first thing to know about it. `Res
 | An **unaccepted invite**      | `granteeUserId` is null, so the grant is addressed by email alone and there is no key to hang off |
 | **Stored document originals** | Object storage cannot enlist in a database transaction                                            |
 
-The scrub reads the address from the transaction (`ErasureTxContext` carries only `userId`, and hooks run **before** `user.delete()`) and lower-cases it — `granteeEmail` is stored lower-cased, and matching a `User.email` raw would leave the row of anybody who signed up with a capital letter. It **deletes** rather than nulls, for the reason `granteeUserId` is CASCADE rather than SET NULL: the owner's audit answer to "who did I share with" cannot be legitimate at the cost of holding an erased person's address on a row they can no longer see or revoke.
+The scrub takes the address core passes in the `ErasureTxContext` (read from the user row inside the erasure transaction, since Sunrise 0.16.0) and lower-cases it — `granteeEmail` is stored lower-cased, and matching a `User.email` raw would leave the row of anybody who signed up with a capital letter. It acts **only for a verified address**: an unverified one may be a stranger's inbox, so it deletes nothing and logs how many grants and invites it left, for a person to judge. It **deletes** rather than nulls, for the reason `granteeUserId` is CASCADE rather than SET NULL: the owner's audit answer to "who did I share with" cannot be legitimate at the cost of holding an erased person's address on a row they can no longer see or revoke.
 
 It deliberately does **not** delete comments. `authorUserId` is CASCADE, so `user.delete()` takes them a moment later; deleting them here as well would be a second definition of what erasure means, and two definitions drift.
 
