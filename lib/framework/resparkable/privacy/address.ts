@@ -5,10 +5,10 @@
  * account: a share invite (`ResparkableGrant.granteeEmail`), a group invitation
  * (`ResparkableGroupInvite.email`), and the account a grant is bound to when it
  * is issued (`findAccountIdForEmail`). Each is a statement by somebody else
- * that the mailbox's owner should have something. Five places read them by
- * address: access (`viewerFor`), the two accept flows, subject export and
- * erasure. They used to agree only by habit, and they did not agree on the
- * question that matters.
+ * that the mailbox's owner should have something. Six places read them by
+ * address: access (`viewerFor`), the two accept flows, `findAccountIdForEmail`,
+ * subject export and erasure. They used to agree only by habit, and they did
+ * not agree on the question that matters.
  *
  * ## Only a verified address matches
  *
@@ -40,11 +40,20 @@ export interface AddressOwner {
 }
 
 /**
+ * An address in the form every writer stores it. Not a permission: it says
+ * whether two addresses are the same mailbox, never whether an account may
+ * match by it. That is {@link matchableAddress}.
+ */
+export function normaliseAddress(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/**
  * The address to match this account's address-keyed rows on, or `null` when
  * it may match none: no address, or one it has not proven it owns.
  */
 export function matchableAddress(account: AddressOwner): string | null {
   if (!account.emailVerified || !account.email) return null;
-  const address = account.email.trim().toLowerCase();
+  const address = normaliseAddress(account.email);
   return address === '' ? null : address;
 }

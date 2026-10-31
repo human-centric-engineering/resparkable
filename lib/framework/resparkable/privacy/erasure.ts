@@ -60,7 +60,7 @@
  * definition of what erasure means, and the two drift.
  */
 
-import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import { classifyStoredKeyScope } from '@/lib/framework/resparkable/mcp/key-scope';
 import { readResparkableScheduleSpaceId } from '@/lib/framework/resparkable/repo/space-scope';
 import { settleGroupsAfterErasure } from '@/lib/framework/resparkable/services/membership';
@@ -133,7 +133,7 @@ export async function cleanupResparkableBlobs(ctx: ErasureExternalContext): Prom
  * Those rows then stay, which was decided in phase 66 rather than left open.
  * Somebody else addressed them to a mailbox, nothing shows the erased account
  * owned it, and no account can read, accept or export them by address until
- * one verifies it (`privacy/address.ts`, the rule all five readers share).
+ * one verifies it (`privacy/address.ts`, the rule all six readers share).
  * Deleting them would let anybody wipe what was sent to another person by
  * signing up under their address and asking to be erased.
  *
@@ -160,7 +160,7 @@ export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
   if (email === null) {
     // Counted on the address as typed, only to say what was left. Nothing here
     // reads or deletes by it.
-    const typed = ctx.email.trim().toLowerCase();
+    const typed = normaliseAddress(ctx.email);
     const grantsLeft = await ctx.tx.resparkableGrant.count({ where: { granteeEmail: typed } });
     const groupInvitesLeft = await ctx.tx.resparkableGroupInvite.count({
       where: { email: typed },

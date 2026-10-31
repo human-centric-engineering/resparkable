@@ -45,6 +45,7 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import { acceptGroupInviteResponseSchema } from '@/lib/framework/resparkable/ui/payloads';
+import { CONFIRM_ADDRESS_ROUTE } from '@/lib/framework/resparkable/ui/routes';
 
 type State =
   | { kind: 'offered' }
@@ -134,7 +135,7 @@ export function AcceptGroupInvite({ token }: { token: string }): React.ReactElem
         description="This invitation was sent to your address, but your account has not confirmed it yet. Confirm it, then open this link again."
         action={
           <Button asChild>
-            <Link href={CONFIRM_ADDRESS_HREF}>Confirm my address</Link>
+            <Link href={CONFIRM_ADDRESS_ROUTE}>Confirm my address</Link>
           </Button>
         }
       />
@@ -164,9 +165,6 @@ export function AcceptGroupInvite({ token }: { token: string }): React.ReactElem
     />
   );
 }
-
-/** Sunrise's dashboard, whose email status card sends the confirmation link. */
-const CONFIRM_ADDRESS_HREF = '/dashboard';
 
 function isSuccess(payload: unknown): payload is { success: true; data: unknown } {
   return (

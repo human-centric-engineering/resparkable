@@ -47,7 +47,7 @@ import {
   stampInviteToken,
 } from '@/lib/framework/resparkable/repo/grants';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
@@ -211,7 +211,7 @@ export async function acceptInvite(
     return { ok: false, reason: 'unknown' };
   }
 
-  if (grant.granteeEmail !== viewer.email.trim().toLowerCase()) {
+  if (grant.granteeEmail !== normaliseAddress(viewer.email)) {
     logger.info('Resparkable share invite opened by the wrong account', {
       entityType: grant.entityType,
     });

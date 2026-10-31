@@ -54,7 +54,7 @@ import {
   upsertInvite,
 } from '@/lib/framework/resparkable/repo/groups';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
-import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   permissionsFor,
@@ -294,7 +294,7 @@ export async function acceptGroupInvite(
     return { ok: false, reason: 'unknown' };
   }
 
-  if (invite.email !== viewer.email.trim().toLowerCase()) {
+  if (invite.email !== normaliseAddress(viewer.email)) {
     logger.info('Resparkable group invite opened by the wrong account', {
       groupId: invite.groupId,
     });
