@@ -49,7 +49,13 @@
 
 import { calculateCost } from '@/lib/orchestration/llm/cost-tracker';
 import { ProviderError } from '@/lib/orchestration/llm/provider';
-import type { LlmFinishReason, LlmMessage, LlmResponseFormat } from '@/lib/orchestration/llm/types';
+import type {
+  LlmFinishReason,
+  LlmMessage,
+  LlmResponseFormat,
+  LlmUsage,
+  ReasoningEffort,
+} from '@/lib/orchestration/llm/types';
 import type { getProvider } from '@/lib/orchestration/llm/provider-manager';
 import {
   GEN_AI_OPERATION_NAME,
@@ -82,9 +88,11 @@ export interface StructuredCompletionOptions<T> {
    * rather than relying on the prompt's prose alone.
    *
    * Providers that support it constrain the response (OpenAI-compatible via
-   * `response_format: { type: 'json_schema', ... }`; Anthropic via a forced
-   * single-tool extraction whose input is serialized back into the response
-   * string). Providers without support ignore it — so `parse` plus the
+   * `response_format: { type: 'json_schema', ... }`; Anthropic via native
+   * structured output where the model takes it, else a single-tool extraction
+   * whose input is serialized back into the response string — forced, or
+   * offered with `auto` when thinking is on or the model refuses a forced
+   * tool). Providers without support ignore it — so `parse` plus the
    * existing temp-0 retry remain the cross-provider safety net, and the
    * prompt's prose contract should still describe the shape as a
    * belt-and-suspenders fallback.
@@ -119,6 +127,23 @@ export interface StructuredCompletionOptions<T> {
   maxTokens?: number;
   timeoutMs?: number;
   /**
+   * How much the model should reason before answering, forwarded on both
+   * attempts. Only reasoning-capable models honour it; others drop it.
+   * Omitted → the provider's default (no extended reasoning on Claude).
+   *
+   * Setting it means sizing the call for reasoning too — the defaults
+   * (1500 tokens, 10s) are for a plain extraction:
+   * - Reasoning tokens count against `maxTokens`. Below 2048 a Claude model
+   *   that takes a thinking budget drops thinking without a word; an adaptive
+   *   one thinks and can spend the whole cap, failing both attempts as
+   *   `truncated_no_output`. Raise `maxTokens`, and `timeoutMs` with it.
+   * - With thinking on, Anthropic refuses a temperature, so neither attempt
+   *   sends one — the temp-0 retry is a second try at the provider's default,
+   *   not a deterministic one. The span still records the requested
+   *   temperature, as every LLM span here records the caller's values.
+   */
+  reasoningEffort?: ReasoningEffort;
+  /**
    * Optional caller-supplied error to throw when the attempts are exhausted
    * and nothing parsed.
    *
@@ -144,7 +169,18 @@ export interface StructuredCompletionOptions<T> {
 
 export interface StructuredCompletionResult<T> {
   value: T;
-  tokenUsage: { input: number; output: number };
+  /**
+   * Tokens billed across every attempt. `input` counts cached input too;
+   * `cacheRead` / `cacheWrite` are the parts of it billed at prompt-cache
+   * rates, present when the provider reported any.
+   */
+  tokenUsage: {
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    serviceTier?: LlmUsage['serviceTier'];
+  };
   costUsd: number;
   /**
    * Finish reason of the attempt that produced `value` (the retry's, when
@@ -188,11 +224,7 @@ const DEFAULT_TIMEOUT_MS = 10_000;
  * full-cap response's billed tokens would otherwise be lost on the way out.
  * Same field the adapters' own guards populate.
  */
-function truncationError(
-  model: string,
-  maxTokens: number,
-  usage?: { inputTokens: number; outputTokens: number }
-): ProviderError {
+function truncationError(model: string, maxTokens: number, usage?: LlmUsage): ProviderError {
   return new ProviderError(
     `Structured completion for model "${model}" was truncated at maxTokens (${maxTokens}) ` +
       `before it could be parsed — the response is incomplete, not schema-invalid. Raise ` +
@@ -254,7 +286,7 @@ export async function runStructuredCompletion<T>(
   ): Promise<{
     parsed: T | null;
     truncated: boolean;
-    usage: { inputTokens: number; outputTokens: number } | null;
+    usage: LlmUsage | null;
     finishReason: LlmFinishReason | null;
   }> => {
     // Note this is a fresh deadline per attempt, so `timeoutMs` bounds each
@@ -280,6 +312,7 @@ export async function runStructuredCompletion<T>(
             timeoutMs,
             signal,
             ...(responseFormat ? { responseFormat } : {}),
+            ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
           });
           setSpanAttributes(span, {
             [GEN_AI_RESPONSE_MODEL]: opts.model,
@@ -319,12 +352,9 @@ export async function runStructuredCompletion<T>(
 
   const first = await attempt(opts.messages, temperature);
   if (first.parsed !== null) {
-    const inputTokens = first.usage?.inputTokens ?? 0;
-    const outputTokens = first.usage?.outputTokens ?? 0;
     return {
       value: first.parsed,
-      tokenUsage: { input: inputTokens, output: outputTokens },
-      costUsd: calculateCost(opts.model, inputTokens, outputTokens).totalCostUsd,
+      ...billing(opts.model, [first.usage]),
       finishReason: first.finishReason ?? 'stop',
     };
   }
@@ -354,10 +384,7 @@ export async function runStructuredCompletion<T>(
   // a full cap's worth of output. Attributing only one of them under-reports
   // the most expensive failure shape there is.
   if (retry.truncated) {
-    const billed = {
-      inputTokens: (first.usage?.inputTokens ?? 0) + (retry.usage?.inputTokens ?? 0),
-      outputTokens: (first.usage?.outputTokens ?? 0) + (retry.usage?.outputTokens ?? 0),
-    };
+    const billed = sumUsage([first.usage, retry.usage]);
     // Omit rather than report zeros, matching the adapter guards: a consumer
     // doing `if (err.usage) logCost(...)` would otherwise write the "this turn
     // was free" row those guards exist to avoid. Both attempts can come back
@@ -377,12 +404,54 @@ export async function runStructuredCompletion<T>(
   // Both attempts are billed, so both are counted — including a first attempt
   // that was truncated, which is by definition a full cap's worth of output
   // and so the LARGEST component of the bill.
-  const inputTokens = (first.usage?.inputTokens ?? 0) + (retry.usage?.inputTokens ?? 0);
-  const outputTokens = (first.usage?.outputTokens ?? 0) + (retry.usage?.outputTokens ?? 0);
   return {
     value: retry.parsed,
-    tokenUsage: { input: inputTokens, output: outputTokens },
-    costUsd: calculateCost(opts.model, inputTokens, outputTokens).totalCostUsd,
+    ...billing(opts.model, [first.usage, retry.usage]),
     finishReason: retry.finishReason ?? 'stop',
+  };
+}
+
+/** The attempts' usage added together; an attempt with none counts as zero. */
+function sumUsage(attempts: Array<LlmUsage | null>): LlmUsage {
+  const total: LlmUsage = { inputTokens: 0, outputTokens: 0 };
+  for (const usage of attempts) {
+    if (!usage) continue;
+    total.inputTokens += usage.inputTokens;
+    total.outputTokens += usage.outputTokens;
+    if (usage.cacheReadTokens) {
+      total.cacheReadTokens = (total.cacheReadTokens ?? 0) + usage.cacheReadTokens;
+    }
+    if (usage.cacheWriteTokens) {
+      total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + usage.cacheWriteTokens;
+    }
+  }
+  return total;
+}
+
+/** `tokenUsage` and `costUsd` for the attempts a result was billed for. */
+function billing(
+  model: string,
+  attempts: Array<LlmUsage | null>
+): Pick<StructuredCompletionResult<unknown>, 'tokenUsage' | 'costUsd'> {
+  const usage = sumUsage(attempts);
+  // Each attempt is priced at the tier that served it: under `auto` one can
+  // be served at priority and the next at standard.
+  const billed = attempts.filter((attempt): attempt is LlmUsage => attempt !== null);
+  const tiers = new Set(billed.map((attempt) => attempt.serviceTier));
+  const onlyTier = tiers.size === 1 ? [...tiers][0] : undefined;
+  return {
+    tokenUsage: {
+      input: usage.inputTokens,
+      output: usage.outputTokens,
+      ...(usage.cacheReadTokens ? { cacheRead: usage.cacheReadTokens } : {}),
+      ...(usage.cacheWriteTokens ? { cacheWrite: usage.cacheWriteTokens } : {}),
+      // A cost row has one tier, so name it only when every attempt agreed.
+      ...(onlyTier ? { serviceTier: onlyTier } : {}),
+    },
+    costUsd: billed.reduce(
+      (sum, attempt) =>
+        sum + calculateCost(model, attempt.inputTokens, attempt.outputTokens, attempt).totalCostUsd,
+      0
+    ),
   };
 }

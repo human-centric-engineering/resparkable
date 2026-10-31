@@ -24,6 +24,22 @@ vi.mock('@/lib/auth/config', () => ({
 vi.mock('next/headers', () => ({
   headers: vi.fn(() => Promise.resolve(new Headers())),
 }));
+// The run's row lock (t-901): the transaction is the prisma mock. That the
+// lock is taken, and first, is `run-row-lock.test.ts`'s and the smoke's.
+vi.mock('@/lib/orchestration/engine/run-row-lock', async (importOriginal) => {
+  const { prisma: client } = await import('@/lib/db/client');
+  return {
+    ...(await importOriginal<typeof import('@/lib/orchestration/engine/run-row-lock')>()),
+    withRunRowLocked: vi.fn((_id: string, fn: (tx: unknown) => Promise<unknown>) => fn(client)),
+  };
+});
+
+// Nobody erased since the review read the run, unless a test says otherwise.
+vi.mock('@/lib/privacy/run-recipients', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/privacy/run-recipients')>()),
+  findErasedSinceCopy: vi.fn().mockResolvedValue(null),
+}));
+
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiWorkflowExecution: {
@@ -74,6 +90,8 @@ import { getModel } from '@/lib/orchestration/llm/model-registry';
 import { hydrateFromDb } from '@/lib/orchestration/llm/model-registry-db-hydrate';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
 import { runSupervisorAssessment } from '@/lib/orchestration/supervisor';
+import { withRunRowLocked } from '@/lib/orchestration/engine/run-row-lock';
+import { findErasedSinceCopy } from '@/lib/privacy/run-recipients';
 import {
   ProviderCallRefusedError,
   registerProviderEligibility,
@@ -247,6 +265,43 @@ describe('POST /api/v1/admin/orchestration/executions/:id/review', () => {
     );
   });
 
+  it('takes anyone erased since the read out of the report, written under the run’s lock (t-901)', async () => {
+    // The model call between read and write can outlast an erasure; the
+    // report quotes the run it read.
+    const before = Date.now();
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(happyExecution() as never);
+    vi.mocked(prisma.aiWorkflowExecution.update).mockResolvedValue({} as never);
+    vi.mocked(runSupervisorAssessment).mockResolvedValue({
+      ...happyAssessment(),
+      report: {
+        ...happyAssessment().report,
+        summary: 'Approved by cmgoneperson0000000000001',
+      },
+    } as never);
+    vi.mocked(findErasedSinceCopy).mockResolvedValueOnce({
+      addresses: [],
+      userIds: ['cmgoneperson0000000000001'],
+    });
+
+    const res = await POST(makeRequest(), makeContext());
+
+    expect(res.status).toBe(200);
+    expect(withRunRowLocked).toHaveBeenCalledWith(EXEC_ID, expect.any(Function));
+    const [, takenAt, values] = vi.mocked(findErasedSinceCopy).mock.calls[0];
+    expect(takenAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(values).toEqual([expect.objectContaining({ summary: expect.any(String) })]);
+    const written = vi.mocked(prisma.aiWorkflowExecution.update).mock.calls[0][0].data as {
+      supervisorReport: { summary: string };
+    };
+    expect(written.supervisorReport.summary).toBe('Approved by [erased]');
+    // The caller gets what was stored, not the copy before redaction.
+    const body = (await res.json()) as {
+      data: { summary: string; report: { summary: string } };
+    };
+    expect(body.data.summary).toBe('Approved by [erased]');
+    expect(body.data.report.summary).toBe('Approved by [erased]');
+  });
+
   it('archives prior verdict into previousVerdicts[] on re-entry', async () => {
     vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue({
       ...happyExecution(),
@@ -280,6 +335,130 @@ describe('POST /api/v1/admin/orchestration/executions/:id/review', () => {
       verdict: 'concerns',
       triggeredBy: 'in_workflow',
     });
+  });
+
+  it('archives the verdict stored at write time, not the one it read, when a review overlapped (t-925)', async () => {
+    // Two admins review at once. Both read V0; the other review writes VA
+    // (archiving V0) during this one's model call. This write must archive
+    // VA as well, or VA is lost from the history.
+    const v0 = {
+      verdict: 'concerns',
+      score: 0.4,
+      summary: 'original',
+      strengths: [],
+      weaknesses: [],
+      anomalies: [],
+      unverifiedAreas: [],
+      confidence: 'medium',
+      triggeredBy: 'in_workflow',
+    };
+    const v0Archived = {
+      verdict: 'concerns',
+      score: 0.4,
+      reviewedAt: '2026-05-16T10:00:00.000Z',
+      triggeredBy: 'in_workflow',
+    };
+    const readAtStart = {
+      ...happyExecution(),
+      supervisorVerdict: 'concerns',
+      supervisorScore: 0.4,
+      supervisorReviewedAt: new Date(v0Archived.reviewedAt),
+      supervisorReport: v0,
+    };
+    const storedAtWrite = {
+      status: 'completed',
+      supervisorVerdict: 'fail',
+      supervisorScore: 0.2,
+      supervisorReviewedAt: new Date('2026-05-17T12:00:00.000Z'),
+      supervisorReport: {
+        ...v0,
+        verdict: 'fail',
+        score: 0.2,
+        summary: 'the other review',
+        triggeredBy: 'retroactive',
+        previousVerdicts: [v0Archived],
+      },
+    };
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(readAtStart as never);
+    vi.mocked(prisma.aiWorkflowExecution.update).mockResolvedValue({} as never);
+    // Inside the lock the run reads as the other review left it.
+    const lockedRead = vi.fn().mockResolvedValue(storedAtWrite);
+    vi.mocked(withRunRowLocked).mockImplementationOnce((_id, fn) =>
+      fn({
+        aiWorkflowExecution: {
+          findUnique: lockedRead,
+          update: prisma.aiWorkflowExecution.update,
+        },
+      } as never)
+    );
+
+    const res = await POST(makeRequest(), makeContext());
+
+    expect(res.status).toBe(200);
+    expect(lockedRead).toHaveBeenCalledWith({
+      where: { id: EXEC_ID },
+      select: {
+        status: true,
+        completedAt: true,
+        supervisorVerdict: true,
+        supervisorReport: true,
+        supervisorReviewedAt: true,
+      },
+    });
+    const written = vi.mocked(prisma.aiWorkflowExecution.update).mock.calls[0][0].data
+      .supervisorReport as { previousVerdicts: unknown[] };
+    expect(written.previousVerdicts).toEqual([
+      v0Archived,
+      {
+        verdict: 'fail',
+        score: 0.2,
+        reviewedAt: '2026-05-17T12:00:00.000Z',
+        triggeredBy: 'retroactive',
+      },
+    ]);
+  });
+
+  it.each([
+    // retry-step (`prepareRetryStep`) sets pending and clears completedAt.
+    ['retried and not yet finished', { status: 'pending', completedAt: null }],
+    // The retried run finished again: terminal, but on a new trace.
+    ['retried and finished again', { completedAt: new Date('2026-05-17T11:00:00.000Z') }],
+  ])(
+    'refuses with 409, writing nothing, when the run was %s during the review',
+    async (_label, moved) => {
+      const read = { ...happyExecution(), completedAt: new Date('2026-05-17T10:00:01.000Z') };
+      vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(read as never);
+      vi.mocked(withRunRowLocked).mockImplementationOnce((_id, fn) =>
+        fn({
+          aiWorkflowExecution: {
+            findUnique: vi.fn().mockResolvedValue({ ...read, ...moved }),
+            update: prisma.aiWorkflowExecution.update,
+          },
+        } as never)
+      );
+
+      const res = await POST(makeRequest(), makeContext());
+
+      expect(res.status).toBe(409);
+      expect(prisma.aiWorkflowExecution.update).not.toHaveBeenCalled();
+    }
+  );
+
+  it('answers 404, writing nothing, when the run was removed during the review', async () => {
+    vi.mocked(prisma.aiWorkflowExecution.findUnique).mockResolvedValue(happyExecution() as never);
+    vi.mocked(withRunRowLocked).mockImplementationOnce((_id, fn) =>
+      fn({
+        aiWorkflowExecution: {
+          findUnique: vi.fn().mockResolvedValue(null),
+          update: prisma.aiWorkflowExecution.update,
+        },
+      } as never)
+    );
+
+    const res = await POST(makeRequest(), makeContext());
+
+    expect(res.status).toBe(404);
+    expect(prisma.aiWorkflowExecution.update).not.toHaveBeenCalled();
   });
 
   it('returns 400 on an invalid CUID id', async () => {

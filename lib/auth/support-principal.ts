@@ -18,7 +18,9 @@
  * @see lib/tenancy/entry.ts — where a support entry is admitted
  * @see .context/tenancy/support-access.md
  */
+import { ForbiddenError } from '@/lib/api/errors';
 import { DEFAULT_USER_ROLE } from '@/lib/auth/roles';
+import { logger } from '@/lib/logging';
 
 /** Did this entry admit a support session? */
 export function isSupportEntry(entry: { source: string } | null | undefined): boolean {
@@ -60,4 +62,75 @@ export function isRefusedReadOnlyWrite(
   if (!isSupportEntry(entry) || entry?.support?.level !== 'READ_ONLY') return false;
   // No method is not a read: refuse what cannot be classified.
   return !READ_METHODS.has((method ?? '').toUpperCase());
+}
+
+/** The refusal a READ_ONLY support session's write gets, in the guards and outside them. */
+export const READ_ONLY_SUPPORT_MESSAGE = 'Support access to this organisation is read-only';
+
+/**
+ * Refuse a write under a READ_ONLY support grant: log it and throw
+ * `ForbiddenError` (403). Does nothing for any other request. The one
+ * statement of the refusal, used by the guards and by
+ * {@link presentSessionEntry}, so the log line and the 403 are the same on both
+ * paths. `context` is added to the log line (the guard, the path, the user).
+ */
+export function refuseReadOnlySupportWrite(
+  entry: { source: string; orgId?: string; support?: { level: string; grantId?: string } },
+  method: string | undefined,
+  context: Record<string, unknown> = {}
+): void {
+  if (!isRefusedReadOnlyWrite(entry, method)) return;
+  logger.warn('tenancy: refused a write under a read-only support grant', {
+    ...context,
+    method,
+    orgId: entry.orgId,
+    grantId: entry.support?.grantId,
+  });
+  throw new ForbiddenError(READ_ONLY_SUPPORT_MESSAGE);
+}
+
+/**
+ * Both support-session rules, for a route that enters an org itself
+ * (`enterSessionOrg`) instead of through `withAuth` / `withAdminAuth` — a
+ * route that also serves a cookie-less caller, say. The guards apply these
+ * rules for every route they wrap; outside them the caller must, or a support
+ * actor keeps their platform `ADMIN` role and a READ_ONLY grant stops no write.
+ *
+ * Throws `ForbiddenError` (403) for a write under a READ_ONLY grant, before
+ * the caller does anything. Otherwise returns `session` as a handler inside
+ * the guards would see it: the default user role in place of the platform
+ * role inside a support session, unchanged everywhere else.
+ *
+ * `entry` is the entry `enterSessionOrg()` returned, after the caller refused
+ * an `OrgRefusal`. It is not nullable on purpose: a caller that turned a
+ * refusal into `null` would otherwise get the raw session back.
+ *
+ * ```typescript
+ * const entry = await enterSessionOrg(user, activeOrgId, headerOrgId);
+ * if (isOrgRefusal(entry)) throw new ForbiddenError('Access denied');
+ * const session = presentSessionEntry(rawSession, entry, request.method, { path });
+ * // false for a support actor
+ * const admin = isPlatformAdmin(session.user);
+ * // Run the work in the org's tenant context, as the guards do: row
+ * // isolation reads it, and so does the support stamp on audit rows.
+ * return runAsOrg(entry.orgId, () => handle(session, admin), {
+ *   source: entry.source,
+ *   role: entry.role,
+ *   ...(entry.support ? { support: entry.support } : {}),
+ * });
+ * ```
+ *
+ * `context` is added to the refusal's log line beside the user, as the guards
+ * add their name and the path.
+ *
+ * @see .context/tenancy/support-access.md — entering an org outside the guards
+ */
+export function presentSessionEntry<S extends { user: { id?: string; role?: string | null } }>(
+  session: S,
+  entry: { source: string; orgId?: string; support?: { level: string; grantId?: string } },
+  method: string | undefined,
+  context: Record<string, unknown> = {}
+): S {
+  refuseReadOnlySupportWrite(entry, method, { ...context, userId: session.user.id });
+  return presentedSession(session, entry);
 }

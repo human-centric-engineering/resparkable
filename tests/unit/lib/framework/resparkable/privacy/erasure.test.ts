@@ -113,7 +113,12 @@ describe('scrubGranteeEmail', () => {
   it('deletes grants addressed to the erased person’s email', async () => {
     const client = tx('b@example.com');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // The half no foreign key reaches: an unaccepted invite has only an
     // address, so this is the only thing that removes it.
@@ -125,7 +130,12 @@ describe('scrubGranteeEmail', () => {
   it('lower-cases the address before matching', async () => {
     const client = tx('B@Example.COM');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // `granteeEmail` is stored lower-cased at the boundary. Matching raw would
     // leave the row of anybody who signed up with a capital letter.
@@ -137,7 +147,12 @@ describe('scrubGranteeEmail', () => {
   it('reads the email from the transaction, before the user row is gone', async () => {
     const client = tx('b@example.com');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // `ErasureTxContext` carries only `userId`, and hooks run before
     // `user.delete()` — so the row is still there to read.
@@ -150,7 +165,12 @@ describe('scrubGranteeEmail', () => {
   it('deletes group invitations addressed to the same email, lower-cased', async () => {
     const client = tx('B@Example.COM');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // `ResparkableGroupInvite.email` has no foreign key either, and an accepted
     // invitation keeps its address after the membership it created has
@@ -163,7 +183,12 @@ describe('scrubGranteeEmail', () => {
   it('does nothing when the user row is already gone', async () => {
     const client = tx(null);
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // Nothing to match on, and no reason to guess. A `deleteMany` with an
     // undefined email would match on `undefined`, which Prisma reads as "no
@@ -175,7 +200,12 @@ describe('scrubGranteeEmail', () => {
   it('does not re-delete what the cascade already takes', async () => {
     const client = tx('b@example.com');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // Comments cascade from `authorUserId` (probe B9) and the space cascades
     // from B1. Deleting either here would be a second definition of what
@@ -187,7 +217,12 @@ describe('scrubGranteeEmail', () => {
   it('never touches the user row', async () => {
     const client = tx('b@example.com');
 
-    await scrubGranteeEmail({ tx: client as never, userId: 'user_b' });
+    await scrubGranteeEmail({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // The hook runs inside `eraseUser`'s transaction and before its own
     // delete. Deleting the user here would run the whole erasure twice.
@@ -199,7 +234,12 @@ describe('scrubResparkableInTransaction', () => {
   it('settles the erased person’s groups through the erasure transaction', async () => {
     const client = tx('b@example.com');
 
-    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+    await scrubResparkableInTransaction({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // The transaction client, not the global one: a promotion must not survive
     // an erasure that rolls back.
@@ -209,7 +249,12 @@ describe('scrubResparkableInTransaction', () => {
   it('still scrubs addresses', async () => {
     const client = tx('b@example.com');
 
-    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+    await scrubResparkableInTransaction({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.resparkableGrant.deleteMany).toHaveBeenCalledWith({
       where: { granteeEmail: 'b@example.com' },
@@ -223,7 +268,12 @@ describe('scrubResparkableInTransaction', () => {
     // no admin. Throwing rolls back `eraseUser`'s transaction, and the subject
     // can retry: a failed request is recoverable, an adminless group is not.
     await expect(
-      scrubResparkableInTransaction({ tx: tx('b@example.com') as never, userId: 'user_b' })
+      scrubResparkableInTransaction({
+        tx: tx('b@example.com') as never,
+        userId: 'user_b',
+        email: 'b@example.com',
+        emailVerified: true,
+      })
     ).rejects.toThrow('deadlock');
   });
 });
@@ -241,7 +291,12 @@ describe('dropResparkableConnectionKeys', () => {
     client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['key_1'] } } });
   });
@@ -253,7 +308,12 @@ describe('dropResparkableConnectionKeys', () => {
     const client = tx('b@example.com');
     client.mcpApiKey.findMany.mockResolvedValue([key('key_service', null)]);
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
   });
@@ -265,7 +325,12 @@ describe('dropResparkableConnectionKeys', () => {
     const client = tx('b@example.com');
     client.mcpApiKey.findMany.mockResolvedValue([key('key_odd', {})]);
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
   });
@@ -284,7 +349,12 @@ describe('dropResparkableConnectionKeys', () => {
     ]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ['key_legacy'] } },
@@ -296,7 +366,12 @@ describe('dropResparkableConnectionKeys', () => {
     const client = tx('b@example.com');
     client.mcpApiKey.findMany.mockResolvedValue([key('key_junk', { nested: { a: 1 } })]);
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).not.toHaveBeenCalled();
   });
@@ -311,7 +386,12 @@ describe('dropResparkableConnectionKeys', () => {
     ]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 3 });
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ['key_personal', 'key_group', 'key_legacy'] } },
@@ -321,7 +401,12 @@ describe('dropResparkableConnectionKeys', () => {
   it('reads only this person’s keys', async () => {
     const client = tx('b@example.com');
 
-    await dropResparkableConnectionKeys({ tx: client as never, userId: 'user_b' });
+    await dropResparkableConnectionKeys({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.findMany).toHaveBeenCalledWith({
       where: { createdBy: 'user_b' },
@@ -336,7 +421,12 @@ describe('dropResparkableConnectionKeys', () => {
     client.mcpApiKey.findMany.mockResolvedValue([key('key_1', { [SPACE_KEY]: 'spc_x' })]);
     client.mcpApiKey.deleteMany.mockResolvedValue({ count: 1 });
 
-    await scrubResparkableInTransaction({ tx: client as never, userId: 'user_b' });
+    await scrubResparkableInTransaction({
+      tx: client as never,
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(client.mcpApiKey.deleteMany).toHaveBeenCalled();
   });
@@ -352,7 +442,11 @@ describe('registered hook', () => {
 
 describe('cleanupResparkableBlobs', () => {
   it('deletes everything under the user’s prefix', async () => {
-    await cleanupResparkableBlobs({ userId: 'user_b' });
+    await cleanupResparkableBlobs({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     expect(deleteByPrefix).toHaveBeenCalledWith('framework-resparkable/user_b/');
   });
@@ -367,7 +461,11 @@ describe('cleanupResparkableBlobs', () => {
   it('does nothing when the deployment stores no originals', async () => {
     isStorageEnabled.mockReturnValue(false);
 
-    await cleanupResparkableBlobs({ userId: 'user_b' });
+    await cleanupResparkableBlobs({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // Not a failure: there is nothing to remove.
     expect(deleteByPrefix).not.toHaveBeenCalled();
@@ -379,6 +477,8 @@ describe('cleanupResparkableBlobs', () => {
     // `eraseUser` swallows a throw from this phase, which is right — a bucket
     // being down must not stop an account being deleted. What must not happen
     // is the log claiming success.
-    await expect(cleanupResparkableBlobs({ userId: 'user_b' })).resolves.toBeUndefined();
+    await expect(
+      cleanupResparkableBlobs({ userId: 'user_b', email: 'b@example.com', emailVerified: true })
+    ).resolves.toBeUndefined();
   });
 });

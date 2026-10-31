@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { withAdminAuth } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
 import { successResponse } from '@/lib/api/responses';
-import { NotFoundError, ValidationError } from '@/lib/api/errors';
+import { ConflictError, NotFoundError, ValidationError } from '@/lib/api/errors';
 import { getClientIP } from '@/lib/security/ip';
 import { getRouteLogger } from '@/lib/api/context';
 import { cuidSchema } from '@/lib/validations/common';
@@ -38,8 +38,14 @@ import {
   nextAgentVersionNumber,
 } from '@/lib/orchestration/agents/agent-versioning';
 import { invalidateAgentAccess } from '@/lib/orchestration/knowledge/resolveAgentDocumentAccess';
-import { bindingOwnerAfterWrite } from '@/lib/orchestration/agents/binding-owner';
-import { picksOwnBinding } from '@/lib/orchestration/agents/platform-agent-guard';
+import {
+  PLATFORM_BINDING_FIELDS,
+  bindingOwnerAfterWrite,
+} from '@/lib/orchestration/agents/binding-owner';
+import {
+  bindingFollowsPlatform,
+  picksOwnBinding,
+} from '@/lib/orchestration/agents/platform-agent-guard';
 import { assertAgentProvidersApproved } from '@/lib/orchestration/agents/provider-approval';
 
 /**
@@ -119,6 +125,24 @@ export const POST = withAdminAuth<{ id: string; versionId: string }>(
     const skip = agent.isSystem
       ? new Set<string>(platformAgentFieldNames('code'))
       : new Set<string>();
+    // While the platform owns a platform agent's provider and model, they move
+    // on their own (t-798), so almost every older version holds a different
+    // pair. Restoring one would freeze the agent on an old pick and make the
+    // binding the org's, and a pick on a provider since revoked would refuse
+    // the whole restore. So a restore leaves them as they are (owner ruling
+    // 2026-10-26, t-821); an admin who wants the old pair sets it on the form,
+    // which makes the binding the org's. Once the org owns it, a restore
+    // brings them back as before.
+    //
+    // `providerConfig` stays too: it is the configuration of whichever
+    // provider is primary, and the old one's would land on the platform's.
+    const followsPlatform = bindingFollowsPlatform(agent);
+    if (followsPlatform) for (const field of PLATFORM_BINDING_FIELDS) skip.add(field);
+    // The old fallbacks were chosen beside the old primary. Kept, but not the
+    // platform's current primary, which would then fall back to itself.
+    const restoredFallbacks = followsPlatform
+      ? snapshot.fallbackProviders?.filter((slug) => slug !== agent.provider)
+      : snapshot.fallbackProviders;
 
     const updateData: Record<string, unknown> = {};
 
@@ -167,11 +191,12 @@ export const POST = withAdminAuth<{ id: string; versionId: string }>(
       // coerce to Prisma.JsonNull, as the create/clone/import paths do.
       updateData[field] = getAgentField(field)?.json && value === null ? Prisma.JsonNull : value;
     }
+    if ('fallbackProviders' in updateData) updateData.fallbackProviders = restoredFallbacks;
 
     // On a platform agent that picks its own binding, bringing back a
     // different provider or model is an admin's choice like any PATCH
     // (t-798): the binding becomes the org's, and the platform stops moving it.
-    if (picksOwnBinding(agent)) {
+    if (picksOwnBinding(agent) && !followsPlatform) {
       const bindingOwner = bindingOwnerAfterWrite(agent, {
         provider: snapshot.provider,
         model: snapshot.model,
@@ -183,9 +208,13 @@ export const POST = withAdminAuth<{ id: string; versionId: string }>(
     // that the agent does not hold now must be one the org is approved for
     // (§120 t-743). A version saved before the org's grant changed would
     // otherwise restore the agent straight into refusal.
-    // An inherit snapshot names no provider, so it has none to approve.
+    // An inherit snapshot names no provider, so it has none to approve, and
+    // nor does one whose provider this restore leaves alone.
     await assertAgentProvidersApproved(
-      { provider: snapshot.provider || undefined, fallbackProviders: snapshot.fallbackProviders },
+      {
+        provider: followsPlatform ? undefined : snapshot.provider || undefined,
+        fallbackProviders: restoredFallbacks,
+      },
       agent
     );
 
@@ -254,8 +283,27 @@ export const POST = withAdminAuth<{ id: string; versionId: string }>(
     // platform-owned fields, left at their current values. The pre-restore state is already the
     // agent's newest version (newest-row-equals-live), so it needs no separate
     // snapshot.
+    //
+    // On an agent whose binding the platform picks, the write is conditional on
+    // the owner and binding read above: what to restore was decided from them,
+    // and a reconcile or a hand-back can change them in between. A restore
+    // that went ahead would then undo a hand-back, or leave a fallback equal
+    // to a primary that has since moved. It is refused instead, for the admin
+    // to retry against the current agent.
+    const where = picksOwnBinding(agent)
+      ? { id, bindingOwner: agent.bindingOwner, provider: agent.provider, model: agent.model }
+      : { id };
     const { updated, nextVersion } = await prisma.$transaction(async (tx) => {
-      const txUpdated = await tx.aiAgent.update({ where: { id }, data: updateData });
+      const txUpdated = await tx.aiAgent
+        .update({ where, data: updateData })
+        .catch((err: unknown) => {
+          if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+            throw new ConflictError(
+              "The agent's provider and model changed while it was being restored. Reload the agent and try again."
+            );
+          }
+          throw err;
+        });
 
       // Replace grants only when the snapshot carried them.
       if (snapshotTagIds !== undefined) {

@@ -59,7 +59,13 @@ import { isRecord } from '@/lib/utils';
 import { normaliseAddress } from '@/lib/orchestration/webhooks/destination';
 import { definitionRecipients } from '@/lib/privacy/config-recipients';
 import {
-  findErasedSubjects,
+  bundleContacts,
+  escalationAddresses,
+  trustedExportedAt,
+} from '@/lib/orchestration/backup/export-seal';
+import {
+  lockSubjects,
+  matchErasedSubjects,
   WRITER_TRANSACTION_OPTIONS,
   type ErasedSubjects,
 } from '@/lib/privacy/erased-subjects';
@@ -212,13 +218,16 @@ export async function importOrchestrationConfig(
   scope: BackupScope
 ): Promise<ImportResult> {
   const parsed = backupSchema.parse(raw);
-  return runAsOrg(scope.orgId, () => importParsed(parsed, userId, scope.includeShared));
+  return runAsOrg(scope.orgId, () =>
+    importParsed(parsed, userId, scope.includeShared, scope.orgId)
+  );
 }
 
 async function importParsed(
   parsed: BackupPayload,
   userId: string,
-  includeShared: boolean
+  includeShared: boolean,
+  orgId: string
 ): Promise<ImportResult> {
   const result: ImportResult = {
     agents: { created: 0, updated: 0 },
@@ -262,8 +271,24 @@ async function importParsed(
       // A backup from before an erasure would otherwise restore their address
       // or approver id into the escalation list, a subscription or a workflow.
       // Found once, under the locks erasure takes, and stripped from every
-      // write below with a warning — an import is not refused for it.
-      const erased = await findErasedSubjects(tx, bundleRecipients(parsed.data, includeShared));
+      // write below with a warning — an import is not refused for it. For
+      // addresses, only erasures since a date this install sealed count (§122
+      // t-902, t-900); see erasedSinceBundle.
+      const since = trustedExportedAt(parsed, orgId, new Date());
+      if (parsed.exportSeal !== undefined && !since) result.warnings.push(SEAL_REJECTED_WARNING);
+      const erased = await erasedSinceBundle(tx, bundleRecipients(parsed.data, includeShared), {
+        since,
+      });
+      // Addresses erased before a sealed export that this import writes back,
+      // noted where each is written, so a skipped row is not counted; and
+      // counted once each, however many places it appears.
+      const keptContacts = new Set<string>();
+      const noteKept = (addresses: Iterable<string>) => {
+        for (const a of addresses) {
+          const address = normaliseAddress(a);
+          if (erased.everContacts.includes(address)) keptContacts.add(address);
+        }
+      };
 
       // Knowledge tags first — agents reference them by slug, so create/refresh
       // them before the agent import so grant resolution succeeds.
@@ -371,6 +396,12 @@ async function importParsed(
               temperature: agent.temperature,
               maxTokens: agent.maxTokens,
               reasoningEffort: agent.reasoningEffort ?? null,
+              stopSequences: agent.stopSequences ?? [],
+              topP: agent.topP ?? null,
+              verbosity: agent.verbosity ?? null,
+              parallelToolCalls: agent.parallelToolCalls ?? null,
+              serviceTier: agent.serviceTier ?? null,
+              providerTools: agent.providerTools ?? Prisma.JsonNull,
               monthlyBudgetUsd: agent.monthlyBudgetUsd,
               // Older backup bundles omit this field — treat absent as
               // null (no per-turn cap). The schema validator allows the
@@ -431,6 +462,7 @@ async function importParsed(
               providerConfig:
                 (createAgent.providerConfig as Prisma.InputJsonValue) ?? Prisma.JsonNull,
               widgetConfig: (createAgent.widgetConfig as Prisma.InputJsonValue) ?? Prisma.JsonNull,
+              providerTools: createAgent.providerTools ?? Prisma.JsonNull,
               createdBy: userId,
             },
           });
@@ -660,12 +692,14 @@ async function importParsed(
         }
         const unapprovedSteps = workflowProviders.bySlug.get(wf.slug);
         if (unapprovedSteps) result.warnings.push(unapprovedSteps);
-        const definition = withoutErasedRecipients(defParsed.data, erased);
+        const definition = withoutErasedRecipients(defParsed.data, erased.inWorkflows);
         if (definition !== defParsed.data) {
           result.warnings.push(
             `Workflow '${wf.slug}': recipients or approvers belonging to people whose data was erased were removed`
           );
         }
+        // Every path below writes the definition.
+        noteKept(definitionRecipients(definition as unknown as Prisma.JsonValue).addresses);
         if (existing) {
           // Promote the imported snapshot to a new version on the existing workflow.
           const lastVersion = await tx.aiWorkflowVersion.findFirst({
@@ -772,7 +806,7 @@ async function importParsed(
           continue;
         }
 
-        if (channel === 'email' && erased.addresses.includes(normaliseAddress(destination))) {
+        if (channel === 'email' && erased.contacts.includes(normaliseAddress(destination))) {
           // Not echoed: it is the address being kept out.
           result.warnings.push(
             'Skipped an email subscription — its address belongs to a person whose data was erased'
@@ -787,6 +821,7 @@ async function importParsed(
           result.webhooks.skipped++;
           continue;
         }
+        if (channel === 'email') noteKept([destination]);
 
         if (channel === 'webhook') {
           result.warnings.push(
@@ -831,12 +866,13 @@ async function importParsed(
       // Import settings — the shared part.
       if (includeShared && parsed.data.settings) {
         const s = parsed.data.settings;
-        const escalationConfig = escalationWithoutErased(s.escalationConfig, erased);
+        const escalationConfig = escalationWithoutErased(s.escalationConfig, erased.contacts);
         if (escalationConfig !== s.escalationConfig) {
           result.warnings.push(
             'Escalation list: addresses belonging to people whose data was erased were removed'
           );
         }
+        noteKept(escalationAddresses(escalationConfig));
         await tx.aiOrchestrationSettings.upsert({
           where: { slug: 'global' },
           create: {
@@ -881,6 +917,7 @@ async function importParsed(
         });
         result.settingsUpdated = true;
       }
+      if (keptContacts.size > 0) result.warnings.push(keptContactsWarning(keptContacts.size));
     },
     { timeout: IMPORT_TRANSACTION_TIMEOUT_MS }
   );
@@ -940,6 +977,56 @@ async function importedWorkflowProviderWarnings(
 }
 
 /**
+ * The erased among a bundle's subjects, under erasure's locks, taken once for
+ * every subject before any is asked about.
+ *
+ * - **`contacts`**: the addresses (the email subscriptions', the escalation
+ *   list's and the workflow definitions') erased since `since` (§122 t-902,
+ *   t-900): the date this install sealed, over the bundle's contacts and this
+ *   org (`export-seal.ts`). One erased earlier that such a copy still names
+ *   was re-added on purpose. With no `since`, every erasure.
+ *   **`everContacts`** is every erased one, so the import can count the
+ *   re-added addresses it writes back.
+ * - **`inWorkflows`**: what to strip from the definitions: those same
+ *   addresses, and every approver id ever erased. An id is never issued
+ *   again, so nobody can have re-added one.
+ */
+async function erasedSinceBundle(
+  tx: Prisma.TransactionClient,
+  subjects: BundleSubjects,
+  { since }: { since: Date | undefined }
+): Promise<{ inWorkflows: ErasedSubjects; contacts: string[]; everContacts: string[] }> {
+  const addresses = [...subjects.workflows.addresses, ...subjects.contacts];
+  await lockSubjects(tx, { addresses, userIds: subjects.workflows.userIds });
+  const { userIds } = await matchErasedSubjects(tx, { userIds: subjects.workflows.userIds });
+  const ever = (await matchErasedSubjects(tx, { addresses })).addresses;
+  const recent = since ? (await matchErasedSubjects(tx, { addresses }, { since })).addresses : ever;
+  return { inWorkflows: { addresses: recent, userIds }, contacts: recent, everContacts: ever };
+}
+
+/** The import's word when a bundle carries a seal this install does not accept. */
+const SEAL_REJECTED_WARNING =
+  "This backup's seal did not verify — it was edited, exported from another organisation or " +
+  'install, or the install secret has changed since — so everyone ever erased was removed ' +
+  'from its workflows, email subscriptions and escalation list';
+
+/** Says how many re-added addresses a sealed import kept, never which. */
+function keptContactsWarning(count: number): string {
+  return (
+    `Kept ${count} contact address${count === 1 ? '' : 'es'} belonging to people whose data ` +
+    'was erased before this backup was taken: this install sealed the backup with them in it, ' +
+    'so they were re-added after the erasure'
+  );
+}
+
+interface BundleSubjects {
+  /** Every address and approver id the workflow definitions name. */
+  workflows: { addresses: string[]; userIds: string[] };
+  /** The email subscriptions' addresses, and the escalation list's when imported. */
+  contacts: string[];
+}
+
+/**
  * Every address and approver id a bundle names, for the erased-person check
  * (t-805): workflow definitions, email subscriptions, and — when shared
  * settings are imported — the escalation list.
@@ -951,37 +1038,25 @@ function bundleRecipients(
     settings?: { escalationConfig: unknown } | null;
   },
   includeShared: boolean
-): { addresses: string[]; userIds: string[] } {
-  const addresses: string[] = [];
+): BundleSubjects {
+  // Addresses from the same lists the seal covers (`bundleContacts`), so the
+  // two cannot drift; approver ids, which the seal does not cover, alongside.
+  const { subscriptions, escalation, workflows: addresses } = bundleContacts(data);
   const userIds: string[] = [];
   for (const wf of data.workflows) {
     const parsed = workflowDefinitionSchema.safeParse(wf.workflowDefinition);
     if (!parsed.success) continue;
-    const named = definitionRecipients(parsed.data as unknown as Prisma.JsonValue);
-    addresses.push(...named.addresses);
-    userIds.push(...named.userIds);
+    userIds.push(...definitionRecipients(parsed.data as unknown as Prisma.JsonValue).userIds);
   }
-  for (const wh of data.webhooks) {
-    if (wh.channel === 'email' && wh.emailAddress) addresses.push(wh.emailAddress);
-  }
-  if (includeShared && data.settings) {
-    addresses.push(...escalationAddresses(data.settings.escalationConfig));
-  }
-  return { addresses, userIds };
-}
-
-function escalationAddresses(config: unknown): string[] {
-  if (!isRecord(config) || !Array.isArray(config.emailAddresses)) return [];
-  return config.emailAddresses.filter((a): a is string => typeof a === 'string');
+  const contacts = [...subscriptions, ...(includeShared ? escalation : [])];
+  return { workflows: { addresses: [...addresses], userIds }, contacts };
 }
 
 /** The escalation config without erased addresses — the same object when none were. */
-function escalationWithoutErased(config: unknown, erased: ErasedSubjects): unknown {
-  if (erased.addresses.length === 0 || !isRecord(config)) return config;
+function escalationWithoutErased(config: unknown, erased: string[]): unknown {
+  if (erased.length === 0 || !isRecord(config)) return config;
   const list = config.emailAddresses;
   if (!Array.isArray(list)) return config;
-  const kept = list.filter(
-    (a) => typeof a !== 'string' || !erased.addresses.includes(normaliseAddress(a))
-  );
+  const kept = list.filter((a) => typeof a !== 'string' || !erased.includes(normaliseAddress(a)));
   return kept.length === list.length ? config : { ...config, emailAddresses: kept };
 }

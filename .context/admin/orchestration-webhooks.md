@@ -199,12 +199,12 @@ Uses admin orchestration webhook endpoints:
 - `GET /webhooks` — list (includes `_count.deliveries`)
 - `POST /webhooks` — create
 - `GET /webhooks/:id` — get
-- `PATCH /webhooks/:id` — update
+- `PATCH /webhooks/:id` — update; sends the `version` its read returned as `If-Match` (428 without one, 412 `STALE_RECORD` when the subscription changed since, an erasure included — t-899). The edit form and the list's active toggle show a notice saying so and keep the admin's edits; see [Saves of a record that moved on](../privacy/data-erasure.md#saves-of-a-record-that-moved-on-version-t-899)
 - `DELETE /webhooks/:id` — delete (its deliveries are kept; see [Where a delivery went](#where-a-delivery-went))
 - `POST /webhooks/:id/test` — send test ping event
 - `GET /webhooks/:id/deliveries` — delivery history (scoped to the caller's own subscriptions, plus ones whose creator was erased where the policy permits)
 - `GET /webhooks/deliveries?status=&subscriptionId=&orphaned=` — deliveries in any status across the subscriptions the caller may see, including those whose subscription was deleted (where the policy permits); the route that reaches a delivered orphan, which neither the per-subscription list nor the DLQ can
-- `POST /webhooks/deliveries/:id/retry` — retry failed delivery (verifies parent subscription ownership; 409 when the subscription was deleted, or when an erasure stopped the delivery)
+- `POST /webhooks/deliveries/:id/retry` — retry failed delivery (verifies parent subscription ownership; 409 when the subscription was deleted, or when an erasure stopped the delivery — including one an attempt stopped itself, finding its address or a person its payload names erased since the subscriptions were read, t-886)
 - `DELETE /webhooks/deliveries/:id` — permanently delete a delivery row (verifies parent subscription ownership, or that it was deleted; audit-logged as `webhook_delivery.delete`, naming the delivery's origin, never an email address)
 - `GET /webhooks/dlq?page=&pageSize=&subscriptionId=&eventType=&since=&until=` — list exhausted deliveries across all subscriptions the calling admin may see (their own, plus ones whose creator was erased where the policy permits), plus orphaned deliveries. Always scoped to `status=exhausted` and that scope; filters narrow further.
 - `GET /webhooks/dlq/stats` — depth signal for the health dashboard. Returns `{ exhausted24h, exhaustedTotal, oldestExhaustedAt }` over the same scope. Consumed by improvement #41 (health dashboard).

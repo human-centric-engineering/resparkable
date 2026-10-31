@@ -19,6 +19,17 @@ export interface SendEmailOptions {
    * differs.
    */
   idempotencyKey?: string;
+  /**
+   * Extra message headers, passed to Resend unchanged — e.g. `List-Unsubscribe`
+   * and `List-Unsubscribe-Post` for one-click unsubscribe on marketing mail.
+   * Only the header names are logged, not their values.
+   *
+   * One set of headers goes to every address in `to`, so a per-recipient
+   * value such as an unsubscribe token needs one send per recipient. Headers
+   * are part of the request `idempotencyKey` covers: a retry with the same key
+   * must send the same headers, or Resend refuses it.
+   */
+  headers?: Record<string, string>;
 }
 
 export type EmailStatus = 'sent' | 'failed' | 'disabled';
@@ -42,7 +53,7 @@ export interface SendEmailResult {
  * @returns Result with success status, email ID, or error message
  */
 export async function sendEmail(options: SendEmailOptions): Promise<SendEmailResult> {
-  const { to, subject, react, from, replyTo, signal, idempotencyKey } = options;
+  const { to, subject, react, from, replyTo, signal, idempotencyKey, headers } = options;
   const sender = from || getDefaultSender();
   // Logged under a PII-named key so production logs redact the addresses.
   const recipientEmail = Array.isArray(to) ? to.join(', ') : to;
@@ -52,6 +63,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<SendEmailRes
     recipientEmail,
     subject,
     from: sender,
+    ...(headers && { headerNames: Object.keys(headers) }),
     deliveryEnabled: isEmailEnabled(),
     nodeEnv: env.NODE_ENV,
   });
@@ -110,6 +122,7 @@ export async function sendEmail(options: SendEmailOptions): Promise<SendEmailRes
         subject,
         html,
         ...(replyTo && { replyTo }),
+        ...(headers && { headers }),
       },
       ...(signal || idempotencyKey ? [{ signal, idempotencyKey }] : [])
     );

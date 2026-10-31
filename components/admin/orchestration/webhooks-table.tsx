@@ -9,6 +9,7 @@
  *   - Delete with confirmation
  */
 
+import { StaleSaveNotice } from '@/components/admin/orchestration/stale-save-notice';
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -72,6 +73,8 @@ export interface WebhookListItem {
   createdAt: string;
   updatedAt: string;
   _count: { deliveries: number };
+  /** Sent back as If-Match by the active toggle (§122 t-899). */
+  version: string;
 }
 
 export interface WebhooksTableProps {
@@ -88,12 +91,18 @@ export function WebhooksTable({ initialWebhooks, initialMeta }: WebhooksTablePro
   const [activeFilter, setActiveFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
+  // A toggle refused because the row changed since the list loaded it.
+  const [stale, setStale] = useState(false);
+  // Rows with a toggle in flight: a second click would carry the version from
+  // before the first, and be refused as stale by the change it just made.
+  const [toggling, setToggling] = useState<ReadonlySet<string>>(new Set());
   const [deleteTarget, setDeleteTarget] = useState<WebhookListItem | null>(null);
 
   const fetchPage = useCallback(
     async (page: number) => {
       setLoading(true);
       setListError(null);
+      setStale(false);
       try {
         const params = new URLSearchParams({ page: String(page), limit: String(meta.limit) });
         if (activeFilter !== 'all') params.set('isActive', activeFilter);
@@ -135,20 +144,35 @@ export function WebhooksTable({ initialWebhooks, initialMeta }: WebhooksTablePro
   };
 
   const handleToggleActive = useCallback(async (wh: WebhookListItem, nextActive: boolean) => {
+    setToggling((prev) => new Set(prev).add(wh.id));
     setWebhooks((prev) => prev.map((w) => (w.id === wh.id ? { ...w, isActive: nextActive } : w)));
     try {
-      await apiClient.patch(API.ADMIN.ORCHESTRATION.webhookById(wh.id), {
-        body: { isActive: nextActive },
-      });
+      const saved = await apiClient.patch<{ version: string }>(
+        API.ADMIN.ORCHESTRATION.webhookById(wh.id),
+        { body: { isActive: nextActive }, options: { headers: { 'If-Match': wh.version } } }
+      );
+      setWebhooks((prev) =>
+        prev.map((w) => (w.id === wh.id ? { ...w, version: saved.version } : w))
+      );
     } catch (err) {
       setWebhooks((prev) =>
         prev.map((w) => (w.id === wh.id ? { ...w, isActive: wh.isActive } : w))
       );
+      if (err instanceof APIClientError && err.code === 'STALE_RECORD') {
+        setStale(true);
+        return;
+      }
       setListError(
         err instanceof APIClientError
           ? `Could not update webhook: ${err.message}`
           : 'Could not update webhook. Try again.'
       );
+    } finally {
+      setToggling((prev) => {
+        const next = new Set(prev);
+        next.delete(wh.id);
+        return next;
+      });
     }
   }, []);
 
@@ -182,6 +206,9 @@ export function WebhooksTable({ initialWebhooks, initialMeta }: WebhooksTablePro
         <div className="border-destructive/50 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm">
           {listError}
         </div>
+      )}
+      {stale && (
+        <StaleSaveNotice what="That subscription" onReload={() => void fetchPage(meta.page)} />
       )}
 
       {/* Table */}
@@ -256,6 +283,7 @@ export function WebhooksTable({ initialWebhooks, initialMeta }: WebhooksTablePro
                   <TableCell className="text-center">
                     <Switch
                       checked={wh.isActive}
+                      disabled={toggling.has(wh.id)}
                       onCheckedChange={(v) => void handleToggleActive(wh, v)}
                       aria-label={`Toggle ${truncateUrl(wh.url, 30)} active`}
                     />

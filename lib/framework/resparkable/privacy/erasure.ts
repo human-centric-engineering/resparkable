@@ -67,6 +67,7 @@ import { mcpKeyScopeSchema } from '@/lib/validations/mcp';
 import { logger } from '@/lib/logging';
 import {
   registerErasureCleanupHook,
+  registerStaleWriter,
   type ErasureExternalContext,
   type ErasureTxContext,
 } from '@/lib/privacy/erasure-hooks';
@@ -297,5 +298,17 @@ export function registerResparkableErasureHook(): void {
     name: 'resparkable',
     cleanupExternal: cleanupResparkableBlobs,
     scrubInTransaction: scrubResparkableInTransaction,
+  });
+
+  // The tier's one write to a column erasure scrubs (§122). It creates a
+  // fresh run and copies nothing stored, so a person erased earlier cannot
+  // come back through it; the engine that later runs the row is core's.
+  registerStaleWriter({
+    file: 'lib/framework/resparkable/repo/workflow-runs.ts',
+    model: 'AiWorkflowExecution',
+    anchor: 'intent',
+    how:
+      "Queues a PENDING run with the caller's options and the ids it names as `inputData`. " +
+      'Nothing stored is copied.',
   });
 }

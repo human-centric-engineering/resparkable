@@ -54,6 +54,7 @@ import {
   resolveEffectivePrompt,
 } from '@/lib/orchestration/agents/resolve-effective-prompt';
 import { narrowReasoningEffort } from '@/lib/orchestration/llm/model-heuristics';
+import { modelParamOptions, spendWebSearches } from '@/lib/orchestration/llm/model-params';
 import { registerStepType } from '@/lib/orchestration/engine/executor-registry';
 import { platformScope, hintScope } from '@/lib/orchestration/scope';
 import {
@@ -96,6 +97,8 @@ interface RunSingleTurnOptions {
   /** Pre-accumulated tokens/cost from prior iterations on the resumed step. */
   startTokens?: number;
   startCost?: number;
+  /** Provider web searches the prior attempt's turns ran, against the agent's search limit. */
+  startWebSearches?: number;
   /**
    * Pre-set finalContent. Used when resuming a step where maxIterations was
    * already hit on the prior attempt — the loop returns immediately and
@@ -151,6 +154,7 @@ async function runSingleTurn(
     startMessages,
     startTokens = 0,
     startCost = 0,
+    startWebSearches = 0,
     startContent = '',
     recordTurn,
     effectiveReasoningEffort,
@@ -158,11 +162,15 @@ async function runSingleTurn(
   } = options;
   let totalTokensUsed = startTokens;
   let totalCostUsd = startCost;
+  // The agent's search limit caps the step's reply, not each call of its loop.
+  let searchesUsed = startWebSearches;
   let finalContent = startContent;
   let currentMessages = startMessages ? [...startMessages] : [...initialMessages];
   // Names already refused this turn, so the hook fires once per distinct name
   // rather than once per iteration — see the emission site for why.
   const refusedToolNames = new Set<string>();
+  // The agent's stop sequences, top P and the rest — the same every turn.
+  const modelParams = modelParamOptions(agent!);
 
   for (let iteration = startIteration; iteration < maxIterations; iteration++) {
     const turnOutcome = await withSpan(
@@ -191,6 +199,7 @@ async function runSingleTurn(
             ...(effectiveReasoningEffort !== undefined
               ? { reasoningEffort: effectiveReasoningEffort }
               : {}),
+            ...spendWebSearches(modelParams, searchesUsed),
             ...(toolDefinitions.length > 0 ? { tools: toolDefinitions } : {}),
             signal: ctx.signal,
           });
@@ -212,8 +221,12 @@ async function runSingleTurn(
               (billedOnFailure ? billedOnFailure.inputTokens + billedOnFailure.outputTokens : 0),
             totalCostUsd +
               (billedOnFailure
-                ? calculateCost(model, billedOnFailure.inputTokens, billedOnFailure.outputTokens)
-                    .totalCostUsd
+                ? calculateCost(
+                    model,
+                    billedOnFailure.inputTokens,
+                    billedOnFailure.outputTokens,
+                    billedOnFailure
+                  ).totalCostUsd
                 : 0)
           );
         }
@@ -226,6 +239,7 @@ async function runSingleTurn(
           requestParams.reasoningEffort = effectiveReasoningEffort;
         }
         if (toolDefinitions.length > 0) requestParams.toolCount = toolDefinitions.length;
+        Object.assign(requestParams, modelParams);
         ctx.stepTelemetry?.push({
           model: model,
           provider: usedSlug,
@@ -239,11 +253,14 @@ async function runSingleTurn(
         const turnCost = calculateCost(
           model,
           response.usage.inputTokens,
-          response.usage.outputTokens
+          response.usage.outputTokens,
+          response.usage
         );
 
         totalTokensUsed += turnTokens;
         totalCostUsd += turnCost.totalCostUsd;
+        const turnSearches = response.usage.webSearchRequests ?? 0;
+        searchesUsed += turnSearches;
 
         setSpanAttributes(span, {
           [GEN_AI_RESPONSE_MODEL]: model,
@@ -261,6 +278,11 @@ async function runSingleTurn(
           provider: usedSlug,
           inputTokens: response.usage.inputTokens,
           outputTokens: response.usage.outputTokens,
+          cacheReadTokens: response.usage.cacheReadTokens,
+          cacheWriteTokens: response.usage.cacheWriteTokens,
+          serviceTier: response.usage.serviceTier,
+          webSearchRequests: response.usage.webSearchRequests,
+          codeExecution: response.usage.codeExecution,
           operation: CostOperation.CHAT,
           isLocal: turnCost.isLocal,
           traceId: span.traceId(),
@@ -295,6 +317,7 @@ async function runSingleTurn(
               assistantContent: response.content,
               tokensUsed: turnTokens,
               costUsd: turnCost.totalCostUsd,
+              ...(turnSearches > 0 ? { webSearchRequests: turnSearches } : {}),
             });
           }
           logger.warn('agent_call: per-turn cost cap exceeded — aborting tool loop', {
@@ -328,6 +351,7 @@ async function runSingleTurn(
               assistantContent: finalContent,
               tokensUsed: turnTokens,
               costUsd: turnCost.totalCostUsd,
+              ...(turnSearches > 0 ? { webSearchRequests: turnSearches } : {}),
             });
           }
           return 'break' as const;
@@ -459,6 +483,7 @@ async function runSingleTurn(
               assistantContent: finalContent,
               tokensUsed: turnTokens,
               costUsd: turnCost.totalCostUsd,
+              ...(turnSearches > 0 ? { webSearchRequests: turnSearches } : {}),
             });
           }
           return 'break' as const;
@@ -477,14 +502,21 @@ async function runSingleTurn(
             assistantContent: response.content,
             toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments },
             toolResult: capResult,
+            ...(response.reasoning ? { reasoning: response.reasoning } : {}),
             tokensUsed: turnTokens,
             costUsd: turnCost.totalCostUsd,
+            ...(turnSearches > 0 ? { webSearchRequests: turnSearches } : {}),
           });
         }
 
         currentMessages = [
           ...currentMessages,
-          { role: 'assistant' as const, content: response.content, toolCalls: [toolCall] },
+          {
+            role: 'assistant' as const,
+            content: response.content,
+            toolCalls: [toolCall],
+            ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+          },
           { role: 'tool' as const, content: JSON.stringify(capResult), toolCallId: toolCall.id },
         ];
         return 'continue' as const;
@@ -713,6 +745,7 @@ export async function executeAgentCall(
       const lastPrior = priorIterTurns[priorIterTurns.length - 1];
       const resumeTokens = priorIterTurns.reduce((s, t) => s + t.tokensUsed, 0);
       const resumeCost = priorIterTurns.reduce((s, t) => s + t.costUsd, 0);
+      const resumeSearches = priorIterTurns.reduce((s, t) => s + (t.webSearchRequests ?? 0), 0);
 
       // Terminal-phase last entry → the prior attempt already produced a final
       // answer (either via the LLM emitting no tool calls or a `skipFollowup`
@@ -743,6 +776,7 @@ export async function executeAgentCall(
             role: 'assistant',
             content: turn.assistantContent,
             toolCalls: [turn.toolCall],
+            ...(turn.reasoning ? { reasoning: turn.reasoning } : {}),
           });
           restoredMessages.push({
             role: 'tool',
@@ -773,6 +807,7 @@ export async function executeAgentCall(
           startMessages: restoredMessages,
           startTokens: resumeTokens,
           startCost: resumeCost,
+          startWebSearches: resumeSearches,
           // `lastPrior.assistantContent` is the most recent assistant response;
           // if maxIterations was already hit on the prior attempt, the resumed
           // loop will exit immediately and return this as the output.

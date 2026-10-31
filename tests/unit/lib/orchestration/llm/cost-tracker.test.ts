@@ -56,6 +56,7 @@ vi.mock('@/lib/orchestration/llm/model-registry', async () => {
 const { prisma } = await import('@/lib/db/client');
 const {
   getAvailableModels,
+  getModel,
   registerModels,
   __resetForTests: resetRegistry,
 } = await import('@/lib/orchestration/llm/model-registry');
@@ -1064,5 +1065,268 @@ describe('calculateLocalSavings', () => {
     expect(result.usd).toBe(0);
     expect(result.sampleSize).toBe(0);
     expect(result.methodology).toBe('tier_fallback');
+  });
+});
+
+describe('prompt-cache pricing (t-909)', () => {
+  const model = (overrides: Partial<ModelInfo>): ModelInfo => ({
+    id: 'priced-model',
+    name: 'Priced',
+    provider: 'anthropic',
+    tier: 'frontier',
+    inputCostPerMillion: 10,
+    outputCostPerMillion: 50,
+    maxContext: 200_000,
+    supportsTools: true,
+    ...overrides,
+  });
+
+  it('prices Claude cache reads at 0.1x and writes at 1.25x when no rate is published', () => {
+    vi.mocked(getModel).mockReturnValueOnce(model({}));
+
+    // 1M input: 600k read, 100k written, 300k uncached.
+    const cost = calculateCost('priced-model', 1_000_000, 0, {
+      cacheReadTokens: 600_000,
+      cacheWriteTokens: 100_000,
+    });
+
+    // 0.3 × 10 + 0.6 × 1 + 0.1 × 12.5
+    expect(cost.inputCostUsd).toBeCloseTo(3 + 0.6 + 1.25);
+    expect(cost.totalCostUsd).toBeCloseTo(4.85);
+  });
+
+  it("uses the model's own published cache rates over the multipliers", () => {
+    vi.mocked(getModel).mockReturnValueOnce(
+      model({ cacheReadCostPerMillion: 0.25, cacheWriteCostPerMillion: 12.5 })
+    );
+
+    const cost = calculateCost('priced-model', 1_000_000, 0, { cacheReadTokens: 1_000_000 });
+
+    expect(cost.inputCostUsd).toBeCloseTo(0.25);
+  });
+
+  it('prices an OpenAI cache hit at the full input rate when no cache rate is published', () => {
+    // Its discount varies by model; without a published rate the safe
+    // answer is never to price under the real cost.
+    vi.mocked(getModel).mockReturnValueOnce(model({ provider: 'openai' }));
+
+    const cost = calculateCost('priced-model', 1_000_000, 0, { cacheReadTokens: 800_000 });
+
+    expect(cost.inputCostUsd).toBeCloseTo(10);
+  });
+
+  it('prices an OpenAI cache hit at its published read rate', () => {
+    vi.mocked(getModel).mockReturnValueOnce(
+      model({ provider: 'openai', inputCostPerMillion: 1.25, cacheReadCostPerMillion: 0.125 })
+    );
+
+    const cost = calculateCost('priced-model', 1_000_000, 0, { cacheReadTokens: 800_000 });
+
+    // 0.2 × 1.25 + 0.8 × 0.125
+    expect(cost.inputCostUsd).toBeCloseTo(0.35);
+  });
+
+  it('never prices more cached input than there was input', () => {
+    vi.mocked(getModel).mockReturnValueOnce(model({}));
+
+    const cost = calculateCost('priced-model', 1_000, 0, {
+      cacheReadTokens: 900,
+      cacheWriteTokens: 5_000,
+    });
+
+    // 900 read, the remaining 100 written, none uncached.
+    expect(cost.inputCostUsd).toBeCloseTo((900 * 1 + 100 * 12.5) / 1_000_000);
+  });
+
+  it('prices input as before when the call reported no cache use', () => {
+    vi.mocked(getModel).mockReturnValueOnce(model({}));
+
+    expect(calculateCost('priced-model', 1_000_000, 0).inputCostUsd).toBeCloseTo(10);
+  });
+
+  it('writes the cache counts to the cost row and prices them into inputCostUsd', async () => {
+    (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'row-1' });
+    vi.mocked(getModel).mockReturnValueOnce(model({}));
+
+    await logCost({
+      model: 'priced-model',
+      provider: 'anthropic',
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      cacheReadTokens: 1_000_000,
+      operation: 'chat',
+    });
+
+    const call = (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.data.cacheReadTokens).toBe(1_000_000);
+    expect(call.data).not.toHaveProperty('cacheWriteTokens');
+    expect(call.data.inputCostUsd).toBeCloseTo(1);
+  });
+});
+
+describe('service-tier pricing (t-911)', () => {
+  const gpt5: ModelInfo = {
+    id: 'tier-model',
+    name: 'Tier model',
+    provider: 'openai',
+    tier: 'frontier',
+    inputCostPerMillion: 1.25,
+    outputCostPerMillion: 10,
+    maxContext: 400_000,
+    supportsTools: true,
+  };
+
+  it.each([
+    ['flex', 0.5],
+    ['priority', 2],
+  ] as const)('prices a %s call at %dx the standard rate, input and output', (serviceTier, x) => {
+    vi.mocked(getModel).mockReturnValueOnce(gpt5);
+    const cost = calculateCost('tier-model', 1_000_000, 1_000_000, { serviceTier });
+    expect(cost.inputCostUsd).toBeCloseTo(1.25 * x);
+    expect(cost.outputCostUsd).toBeCloseTo(10 * x);
+  });
+
+  it('stamps the tier on the cost row, whose costs include it', async () => {
+    (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'row-1' });
+    vi.mocked(getModel).mockReturnValueOnce(gpt5);
+
+    await logCost({
+      model: 'tier-model',
+      provider: 'openai',
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      serviceTier: 'flex',
+      operation: 'chat',
+    });
+
+    const call = (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.data.metadata).toEqual({ serviceTier: 'flex' });
+    expect(call.data.inputCostUsd).toBeCloseTo(0.625);
+  });
+});
+
+describe('web search pricing (t-912)', () => {
+  const sonnet: ModelInfo = {
+    id: 'search-model',
+    name: 'Search model',
+    provider: 'anthropic',
+    tier: 'mid',
+    inputCostPerMillion: 3,
+    outputCostPerMillion: 15,
+    maxContext: 200_000,
+    supportsTools: true,
+  };
+
+  it('adds $0.01 a search to the total, outside the input and output costs', () => {
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+    const cost = calculateCost('search-model', 1_000_000, 0, { webSearchRequests: 3 });
+    expect(cost.inputCostUsd).toBeCloseTo(3);
+    expect(cost.outputCostUsd).toBe(0);
+    expect(cost.webSearchCostUsd).toBeCloseTo(0.03);
+    expect(cost.totalCostUsd).toBeCloseTo(3.03);
+  });
+
+  it('still charges the searches when the model has no token price', () => {
+    vi.mocked(getModel).mockReturnValueOnce(undefined);
+    const cost = calculateCost('unknown-model', 1000, 1000, { webSearchRequests: 2 });
+    expect(cost.unpriced).toBe(true);
+    expect(cost.totalCostUsd).toBeCloseTo(0.02);
+  });
+
+  it('leaves a call without searches as it was', () => {
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+    const cost = calculateCost('search-model', 1_000_000, 0, { webSearchRequests: 0 });
+    expect(cost).not.toHaveProperty('webSearchCostUsd');
+    expect(cost.totalCostUsd).toBeCloseTo(3);
+  });
+
+  it('records the searches and their cost on the row, whose total includes them', async () => {
+    (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'row-1' });
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+
+    await logCost({
+      model: 'search-model',
+      provider: 'anthropic',
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      webSearchRequests: 4,
+      operation: 'chat',
+    });
+
+    const call = (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.data.metadata).toEqual({ webSearchRequests: 4, webSearchCostUsd: 0.04 });
+    expect(call.data.inputCostUsd).toBeCloseTo(3);
+    expect(call.data.totalCostUsd).toBeCloseTo(3.04);
+  });
+});
+
+describe('code execution pricing (t-956)', () => {
+  const sonnet: ModelInfo = {
+    id: 'code-model',
+    name: 'Code model',
+    provider: 'anthropic',
+    tier: 'mid',
+    inputCostPerMillion: 3,
+    outputCostPerMillion: 15,
+    maxContext: 200_000,
+    supportsTools: true,
+  };
+  // 1800 s at $0.10/h = $0.05
+  const codeExecution = { runs: 2, billedSeconds: 1800, usdPerHour: 0.1 };
+
+  it('adds billedSeconds/3600 x usdPerHour to the total, outside the token costs', () => {
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+    const cost = calculateCost('code-model', 1_000_000, 0, { codeExecution });
+    expect(cost.inputCostUsd).toBeCloseTo(3);
+    expect(cost.codeExecutionCostUsd).toBeCloseTo(0.05);
+    expect(cost.totalCostUsd).toBeCloseTo(3.05);
+    expect(cost).not.toHaveProperty('webSearchCostUsd');
+  });
+
+  it('adds it beside web search, each reported on its own', () => {
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+    const cost = calculateCost('code-model', 1_000_000, 0, { codeExecution, webSearchRequests: 3 });
+    expect(cost.webSearchCostUsd).toBeCloseTo(0.03);
+    expect(cost.codeExecutionCostUsd).toBeCloseTo(0.05);
+    expect(cost.totalCostUsd).toBeCloseTo(3.08);
+  });
+
+  it('still charges the runs when the model has no token price', () => {
+    vi.mocked(getModel).mockReturnValueOnce(undefined);
+    const cost = calculateCost('unknown-model', 1000, 1000, { codeExecution });
+    expect(cost.unpriced).toBe(true);
+    expect(cost.codeExecutionCostUsd).toBeCloseTo(0.05);
+    expect(cost.totalCostUsd).toBeCloseTo(0.05);
+  });
+
+  it('leaves a call with no billed seconds as it was', () => {
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+    const cost = calculateCost('code-model', 1_000_000, 0, {
+      codeExecution: { runs: 1, billedSeconds: 0, usdPerHour: 0.1 },
+    });
+    expect(cost).not.toHaveProperty('codeExecutionCostUsd');
+    expect(cost.totalCostUsd).toBeCloseTo(3);
+  });
+
+  it('records runs, billed seconds and cost on the row, whose total includes them', async () => {
+    (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'row-1' });
+    vi.mocked(getModel).mockReturnValueOnce(sonnet);
+
+    await logCost({
+      model: 'code-model',
+      provider: 'anthropic',
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+      codeExecution,
+      operation: 'chat',
+    });
+
+    const call = (prisma.aiCostLog.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.data.metadata).toEqual({
+      codeExecutionRuns: 2,
+      codeExecutionBilledSeconds: 1800,
+      codeExecutionCostUsd: expect.closeTo(0.05, 10),
+    });
+    expect(call.data.totalCostUsd).toBeCloseTo(3.05);
   });
 });

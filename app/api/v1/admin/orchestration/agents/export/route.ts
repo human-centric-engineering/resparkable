@@ -31,6 +31,12 @@ import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { getRouteLogger } from '@/lib/api/context';
 import { logger } from '@/lib/logging';
+import { REASONING_EFFORTS } from '@/lib/orchestration/llm/types';
+import {
+  narrowProviderTools,
+  narrowServiceTier,
+  narrowVerbosity,
+} from '@/lib/orchestration/llm/model-params';
 import {
   exportAgentsSchema,
   systemInstructionsHistorySchema,
@@ -41,7 +47,7 @@ import {
 const jsonRecord = z.record(z.string(), z.unknown()).nullable().catch(null);
 const guardModeSchema = z.enum(['log_only', 'warn_and_continue', 'block']).nullable();
 const visibilitySchema = z.enum(['internal', 'public', 'invite_only']);
-const reasoningEffortSchema = z.enum(['minimal', 'low', 'medium', 'high']).nullable().optional();
+const reasoningEffortSchema = z.enum(REASONING_EFFORTS).nullable().optional();
 // Non-null enum columns — `.catch(default)` so a single legacy/malformed row
 // degrades to the default instead of failing the whole export.
 const kindSchema = z.enum(['chat', 'judge']).catch('chat');
@@ -115,6 +121,12 @@ export const POST = withAdminAuth(
           temperature: agent.temperature,
           maxTokens: agent.maxTokens,
           reasoningEffort: reasoningEffortSchema.parse(agent.reasoningEffort),
+          stopSequences: agent.stopSequences,
+          topP: agent.topP,
+          verbosity: narrowVerbosity(agent.verbosity) ?? null,
+          parallelToolCalls: agent.parallelToolCalls,
+          serviceTier: narrowServiceTier(agent.serviceTier) ?? null,
+          providerTools: narrowProviderTools(agent.providerTools) ?? null,
           monthlyBudgetUsd: agent.monthlyBudgetUsd,
           maxCostPerTurnUsd: agent.maxCostPerTurnUsd,
           metadata: jsonRecord.parse(agent.metadata),

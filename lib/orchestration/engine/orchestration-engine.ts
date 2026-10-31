@@ -43,20 +43,28 @@
  */
 
 import { Prisma } from '@prisma/client';
-import { z } from 'zod';
 import { createLogger, type Logger } from '@/lib/logging';
 import { keepRunningAfterResponse } from '@/lib/api/after-response';
 import { prisma } from '@/lib/db/client';
 import { approvalRecipients } from '@/lib/privacy/config-recipients';
-import { findErasedSinceRunStarted, redactErased } from '@/lib/privacy/run-recipients';
+import {
+  findErasedSinceRunStarted,
+  redactErased,
+  redactTurns,
+  toStoredJson as toJson,
+} from '@/lib/privacy/run-recipients';
 import { isRecord } from '@/lib/utils';
 import {
   boundLockWaits,
   findErasedSubjects,
   SUBJECT_LOCK_WAIT_MS,
-  WRITER_TRANSACTION_OPTIONS,
   type ErasedSubjects,
 } from '@/lib/privacy/erased-subjects';
+import { lockRunRow, RUN_ROW_WRITE_OPTIONS } from '@/lib/orchestration/engine/run-row-lock';
+import {
+  STORED_VERDICT_SELECT,
+  withPriorArchived,
+} from '@/lib/orchestration/supervisor/verdict-history';
 import {
   executionTraceEntrySchema,
   stepErrorConfigSchema,
@@ -1161,7 +1169,7 @@ export class OrchestrationEngine {
           durationMs,
           input: step.config,
           ...rollupTelemetry(telemetryOut),
-          ...(stepTurns.length > 0 ? { turns: [...stepTurns] } : {}),
+          ...(stepTurns.length > 0 ? { turns: traceTurns(stepTurns) } : {}),
         });
         // The pause path keeps the running-step row alive on purpose:
         // `pauseForApproval` doesn't call `clearRunningStep`, so the row
@@ -1247,7 +1255,7 @@ export class OrchestrationEngine {
         durationMs,
         input: step.config,
         ...rollupTelemetry(telemetryOut),
-        ...(stepTurns.length > 0 ? { turns: [...stepTurns] } : {}),
+        ...(stepTurns.length > 0 ? { turns: traceTurns(stepTurns) } : {}),
       });
       ctx.resumeTurns = undefined;
       ctx.recordTurn = undefined;
@@ -1286,7 +1294,7 @@ export class OrchestrationEngine {
       durationMs,
       input: step.config,
       ...rollupTelemetry(telemetryOut),
-      ...(stepTurns.length > 0 ? { turns: [...stepTurns] } : {}),
+      ...(stepTurns.length > 0 ? { turns: traceTurns(stepTurns) } : {}),
       ...(completedProvenance ? { provenance: completedProvenance } : {}),
     });
     ctx.resumeTurns = undefined;
@@ -2197,6 +2205,11 @@ export class OrchestrationEngine {
    * lease guarantees only one host writes per execution, so overwrite is
    * correct.
    *
+   * The refresh and the `turns` write share one transaction (t-882): the
+   * refresh takes the run's row lock, as erasure does before it redacts the
+   * run's turns, and anyone erased since the run started is then left out of
+   * the turns written — the executor holds them in memory from before.
+   *
    * Log-level branch on the clear-write case (`turns.length === 0`): the
    * empty-array write is fired by `executeSingleStep`'s `onAttemptStart`
    * callback between retry attempts. If THAT write fails AND the host
@@ -2217,18 +2230,26 @@ export class OrchestrationEngine {
     const { executionId, token } = lease;
     const isClearWrite = turns.length === 0;
     try {
-      const refreshed = await prisma.aiWorkflowExecution.updateMany({
-        where: { id: executionId, leaseToken: token },
-        data: {
-          leaseExpiresAt: leaseExpiry(),
-          lastHeartbeatAt: new Date(),
-        },
-      });
-      if (refreshed.count === 0) return;
-      await prisma.aiWorkflowRunningStep.updateMany({
-        where: { executionId, stepId },
-        data: { turns: turns as unknown as Prisma.InputJsonValue },
-      });
+      await prisma.$transaction(async (tx) => {
+        const refreshed = await tx.aiWorkflowExecution.updateMany({
+          where: { id: executionId, leaseToken: token },
+          data: {
+            leaseExpiresAt: leaseExpiry(),
+            lastHeartbeatAt: new Date(),
+          },
+        });
+        if (refreshed.count === 0) return;
+        const erased = isClearWrite
+          ? null
+          : await findErasedSinceRunStarted(tx, executionId, [turns]);
+        const written = erased
+          ? redactTurns(toJson(turns), (value) => redactErased(value, erased))
+          : turns;
+        await tx.aiWorkflowRunningStep.updateMany({
+          where: { executionId, stepId },
+          data: { turns: written as unknown as Prisma.InputJsonValue },
+        });
+      }, RUN_ROW_WRITE_OPTIONS);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (isClearWrite) {
@@ -2254,6 +2275,7 @@ export class OrchestrationEngine {
     const contextPatchData = drainContextPatch(ctx);
     try {
       const result = await prisma.$transaction(async (tx) => {
+        await archivePriorVerdict(tx, executionId, contextPatchData);
         const written = await tx.aiWorkflowExecution.updateMany({
           where: { id: executionId, leaseToken: token },
           data: {
@@ -2265,9 +2287,13 @@ export class OrchestrationEngine {
             ...contextPatchData,
           },
         });
-        if (written.count > 0) await leaveOutErasedSinceStart(tx, executionId, ctx, trace, null);
+        if (written.count > 0) {
+          await leaveOutErasedSinceStart(tx, executionId, ctx, trace, null, {
+            patch: contextPatchData,
+          });
+        }
         return written;
-      }, RUN_WRITE_TRANSACTION_OPTIONS);
+      }, RUN_ROW_WRITE_OPTIONS);
       if (result.count === 0) {
         // Lease lost — another host has claimed this run. The orphan sweep handed it off
         // because our heartbeat lapsed. Future writes from this run will keep no-opping;
@@ -2368,7 +2394,7 @@ export class OrchestrationEngine {
         },
         namesAnyone
           ? { timeout: SUBJECT_LOCK_WAIT_MS + 10_000, maxWait: 10_000 }
-          : RUN_WRITE_TRANSACTION_OPTIONS
+          : RUN_ROW_WRITE_OPTIONS
       );
       if (result.count === 0) {
         // Lease lost — the orphan sweep handed this row to a new owner who is now the
@@ -2476,6 +2502,7 @@ export class OrchestrationEngine {
       status === WorkflowStatus.COMPLETED ? (ctx.stepOutputs as object) : Prisma.DbNull;
     try {
       const result = await prisma.$transaction(async (tx) => {
+        await archivePriorVerdict(tx, executionId, contextPatchData);
         const written = await tx.aiWorkflowExecution.updateMany({
           where: { id: executionId, leaseToken: token },
           data: {
@@ -2492,19 +2519,15 @@ export class OrchestrationEngine {
           },
         });
         if (written.count > 0) {
-          const left = await leaveOutErasedSinceStart(
-            tx,
-            executionId,
-            ctx,
-            trace,
-            errorMessage,
+          const left = await leaveOutErasedSinceStart(tx, executionId, ctx, trace, errorMessage, {
             outputData,
-            [finalOutput]
-          );
+            alsoSent: [finalOutput],
+            patch: contextPatchData,
+          });
           erased = left?.erased ?? null;
         }
         return written;
-      }, RUN_WRITE_TRANSACTION_OPTIONS);
+      }, RUN_ROW_WRITE_OPTIONS);
       if (result.count === 0) {
         ctx.logger.warn('finalize: lease lost before terminal write — another host owns this run', {
           executionId,
@@ -2578,6 +2601,44 @@ function drainContextPatch(ctx: ExecutionContext): Record<string, unknown> {
   return out;
 }
 
+/**
+ * Archive the run's stored verdict into a supervisor report the patch is about
+ * to write, in place (t-951): the in-workflow step replaces the report whole,
+ * and a run reviewed retroactively, then retried, would otherwise lose every
+ * verdict before it. The stored verdict is read under the run's row lock, as
+ * the review route reads it, so neither writer drops the other's.
+ */
+async function archivePriorVerdict(
+  tx: Prisma.TransactionClient,
+  executionId: string,
+  patch: Record<string, unknown>
+): Promise<void> {
+  if (!isRecord(patch.supervisorReport)) return;
+  await lockRunRow(tx, executionId);
+  const stored = await tx.aiWorkflowExecution.findUnique({
+    where: { id: executionId },
+    select: STORED_VERDICT_SELECT,
+  });
+  if (stored) {
+    patch.supervisorReport = withPriorArchived(patch.supervisorReport, stored, executionId);
+  }
+}
+
+/**
+ * The step's turns as the trace entry keeps them. `agent_call` reasoning
+ * (signed, possibly summarized thinking blocks) is resume state only: it stays
+ * on the running-step row, which outlives the step only while it is paused or
+ * in flight and is stripped from the org export, and is left out of
+ * `executionTrace`, which is kept, shown in the trace viewer and exported.
+ */
+function traceTurns(turns: TurnEntry[]): TurnEntry[] {
+  return turns.map((turn) => {
+    if (turn.kind !== 'agent_call' || turn.phase !== 'continuing' || !turn.reasoning) return turn;
+    const { reasoning: _reasoning, ...rest } = turn;
+    return rest;
+  });
+}
+
 /** Sanitize an error for client-facing text. */
 function sanitizeError(err: ExecutorError): string {
   // `executor_threw` wraps raw upstream errors (e.g. LLM provider failures)
@@ -2634,14 +2695,6 @@ function withoutErasedInPause(
 }
 
 /**
- * How a write of a run waits. Its row may be held by an erasure redacting it,
- * for up to that erasure's 60 s, and the plain write this replaced (t-843)
- * waited that long without a bound: Prisma's 5 s default would fail it
- * instead. Waits for a connection as a plain query does.
- */
-const RUN_WRITE_TRANSACTION_OPTIONS = { ...WRITER_TRANSACTION_OPTIONS, maxWait: 10_000 } as const;
-
-/**
  * Take anyone erased since the run started out of what it holds, and out of
  * the row just written, in the transaction that wrote it (t-843).
  *
@@ -2662,19 +2715,32 @@ async function leaveOutErasedSinceStart(
   ctx: ExecutionContext,
   trace: ExecutionTraceEntry[],
   errorMessage: string | null,
-  outputData?: () => object,
-  /**
-   * Values the caller sends on after the write and redacts itself from the
-   * result — the completion event's output, which holds the last step's
-   * output as it was before any redaction.
-   */
-  alsoSent: unknown[] = []
+  {
+    outputData,
+    alsoSent = [],
+    patch = {},
+  }: {
+    outputData?: () => object;
+    /**
+     * Values the caller sends on after the write and redacts itself from the
+     * result — the completion event's output, which holds the last step's
+     * output as it was before any redaction.
+     */
+    alsoSent?: unknown[];
+    /**
+     * The context patch the write carried. Its supervisor report quotes step
+     * outputs, so it is checked and rewritten with the rest (t-882).
+     */
+    patch?: Record<string, unknown>;
+  } = {}
 ): Promise<{ erased: ErasedSubjects } | null> {
+  const report = patch.supervisorReport;
   const erased = await findErasedSinceRunStarted(tx, executionId, [
     ctx.inputData,
     ctx.stepOutputs,
     trace,
     errorMessage,
+    report,
     ...alsoSent,
   ]);
   if (!erased) return null;
@@ -2696,6 +2762,9 @@ async function leaveOutErasedSinceStart(
       inputData: ctx.inputData as Prisma.InputJsonValue,
       ...(typeof error === 'string' ? { errorMessage: error } : {}),
       ...(outputData ? { outputData: outputData() } : {}),
+      ...(isRecord(report)
+        ? { supervisorReport: redactErased(toJson(report), erased) ?? Prisma.DbNull }
+        : {}),
     },
   });
   // Never the address or the id: they are what was erased.
@@ -2705,16 +2774,4 @@ async function leaveOutErasedSinceStart(
     userIds: erased.userIds.length,
   });
   return { erased };
-}
-
-const jsonValueSchema = z.json();
-
-/**
- * `value` as the JSON it is persisted as: the trace and the payload are
- * written to a JSON column, so this is the value erasure later reads.
- */
-function toJson(value: unknown): Prisma.JsonValue {
-  if (value === undefined) return null;
-  const parsed: unknown = JSON.parse(JSON.stringify(value));
-  return jsonValueSchema.parse(parsed);
 }

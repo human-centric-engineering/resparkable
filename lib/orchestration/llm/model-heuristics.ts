@@ -27,6 +27,7 @@ import type {
 } from '@/types/orchestration';
 
 import type { Capability } from '@/lib/orchestration/llm/capability-inference';
+import { REASONING_EFFORTS } from '@/lib/orchestration/llm/types';
 import type { ParamProfile, ReasoningEffort } from '@/lib/orchestration/llm/types';
 
 /**
@@ -311,13 +312,14 @@ function normalizeClaudeId(modelId: string): string {
  * Two distinct routes lead to true:
  *   1. **OpenAI reasoning family** — any model resolved to the
  *      `openai-reasoning` param profile accepts `reasoning_effort`
- *      (`minimal | low | medium | high`).
- *   2. **Anthropic extended thinking** — only specific Claude 4 models
+ *      (see `supportedReasoningEfforts` for which values).
+ *   2. **Anthropic extended thinking** — only specific Claude models
  *      accept the `thinking` field. We check this via a prefix match
  *      because the matrix doesn't carry a separate "supports thinking"
- *      column. Patterns covered: `claude-opus-4*`, `claude-sonnet-4-5*`
- *      and later 4.x. Claude Haiku 4.5 is intentionally NOT in the list
- *      — Anthropic doesn't ship extended thinking on Haiku.
+ *      column. Patterns covered: `claude-opus-4*` and later, Sonnet 4.5
+ *      and later, Haiku 4.5 and later, and every Fable and Mythos model.
+ *      Haiku 4.5 takes a token budget; the rest of the newer families
+ *      take adaptive thinking (`acceptsThinkingBudget` picks the shape).
  *
  * Anthropic-prefixed Bedrock ids (`anthropic.claude-…`) and OpenRouter
  * ids (`anthropic/claude-…`) are handled by stripping the known
@@ -347,7 +349,126 @@ export function supportsReasoningEffort(
   // `claude-sonnet-4.5` both ship in different SDK / API surfaces).
   if (/^claude-sonnet-4[-.](?:[5-9]|\d{2,})(?:\b|[-.])/.test(id)) return true;
   if (/^claude-sonnet-([5-9]|\d{2,})(?:\b|[-.])/.test(id)) return true;
+  const version = claudeVersion(id);
+  if (!version) return false;
+  // Fable and Mythos think on every release (thinking can't be turned off).
+  if (version.family === 'fable' || version.family === 'mythos') return true;
+  // Haiku 4.5 takes a thinking budget; Haiku 5+ takes adaptive thinking.
+  if (version.family === 'haiku') return atLeast(version, 4, 5);
   return false;
+}
+
+/** A Claude model id split into family and version, e.g. Opus 4.6. */
+interface ClaudeVersion {
+  family: 'opus' | 'sonnet' | 'haiku' | 'fable' | 'mythos';
+  major: number;
+  minor: number;
+}
+
+/**
+ * Parse a family-first Claude id (`claude-opus-4-6`, `claude-fable-5-1`)
+ * already through `normalizeClaudeId`. A missing minor, or a date stamp in
+ * its place (`claude-opus-4-20250514`), is `.0`. The older version-first
+ * names (`claude-3-5-sonnet`) and unknown families return `undefined`.
+ */
+function claudeVersion(id: string): ClaudeVersion | undefined {
+  const match =
+    /^claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:[-.](\d{1,2})(?!\d))?(?:$|[-.@:[_])/.exec(
+      id
+    );
+  if (!match) return undefined;
+  return {
+    family: match[1] as ClaudeVersion['family'],
+    major: Number(match[2]),
+    minor: match[3] === undefined ? 0 : Number(match[3]),
+  };
+}
+
+function atLeast(version: ClaudeVersion, major: number, minor: number): boolean {
+  return version.major > major || (version.major === major && version.minor >= minor);
+}
+
+/**
+ * Does this Claude model take native structured output
+ * (`output_config.format: { type: 'json_schema', schema }`)?
+ *
+ * Anthropic documents it on Fable and Mythos, Opus 4.1, 4.5, 4.8 and 5+,
+ * Sonnet 5+, Haiku 4.5 and Haiku 5+. Opus 4.0 / 4.6 / 4.7 and Sonnet 4.x
+ * are not on that list, so they keep the forced extraction tool. Native
+ * output needs no tool, so it can't clash with thinking or with the newer
+ * models' refusal of a forced `tool_choice`.
+ *
+ * Ids the parser doesn't recognise return false and keep the extraction
+ * tool, which every Claude model accepts.
+ */
+export function acceptsNativeStructuredOutput(modelId: string): boolean {
+  const version = claudeVersion(normalizeClaudeId(modelId));
+  if (!version) return false;
+  switch (version.family) {
+    case 'fable':
+    case 'mythos':
+      return true;
+    case 'opus':
+      if (version.major !== 4) return version.major > 4;
+      return version.minor === 1 || version.minor === 5 || version.minor >= 8;
+    case 'sonnet':
+      return version.major >= 5;
+    case 'haiku':
+      return atLeast(version, 4, 5);
+  }
+}
+
+/**
+ * Does this Claude model take Anthropic's server-side web search tool?
+ *
+ * Anthropic offers it on Claude 3.5 Haiku, 3.5 Sonnet and 3.7 Sonnet, and on
+ * every family-first model since (Opus / Sonnet / Haiku 4+, Fable, Mythos).
+ * The Claude 3.0 models and ids the parser doesn't recognise return false,
+ * so the provider drops the tool rather than sending one that 400s.
+ */
+export function acceptsWebSearch(modelId: string): boolean {
+  const id = normalizeClaudeId(modelId);
+  if (/^claude-3-[57]-(?:sonnet|haiku)(?:\b|[-.@:]|$)/.test(id)) return true;
+  return claudeVersion(id) !== undefined;
+}
+
+/**
+ * Does this Claude model take Anthropic's code execution tool?
+ *
+ * Anthropic lists Opus, Sonnet and Haiku from 4.5 on, and Fable and Mythos
+ * (its code execution doc, 2026-10-27). The Claude 3 models, Opus 4.0 / 4.1,
+ * Sonnet 4.0 and ids the parser doesn't recognise return false, so the
+ * provider drops the tool rather than sending one that 400s.
+ */
+export function acceptsCodeExecution(modelId: string): boolean {
+  const version = claudeVersion(normalizeClaudeId(modelId));
+  if (!version) return false;
+  if (version.family === 'fable' || version.family === 'mythos') return true;
+  return atLeast(version, 4, 5);
+}
+
+/**
+ * Does this Claude model refuse a forced `tool_choice` (`any` or a named
+ * tool) outright, with a 400?
+ *
+ * Opus 5.5, Sonnet 5.5, Fable 5.1 and Mythos 5.1 do, whatever the thinking
+ * setting; later releases of those families are assumed to as well. Every
+ * Claude model also refuses one alongside an explicit `thinking` field,
+ * which the provider handles separately.
+ */
+export function refusesForcedToolChoice(modelId: string): boolean {
+  const version = claudeVersion(normalizeClaudeId(modelId));
+  if (!version) return false;
+  switch (version.family) {
+    case 'opus':
+    case 'sonnet':
+      return atLeast(version, 5, 5);
+    case 'fable':
+    case 'mythos':
+      return atLeast(version, 5, 1);
+    case 'haiku':
+      return false;
+  }
 }
 
 /**
@@ -423,6 +544,9 @@ export function acceptsThinkingBudget(modelId: string): boolean {
  *   - o-series (o1, o1-mini, o3-mini, o4-mini, …) accept
  *     `'low' | 'medium' | 'high'` — they reject `'minimal'` with a 400.
  *   - The gpt-5 family added `'minimal'` to the set.
+ *   - `'xhigh'` / `'max'` are never in the set: OpenAI accepts them on some
+ *     models only, without a per-id list. The provider clamps them to
+ *     `'high'` (`openAiReasoningEffort`) before consulting this.
  *
  * For non-`openai-reasoning` profiles, the field is dropped regardless
  * of value, so this returns the full set — the openai-compatible
@@ -458,6 +582,17 @@ export function supportedReasoningEfforts(
 }
 
 /**
+ * The `reasoning_effort` an OpenAI-compatible reasoning model is sent for
+ * this bucket: `xhigh` and `max` become `high` (see
+ * {@link supportedReasoningEfforts}); the rest go as they are.
+ */
+export function openAiReasoningEffort(
+  effort: ReasoningEffort
+): 'minimal' | 'low' | 'medium' | 'high' {
+  return effort === 'xhigh' || effort === 'max' ? 'high' : effort;
+}
+
+/**
  * Narrow an arbitrary string (typically a DB column read) into the
  * `ReasoningEffort` union, or return `undefined` for any unrecognised
  * value.
@@ -473,8 +608,7 @@ export function supportedReasoningEfforts(
  * Mirror of `narrowParamProfile` in `db-model-adapter.ts`.
  */
 export function narrowReasoningEffort(raw: string | null | undefined): ReasoningEffort | undefined {
-  if (raw === 'minimal' || raw === 'low' || raw === 'medium' || raw === 'high') return raw;
-  return undefined;
+  return REASONING_EFFORTS.find((effort) => effort === raw);
 }
 
 /**
@@ -489,14 +623,14 @@ export function narrowReasoningEffort(raw: string | null | undefined): Reasoning
  *   - `low`     — 1024 tokens.
  *   - `medium`  — 4096 tokens.
  *   - `high`    — 16384 tokens.
+ *   - `xhigh`   — 32768 tokens.
+ *   - `max`     — 65536 tokens.
  *
  * The provider class applies a final clamp against `max_tokens` so the
  * budget can never exceed the visible-output cap; that clamp is the
  * provider's responsibility, not this function's.
  */
-export function anthropicThinkingBudget(
-  effort: 'minimal' | 'low' | 'medium' | 'high'
-): number | undefined {
+export function anthropicThinkingBudget(effort: ReasoningEffort): number | undefined {
   switch (effort) {
     case 'minimal':
       return undefined;
@@ -506,6 +640,10 @@ export function anthropicThinkingBudget(
       return 4096;
     case 'high':
       return 16384;
+    case 'xhigh':
+      return 32768;
+    case 'max':
+      return 65536;
   }
 }
 
@@ -517,10 +655,100 @@ export function anthropicThinkingBudget(
  *                 (Opus 5.5 and Sonnet 5.5 400 on `{ type: 'disabled' }`),
  *                 so the lowest effort is the nearest they get. The
  *                 provider sends it without a `thinking` field.
- *   - `low` / `medium` / `high` — the same name.
- *
- * `xhigh` and `max` have no bucket of their own, so they are never sent.
+ *   - `low` / `medium` / `high` / `xhigh` / `max` — the same name. Every
+ *                 adaptive-thinking model (Opus 4.7+, Sonnet 5+, Haiku 5+,
+ *                 Fable, Mythos) takes all five; Opus 4.6 / Sonnet 4.6,
+ *                 which lack `xhigh`, are on a thinking budget instead.
  */
-export function anthropicAdaptiveEffort(effort: ReasoningEffort): 'low' | 'medium' | 'high' {
+export function anthropicAdaptiveEffort(
+  effort: ReasoningEffort
+): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
   return effort === 'minimal' ? 'low' : effort;
+}
+
+/**
+ * Does this OpenAI model take the Responses API's `web_search` tool?
+ *
+ * Measured against the live API (2026-10-27): GPT-5 and its numbered releases
+ * (nano included), gpt-4.1 and gpt-4.1-mini, gpt-4o and gpt-4o-mini, and per
+ * OpenAI's docs o3 and o4-mini. gpt-4.1-nano is a 400, as are o3-mini and the
+ * older chat models. The search, audio, realtime, speech and transcription
+ * variants of these families are not chat models on the Responses API
+ * (gpt-4o-mini-search-preview and gpt-5-search-api are a 400, measured), so
+ * they return false. A model it doesn't recognise returns false, so the
+ * request stays on Chat Completions without search rather than 400ing.
+ *
+ * GPT-5 also refuses the tool at `minimal` reasoning effort; the routing in
+ * `openai-responses.ts` checks that, since it depends on the request.
+ */
+export function acceptsOpenAiWebSearch(modelId: string): boolean {
+  const id = bareOpenAiId(modelId);
+  if (/^gpt-4\.1-nano(?:$|-)/.test(id)) return false;
+  if (/-(?:search|audio|realtime|tts|transcribe)(?:$|-)/.test(id)) return false;
+  return /^(?:gpt-5(?:$|[-.])|gpt-4\.1(?:$|-)|gpt-4o(?:$|-(?:mini(?:$|-)|\d{4}-))|o3(?:$|-\d{4}-)|o4-mini(?:$|-))/.test(
+    id
+  );
+}
+
+/**
+ * Does this OpenAI model take the Responses API's `code_interpreter` tool?
+ *
+ * The models that take web search ({@link acceptsOpenAiWebSearch}) do:
+ * measured on gpt-5-mini, gpt-4.1, gpt-4.1-mini, gpt-4o and gpt-4o-mini
+ * (2026-10-27), and OpenAI documents it on o3 and o4-mini. Like web search,
+ * it is a 400 at `minimal` reasoning effort, which the routing checks.
+ */
+export function acceptsOpenAiCodeInterpreter(modelId: string): boolean {
+  return acceptsOpenAiWebSearch(modelId);
+}
+
+/**
+ * Does this OpenAI model take `filters` (allowed / blocked sites) on its
+ * `web_search` tool? gpt-4o-mini and gpt-4.1-mini search but refuse filters
+ * with a 400 (measured 2026-10-27); every other model
+ * {@link acceptsOpenAiWebSearch} accepts takes them.
+ */
+export function acceptsOpenAiWebSearchFilters(modelId: string): boolean {
+  if (!acceptsOpenAiWebSearch(modelId)) return false;
+  return !/^gpt-4(?:o|\.1)-mini(?:$|-)/.test(bareOpenAiId(modelId));
+}
+
+/**
+ * Does this model take OpenAI's `verbosity`? The GPT-5 family does; the
+ * o-series and older chat models refuse it. Anchored at the start of the
+ * bare id, so `openai/gpt-5-mini` and dated snapshots match and a fine-tune
+ * named `my-gpt-5` does not.
+ */
+export function acceptsVerbosity(modelId: string): boolean {
+  return /^gpt-5(?:$|[-.])/.test(bareOpenAiId(modelId));
+}
+
+/**
+ * Does OpenAI offer the `flex` service tier on this model? Its list is the
+ * GPT-5 models themselves (base, mini, nano, numbered releases), o3 and
+ * o4-mini; a flex request to any other model — gpt-4o, o3-mini, or a GPT-5
+ * variant such as `-chat-latest`, `-pro` or `-codex` — is a 400. So an
+ * allow-list, and a model it doesn't recognise is sent no tier.
+ */
+export function acceptsFlexTier(modelId: string): boolean {
+  const id = bareOpenAiId(modelId);
+  const dated = '(?:-\\d{4}-\\d{2}-\\d{2})?$';
+  return (
+    new RegExp(`^gpt-5(?:\\.\\d+)?(?:-mini|-nano)?${dated}`).test(id) ||
+    new RegExp(`^(?:o3|o4-mini)${dated}`).test(id)
+  );
+}
+
+/**
+ * Does this OpenAI reasoning model take `parallel_tool_calls`? The GPT-5
+ * family does; the o-series refuses it with a 400. Non-reasoning chat models
+ * always take it and don't ask this.
+ */
+export function reasoningModelAcceptsParallelToolCalls(modelId: string): boolean {
+  return /^gpt-5(?:$|[-.])/.test(bareOpenAiId(modelId));
+}
+
+/** An OpenAI model id without an `openai/` or `azure/` prefix, lower-cased. */
+function bareOpenAiId(modelId: string): string {
+  return modelId.toLowerCase().replace(/^(openai|azure)\//, '');
 }

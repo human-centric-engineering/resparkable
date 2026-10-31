@@ -620,7 +620,21 @@ transaction):
    - **Other people's runs** — a run keeps a copy of everything it was given
      and did: `inputData` (a scheduled run's copy of the template),
      `executionTrace` (each step's config and output), `outputData` (the step
-     outputs the engine copies there on completion) and `errorMessage`. A run **paused at an
+     outputs the engine copies there on completion), `errorMessage` and
+     `supervisorReport` (an LLM's audit of the run, which quotes its step
+     outputs). Three more tables hold a run's copies, and are redacted with it,
+     under the run's row lock, by the same rule (t-882):
+     `ai_workflow_running_step.turns` (a multi-turn step's state, kept while
+     the run is paused at an approval or its host died mid-step, because
+     resume reads it back), `ai_workflow_step_dispatch.result` (the result
+     of a `tool_call`, `external_call` or `send_notification` step, cached so
+     a crash re-drive replays it into the trace rather than repeating the side
+     effect) and `ai_workflow_execution_lease_event.metadata` (`actorUserId`,
+     the admin who force-failed the run). A run is read when any of them names
+     the person, and counted once. **Not reached:** the force-fail lease event
+     is written after the route responds, without the run's row lock, so one
+     whose admin is erased in the same moment can land after erasure's last
+     pass over the run and keep their id until retention prunes it. A run **paused at an
      approval** keeps its `approverUserIds` and notification target there,
      and the approval routes read them until retention prunes the run. In
      both columns the subject's id leaves every approver list, a notification
@@ -657,8 +671,14 @@ transaction):
    it sends to a person check at the moment they send (t-841):
 
    - **A `send_notification` email step** checks its resolved recipients
-     against the receipts, under the subjects' locks, in the transaction it
-     sends in, and holds the locks until the send settles. It takes them
+     against the receipts of erasures **since the run started** (§122 t-886:
+     someone erased before it started and since re-entered is emailed) — except
+     a recipient resolved from an earlier step's output (any placeholder but
+     `{{input…}}`), checked against every erasure ever, since a knowledge
+     document, conversation or outside system it came from is never scrubbed
+     (owner ruling, 2026-10-22) — under
+     the subjects' locks, in the transaction it sends in, and holds the locks
+     until the send settles. It takes them
      shared, so two sends to one address run side by side; only an erasure,
      which takes them exclusively, waits — and once queued it is not overtaken
      by a later send. Whichever of the
@@ -719,14 +739,21 @@ transaction):
 
    **Not reached:** the approval events are sent after the pause commits
    and its locks are let go, so an erasure that ran from start to finish in
-   that gap of milliseconds would not see the delivery they create. A run's
-   multi-turn step state (`ai_workflow_running_step.turns`) is not redacted
-   by erasure at all, nor is `supervisorReport` (t-882). Nor are the writes of
-   a paused run made outside the engine — an approval or rejection, and a
-   scheduler's failure write — which read the row before they write it
-   (t-883). The engine deletes the running-step row when its step ends, but it
-   is kept while the run is paused at an approval (resume reads its turns
-   back) and when the host running it dies mid-step. A tick that read a schedule before the erasure and creates
+   that gap of milliseconds would not see the delivery they create. The
+   writes of a run made outside the engine are below ("Actions on a run",
+   §122 t-901).
+
+   The engine's other writes of a run's copies are checked the same way
+   (t-882): the supervisor report its checkpoint or finalize writes is
+   checked and rewritten with the trace; a multi-turn step's `turns` are
+   written in a transaction that first refreshes the run's lease, which
+   takes its row lock; and a step's cached dispatch result is written after
+   taking the run's row lock. Each leaves out anyone erased since the run
+   started. Erasure takes the run's row lock before it redacts any of them,
+   so the two are ordered as above, and the pass after the commit reaches the
+   rest. **Not reached:** what an executor holds in memory for its next model
+   call — a multi-turn step's message history — is not redacted; only what is
+   written is. A tick that read a schedule before the erasure and creates
    its run after it is a writer like any other (t-839, see "Writers that read
    before an erasure" below).
 
@@ -766,20 +793,20 @@ tab, a publish or rollback in flight, a webhook or schedule edit page — or a
 backup taken before the erasure (t-805). The read is long over by then, so
 row locks cannot stop it.
 
-So each of those writers asks, inside the transaction that writes, whether
-what it is about to write names an erased person —
+The settings form, the webhook subscription edit and the schedule edit refuse
+such a save by **version** since t-899, and the workflow builder since t-900:
+see [Saves of a record that moved on](#saves-of-a-record-that-moved-on-version-t-899)
+and [The workflow builder](#the-workflow-builder-version-t-900).
+The writers below still ask, inside the transaction that writes, whether
+what they are about to write names an erased person —
 `lib/privacy/erased-subjects.ts`, from the erasure receipt
 (`subjectUserId`, and `subjectEmailHash` of the normalised address):
 
-| Writer                                                                     | Names it checks                                                                                           | On a match                                                                                                                                                                                                                          |
-| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PATCH /settings`                                                          | `escalationConfig.emailAddresses`                                                                         | 400 on the field                                                                                                                                                                                                                    |
-| `saveDraft`, `publishDraft`, `createInitialVersion` (`version-service.ts`) | every `to`, approver id and notification target in the definition                                         | an erased address: `ValidationError`, nothing written; an erased approver id: stripped, the rest written (an opaque id the builder cannot show, and a workflow naming someone erased before t-791 would otherwise never save again) |
-| `rollback`                                                                 | the same, in the target snapshot                                                                          | stripped from the copy, with `erasedRecipientsRemoved` on the audit row: a snapshot cannot be edited, so a refusal would block it for good                                                                                          |
-| `POST` / `PATCH /webhooks`                                                 | `emailAddress`                                                                                            | 400 on the field                                                                                                                                                                                                                    |
-| `POST` / `PATCH .../schedules`                                             | every string in `inputTemplate`                                                                           | 400 on the field                                                                                                                                                                                                                    |
-| Backup import                                                              | all of the above in the bundle                                                                            | stripped, with a warning; the import goes ahead                                                                                                                                                                                     |
-| Scheduler tick (`processDueSchedules`)                                     | every string in the schedule's `inputTemplate`, and every recipient and approver in its published version | the address blanked in the run's input and the person left out of the definition the engine runs, as erasure does to the rows; logged without the address (t-839)                                                                   |
+| Writer                                                                                            | Names it checks                                                                                                                                                                                 | On a match                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Workflow writers (`version-service.ts`): save, publish, discard, rollback, `createInitialVersion` | every approver id in the definition                                                                                                                                                             | stripped, the rest written: an id is never issued again, so nobody can re-add one. Addresses are not checked (t-900): a stale builder is refused by version, a rollback reads its target again under erasure's locks, and a create is intent |
+| Backup import                                                                                     | all of the above in the bundle; for its addresses (email subscriptions, escalation list, workflow definitions), only erasures since its `exportedAt` when this install sealed it (t-902, t-900) | stripped, with a warning; the import goes ahead                                                                                                                                                                                              |
+| Scheduler tick (`processDueSchedules`)                                                            | every string in the schedule's `inputTemplate`, and every recipient and approver in its published version                                                                                       | the address blanked in the run's input and the person left out of the definition the engine runs, as erasure does to the rows; logged without the address (t-839)                                                                            |
 
 The tick reads its schedules at the top of the tick, and an erasure can commit
 before it creates the run. So it creates the run, and claims the schedule's
@@ -852,8 +879,386 @@ longer than erasure's 60 s and checks that the erasure completes after it. It
 takes a little over a minute.
 
 **A fork's own writer** of a recipient — a module that stores an address or
-user id it notifies — calls `refuseErasedSubjects(tx, { addresses, userIds },
-field)` inside its write transaction, and the same guarantee holds.
+user id it notifies — refuses a stale save by version (`lib/api/record-version.ts`,
+[below](#saves-of-a-record-that-moved-on-version-t-899)), or, where it holds no
+loaded copy to compare, asks `findErasedSubjects(tx, { addresses, userIds })`
+inside its write transaction under the same locks. It also declares itself in
+the stale-writer manifest (below).
+
+## Writers of scrubbed data (the stale-writer manifest)
+
+Before §122 (`f-erasure-stale-writes`) every one of these writers refused or
+stripped anyone **ever** erased. §122 replaced that with a check against **how
+old the writer's copy is**, so a stale tab is refused and an address re-entered
+on purpose is not; an approver id is still stripped whenever its account was
+erased. Step one was knowing every writer. That list is
+`lib/privacy/stale-writers.ts`:
+
+- **`SCRUBBED_COLUMNS`** is every column erasure rewrites in place, by model.
+  A column added to erasure goes here in the same change, with its writers.
+  t-882 added `AiWorkflowExecution.supervisorReport` and a run's three side
+  tables (`turns`, dispatch `result`, lease-event `metadata`).
+- **`STALE_WRITERS`** is every file that writes one, with its anchor:
+
+| Anchor     | How the writer knows its copy is stale                                                                                          |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `version`  | Optimistic concurrency: the save carries the version it loaded, and is refused once the row has moved. Erasure moves it.        |
+| `row-lock` | Reads and writes in one transaction under the row lock, which erasure also takes.                                               |
+| `taken-at` | A copy held in memory leaves out people erased since it was taken: the event's time, the read's, `exportedAt`, the run's start. |
+| `intent`   | Writes only what arrives in the request, typed by an admin or sent from outside. Not checked.                                   |
+| `erasure`  | Erasure itself.                                                                                                                 |
+| `seed`     | A seed unit, run at deploy.                                                                                                     |
+
+Until §122's last task (t-900) there was a seventh anchor, `pending`, for a
+writer not converted yet. It is gone from the type: a new writer takes one of
+the six.
+
+`tests/unit/lib/privacy/stale-writers.test.ts` parses the tree with
+`scripts/ci/scrubbed-column-writes.ts`. It fails on any file that writes a
+scrubbed column and is not listed, and on any entry whose file no longer
+writes. The parser reads Prisma write calls (column by column, from the `data`
+literal), nested writes through a relation, and SQL `UPDATE`, `INSERT INTO` and
+`MERGE INTO`. A write whose columns it cannot read, and a delegate it cannot
+follow (`const d = tx.aiWorkflow`), count. Deletes do not: a deleted row
+cannot put anyone back. Its header says plainly what it still cannot see.
+`scripts/smoke/` and `scripts/spikes/` are not scanned: their fixtures are written to be erased.
+An entry is a file and a model, not a write, so a new write added to a file
+already listed passes: review a change to a listed file against its entry.
+
+### Saves of a record that moved on (`version`, t-899)
+
+An admin opens the escalation settings at 9:00 with Jane on the list. Jane is
+erased at 9:30. At 11:00 the admin saves, and the form sends the list it
+loaded: Jane goes back in. Before t-899 these routes refused any address ever
+erased, which also refused an admin typing Jane's address into a fresh form on
+purpose, for good. Now a save says **which version of the record it loaded**,
+and is refused when the record has moved on, whoever moved it:
+
+- **Read.** `GET /settings` returns `escalationVersion`. A webhook
+  subscription and a schedule carry `version`, in their list and on their own
+  `GET`. Each is a field, never an `ETag` header: a version covers only what a
+  save writes, so it is not a tag for the whole body. The `ETag` that
+  `GET /settings` does send covers the whole body, and as an `If-Match` it
+  never matches.
+- **Save.** `PATCH /settings` with an `escalationConfig`, `PATCH /webhooks/:id`
+  and `PATCH .../schedules/:scheduleId` send it back as `If-Match`.
+  - Without one, the save is refused with **428** `PRECONDITION_REQUIRED`.
+    `*`, or only weak tags (`W/"…"`, a cache validator such as the settings `ETag`), is refused the same way. The header is required, not optional (owner
+    ruling, 2026-10-23): a header any client may leave off is a check any
+    client skips.
+  - When the record has moved on, the save is refused with **412**
+    `STALE_RECORD` and nothing is written. The form says so, keeps the
+    admin's edits on the page, and leaves the reload to them
+    (`StaleSaveNotice`).
+  - A settings save that does not write `escalationConfig` needs no
+    `If-Match`. The settings form sends the list only when it changed it, so
+    an erasure that moved the list does not refuse a change to a guard mode.
+- **Create.** `POST /webhooks` and `POST .../schedules` write only what the
+  request carries, and are not checked (`intent`). An address typed in is
+  saved, erased or not.
+
+**The version is the record's content**: a hash of the fields a save of it
+can write (`recordVersion`, `lib/api/record-version.ts`; the picks are in
+`lib/orchestration/config-versions.ts`). Erasure changes those fields, so it
+changes the version, with no column to bump and nothing a raw-SQL writer can
+forget. A field no save writes is left out, so it cannot refuse a save it has
+nothing to do with:
+
+- a schedule's `nextRunAt` and `lastRunAt`, which the tick moves on every
+  firing;
+- a subscription's `secret`, never returned;
+- every settings field but `escalationConfig`.
+
+**The check is under the row lock erasure takes.** `assertUnchangedSince`
+locks the row `FOR NO KEY UPDATE`, reads its current version, and refuses a
+mismatch, inside the transaction that writes. Either the save reads the row
+erasure already scrubbed, and is refused, or erasure waits and scrubs what the
+save wrote. `npm run smoke:erasure-stale-saves` loads each record, erases the
+person, shows the save from that form refused and the row still scrubbed, then
+reloads and saves the address typed back in.
+
+**For an API client** this is a change: read the record, then save it with the
+version the read returned. A fork applies the same three steps to its own
+records: return a version from the read, `requireIfMatch` on the save, and
+`assertUnchangedSince` (or `assertCurrentVersion` over its own lock and
+version) before the write. It then declares the writer `version` in the
+manifest.
+
+### The workflow builder (`version`, t-900)
+
+The builder holds a workflow's definition for as long as its tab is open, and
+erasure scrubs the person out of the stored draft and out of every version.
+A save, publish or discard from a tab opened before the erasure would write
+the old copy back. So the builder works as the forms above do:
+
+- **Read.** `GET /workflows/:id` returns `definitionVersion`: a hash of what
+  the builder loaded (the draft, or the published snapshot when there is
+  none) and of which version is published
+  (`workflowDefinitionVersion`, `config-versions.ts`). Erasure scrubbing either
+  moves it; so does another admin's save, publish, discard or rollback. The
+  name, toggles and cost cap are left out: nothing erasure scrubs.
+- **Save, publish, discard.** `PATCH /workflows/:id` with a
+  `draftDefinition` (a draft, or `null` to clear it), `POST .../publish` and
+  `POST .../discard-draft` send it back as `If-Match`: 428 without, 412
+  `STALE_RECORD` once it has moved on, nothing written. A save and a publish return the version they leave, which the builder
+  sends with its next write; after a discard it reloads the workflow, version
+  and all. A `PATCH` of other fields alone (the list's on/off toggle) needs
+  none.
+- **One write per request.** A save carries the builder's name, slug and
+  cost cap with the draft. They go into the same update, after the version
+  check, so a refused save writes none of them, and a slug conflict (409)
+  writes no draft. The version returned is read in that transaction, not
+  after it commits, when it could already carry a change the canvas has not
+  seen. Clearing a draft by `PATCH` goes through `discardDraft`, and is
+  audited as a discard.
+- **Publish checks twice.** Once against the draft it reads, before
+  validation, so a stale builder is told to reload rather than shown errors
+  in a draft it has not seen; and again under the row lock, against that
+  read, so what was validated is what is published.
+- **Rollback takes no `If-Match`.** It copies a stored snapshot, not the
+  browser's, so only its own read of the target can be stale. It takes
+  erasure's locks for everyone that read names, then reads the target again:
+  an erasure has either finished, and the second read differs (refused with
+  412, "try the rollback again"), or waits and scrubs the new version too.
+- **A create typed from scratch** (`POST /workflows`, `createInitialVersion`)
+  is intent, and an address in it is written.
+- **A create copied from a stored workflow is not** (security review). A
+  custom template applied in the builder, which the page holds for as long as
+  it is open, **Duplicate** in the list, and **save-as-template** each copy a
+  definition erasure scrubs. So the copy names its source as `copiedFrom:
+{ workflowId, definitionVersion }`: the catalogue gives each custom template
+  its `copySource`, and save-as-template uses the row it read, each the
+  version of the published snapshot alone (`publishedSnapshotVersion`), since
+  that is what they copy and a draft saved on the source changes nothing in
+  it; Duplicate sends the `definitionVersion` its read returned, since it
+  copies the draft when there is one. `createInitialVersion`
+  checks it under the source's row lock, after erasure's locks, and refuses a
+  source that has moved on (or that the org cannot see) with 412. Built-in
+  templates come from code, which erasure never touches, and carry none.
+  Templates cannot be applied in the edit page, so a draft save needs no such
+  check.
+
+Each of these writers takes erasure's locks for everyone its definition names
+before its row lock, the order erasure takes them in. A publish, rollback or
+create inserts a new version row, which an erasure already scanning the
+versions would not see; with the locks, the erasure scans after the insert
+commits. Erased approver ids are stripped from all of them, as before.
+
+**The reload prompt keeps the canvas.** The builder has no record of which
+edits are unsaved, so the 412 notice says plainly that reloading discards the
+canvas, and offers **Copy my changes** first (the canvas as JSON, as
+**Copy JSON** gives it). It never reloads by itself.
+
+`npm run smoke:erasure-stale-saves` loads a workflow whose draft and
+published version email the person, erases them, shows a save, publish and
+discard from that builder each refused with the draft untouched, rolls back
+to the version that named them and gets it without them, then reloads and
+saves their address typed back in.
+
+### Actions on a run (`row-lock`, t-901)
+
+**Approve, reject and retry-step** read a run's trace and write it back whole,
+so a copy read before an erasure would put the person back into a run that,
+once rejected or failed, is never scrubbed again. Each now reads and writes in
+one transaction under the run's row lock (`withRunRowLocked`,
+`lib/orchestration/engine/run-row-lock.ts`; retry-step's core is
+`lib/orchestration/retry-step.ts`). Erasure locks each run it redacts the
+same way, so either the action reads a run erasure already scrubbed, or
+erasure waits and reads what the action wrote. A write that commits while an
+erasure is open, to a run its pass had not reached, is caught by the pass
+after its commit (`redactSubjectFromRunsSince`), which reads every run
+written since, terminal ones included.
+
+- **Cancel, force-fail and the zombie reaper** each write a fixed message —
+  force-fail, the reason the admin typed — in one UPDATE, which holds the row
+  while it writes. Nothing they read is written back, so they take no further
+  lock.
+- **The scheduler's crash repair** writes the engine's error message, which
+  comes from what the run held in memory, under the row lock with anyone
+  erased since the run started taken out (`findErasedSinceRunStarted`, as the
+  engine's own writes do). Its other repair writes are fixed messages.
+- **The scheduler's run creation** blanks anyone erased **since the tick read
+  the schedule**, not ever: an address re-entered in an input template after
+  an older erasure is the admin's, on purpose, and will reach the run. Since
+  t-899 the schedule routes save such an address typed into a freshly loaded
+  form, so this is how it reaches a template.
+- **Waiting for the row** past `RUN_ROW_WRITE_OPTIONS` (an erasure holding it,
+  a busy pool) answers 409, "the run is busy; nothing was changed".
+- **A crash repair that fails** sends its hook a fixed message, since the
+  engine's was never checked for people erased while the run ran.
+- **A retroactive review** cannot hold the lock across its model call, so it
+  writes `supervisorReport` under the lock with anyone erased since its read
+  of the run taken out (`findErasedSinceCopy`), and returns what it stored. It
+  follows erasure's rule: an id wherever it appears, an address only where it
+  is a whole value, never inside the report's prose. Erasure redacts
+  `supervisorReport` itself under the same lock (t-882), so a review written
+  while an erasure is still open either waits for it and finds its receipt,
+  or is read and redacted by it. The verdict a review archives is read under
+  the lock too (t-925), and it refuses (409) a run retried since its read.
+- **The scheduler's crash hook** carries the same redacted message as the row.
+
+`npm run smoke:erasure-run-actions` races each of approve, reject and
+retry-step against an erasure, in both orders, and the person is gone
+afterwards. It passes with the lock removed too: in the orders it can stage,
+erasure's own later passes reach the write. The old failure needs an action
+that read before an erasure and wrote after it had finished, which the lock
+removes by construction.
+
+### Backup import (`taken-at`, t-902)
+
+A bundle is a copy. Someone erased before it was taken is not in it, so a
+bundle that still names them had them added back after the erasure, on
+purpose. The importer keeps them, but only when it can trust the bundle,
+which means only when **this install** sealed it, for **this org**, with
+**these** addresses in it.
+
+The date alone cannot be trusted. Several kinds of bundle name people nobody
+re-added, and a date check would let every one of them back silently:
+
+- one from a staging copy that never ran production's erasure;
+- one round-tripped through such a copy;
+- one exported from another org;
+- one whose date or addresses were edited.
+
+That is why it is sealed (code review, owner ruling 2026-10-23).
+
+So the exporter stamps `exportedAt` **before** it reads, and seals
+(`exportSeal`, `lib/orchestration/backup/export-seal.ts`) the date, the org it
+exported, and every contact address the bundle carries: the email
+subscriptions', the escalation list's and the workflow definitions' (t-900) as
+three lists, normalised and sorted, repeats kept, so an address moved or
+copied from one to another breaks it too. It is an HMAC
+keyed by this install's `BETTER_AUTH_SECRET`, and the signed bytes carry their
+own scheme tag, so neither scheme that shares the secret (approval tokens,
+storage tokens) can mint one.
+
+| Bundle                                                                                                                | Addresses: email subscriptions, escalation list, workflow definitions                                              | Approver ids in workflows   |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------- |
+| Sealed by this install, imported into the org it came from, date and addresses untouched                              | people erased since `exportedAt` (less `COPY_CLOCK_SKEW_MS`) stripped; the rest kept, with a warning counting them | anyone ever erased stripped |
+| Anything else: unsealed (every bundle exported before t-902), sealed before t-900, another install's or org's, edited | anyone ever erased stripped                                                                                        | anyone ever erased stripped |
+
+A sealed import that keeps an address erased before the export says so in its
+warnings, counting the ones it wrote back and never naming them. A bundle that
+carries a seal this install does not accept says that too: it was edited,
+came from another org or install, or **the install's `BETTER_AUTH_SECRET` has
+been rotated since**, which unseals every bundle exported before. Each strip
+carries the warning it always has.
+
+**A sealed bundle restores what it held.** Suppose an address was re-added
+after its erasure and then sealed into a backup. If it is later taken out
+again by hand, without a new erasure, restoring that backup brings it back,
+counted in the warning. A contact with no account cannot be erased a second
+time, so only the admin's restore choice stands between them. Strip it after
+the restore, or restore from a backup taken after it was removed.
+
+Workflow definitions joined the seal in t-900, once `createInitialVersion`
+stopped refusing an ever-erased address. A bundle sealed before then covers
+no workflow addresses, so it no longer verifies, and its import counts every
+erasure, as an unsealed one does. An approver's user id is stripped whenever
+it was erased: nobody can re-add an account that is gone.
+
+A bundle with no `exportedAt` is still refused by the schema.
+
+**An install that shares its secret with another shares its seals.** A
+staging copy configured from production's environment would seal bundles
+production trusts. Give each environment its own `BETTER_AUTH_SECRET`; the
+seal cannot tell two installs with one key apart.
+
+### Deliveries and emails sent from a copy (`taken-at`, t-886)
+
+A webhook dispatch reads the subscriptions and builds its payload from an
+event; an escalation reads the settings, then emails. An erasure committing in
+between would otherwise be overtaken: an email to the erased address, or a
+delivery row naming them that erasure's own pass ran too early to see.
+
+So every **attempt** — a first send or a retry, webhook (`dispatcher.ts`) or
+event hook (`hooks/registry.ts`, both through `decideDeliveryUnderLocks()`) —
+and the **escalation email** run through `sendHoldingSubjects()`
+(`lib/privacy/stale-sends.ts`): in one transaction it
+takes erasure's locks, shared, for the email address and everyone the payload
+names (`subjectsOfPayload`: `userId`, `actorUserId`, `approverUserIds`, and
+the owners of its `conversationId` and `executionId`, looked up side by
+side), asks who among them was erased **since the copy was taken**, and
+writes what it decided under them. An event's first attempts share one
+payload, so its fan-out resolves who it names once and hands that to each
+attempt; a retry resolves it again, from the row it claimed (t-926). A
+stopped attempt is written by `settleStoppedDelivery()`, the one place a
+sender settles a stop in either delivery table.
+**An email is sent under the locks**, held until it settles: it reaches the
+person and cannot be recalled. **A webhook or hook post goes after the
+decision commits** (owner ruling, 2026-10-22): no pooled connection waits on a
+third party's response, and an erasure in the moment between still redacts the
+stored row. The copy's time is the **oldest** thing the attempt holds, less
+`COPY_CLOCK_SKEW_MS` (5 min: erasure stamps its receipt up to 60 s before it
+commits, on another host's clock):
+
+- the subscriptions, the hook's row or the settings, as this attempt read them;
+- the delivery row's `createdAt`, since its payload is the event's copy — so a
+  retry days later still counts an erasure that came after its event;
+- the start of the run its payload names (`executionId`): an event built from
+  a run's memory, its approvers or outputs, holds a copy from then.
+
+Those anchors are for the people the **payload** names. The subscription's
+**address** was read for this attempt, so only an erasure since that read
+counts against it: an address re-entered on a subscription after an older
+erasure is sent to, however old the event.
+
+| Found erased since the copy                                         | What happens                                                                                                  |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| The email address                                                   | Not sent. The row is settled `exhausted`, `stoppedByErasure`, `recipient erased`, its destination `[erased]`. |
+| A person whose activity the event is about                          | Not sent. The row is stopped the same way (`subject erased`), its payload redacted as erasure redacts one.    |
+| Only an admin acting on configuration (`actor`)                     | Sent without who acted; the row's payload is redacted to match.                                               |
+| A conversation or run that no longer exists, with any erasure since | Not sent: its owner can no longer be named. Kept to its record keys and stopped.                              |
+| A recipient of the escalation email                                 | Left out; the rest are emailed. The log counts them, never names them.                                        |
+| The person the escalation is about                                  | Neither the email nor the escalation webhook goes: both carry their reason.                                   |
+
+A stopped row is never retried or replayed (t-793). Someone erased **before**
+the copy was taken is not in it, so a copy naming them was written after the
+erasure, on purpose, and is sent. An auth or invitation email is never checked:
+it goes to a live account or to an address the admin just typed.
+
+The cost is a connection held for up to `SENDER_LOCK_WAIT_MS` (30 s) waiting
+for an erasure's or a backup import's locks, plus an email's send (15 s), and
+only when the copy names someone. A wait past 30 s — or any other failure of the check — sends nothing
+and is retried, **without counting against the subscription's attempts** for
+the row's first hour (`UNCOUNTED_CHECK_WINDOW_MS`): lock contention is not the
+receiver failing, and must not exhaust a live delivery. After that the failures
+count, so a check that never succeeds ends in `exhausted`, not a loop. The
+escalation email, which has no retry, waits as long as the notification step
+(`SUBJECT_LOCK_WAIT_MS`). The escalation webhook does not wait behind its email, and the
+escalation is kept alive past the response that set it off.
+
+Costs accepted with it:
+
+- **An email that went out, whose transaction then failed to commit**, is
+  retried; its Resend idempotency key keeps it from reaching the inbox twice.
+- **A payload naming a conversation or run that is gone** is stopped whenever
+  anyone was erased since, because receipts carry no org and the owner can no
+  longer be named. A delivery about a conversation deleted for another reason,
+  within minutes of an unrelated erasure, is stopped with it.
+
+**Never delete an entry to make the test pass**, the same rule as the export
+manifest. An unlisted writer is the defect the test exists to find.
+
+**A fork** declares its own writers from `initAppErasureHooks()` in
+`lib/app/erasure.ts`, or its framework tier's init:
+
+```typescript
+import { registerStaleWriter } from '@/lib/privacy/erasure-hooks';
+
+export function initAppErasureHooks(): void {
+  registerStaleWriter({
+    file: 'lib/app/orders/notify-settings.ts',
+    model: 'AiWebhookSubscription',
+    anchor: 'version',
+    how: 'Saves with the version it loaded; refused once the subscription moved.',
+  });
+}
+```
+
+Only a settled anchor is accepted from a fork. The registration rolls back
+with the fork's hooks if its init throws. Nothing reads it at runtime; the test
+does.
 
 ## App / Fork Tables Relating to `User`
 
@@ -928,12 +1333,31 @@ export function initAppErasureHooks(): void {
 ```
 
 **A fork table keyed by email (no `userId` at all) is the `ContactSubmission`
-case** — no FK, so delete it in `scrubInTransaction`. The hook is handed only
-the `userId`, but the user row still exists at that point, so read the address
-from `tx.user` and match it exactly, normalised as your writer stores it. If the
-writer takes an address nobody proved (a public form), also read
-`emailVerified` and match nothing when it is false, as `contactSubmissionsOf()`
-does.
+case** — no FK, so delete it in `scrubInTransaction`. Both phases are handed
+the account's `email` and `emailVerified` alongside `userId`, read from the
+user row: inside the transaction, from the transaction's own read; for
+`cleanupExternal`, from a read just before the transaction, so an address
+changed while the erasure runs reaches that phase as it was. The address is
+passed as stored, not normalised: match it exactly, normalised as your writer
+stores it. If the writer takes an
+address nobody proved (a public form), match nothing when `emailVerified` is
+false, as `contactSubmissionsOf()` does: deleting by an unproven address erases
+a stranger's rows.
+
+The export collector is given the same three fields, so write the match once
+and call it from both, as core does:
+
+```ts
+// One rule for export and erasure, so the two cannot drift apart.
+function enquiriesOf({ email, emailVerified }: { email: string; emailVerified: boolean }) {
+  return emailVerified ? { email: email.trim().toLowerCase() } : null;
+}
+
+async scrubInTransaction({ tx, email, emailVerified }) {
+  const where = enquiriesOf({ email, emailVerified });
+  if (where) await tx.appEnquiry.deleteMany({ where });
+},
+```
 
 `getErasureCleanupHooks()` runs `initAppErasureHooks()` once, before its first
 read, in the module graph `eraseUser()` runs in. Keep it synchronous: register

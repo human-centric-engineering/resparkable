@@ -1230,3 +1230,49 @@ describe('ExecutionTraceEntryRow', () => {
     });
   });
 });
+
+describe('ExecutionTraceEntryRow — model parameters on the request line (t-911, t-913)', () => {
+  it('names the further model parameters a step asked for', () => {
+    render(
+      <ExecutionTraceEntryRow
+        {...BASE_PROPS}
+        requestParams={{
+          stopSequences: ['END', '###'],
+          topP: 0.9,
+          verbosity: 'low',
+          parallelToolCalls: false,
+          serviceTier: 'flex',
+        }}
+      />
+    );
+
+    expect(screen.getByTestId('trace-entry-request-params-step-1')).toHaveTextContent(
+      'Request — stop: 2 · topP: 0.9 · verbosity: low · parallel tools: off · tier: flex'
+    );
+  });
+  it('names provider web search and code execution when the step turned them on', () => {
+    render(
+      <ExecutionTraceEntryRow
+        {...BASE_PROPS}
+        requestParams={{ providerTools: { webSearch: {}, codeExecution: {} } }}
+      />
+    );
+
+    expect(screen.getByTestId('trace-entry-request-params-step-1')).toHaveTextContent(
+      'Request — web search: on · code execution: on'
+    );
+  });
+
+  it('names code execution alone, without web search', () => {
+    render(
+      <ExecutionTraceEntryRow
+        {...BASE_PROPS}
+        requestParams={{ providerTools: { codeExecution: {} } }}
+      />
+    );
+
+    const line = screen.getByTestId('trace-entry-request-params-step-1');
+    expect(line).toHaveTextContent('Request — code execution: on');
+    expect(line).not.toHaveTextContent('web search');
+  });
+});

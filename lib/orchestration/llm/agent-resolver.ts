@@ -91,6 +91,23 @@ export class NoEligibleProviderError extends ProviderError {
 }
 
 /**
+ * An agent's explicit fallbacks without its primary's slug or any repeat
+ * (t-954), first occurrence kept. The list can name the primary: the reconcile
+ * moves a platform-picked primary without touching the org's fallbacks
+ * (t-798), and an agent on inherit has its primary chosen per turn, possibly
+ * from that list. Left in, the binding lists a provider as its own fallback,
+ * a fork's eligibility rule is asked about it as one, and the call probes it
+ * twice. An entry naming the primary by its display name rather than its slug
+ * is not recognised here; `getProviderWithFallbacks` skips only exact repeats.
+ */
+function withoutPrimary(
+  fallbacks: readonly string[] | null | undefined,
+  primary: string
+): string[] {
+  return [...new Set(fallbacks ?? [])].filter((slug) => slug !== primary);
+}
+
+/**
  * Resolve the provider slug, model id, and fallback list to use for a
  * chat turn or workflow step. Empty `agent.provider`/`agent.model` are
  * filled from system defaults; explicit values pass through unchanged.
@@ -114,11 +131,14 @@ export async function resolveAgentProviderAndModel(
       providerSlug: agent.provider,
       model: agent.model,
       fallbacks: [
-        ...(await resolveEligibleProviders(agent.fallbackProviders ?? [], {
-          task,
-          source: 'explicit',
-          primarySlug: agent.provider,
-        })),
+        ...(await resolveEligibleProviders(
+          withoutPrimary(agent.fallbackProviders, agent.provider),
+          {
+            task,
+            source: 'explicit',
+            primarySlug: agent.provider,
+          }
+        )),
       ],
       provenance: { task, primary: 'explicit', fallbacks: 'explicit' },
     };
@@ -174,9 +194,12 @@ export async function resolveAgentProviderAndModel(
   const model = modelSet ? agent.model : await getDefaultModelForTask(task);
 
   // System fallbacks: every other reachable candidate, capped. Skipped
-  // if the agent already has an explicit fallback list.
-  const explicitFallbacks = agent.fallbackProviders ?? [];
-  const usingExplicit = explicitFallbacks.length > 0;
+  // if the agent already has an explicit fallback list — judged before the
+  // primary is taken out of it, so a list that named only the primary stays
+  // an explicit, empty one rather than turning into the system fill, which
+  // could reach providers the operator never listed.
+  const usingExplicit = (agent.fallbackProviders ?? []).length > 0;
+  const explicitFallbacks = withoutPrimary(agent.fallbackProviders, providerSlug);
   // Drawn from the FULL candidate list, not from `eligibleCandidates`. The two
   // are filtered independently and with different `source` values, so a rule
   // stricter about the silent fill than about the primary keeps working —

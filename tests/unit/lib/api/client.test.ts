@@ -594,17 +594,52 @@ describe('request', () => {
       },
     });
 
-    // Assert - Note: ...options?.options spread overwrites the headers object,
-    // so custom headers replace the default Content-Type header
+    // Assert - the caller's headers are merged into the defaults, not swapped
+    // for them, so the JSON content type survives (t-899)
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        headers: expect.objectContaining({
+        headers: {
+          'Content-Type': 'application/json',
           'X-Custom-Header': 'custom-value',
           Authorization: 'Bearer token',
-        }),
+        },
       })
     );
+  });
+
+  it.each([
+    ['a Headers instance', new Headers({ 'If-Match': '"v1"' })],
+    ['an array of pairs', [['If-Match', '"v1"']] as [string, string][]],
+  ])('keeps caller headers given as %s', async (_label, headers) => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: {} }),
+    });
+
+    await apiClient.patch('/api/v1/x', { body: { a: 1 }, options: { headers } });
+
+    const sent = new Headers((mockFetch.mock.calls[0][1] as RequestInit).headers);
+    expect(sent.get('if-match')).toBe('"v1"');
+    expect(sent.get('content-type')).toBe('application/json');
+  });
+
+  it('keeps the JSON content type on a PATCH that passes an If-Match header (t-899)', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: {} }),
+    });
+
+    await apiClient.patch('/api/v1/x', {
+      body: { a: 1 },
+      options: { headers: { 'If-Match': '"v1"' } },
+    });
+
+    const init = mockFetch.mock.calls[0][1] as RequestInit;
+    expect(init.headers).toEqual({ 'Content-Type': 'application/json', 'If-Match': '"v1"' });
+    expect(init.body).toBe('{"a":1}');
   });
 
   it('should set credentials to same-origin', async () => {

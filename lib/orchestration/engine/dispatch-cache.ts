@@ -31,6 +31,12 @@ import { Prisma } from '@prisma/client';
 
 import { prisma } from '@/lib/db/client';
 import { logger } from '@/lib/logging';
+import { lockRunRow, RUN_ROW_WRITE_OPTIONS } from '@/lib/orchestration/engine/run-row-lock';
+import {
+  findErasedSinceRunStarted,
+  redactErased,
+  toStoredJson,
+} from '@/lib/privacy/run-recipients';
 
 /**
  * The deterministic shape that maps to one dispatch-cache row's primary axis.
@@ -97,6 +103,11 @@ export type RecordDispatchInput = DispatchKeyParts & { result: unknown };
  * pass `DispatchKeyParts` and never construct the key string themselves. This
  * removes the parallel-parameter drift bug class where a caller's `lookupDispatch`
  * key and `recordDispatch` key could disagree (PR 2 type-design-analyzer T2).
+ *
+ * The result is a copy of what the step returned, held in memory since before
+ * the call, and a re-drive replays it into the trace. So it is written under
+ * the run's row lock — which erasure takes before it redacts the run's cached
+ * results — without anyone erased since the run started (t-882).
  */
 export async function recordDispatch({
   executionId,
@@ -106,15 +117,21 @@ export async function recordDispatch({
 }: RecordDispatchInput): Promise<boolean> {
   const idempotencyKey = buildIdempotencyKey({ executionId, stepId, turnIndex });
   try {
-    await prisma.aiWorkflowStepDispatch.create({
-      data: {
-        executionId,
-        stepId,
-        ...(turnIndex !== undefined ? { turnIndex } : {}),
-        idempotencyKey,
-        result: result as Prisma.InputJsonValue,
-      },
-    });
+    await prisma.$transaction(async (tx) => {
+      await lockRunRow(tx, executionId);
+      const erased = await findErasedSinceRunStarted(tx, executionId, [result]);
+      await tx.aiWorkflowStepDispatch.create({
+        data: {
+          executionId,
+          stepId,
+          ...(turnIndex !== undefined ? { turnIndex } : {}),
+          idempotencyKey,
+          result: (erased
+            ? redactErased(toStoredJson(result), erased)
+            : result) as Prisma.InputJsonValue,
+        },
+      });
+    }, RUN_ROW_WRITE_OPTIONS);
     return true;
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {

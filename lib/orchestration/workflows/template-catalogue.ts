@@ -18,6 +18,10 @@
  */
 
 import { prisma } from '@/lib/db/client';
+import {
+  publishedSnapshotVersion,
+  WORKFLOW_DEFINITION_VERSION_SELECT,
+} from '@/lib/orchestration/config-versions';
 import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
 import { PROVIDER_MODEL_AUDIT_TEMPLATE } from '@/prisma/seeds/data/templates/provider-model-audit';
 import type { WorkflowDefinition, WorkflowTemplateMetadata } from '@/types/orchestration';
@@ -52,6 +56,13 @@ export interface CustomTemplateEntry extends TemplateEntryBase {
   source: 'custom';
   workflowDefinition: unknown;
   metadata: unknown;
+  /**
+   * The row and the version of its published snapshot, which a workflow
+   * created from it sends back as `copiedFrom` (§122 t-900): erasure scrubs a
+   * template like any workflow, so a copy taken before is refused. A draft
+   * saved on the template is not what was copied, and does not refuse it.
+   */
+  copySource: { workflowId: string; definitionVersion: string };
 }
 
 /** One template the builder can load onto its canvas. */
@@ -127,12 +138,13 @@ export async function listCustomTemplates(): Promise<CustomTemplateList> {
     orderBy: { name: 'asc' },
     take: MAX_CUSTOM_TEMPLATES + 1,
     select: {
+      id: true,
       slug: true,
       name: true,
       description: true,
       patternsUsed: true,
       metadata: true,
-      publishedVersion: { select: { snapshot: true } },
+      ...WORKFLOW_DEFINITION_VERSION_SELECT,
     },
   });
   const entries = rows.slice(0, MAX_CUSTOM_TEMPLATES).map((row) => ({
@@ -143,6 +155,7 @@ export async function listCustomTemplates(): Promise<CustomTemplateList> {
     workflowDefinition: row.publishedVersion?.snapshot ?? null,
     patternsUsed: row.patternsUsed,
     metadata: row.metadata,
+    copySource: { workflowId: row.id, definitionVersion: publishedSnapshotVersion(row) },
   }));
   return { entries, truncated: rows.length > MAX_CUSTOM_TEMPLATES };
 }

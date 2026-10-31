@@ -41,6 +41,17 @@ export interface WorkflowSavePayload {
   mode: 'create' | 'edit';
   /** Required in edit mode; ignored in create mode. */
   workflowId?: string;
+  /**
+   * Edit mode: the definition version the builder loaded, sent as `If-Match`
+   * (§122 t-900). A save refused because it moved on throws `STALE_RECORD`.
+   */
+  definitionVersion?: string;
+  /**
+   * Create mode: the custom template the canvas was loaded from, sent as
+   * `copiedFrom` (§122 t-900): the server refuses the copy if the template
+   * moved on since. Templates cannot be applied in edit mode.
+   */
+  copiedFrom?: { workflowId: string; definitionVersion: string };
   name: string;
   nodes: readonly PatternNode[];
   edges: readonly Edge[];
@@ -58,7 +69,9 @@ export interface WorkflowSavePayload {
  * Errors propagate unchanged so the caller can distinguish `APIClientError`
  * (shows a red inline alert) from network failures.
  */
-export async function saveWorkflow(payload: WorkflowSavePayload): Promise<AiWorkflow> {
+export async function saveWorkflow(
+  payload: WorkflowSavePayload
+): Promise<AiWorkflow & { definitionVersion?: string }> {
   const definition = flowToWorkflowDefinition(payload.nodes, payload.edges, {
     errorStrategy: payload.details.errorStrategy,
   });
@@ -70,25 +83,30 @@ export async function saveWorkflow(payload: WorkflowSavePayload): Promise<AiWork
         slug: payload.details.slug,
         description: payload.details.description,
         workflowDefinition: definition,
+        ...(payload.copiedFrom ? { copiedFrom: payload.copiedFrom } : {}),
         isTemplate: payload.details.isTemplate,
         maxCostPerExecutionUsd: payload.details.maxCostPerExecutionUsd,
       },
     });
   }
 
-  if (!payload.workflowId) {
-    throw new Error('workflowId is required when saving in edit mode');
+  if (!payload.workflowId || !payload.definitionVersion) {
+    throw new Error('workflowId and definitionVersion are required when saving in edit mode');
   }
   // PATCH writes the canvas state to `draftDefinition`; the published version
   // is only updated by an explicit POST /publish from Phase 3's UI.
-  return apiClient.patch<AiWorkflow>(API.ADMIN.ORCHESTRATION.workflowById(payload.workflowId), {
-    body: {
-      name: payload.name,
-      slug: payload.details.slug,
-      description: payload.details.description,
-      draftDefinition: definition,
-      isTemplate: payload.details.isTemplate,
-      maxCostPerExecutionUsd: payload.details.maxCostPerExecutionUsd,
-    },
-  });
+  return apiClient.patch<AiWorkflow & { definitionVersion: string }>(
+    API.ADMIN.ORCHESTRATION.workflowById(payload.workflowId),
+    {
+      options: { headers: { 'If-Match': payload.definitionVersion } },
+      body: {
+        name: payload.name,
+        slug: payload.details.slug,
+        description: payload.details.description,
+        draftDefinition: definition,
+        isTemplate: payload.details.isTemplate,
+        maxCostPerExecutionUsd: payload.details.maxCostPerExecutionUsd,
+      },
+    }
+  );
 }

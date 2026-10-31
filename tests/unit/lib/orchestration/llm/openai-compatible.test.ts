@@ -14,6 +14,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { LlmOptions } from '@/lib/orchestration/llm/types';
 
 // ---------------------------------------------------------------------------
 // Module-level mock stubs (must be declared before vi.mock hoisting)
@@ -147,7 +148,11 @@ function makeChunk(opts: {
     function?: { name?: string; arguments?: string };
   }>;
   finishReason?: string | null;
-  usage?: { prompt_tokens: number; completion_tokens: number };
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    prompt_tokens_details?: { cached_tokens?: number };
+  };
 }) {
   return {
     id: 'chunk-test',
@@ -697,6 +702,93 @@ describe('chatStream', () => {
       type: 'done',
       finishReason: 'stop',
     });
+  });
+
+  it.each([
+    ['reasoning_content', 'DeepSeek / vLLM'],
+    ['reasoning', 'OpenRouter'],
+  ])('yields %s deltas (%s) as reasoning chunks ahead of the text', async (field) => {
+    const reasoningChunk = (text: string) => ({
+      id: 'chunk-r',
+      model: 'deepseek-reasoner',
+      choices: [{ index: 0, delta: { [field]: text }, finish_reason: null }],
+    });
+    chatCreateMock.mockResolvedValue(
+      toAsyncIterable([
+        reasoningChunk('Check '),
+        reasoningChunk('the date.'),
+        makeChunk({ content: 'Tuesday.' }),
+        makeChunk({ finishReason: 'stop', usage: { prompt_tokens: 3, completion_tokens: 2 } }),
+      ])
+    );
+
+    const collected: Array<{ type: string }> = [];
+    for await (const chunk of makeProvider().chatStream([{ role: 'user', content: 'hi' }], {
+      model: 'deepseek-reasoner',
+    })) {
+      collected.push(chunk);
+    }
+
+    expect(collected.filter((c) => c.type !== 'done')).toEqual([
+      { type: 'reasoning', text: 'Check ' },
+      { type: 'reasoning', text: 'the date.' },
+      { type: 'text', content: 'Tuesday.' },
+    ]);
+  });
+
+  it('falls through an empty reasoning_content to a populated reasoning field', async () => {
+    chatCreateMock.mockResolvedValue(
+      toAsyncIterable([
+        {
+          id: 'chunk-r',
+          model: 'deepseek-reasoner',
+          choices: [
+            {
+              index: 0,
+              delta: { reasoning_content: '', reasoning: 'Step one.' },
+              finish_reason: null,
+            },
+          ],
+        },
+        makeChunk({ finishReason: 'stop', usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+      ])
+    );
+
+    const collected: Array<{ type: string }> = [];
+    for await (const chunk of makeProvider().chatStream([{ role: 'user', content: 'hi' }], {
+      model: 'deepseek-reasoner',
+    })) {
+      collected.push(chunk);
+    }
+
+    expect(collected.filter((c) => c.type !== 'done')).toEqual([
+      { type: 'reasoning', text: 'Step one.' },
+    ]);
+  });
+
+  it('yields no reasoning chunk for a null, empty or non-string reasoning field', async () => {
+    const withDelta = (delta: Record<string, unknown>) => ({
+      id: 'chunk-x',
+      model: 'gpt-4o',
+      choices: [{ index: 0, delta, finish_reason: null }],
+    });
+    chatCreateMock.mockResolvedValue(
+      toAsyncIterable([
+        withDelta({ reasoning_content: null, content: 'a' }),
+        withDelta({ reasoning: '' }),
+        withDelta({ reasoning: { summary: 'not a string' } }),
+        makeChunk({ finishReason: 'stop', usage: { prompt_tokens: 1, completion_tokens: 1 } }),
+      ])
+    );
+
+    const collected: Array<{ type: string }> = [];
+    for await (const chunk of makeProvider().chatStream([{ role: 'user', content: 'hi' }], {
+      model: 'gpt-4o',
+    })) {
+      collected.push(chunk);
+    }
+
+    expect(collected.map((c) => c.type)).toEqual(['text', 'done']);
   });
 
   it('captures usage from trailing usage-only chunk (OpenAI style)', async () => {
@@ -1391,6 +1483,32 @@ describe('toSdkMessage mapping', () => {
       messages: Array<{ role: string; content: string }>;
     };
     expect(calledParams.messages[0]).toEqual({ role: 'system', content: 'You are helpful.' });
+  });
+
+  it('sends a turnInstruction system message as a plain system message, in place', async () => {
+    // Arrange
+    chatCreateMock.mockResolvedValue(makeChatCompletion('ok', 'stop'));
+
+    // Act
+    const provider = makeProvider();
+    await provider.chat(
+      [
+        { role: 'system', content: 'You are helpful.' },
+        { role: 'assistant', content: 'Earlier reply.' },
+        { role: 'system', content: 'Open the check-in.', turnInstruction: true },
+      ],
+      { model: 'gpt-4o' }
+    );
+
+    // Assert — OpenAI takes a system message anywhere, so the flag changes nothing.
+    const calledParams = chatCreateMock.mock.calls[0]?.[0] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(calledParams.messages).toEqual([
+      { role: 'system', content: 'You are helpful.' },
+      { role: 'assistant', content: 'Earlier reply.' },
+      { role: 'system', content: 'Open the check-in.' },
+    ]);
   });
 
   it('maps user message correctly', async () => {
@@ -2189,6 +2307,20 @@ describe('buildBaseParams', () => {
       }
     );
 
+    // Not every OpenAI model takes xhigh / max, and none is listed by id, so
+    // both go as `high` rather than risk a 400.
+    it.each([
+      ['gpt-5', 'xhigh'],
+      ['gpt-5', 'max'],
+      ['o3-mini', 'max'],
+    ] as const)('sends %s at high when asked for %s', async (model, value) => {
+      chatCreateMock.mockResolvedValue(makeChatCompletion('ok', 'stop'));
+      const provider = makeProvider();
+      await provider.chat([{ role: 'user', content: 'x' }], { model, reasoningEffort: value });
+      const params = chatCreateMock.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(params?.reasoning_effort).toBe('high');
+    });
+
     it('forwards `minimal` on gpt-5 (gpt-5 family added this bucket)', async () => {
       chatCreateMock.mockResolvedValue(makeChatCompletion('ok', 'stop'));
       const provider = makeProvider();
@@ -2334,5 +2466,166 @@ describe('per-request timeout and signal', () => {
 
     // Assert — no `signal: undefined` key, which some SDK versions treat as a value
     expect(chatCreateMock.mock.calls[0]?.[1]).toEqual({ timeout: 5_000 });
+  });
+});
+
+describe('cached prompt tokens (t-909)', () => {
+  // OpenAI caches long prompts on its own and reports the hits inside
+  // `prompt_tokens`; they are read back so the cost row can price them.
+  it('reports cached_tokens as cacheReadTokens, leaving inputTokens the whole prompt', async () => {
+    chatCreateMock.mockResolvedValue({
+      ...makeChatCompletion('ok', 'stop'),
+      usage: {
+        prompt_tokens: 3000,
+        completion_tokens: 40,
+        prompt_tokens_details: { cached_tokens: 2048 },
+      },
+    });
+
+    const response = await makeProvider().chat([{ role: 'user', content: 'x' }], {
+      model: 'gpt-5',
+    });
+
+    expect(response.usage).toEqual({
+      inputTokens: 3000,
+      outputTokens: 40,
+      cacheReadTokens: 2048,
+    });
+  });
+
+  it('leaves cacheReadTokens off when nothing came from the cache', async () => {
+    chatCreateMock.mockResolvedValue({
+      ...makeChatCompletion('ok', 'stop'),
+      usage: {
+        prompt_tokens: 30,
+        completion_tokens: 4,
+        prompt_tokens_details: { cached_tokens: 0 },
+      },
+    });
+
+    const response = await makeProvider().chat([{ role: 'user', content: 'x' }], {
+      model: 'gpt-5',
+    });
+
+    expect(response.usage).toEqual({ inputTokens: 30, outputTokens: 4 });
+  });
+
+  it('carries cached_tokens from the final usage chunk onto the done chunk', async () => {
+    chatCreateMock.mockResolvedValue(
+      toAsyncIterable([
+        makeChunk({ content: 'hi' }),
+        makeChunk({
+          finishReason: 'stop',
+          usage: {
+            prompt_tokens: 1500,
+            completion_tokens: 2,
+            prompt_tokens_details: { cached_tokens: 1024 },
+          },
+        }),
+      ])
+    );
+
+    const collected: unknown[] = [];
+    for await (const chunk of makeProvider().chatStream([{ role: 'user', content: 'x' }], {
+      model: 'gpt-5',
+    })) {
+      collected.push(chunk);
+    }
+
+    expect(collected.at(-1)).toEqual({
+      type: 'done',
+      usage: { inputTokens: 1500, outputTokens: 2, cacheReadTokens: 1024 },
+      finishReason: 'stop',
+    });
+  });
+});
+
+describe('stop, top_p, verbosity, parallel tool calls, service tier (t-911, t-913)', () => {
+  const tool = { name: 'lookup', description: 'Look up', parameters: { type: 'object' } };
+  async function sent(model: string, options: Partial<LlmOptions>, baseUrl?: string) {
+    chatCreateMock.mockResolvedValue(makeChatCompletion('ok', 'stop'));
+    await makeProvider(baseUrl ? { baseUrl } : {}).chat([{ role: 'user', content: 'x' }], {
+      model,
+      ...options,
+    });
+    return chatCreateMock.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+  }
+
+  it('sends stop and top_p to a non-reasoning model', async () => {
+    const params = await sent('gpt-4o', { stopSequences: ['END'], topP: 0.8 });
+    expect(params.stop).toEqual(['END']);
+    expect(params.top_p).toBe(0.8);
+  });
+
+  it('drops stop and top_p on a reasoning model, which refuses them', async () => {
+    const params = await sent('gpt-5', { stopSequences: ['END'], topP: 0.8 });
+    expect(params).not.toHaveProperty('stop');
+    expect(params).not.toHaveProperty('top_p');
+  });
+
+  it.each(['gpt-5', 'gpt-5-mini', 'openai/gpt-5.4'])('sends verbosity to %s', async (model) => {
+    expect((await sent(model, { verbosity: 'low' })).verbosity).toBe('low');
+  });
+
+  it.each(['o3-mini', 'gpt-4o', 'my-gpt-5'])('drops verbosity on %s', async (model) => {
+    expect(await sent(model, { verbosity: 'low' })).not.toHaveProperty('verbosity');
+  });
+
+  it('drops parallel_tool_calls on the o-series, which refuses it, and keeps it on GPT-5', async () => {
+    expect(await sent('o3-mini', { tools: [tool], parallelToolCalls: false })).not.toHaveProperty(
+      'parallel_tool_calls'
+    );
+    expect(
+      (await sent('gpt-5', { tools: [tool], parallelToolCalls: false })).parallel_tool_calls
+    ).toBe(false);
+  });
+
+  it.each([
+    ['gpt-4o', 'flex', false],
+    ['o3-mini', 'flex', false],
+    ['gpt-5-mini', 'flex', true],
+    ['o3', 'flex', true],
+    ['gpt-4o', 'priority', true],
+  ] as const)('on %s, sends a %s tier: %s', async (model, serviceTier, expected) => {
+    const params = await sent(model, { serviceTier }, 'https://api.openai.com/v1');
+    expect('service_tier' in params).toBe(expected);
+  });
+
+  it('sends parallel_tool_calls only alongside tools', async () => {
+    expect(
+      (await sent('gpt-5', { tools: [tool], parallelToolCalls: false })).parallel_tool_calls
+    ).toBe(false);
+    expect(await sent('gpt-5', { parallelToolCalls: false })).not.toHaveProperty(
+      'parallel_tool_calls'
+    );
+  });
+
+  it('sends service_tier to OpenAI itself and to no other host', async () => {
+    expect(
+      (await sent('gpt-5', { serviceTier: 'flex' }, 'https://api.openai.com/v1')).service_tier
+    ).toBe('flex');
+    expect(
+      await sent('gpt-5', { serviceTier: 'flex' }, 'https://api.groq.com/openai/v1')
+    ).not.toHaveProperty('service_tier');
+  });
+
+  it('reports a flex or priority tier the response says served it, and not the standard one', async () => {
+    chatCreateMock.mockResolvedValueOnce({
+      ...makeChatCompletion('ok', 'stop'),
+      service_tier: 'priority',
+    });
+    const priority = await makeProvider().chat([{ role: 'user', content: 'x' }], {
+      model: 'gpt-5',
+    });
+    chatCreateMock.mockResolvedValueOnce({
+      ...makeChatCompletion('ok', 'stop'),
+      service_tier: 'default',
+    });
+    const standard = await makeProvider().chat([{ role: 'user', content: 'x' }], {
+      model: 'gpt-5',
+    });
+
+    expect(priority.usage.serviceTier).toBe('priority');
+    expect(standard.usage).not.toHaveProperty('serviceTier');
   });
 });

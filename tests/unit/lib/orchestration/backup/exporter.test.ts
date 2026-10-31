@@ -11,6 +11,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ─── Mocks (declared before imports) ────────────────────────────────────────
 
+// The backup seal's key (§122 t-902). happy-dom hides the server env.
+vi.mock('@/lib/env', async (importOriginal) => ({
+  env: {
+    ...(await importOriginal<typeof import('@/lib/env')>()).env,
+    BETTER_AUTH_SECRET: 'test-secret-that-is-at-least-32-characters-long',
+  },
+}));
+
 const mockFindMany = vi.fn();
 const mockFindUnique = vi.fn();
 /** Records `model` and the tenant org each query ran in, in call order. */
@@ -40,6 +48,7 @@ vi.mock('@/lib/db/client', () => ({
 // ─── Imports after mocks ─────────────────────────────────────────────────────
 
 import { exportOrchestrationConfig } from '@/lib/orchestration/backup/exporter';
+import { isSealedByThisInstall } from '@/lib/orchestration/backup/export-seal';
 import { getTenantContext } from '@/lib/tenancy/context';
 import type { BackupScope } from '@/lib/orchestration/backup/scope';
 import { BUILTIN_WORKFLOW_TEMPLATES } from '@/prisma/seeds/data/templates';
@@ -187,6 +196,40 @@ describe('exportOrchestrationConfig', () => {
     expect(payload.exportedAt.localeCompare(after)).toBeLessThanOrEqual(0);
   });
 
+  it('stamps exportedAt before any read starts, and seals it (§122 t-902)', async () => {
+    // Each read finishes a minute after it starts, on the faked clock: an
+    // exportedAt stamped after the reads would be at least a minute late.
+    const START = new Date('2026-10-22T12:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(START);
+    try {
+      const later = <T>(value: T) => {
+        vi.setSystemTime(new Date(Date.now() + 60_000));
+        return Promise.resolve(value);
+      };
+      mockFindMany.mockImplementation(() => later([]));
+      mockFindUnique.mockImplementation(() => later(null));
+
+      const payload = await exportOrchestrationConfig(SHARED_SCOPE);
+
+      expect(payload.exportedAt).toBe(START.toISOString());
+      expect(
+        isSealedByThisInstall(
+          {
+            exportedAt: START.toISOString(),
+            orgId: 'install',
+            contacts: { subscriptions: [], escalation: [], workflows: [] },
+          },
+          payload.exportSeal
+        )
+      ).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      mockFindMany.mockReset();
+      mockFindUnique.mockReset();
+    }
+  });
+
   it('maps agents array from DB rows', async () => {
     mockFindMany
       .mockResolvedValueOnce([agentRow]) // agents
@@ -314,6 +357,62 @@ describe('exportOrchestrationConfig', () => {
     const payload = await exportOrchestrationConfig(SHARED_SCOPE);
 
     expect(payload.data.webhooks[0].channel).toBe('email');
+  });
+
+  it('seals the org and every contact address it exports, so neither can change (§122 t-902, t-900)', async () => {
+    const emailing = {
+      steps: [
+        {
+          id: 'n',
+          name: 'N',
+          type: 'send_notification',
+          config: { channel: 'email', to: 'Flow@Example.com', subject: 's', bodyTemplate: 'b' },
+          nextSteps: [],
+        },
+      ],
+      entryStepId: 'n',
+      errorStrategy: 'fail',
+    };
+    mockFindMany
+      .mockResolvedValueOnce([]) // agents
+      .mockResolvedValueOnce([]) // capabilities
+      .mockResolvedValueOnce([{ ...workflowRow, publishedVersion: { snapshot: emailing } }])
+      .mockResolvedValueOnce([
+        { ...webhookRow, channel: 'email', emailAddress: 'Ops@Example.com' },
+      ]);
+    mockFindMany.mockResolvedValueOnce([]); // knowledgeTags
+    mockFindUnique.mockResolvedValue({
+      ...settingsRow,
+      escalationConfig: { emailAddresses: ['oncall@example.com'], notifyOnPriority: 'high' },
+    });
+
+    const payload = await exportOrchestrationConfig(SHARED_SCOPE);
+
+    const facts = {
+      exportedAt: payload.exportedAt,
+      orgId: 'install',
+      contacts: {
+        subscriptions: ['ops@example.com'],
+        escalation: ['oncall@example.com'],
+        workflows: ['flow@example.com'],
+      },
+    };
+    expect(isSealedByThisInstall(facts, payload.exportSeal)).toBe(true);
+    expect(isSealedByThisInstall({ ...facts, orgId: 'org_customer' }, payload.exportSeal)).toBe(
+      false
+    );
+    expect(
+      isSealedByThisInstall(
+        { ...facts, contacts: { ...facts.contacts, escalation: [] } },
+        payload.exportSeal
+      )
+    ).toBe(false);
+    expect(
+      isSealedByThisInstall(
+        { ...facts, contacts: { ...facts.contacts, workflows: [] } },
+        payload.exportSeal
+      )
+    ).toBe(false);
   });
 
   it('returns all four data collections in the correct positions', async () => {

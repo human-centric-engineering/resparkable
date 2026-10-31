@@ -13,6 +13,16 @@ import { POST } from '@/app/api/v1/orchestration/approvals/[id]/approve/route';
 
 // ─── Mock dependencies ─────────────────────────────────────────────────────
 
+// The run's row lock (t-901): the transaction is the prisma mock. That the
+// lock is taken, and first, is `run-row-lock.test.ts`'s and the smoke's.
+vi.mock('@/lib/orchestration/engine/run-row-lock', async (importOriginal) => {
+  const { prisma: client } = await import('@/lib/db/client');
+  return {
+    ...(await importOriginal<typeof import('@/lib/orchestration/engine/run-row-lock')>()),
+    withRunRowLocked: vi.fn((_id: string, fn: (tx: unknown) => Promise<unknown>) => fn(client)),
+  };
+});
+
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     aiWorkflowExecution: {
@@ -34,6 +44,8 @@ vi.mock('@/lib/env', () => ({
 import { prisma } from '@/lib/db/client';
 import { generateApprovalToken } from '@/lib/orchestration/approval-tokens';
 import { getTenantContext } from '@/lib/tenancy/context';
+import { RUN_BUSY_MESSAGE, withRunRowLocked } from '@/lib/orchestration/engine/run-row-lock';
+import { ConflictError } from '@/lib/api/errors';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -149,6 +161,17 @@ describe('POST /api/v1/orchestration/approvals/:id/approve (token auth)', () => 
 
     const response = await POST(makeRequest(EXECUTION_ID, token), makeParams(EXECUTION_ID));
     expect(response.status).toBe(409);
+  });
+
+  it('returns 409 saying nothing changed when the run was held past the lock’s wait (t-901)', async () => {
+    vi.mocked(withRunRowLocked).mockRejectedValueOnce(new ConflictError(RUN_BUSY_MESSAGE));
+    const { token } = generateApprovalToken(EXECUTION_ID, 'approve', 60);
+
+    const response = await POST(makeRequest(EXECUTION_ID, token), makeParams(EXECUTION_ID));
+    const body = (await response.json()) as { error: { code: string; message: string } };
+
+    expect(response.status).toBe(409);
+    expect(body.error).toMatchObject({ code: 'CONFLICT', message: RUN_BUSY_MESSAGE });
   });
 
   it('returns 404 when execution not found', async () => {

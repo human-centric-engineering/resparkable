@@ -54,11 +54,27 @@ import { InstructionsHistoryPanel } from '@/components/admin/orchestration/instr
 import { AgentCapabilitiesTab } from '@/components/admin/orchestration/agent-capabilities-tab';
 import { AgentInviteTokensTab } from '@/components/admin/orchestration/agent-invite-tokens-tab';
 import { AgentVersionHistoryTab } from '@/components/admin/orchestration/agent-version-history-tab';
+import { PlatformBindingOwner } from '@/components/admin/orchestration/platform-binding-owner';
 import { describeTunableFields } from '@/components/admin/orchestration/platform-agent-fields';
 import { AgentTestCard } from '@/components/admin/orchestration/agent-test-card';
 import { EmbedConfigPanel } from '@/components/admin/orchestration/agents/embed-config-panel';
 import { KnowledgeAccessSection } from '@/components/admin/orchestration/knowledge-access-section';
 import {
+  ModelParamsFields,
+  type ModelParamField,
+  type ModelParamsValue,
+} from '@/components/admin/orchestration/model-params-fields';
+import { MAX_STOP_SEQUENCES, SERVICE_TIERS, VERBOSITIES } from '@/lib/orchestration/llm/types';
+import {
+  narrowProviderTools,
+  narrowServiceTier,
+  narrowVerbosity,
+  providerToolsSchema,
+} from '@/lib/orchestration/llm/model-params';
+import { CodeExecutionField } from '@/components/admin/orchestration/code-execution-field';
+import { WebSearchFields } from '@/components/admin/orchestration/web-search-fields';
+import {
+  REASONING_EFFORT_FORM_VALUES,
   ReasoningEffortSelect,
   toReasoningEffortFormValue,
 } from '@/components/admin/orchestration/reasoning-effort-select';
@@ -113,7 +129,13 @@ const agentFormSchema = z
     // the provider apply its default" — Radix Select forbids empty-string
     // values, so we can't use `''` even though the column persists as
     // null. The submit handler translates `'auto'` → null.
-    reasoningEffort: z.enum(['auto', 'minimal', 'low', 'medium', 'high']),
+    reasoningEffort: z.enum(REASONING_EFFORT_FORM_VALUES),
+    stopSequences: z.array(z.string().min(1).max(200)).max(MAX_STOP_SEQUENCES),
+    topP: z.number().min(0).max(1).nullable(),
+    verbosity: z.enum(VERBOSITIES).nullable(),
+    parallelToolCalls: z.boolean().nullable(),
+    serviceTier: z.enum(SERVICE_TIERS).nullable(),
+    providerTools: providerToolsSchema.nullable(),
     monthlyBudgetUsd: z.number().positive().max(10000).optional(),
     // Per-turn cap (improvement #39 runaway-loop guard). Optional /
     // nullable; null means "use the org default" or "no cap" if that
@@ -200,6 +222,10 @@ export type AgentWithGrants = AiAgent & {
     lockedFields: string[];
     tunableFields: string[];
     bindingsLocked: boolean;
+    /** The platform picks this agent's provider and model while it owns them (t-818). */
+    picksOwnBinding?: boolean;
+    /** It does, and owns them now, so a version restore leaves them as they are (t-821). */
+    bindingFollowsPlatform?: boolean;
   } | null;
   /**
    * Providers the agent names that its org is no longer approved for (§120
@@ -252,6 +278,46 @@ function toSlug(value: string): string {
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .slice(0, 100);
+}
+
+/**
+ * The first message in a nested react-hook-form error (an object field's, or
+ * one of its list's), for a field that shows one line under it.
+ */
+function firstErrorMessage(error: unknown): string | undefined {
+  if (error === null || typeof error !== 'object') return undefined;
+  if ('message' in error && typeof error.message === 'string' && error.message) {
+    return error.message;
+  }
+  for (const [key, child] of Object.entries(error)) {
+    // `ref` is the input's DOM element, not a nested error.
+    if (key === 'ref') continue;
+    const message = firstErrorMessage(child);
+    if (message) return message;
+  }
+  return undefined;
+}
+
+/** An agent row's model parameters as the form holds them. */
+function toModelParamsValue(
+  agent:
+    | {
+        stopSequences: string[];
+        topP: number | null;
+        verbosity: string | null;
+        parallelToolCalls: boolean | null;
+        serviceTier: string | null;
+      }
+    | null
+    | undefined
+): ModelParamsValue {
+  return {
+    stopSequences: agent?.stopSequences ?? [],
+    topP: agent?.topP ?? null,
+    verbosity: narrowVerbosity(agent?.verbosity) ?? null,
+    parallelToolCalls: agent?.parallelToolCalls ?? null,
+    serviceTier: narrowServiceTier(agent?.serviceTier) ?? null,
+  };
 }
 
 export function AgentForm({
@@ -359,6 +425,7 @@ export function AgentForm({
     setValue,
     watch,
     reset,
+    getValues,
     formState: { errors, isDirty },
   } = useForm<AgentFormData>({
     resolver: zodResolver(isEdit ? agentFormSchema : createFormSchema),
@@ -373,6 +440,8 @@ export function AgentForm({
       temperature: agent?.temperature ?? 0.7,
       maxTokens: agent?.maxTokens ?? 4096,
       reasoningEffort: toReasoningEffortFormValue(agent?.reasoningEffort),
+      ...toModelParamsValue(agent),
+      providerTools: narrowProviderTools(agent?.providerTools) ?? null,
       monthlyBudgetUsd: agent?.monthlyBudgetUsd ?? undefined,
       maxCostPerTurnUsd: agent?.maxCostPerTurnUsd ?? null,
       isActive: agent?.isActive ?? true,
@@ -1051,6 +1120,26 @@ export function AgentForm({
 
         {/* ================= TAB 2 — MODEL ================= */}
         <TabsContent value="model" className="space-y-4 pt-4">
+          {isEdit && agent && platformAgent?.picksOwnBinding && (
+            <PlatformBindingOwner
+              agentId={agent.id}
+              bindingOwner={agent.bindingOwner}
+              // A save in flight counts: it re-seeds the form when it lands,
+              // which would put back the binding the hand-back replaced.
+              hasUnsavedChanges={isDirty || authored.provider || authored.model || submitting}
+              onHandedBack={(handedBack) => {
+                // The PATCH returns the row after its reconcile. Nothing else
+                // was unsaved (the control is disabled otherwise), so the form
+                // keeps its values and takes the row's provider and model,
+                // seeded as at mount: the row's own values, never the preview.
+                reset({ ...getValues(), provider: handedBack.provider, model: handedBack.model });
+                setAuthored({ provider: false, model: false });
+                // Re-render the server page, so the owner shown here and the
+                // restore dialog follow the hand-back.
+                router.refresh();
+              }}
+            />
+          )}
           {(providerFallback || modelFallback) && (
             <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
               We couldn&apos;t load the{' '}
@@ -1360,6 +1449,44 @@ export function AgentForm({
             value={watch('reasoningEffort')}
             onChange={(v) => setValue('reasoningEffort', v, { shouldDirty: true })}
             disabled={locked('reasoningEffort')}
+          />
+
+          <ModelParamsFields
+            idPrefix="agent"
+            value={{
+              stopSequences: watch('stopSequences'),
+              topP: watch('topP'),
+              verbosity: watch('verbosity'),
+              parallelToolCalls: watch('parallelToolCalls'),
+              serviceTier: watch('serviceTier'),
+            }}
+            onChange={(patch) => {
+              for (const [field, v] of Object.entries(patch) as Array<
+                [ModelParamField, ModelParamsValue[ModelParamField]]
+              >) {
+                setValue(field, v as never, { shouldDirty: true, shouldValidate: true });
+              }
+            }}
+            isLocked={locked}
+          />
+
+          <WebSearchFields
+            idPrefix="agent"
+            value={watch('providerTools')}
+            onChange={(next) =>
+              setValue('providerTools', next, { shouldDirty: true, shouldValidate: true })
+            }
+            disabled={locked('providerTools')}
+            error={firstErrorMessage(errors.providerTools)}
+          />
+
+          <CodeExecutionField
+            idPrefix="agent"
+            value={watch('providerTools')}
+            onChange={(next) =>
+              setValue('providerTools', next, { shouldDirty: true, shouldValidate: true })
+            }
+            disabled={locked('providerTools')}
           />
 
           <div className="grid gap-2">
@@ -2187,6 +2314,7 @@ export function AgentForm({
             <AgentVersionHistoryTab
               agentId={agent.id}
               platformTunableFields={platformAgent?.tunableFields ?? null}
+              bindingFollowsPlatform={platformAgent?.bindingFollowsPlatform === true}
               onRestored={() => {
                 // Re-pull the fresh agent into the form after a version restore.
                 void (async () => {
@@ -2194,6 +2322,7 @@ export function AgentForm({
                     const fresh = await apiClient.get<AgentWithGrants>(
                       API.ADMIN.ORCHESTRATION.agentById(agent.id)
                     );
+                    const modelParams = toModelParamsValue(fresh);
                     reset({
                       name: fresh.name,
                       slug: fresh.slug,
@@ -2214,6 +2343,14 @@ export function AgentForm({
                       temperature: fresh.temperature,
                       maxTokens: fresh.maxTokens,
                       reasoningEffort: toReasoningEffortFormValue(fresh.reasoningEffort),
+                      // Named, not spread: the reset-parity test reads these keys
+                      // from the source.
+                      stopSequences: modelParams.stopSequences,
+                      topP: modelParams.topP,
+                      verbosity: modelParams.verbosity,
+                      parallelToolCalls: modelParams.parallelToolCalls,
+                      serviceTier: modelParams.serviceTier,
+                      providerTools: narrowProviderTools(fresh.providerTools) ?? null,
                       monthlyBudgetUsd: fresh.monthlyBudgetUsd ?? undefined,
                       maxCostPerTurnUsd: fresh.maxCostPerTurnUsd ?? null,
                       isActive: fresh.isActive,

@@ -25,8 +25,12 @@
  *     their address is removed (the channel and its type stay), and any other
  *     value that is their address or their id becomes `[erased]` — the record
  *     keeps its shape and says something was taken out, as a webhook
- *     delivery's destination does. The subject's **own** runs are not read:
- *     they cascade with the user row.
+ *     delivery's destination does. The same rule covers the rest of what a
+ *     run keeps: its supervisor report, and its rows in other tables — a
+ *     paused or interrupted multi-turn step's `turns`, a step's cached
+ *     dispatch result, and its lease events (t-882). A run is read when any of
+ *     them names the person. The subject's **own** runs are not read: they
+ *     cascade with the user row.
  *
  * **Matching** is the rule the rest of erasure uses: an address exact on
  * `normaliseAddress()`, compared in code, and only when verified (`address` is
@@ -58,9 +62,11 @@
  */
 
 import { Prisma, type PrismaClient } from '@prisma/client';
+import { z } from 'zod';
 import { normaliseAddress } from '@/lib/orchestration/webhooks/destination';
 import { asciiSearchTerm, isJsonObject, type PersonMatch } from '@/lib/privacy/config-recipients';
 import { inBoundedTransaction } from '@/lib/privacy/erasure-deadline';
+import { jsonEquals } from '@/lib/utils/json-equal';
 import {
   matchErasedSubjects,
   stringsIn,
@@ -100,13 +106,22 @@ export interface RunRecipientsSubject {
 export interface RunRecipientsResult {
   /** Schedules whose input template named the person. */
   schedulesChanged: number;
-  /** Other people's runs whose input or trace named the person. */
+  /**
+   * Other people's runs that named the person: in the run's own columns, or in
+   * its step turns, cached step results or lease events (t-882).
+   */
   executionsRedacted: number;
 }
 
 type RunClient = Pick<
   Prisma.TransactionClient,
-  '$queryRaw' | 'aiWorkflowSchedule' | 'aiWorkflowExecution' | 'aiAdminAuditLog'
+  | '$queryRaw'
+  | 'aiWorkflowSchedule'
+  | 'aiWorkflowExecution'
+  | 'aiWorkflowRunningStep'
+  | 'aiWorkflowStepDispatch'
+  | 'aiWorkflowExecutionLeaseEvent'
+  | 'aiAdminAuditLog'
 >;
 
 /** What {@link redactPerson} took out of one value. */
@@ -198,6 +213,35 @@ export function redactErased(value: Prisma.JsonValue, erased: ErasedSubjects): P
   return current;
 }
 
+/**
+ * `value` as the JSON column stores it, for {@link redactErased} to walk: the
+ * one rule for every writer that redacts a copy before it writes it.
+ */
+export function toStoredJson(value: unknown): Prisma.JsonValue {
+  if (value === undefined) return null;
+  return z.json().parse(JSON.parse(JSON.stringify(value)));
+}
+
+/**
+ * A step's turns with `redact` applied, except that a turn's `reasoning` that
+ * `redact` would change is dropped rather than edited (code review, t-882). A
+ * thinking block's signature covers its text, so an edited block is refused
+ * when resume replays it; a turn without one is replayed as a text note of the
+ * call (`closeUnthinkingToolTurn` in the Anthropic provider).
+ */
+export function redactTurns(
+  turns: Prisma.JsonValue,
+  redact: (value: Prisma.JsonValue) => Prisma.JsonValue
+): Prisma.JsonValue {
+  if (!Array.isArray(turns)) return redact(turns);
+  return turns.map((turn) => {
+    if (!isJsonObject(turn) || turn.reasoning === undefined) return redact(turn);
+    if (jsonEquals(redact(turn.reasoning), turn.reasoning)) return redact(turn);
+    const { reasoning: _signed, ...rest } = turn;
+    return redact(rest);
+  });
+}
+
 type RunWriterClient = Pick<Prisma.TransactionClient, '$queryRaw' | 'dataErasureReceipt' | 'user'>;
 
 /**
@@ -227,6 +271,34 @@ export async function findErasedSinceRunStarted(
      WHERE r."erasedAt" >= (SELECT coalesce(e."startedAt", e."createdAt")
          FROM ai_workflow_execution e WHERE e.id = ${executionId})
        - ${RUN_CLOCK_SKEW_MS} * interval '1 millisecond'`;
+  return erasedAmong(tx, receipts, values);
+}
+
+/**
+ * Anyone erased since `takenAt` whom `values` name, or null when nobody was
+ * (§122 t-901): {@link findErasedSinceRunStarted} for a copy taken at a time
+ * of the caller's — a retroactive review's read of the run, before the model
+ * call that turned it into a report.
+ */
+export async function findErasedSinceCopy(
+  tx: RunWriterClient,
+  takenAt: Date,
+  values: unknown[]
+): Promise<ErasedSubjects | null> {
+  const receipts = await tx.$queryRaw<
+    Array<{ subjectUserId: string; subjectEmailHash: string | null }>
+  >`SELECT r."subjectUserId", r."subjectEmailHash"
+     FROM data_erasure_receipt r
+     WHERE r."erasedAt" >= ${takenAt}::timestamptz - ${RUN_CLOCK_SKEW_MS} * interval '1 millisecond'`;
+  return erasedAmong(tx, receipts, values);
+}
+
+/** Who among `receipts` `values` name, matched as {@link matchErasedSubjects} matches. */
+async function erasedAmong(
+  tx: RunWriterClient,
+  receipts: Array<{ subjectUserId: string; subjectEmailHash: string | null }>,
+  values: unknown[]
+): Promise<ErasedSubjects | null> {
   if (receipts.length === 0) return null;
 
   // An id is matched in the strings, which is where redaction can take it out
@@ -353,9 +425,15 @@ type RunRow = {
   executionTrace: Prisma.JsonValue;
   outputData: Prisma.JsonValue | null;
   errorMessage: string | null;
+  supervisorReport: Prisma.JsonValue | null;
 };
 
-/** Write `row` without the person, inside `tx`; false when it does not name them. */
+/**
+ * Write `row`, and the rows that hang off it, without the person, inside `tx`;
+ * false when none of them names them. The caller holds the run's row lock,
+ * which the engine takes before it writes any of them (t-882), so none is
+ * written back from a copy between this read and this write.
+ */
 async function redactRunRow(
   tx: RunClient,
   row: RunRow,
@@ -363,24 +441,112 @@ async function redactRunRow(
 ): Promise<boolean> {
   // Every column a run copies them into: its input, its trace, the step
   // outputs the engine writes to `outputData` on completion (an approval's
-  // `actor` among them), and an error message (review round 3).
+  // `actor` among them), an error message (review round 3), and the
+  // supervisor's report, which quotes step outputs (t-882).
   const input = redactPerson(row.inputData, subject, ERASED_VALUE);
   const trace = redactPerson(row.executionTrace, subject, ERASED_VALUE);
   const output =
     row.outputData === null ? null : redactPerson(row.outputData, subject, ERASED_VALUE);
   const error =
     row.errorMessage === null ? null : redactPerson(row.errorMessage, subject, ERASED_VALUE);
-  if (!input && !trace && !output && !error) return false;
-  await tx.aiWorkflowExecution.update({
-    where: { id: row.id },
-    data: {
-      ...(input ? { inputData: input.value ?? {} } : {}),
-      ...(trace ? { executionTrace: trace.value ?? [] } : {}),
-      ...(output ? { outputData: output.value ?? Prisma.DbNull } : {}),
-      ...(error && typeof error.value === 'string' ? { errorMessage: error.value } : {}),
-    },
-  });
-  return true;
+  const report =
+    row.supervisorReport === null
+      ? null
+      : redactPerson(row.supervisorReport, subject, ERASED_VALUE);
+  const runChanged = Boolean(input || trace || output || error || report);
+  if (runChanged) {
+    await tx.aiWorkflowExecution.update({
+      where: { id: row.id },
+      data: {
+        ...(input ? { inputData: input.value ?? {} } : {}),
+        ...(trace ? { executionTrace: trace.value ?? [] } : {}),
+        ...(output ? { outputData: output.value ?? Prisma.DbNull } : {}),
+        ...(error && typeof error.value === 'string' ? { errorMessage: error.value } : {}),
+        ...(report ? { supervisorReport: report.value ?? Prisma.DbNull } : {}),
+      },
+    });
+  }
+  const sideChanged = await redactRunSideRows(tx, row.id, subject);
+  return runChanged || sideChanged;
+}
+
+/**
+ * The run's rows in other tables without the person, inside `tx`; false when
+ * none names them (t-882). Each holds a copy of what the run did:
+ *
+ *   • a running step's `turns` — a multi-turn step's state, kept while the run
+ *     is paused at an approval (resume reads it back) or its host died;
+ *   • a step dispatch's `result` — a `tool_call`, `external_call` or
+ *     `send_notification` step's result, cached so a re-drive replays it into
+ *     the trace instead of repeating the side effect;
+ *   • a lease event's `metadata` — the admin who force-failed the run.
+ */
+async function redactRunSideRows(
+  tx: RunClient,
+  executionId: string,
+  subject: RunRecipientsSubject
+): Promise<boolean> {
+  const { userId } = subject;
+  const { term, scanAll } = searchTermFor(subject.address);
+  const redact = (value: Prisma.JsonValue): Prisma.JsonValue =>
+    redactPerson(value, subject, ERASED_VALUE)?.value ?? value;
+  // Only rows whose own text names them are read, by the run pass's folded
+  // test (code review): a run re-read without narrowing after the commit would
+  // otherwise load every cached result it holds. Each write is an updateMany:
+  // the engine deletes a step's row when the step ends without the run's lock,
+  // and a row gone since the read is nothing to redact (code review).
+  let changed = false;
+  const steps = await tx.$queryRaw<Array<{ id: string; turns: Prisma.JsonValue }>>`
+    SELECT s.id, s.turns FROM ai_workflow_running_step s
+     CROSS JOIN LATERAL (SELECT translate(coalesce(s.turns::text, ''),
+       'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) f
+     WHERE s."executionId" = ${executionId}
+       AND (${scanAll} OR strpos(f.folded, ${userId}) > 0
+         OR (${term}::text IS NOT NULL AND strpos(f.folded, ${term}::text) > 0))`;
+  for (const step of steps) {
+    if (step.turns === null) continue;
+    const turns = redactTurns(step.turns, redact);
+    if (jsonEquals(turns, step.turns)) continue;
+    await tx.aiWorkflowRunningStep.updateMany({
+      where: { id: step.id },
+      data: { turns: turns ?? Prisma.DbNull },
+    });
+    changed = true;
+  }
+  const dispatches = await tx.$queryRaw<Array<{ id: string; result: Prisma.JsonValue }>>`
+    SELECT d.id, d.result FROM ai_workflow_step_dispatch d
+     CROSS JOIN LATERAL (SELECT translate(d.result::text,
+       'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) f
+     WHERE d."executionId" = ${executionId}
+       AND (${scanAll} OR strpos(f.folded, ${userId}) > 0
+         OR (${term}::text IS NOT NULL AND strpos(f.folded, ${term}::text) > 0))`;
+  for (const dispatch of dispatches) {
+    const result = redactPerson(dispatch.result, subject, ERASED_VALUE);
+    if (!result) continue;
+    await tx.aiWorkflowStepDispatch.updateMany({
+      where: { id: dispatch.id },
+      data: { result: result.value ?? {} },
+    });
+    changed = true;
+  }
+  const events = await tx.$queryRaw<Array<{ id: string; metadata: Prisma.JsonValue }>>`
+    SELECT l.id, l.metadata FROM ai_workflow_execution_lease_event l
+     CROSS JOIN LATERAL (SELECT translate(coalesce(l.metadata::text, ''),
+       'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) f
+     WHERE l."executionId" = ${executionId}
+       AND (${scanAll} OR strpos(f.folded, ${userId}) > 0
+         OR (${term}::text IS NOT NULL AND strpos(f.folded, ${term}::text) > 0))`;
+  for (const event of events) {
+    const metadata =
+      event.metadata === null ? null : redactPerson(event.metadata, subject, ERASED_VALUE);
+    if (!metadata) continue;
+    await tx.aiWorkflowExecutionLeaseEvent.updateMany({
+      where: { id: event.id },
+      data: { metadata: metadata.value ?? Prisma.DbNull },
+    });
+    changed = true;
+  }
+  return changed;
 }
 
 /**
@@ -402,19 +568,16 @@ async function redactExecutionsPage(
   // the database's, so the cut-off is moved back by RUN_CLOCK_SKEW_MS (review
   // round 2): a run rewritten during the pre-pass by a worker whose clock runs
   // behind is still re-read. `updatedAt` is UTC wall time, compared in UTC.
-  const rows = await tx.$queryRaw<
-    Array<{
-      id: string;
-      inputData: Prisma.JsonValue;
-      executionTrace: Prisma.JsonValue;
-      outputData: Prisma.JsonValue | null;
-      errorMessage: string | null;
-    }>
-  >`SELECT e.id, e."inputData", e."executionTrace", e."outputData", e."errorMessage"
+  // A run is also read when one of its rows in other tables names the person
+  // (t-882), each tested on its own text: a run that names them only in a
+  // paused step's turns is still read.
+  const rows = await tx.$queryRaw<RunRow[]>`SELECT e.id, e."inputData", e."executionTrace",
+       e."outputData", e."errorMessage", e."supervisorReport"
      FROM ai_workflow_execution e
      CROSS JOIN LATERAL (SELECT translate(e."inputData"::text || e."executionTrace"::text
-         || coalesce(e."outputData"::text, '') || coalesce(e."errorMessage", ''),
-         'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) f
+         || coalesce(e."outputData"::text, '') || coalesce(e."errorMessage", '')
+         || coalesce(e."supervisorReport"::text, ''),
+         'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) f
      WHERE e.id > ${after}
        AND e."userId" IS DISTINCT FROM ${userId}
        AND (${since}::timestamptz IS NULL
@@ -422,7 +585,22 @@ async function redactExecutionsPage(
          OR e.status IN ('pending', 'running', 'paused_for_approval'))
        AND (${scanAll}
          OR strpos(f.folded, ${userId}) > 0
-         OR (${term}::text IS NOT NULL AND strpos(f.folded, ${term}::text) > 0))
+         OR (${term}::text IS NOT NULL AND strpos(f.folded, ${term}::text) > 0)
+         OR EXISTS (SELECT 1 FROM ai_workflow_running_step s
+           CROSS JOIN LATERAL (SELECT translate(coalesce(s.turns::text, ''),
+             'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) sf
+           WHERE s."executionId" = e.id AND (strpos(sf.folded, ${userId}) > 0
+             OR (${term}::text IS NOT NULL AND strpos(sf.folded, ${term}::text) > 0)))
+         OR EXISTS (SELECT 1 FROM ai_workflow_step_dispatch d
+           CROSS JOIN LATERAL (SELECT translate(d.result::text,
+             'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) df
+           WHERE d."executionId" = e.id AND (strpos(df.folded, ${userId}) > 0
+             OR (${term}::text IS NOT NULL AND strpos(df.folded, ${term}::text) > 0)))
+         OR EXISTS (SELECT 1 FROM ai_workflow_execution_lease_event l
+           CROSS JOIN LATERAL (SELECT translate(coalesce(l.metadata::text, ''),
+             'ABCDEFGHIJKLMNOPQRSTUVWXYZK', 'abcdefghijklmnopqrstuvwxyzk') AS folded) lf
+           WHERE l."executionId" = e.id AND (strpos(lf.folded, ${userId}) > 0
+             OR (${term}::text IS NOT NULL AND strpos(lf.folded, ${term}::text) > 0))))
      ORDER BY e.id LIMIT ${RUN_PAGE_SIZE} FOR NO KEY UPDATE OF e`;
   let redacted = 0;
   for (const row of rows) {
@@ -549,7 +727,7 @@ export async function redactSubjectFromRunsSince(
       try {
         const changed = await client.$transaction(async (tx) => {
           const [row] = await tx.$queryRaw<RunRow[]>`SELECT e.id, e."inputData", e."executionTrace",
-               e."outputData", e."errorMessage"
+               e."outputData", e."errorMessage", e."supervisorReport"
              FROM ai_workflow_execution e WHERE e.id = ${id} FOR NO KEY UPDATE`;
           return row ? redactRunRow(tx, row, full) : false;
         }, RUN_ROW_TRANSACTION_OPTIONS);

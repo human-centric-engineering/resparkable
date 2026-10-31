@@ -40,7 +40,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { scaffoldsOnDisk } from '@/tests/helpers/app-scaffolds';
 
 // FORK (Resparkable): `lib/app/data-export.ts` is filled here, and it runs TWO
 // collectors — one per side of the D5 boundary. `repo/subject-export.ts`
@@ -75,6 +74,7 @@ vi.mock('@/lib/framework/resparkable/access/subject-export', () => ({
   RESPARKABLE_GROUP_CONTRIBUTION_MODEL: 'ResparkableGroup',
 }));
 
+import { ownModuleProblems, scaffoldsOnDisk, unlistedSeams } from '@/tests/helpers/app-scaffolds';
 import { registerAppRateLimits } from '@/lib/app/rate-limit';
 import { registerAppCapabilities } from '@/lib/orchestration/capabilities';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
@@ -105,6 +105,7 @@ import { initAppGuardEventContributors } from '@/lib/app/guard-event-contributor
 import { appAgentFields } from '@/lib/app/agent-fields';
 import { appProtectedRoutes } from '@/lib/app/protected-routes';
 import { appDisallowedPaths } from '@/lib/app/robots';
+import { appCredentialPaths } from '@/lib/app/credential-paths';
 import { appEnvSchema } from '@/lib/app/env';
 import { footerCopyright } from '@/lib/app/footer';
 import { APP_API_KEY_SCOPES } from '@/lib/app/api-key-scopes';
@@ -120,6 +121,7 @@ import {
   appAlwaysRunTests,
   appOwnerlessSurfaceExceptions,
 } from '@/lib/app/ci';
+import { appOwnModules } from '@/lib/app/own-modules';
 import { APP_CAPABILITY_PAIRS, APP_UNCHECKED_SEEDS } from '@/lib/app/capability-seed-pairs';
 import { initAppUserCreatedHooks } from '@/lib/app/user-created';
 import { collectAppSubjectData } from '@/lib/app/data-export';
@@ -168,10 +170,14 @@ import {
 } from '@/lib/account-sections/registry';
 import { initAppAuthorizationPolicy } from '@/lib/app/authorization';
 import { ORG_TIER_ADMIN_PAGES, adminPageTier } from '@/lib/auth/admin-tier';
+import { APP_ORG_TIER_ADMIN_ROUTES } from '@/lib/app/admin-tier-routes';
+import { appOrgAdminLandingRoute } from '@/lib/app/admin-landing';
+import { orgAdminLanding } from '@/lib/auth/admin-landing';
 import {
   getAppOrgTierAdminPages,
   orgTierAdminPages,
   __resetAppOrgTierAdminPagesForTests,
+  closedCoreOrgTierSections,
 } from '@/lib/auth/org-tier-admin-pages';
 import {
   appOwnerClassifications,
@@ -555,16 +561,43 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     seam: 'lib/app/owner-classification.ts',
     risk: 'a stray classification would switch the data layer’s owner check on for a model nobody decided was private — refusing reads the product means to allow — or pre-classify a fork model nobody looked at, silencing the coverage guard for it',
     // FORK (Resparkable): Sunrise asserts an empty registry; Resparkable
-    // classifies the three of its models the coverage guard can see. Pinning the
-    // exact set keeps the original intent: a stray classification still fails
-    // here, and so does one switched to `enforced` without a decision.
+    // classifies every one of its models the coverage guard can see (all of
+    // them since 0.16.0's `…UserId` rule, Sunrise ask #56). Pinning the exact
+    // set keeps the original intent: a stray classification still fails here,
+    // and so does one switched to `enforced` without a decision.
     assert: () => {
       __resetAppOwnerClassificationForTests();
       // The read triggers the lazy init, so this exercises the REAL file.
       const rows = appOwnerClassifications();
       expect(Object.keys(rows).sort()).toEqual([
+        'ResparkableArea',
+        'ResparkableBoard',
+        'ResparkableBoardCard',
+        'ResparkableChecklistItem',
+        'ResparkableComment',
+        'ResparkableCreditAccount',
+        'ResparkableCreditLedgerEntry',
+        'ResparkableDocument',
+        'ResparkableEmbedding',
+        'ResparkableEntity',
+        'ResparkableEvent',
+        'ResparkableGoal',
+        'ResparkableGrant',
+        'ResparkableGroup',
         'ResparkableGroupAuditEntry',
+        'ResparkableGroupInvite',
         'ResparkableGroupMember',
+        'ResparkableJob',
+        'ResparkableLink',
+        'ResparkableProject',
+        'ResparkableReview',
+        'ResparkableShareLink',
+        'ResparkableSpace',
+        'ResparkableTag',
+        'ResparkableTask',
+        'ResparkableTaskTag',
+        'ResparkableThought',
+        'ResparkableTimeBlock',
         'TransferJob',
       ]);
       expect(Object.values(rows).some((row) => row.kind === 'personal' && row.enforced)).toBe(
@@ -630,6 +663,11 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // `tests/unit/app/robots.test.ts` asserts that; this asserts the list a
     // reviewer would have to have agreed to in the first place.
     assert: () => expect(appDisallowedPaths).toEqual(['/s/']),
+  },
+  {
+    seam: 'lib/app/credential-paths.ts',
+    risk: 'a stray pattern would blank a route word out of every install’s logs and analytics',
+    assert: () => expect(appCredentialPaths).toEqual([]),
   },
   {
     seam: 'lib/app/env.ts',
@@ -783,7 +821,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
   },
   {
     seam: 'lib/app/admin-tier.ts',
-    risk: 'a stray pattern would open that admin page to every org OWNER/ADMIN on every install — the page only, since its API routes declare their own tier, but a page core meant for platform admins alone',
+    risk: 'a stray pattern would open that admin page to every org OWNER/ADMIN on every install — the page only, since its API routes declare their own tier, but a page core meant for platform admins alone; a stray closeCoreOrgTierSection() would shut orchestration to every org admin on every install',
     assert: () => {
       __resetAppOrgTierAdminPagesForTests();
       // The read triggers the lazy init, so this exercises the REAL seam.
@@ -791,6 +829,23 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       // …and the roster the layout reads and hands the gate is exactly core's.
       expect(orgTierAdminPages()).toEqual(ORG_TIER_ADMIN_PAGES);
       expect(adminPageTier('/admin/users', orgTierAdminPages())).toBeNull();
+      // …and it closes none of core's sections (t-929), so the routes keep
+      // the tier they declare.
+      expect(closedCoreOrgTierSections()).toEqual([]);
+    },
+  },
+  {
+    seam: 'lib/app/admin-tier-routes.ts',
+    risk: "a stray entry would let a route declaring tier 'org' pass the roster test without core's list naming it — it opens nothing by itself, but the opening would no longer show in the diff a reviewer reads",
+    assert: () => expect(APP_ORG_TIER_ADMIN_ROUTES).toEqual([]),
+  },
+  {
+    seam: 'lib/app/admin-landing.ts',
+    risk: 'a stray route would send every org OWNER/ADMIN on every install somewhere other than their orchestration dashboard when they open the console',
+    assert: () => {
+      expect(appOrgAdminLandingRoute).toBeNull();
+      // …and /admin sends an org admin exactly where it did before the seam.
+      expect(orgAdminLanding()).toBe('/admin/orchestration');
     },
   },
   {
@@ -814,6 +869,23 @@ const SEAM_DEFAULTS: SeamDefault[] = [
     // Resparkable is relying on.
     assert: () =>
       expect([...occupiedTiers].sort()).toEqual(['.context/framework', 'lib/framework']),
+  },
+  {
+    seam: 'lib/app/own-modules.ts',
+    risk: 'a stray entry would exempt a lib/app/ entry from the version contract, the fork guide and this table on every install, so a real seam could ship with no breaking-change announcement',
+    // Not pinned to []: a leaf fork that declares its modules would otherwise
+    // edit this row, in a Sunrise file, which is the cost #847 removes. What
+    // it asserts still fails on a stray upstream entry, because every seam
+    // Sunrise ships has a row here or in UNASSERTED_SEAMS, and an entry with
+    // a row is refused. Upstream, that leaves no declarable entry at all.
+    assert: () =>
+      expect(
+        ownModuleProblems(appOwnModules, scaffoldsOnDisk(), {
+          SEAM_DEFAULTS: SEAM_DEFAULTS.map((s) => s.seam),
+          UNASSERTED_SEAMS: [...UNASSERTED_SEAMS],
+        }),
+        'lib/app/own-modules.ts declares entries that cannot be honoured (see each message)'
+      ).toEqual([]),
   },
   {
     seam: 'lib/app/capability-seed-pairs.ts',
@@ -967,8 +1039,10 @@ describe('lib/app/ seams ship empty', () => {
     // `lib/app/<name>/`, and a file of any extension is owed one too.
     const onDisk = scaffoldsOnDisk();
 
+    // A leaf fork's own modules (lib/app/own-modules.ts) are not seams and owe
+    // no row (#847).
     const covered = new Set(SEAM_DEFAULTS.map((s) => s.seam));
-    const missing = onDisk.filter((f) => !covered.has(f) && !UNASSERTED_SEAMS.has(f));
+    const missing = unlistedSeams([...covered, ...UNASSERTED_SEAMS]);
     const stale = [...covered].filter((f) => !onDisk.includes(f));
 
     expect(missing, 'lib/app/ seam with no row in SEAM_DEFAULTS').toEqual([]);

@@ -80,10 +80,12 @@ import {
 } from '@/lib/orchestration/agents/agent-versioning';
 import {
   PLATFORM_AGENT_BASELINE,
+  createPlatformAgentCatalogue,
   definitionPicksBinding,
   getPlatformAgent,
   platformAgentRegistryHash,
   platformAgentsForOrg,
+  type PlatformAgentCatalogue,
   type PlatformAgentDefinition,
 } from '@/lib/orchestration/agents/platform-agents';
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
@@ -132,6 +134,12 @@ export interface ReconcileOptions {
   /** The client to write through. The seed passes its own (owner DSN). */
   db?: TenancyClient;
   log?: Logger;
+  /**
+   * The provider and model rows the picks read (t-816). The maintenance job
+   * passes one per run, so every org of that run shares it; otherwise each
+   * call reads its own.
+   */
+  catalogue?: PlatformAgentCatalogue;
 }
 
 type ExistingAgent = Prisma.AiAgentGetPayload<{
@@ -162,14 +170,53 @@ function storedOwner(value: string | null): BindingOwner | null {
  * job's drift check apply, so the two cannot disagree. Only for a definition
  * that has a `defaultBinding`.
  */
-async function askPick(definition: PlatformAgentDefinition, db: TenancyClient): Promise<Binding> {
-  return (await definition.defaultBinding?.(db)) ?? INHERIT;
+async function askPick(
+  definition: PlatformAgentDefinition,
+  db: TenancyClient,
+  catalogue: PlatformAgentCatalogue
+): Promise<Binding> {
+  return (await definition.defaultBinding?.(db, catalogue)) ?? INHERIT;
+}
+
+/**
+ * What to log for a pick that threw: its message, and its cause's. The
+ * eligibility seam's throw mode logs nothing itself, so there the cause — the
+ * resolver's own error — is the only place the reason survives. The
+ * credential seam logs its resolver's error where it happens, and the cause
+ * here is its `credential_unavailable` error.
+ */
+function pickFailure(error: unknown): { error: string; cause?: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!(error instanceof Error) || error.cause === undefined) return { error: message };
+  return { error: message, cause: describeCause(error.cause) };
+}
+
+/** A cause as text, without throwing: this runs inside a failure's own report. */
+function describeCause(cause: unknown): string {
+  if (cause instanceof Error) return cause.message;
+  if (typeof cause === 'string') return cause;
+  try {
+    return JSON.stringify(cause) ?? typeof cause;
+  } catch {
+    return typeof cause;
+  }
 }
 
 /** A pick the run could not get (the org's policy unreadable, say). */
 const PICK_UNAVAILABLE = 'unavailable';
 
 type Pick = Binding | typeof PICK_UNAVAILABLE;
+
+/**
+ * Where one run's picks come from: the catalogue they read, and the picks the
+ * job's drift check already made this pass, by slug (t-816). A drifted org is
+ * reconciled straight after its check, so asking again would only repeat the
+ * same reads for the same answer.
+ */
+interface PickSource {
+  catalogue: PlatformAgentCatalogue;
+  known: ReadonlyMap<string, Binding>;
+}
 
 /**
  * One agent's pick for one run: asked only when something needs it, and at
@@ -181,11 +228,13 @@ type Pick = Binding | typeof PICK_UNAVAILABLE;
 function lazyPick(
   definition: PlatformAgentDefinition,
   db: TenancyClient,
+  source: PickSource,
   onUnavailable: (error: unknown) => void
 ): () => Promise<Pick> {
-  let answer: Promise<Pick> | undefined;
+  const known = source.known.get(definition.slug);
+  let answer: Promise<Pick> | undefined = known && Promise.resolve(known);
   return () =>
-    (answer ??= askPick(definition, db).catch((error: unknown) => {
+    (answer ??= askPick(definition, db, source.catalogue).catch((error: unknown) => {
       onUnavailable(error);
       return PICK_UNAVAILABLE;
     }));
@@ -311,8 +360,21 @@ export async function reconcilePlatformAgents(
   orgId: string,
   options: ReconcileOptions = {}
 ): Promise<PlatformAgentReconcileResult> {
+  return reconcileOrg(orgId, options, new Map());
+}
+
+/** {@link reconcilePlatformAgents}, reusing the picks a drift check already made. */
+async function reconcileOrg(
+  orgId: string,
+  options: ReconcileOptions,
+  known: ReadonlyMap<string, Binding>
+): Promise<PlatformAgentReconcileResult> {
   const db = options.db ?? defaultDb;
   const log = options.log ?? defaultLogger;
+  const source: PickSource = {
+    catalogue: options.catalogue ?? createPlatformAgentCatalogue(),
+    known,
+  };
   const result: PlatformAgentReconcileResult = {
     orgId,
     created: [],
@@ -417,12 +479,12 @@ export async function reconcilePlatformAgents(
       }
 
       // Asked before any write for this agent, and only if needed.
-      const pick = lazyPick(definition, db, (error) => {
+      const pick = lazyPick(definition, db, source, (error) => {
         complete = false;
         log.warn('Platform agent binding pick unavailable — binding left as it is', {
           orgId,
           slug: definition.slug,
-          error: error instanceof Error ? error.message : String(error),
+          ...pickFailure(error),
         });
       });
 
@@ -589,7 +651,9 @@ export async function reconcilePlatformAgents(
  * put it now ({@link platformBindingsDrifted}). The maintenance job's entry
  * point. When nothing changed it costs one `Org` read, plus, for an org with
  * an agent that picks its own binding, the agents' bindings, the org's
- * provider policy and the pick's provider and model reads.
+ * provider policy and the pick's own per-org filters. The provider and model
+ * rows come from `options.catalogue`, which the job shares across one run's
+ * orgs (t-816), and a drifted org's reconcile reuses the check's picks.
  *
  * For an org whose agents pick a binding, its cached provider policy is
  * dropped first: this process may have cached it before a grant or revocation
@@ -606,15 +670,22 @@ export async function reconcilePlatformAgentsIfStale(
 ): Promise<{ reconciled: boolean; result?: PlatformAgentReconcileResult }> {
   if (!isMultiTenant() && orgId !== INSTALL_ORG_ID) return { reconciled: false };
   const db = options.db ?? defaultDb;
+  // One catalogue for the check and the reconcile it may lead to.
+  const shared = { ...options, catalogue: options.catalogue ?? createPlatformAgentCatalogue() };
   if (platformAgentsForOrg(orgId).some((d) => d.defaultBinding)) forgetOrgProviderPolicy(orgId);
   const marker = await loadPlatformAgentsMarker(orgId, db);
-  if (
-    marker?.hash === platformAgentRegistryHash() &&
-    !(await platformBindingsDrifted(orgId, db, options.log ?? defaultLogger))
-  ) {
-    return { reconciled: false };
+  let known: ReadonlyMap<string, Binding> = new Map();
+  if (marker?.hash === platformAgentRegistryHash()) {
+    const check = await platformBindingsDrifted(
+      orgId,
+      db,
+      shared.catalogue,
+      options.log ?? defaultLogger
+    );
+    if (!check.drifted) return { reconciled: false };
+    known = check.picks;
   }
-  return { reconciled: true, result: await reconcilePlatformAgents(orgId, options) };
+  return { reconciled: true, result: await reconcileOrg(orgId, shared, known) };
 }
 
 /**
@@ -628,15 +699,19 @@ export async function reconcilePlatformAgentsIfStale(
  * classifies it. A pick that cannot be answered is logged and skipped, as the
  * reconcile would leave that binding as it is.
  *
+ * Returns the picks it made, for the reconcile a drift leads to (t-816).
+ *
  * A missing or refused agent is left to the digest check.
  */
 async function platformBindingsDrifted(
   orgId: string,
   db: TenancyClient,
+  catalogue: PlatformAgentCatalogue,
   log: Logger
-): Promise<boolean> {
+): Promise<{ drifted: boolean; picks: Map<string, Binding> }> {
+  const picks = new Map<string, Binding>();
   const definitions = platformAgentsForOrg(orgId).filter((d) => d.defaultBinding);
-  if (definitions.length === 0) return false;
+  if (definitions.length === 0) return { drifted: false, picks };
   return runAsOrg(orgId, async () => {
     const rows = await db.aiAgent.findMany({
       where: {
@@ -651,20 +726,22 @@ async function platformBindingsDrifted(
       const row = rows.find((r) => r.slug === definition.slug);
       if (!row) continue;
       const owner = storedOwner(row.bindingOwner);
-      if (owner === null) return true;
+      if (owner === null) return { drifted: true, picks };
       if (owner === 'org') continue;
       try {
-        if (!sameBinding(row, await askPick(definition, db))) return true;
+        const pick = await askPick(definition, db, catalogue);
+        picks.set(definition.slug, pick);
+        if (!sameBinding(row, pick)) return { drifted: true, picks };
       } catch (error) {
         // The reconcile would leave this binding as it is too; ask next pass.
         log.warn('Platform agent binding pick unavailable — drift not checked', {
           orgId,
           slug: definition.slug,
-          error: error instanceof Error ? error.message : String(error),
+          ...pickFailure(error),
         });
       }
     }
-    return false;
+    return { drifted: false, picks };
   });
 }
 

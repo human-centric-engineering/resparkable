@@ -229,6 +229,98 @@ describe('resolveAgentProviderAndModel', () => {
       expect(result.fallbacks).toEqual(['custom-fallback']);
     });
 
+    it('never lists an explicit primary among its own fallbacks, keeping the rest in order (t-954)', async () => {
+      // The reconcile moved a platform-picked primary onto a provider the org
+      // had listed as a fallback. The call tries [primary, ...fallbacks], so a
+      // failing primary would be retried as its own fallback.
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({
+          provider: 'openai',
+          model: 'gpt-4.1',
+          fallbackProviders: ['mistral', 'openai', 'anthropic'],
+        }),
+        'chat'
+      );
+
+      expect(result.providerSlug).toBe('openai');
+      expect(result.fallbacks).toEqual(['mistral', 'anthropic']);
+    });
+
+    it('never lists an inherited primary among its own fallbacks (t-954)', async () => {
+      // On inherit the primary is chosen per turn, here anthropic, which the
+      // agent also lists as a fallback.
+      setProviders([makeProviderRow({ slug: 'anthropic' })]);
+
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({ fallbackProviders: ['anthropic', 'custom-fallback'] }),
+        'chat'
+      );
+
+      expect(result.providerSlug).toBe('anthropic');
+      expect(result.fallbacks).toEqual(['custom-fallback']);
+    });
+
+    it('drops a repeat among the fallbacks, keeping the first (t-954)', async () => {
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({
+          provider: 'openai',
+          model: 'gpt-4.1',
+          fallbackProviders: ['mistral', 'anthropic', 'mistral'],
+        }),
+        'chat'
+      );
+
+      expect(result.fallbacks).toEqual(['mistral', 'anthropic']);
+    });
+
+    it('never asks an eligibility rule about the primary as one of its own fallbacks (t-954)', async () => {
+      // The rule's input, not just the binding's output: a rule that counts,
+      // flags or appends the primary must not find it in an explicit list.
+      const asked: Array<{ candidates: readonly string[]; source: string }> = [];
+      registerProviderEligibility((candidates, context) => {
+        asked.push({ candidates: [...candidates], source: context.source });
+        return candidates;
+      });
+      setProviders([makeProviderRow({ slug: 'anthropic' })]);
+
+      // Fully bound (the early return), then on inherit (the fill path).
+      await resolveAgentProviderAndModel(
+        makeAgent({
+          provider: 'openai',
+          model: 'gpt-4.1',
+          fallbackProviders: ['openai', 'mistral'],
+        }),
+        'chat'
+      );
+      await resolveAgentProviderAndModel(
+        makeAgent({ fallbackProviders: ['anthropic', 'mistral'] }),
+        'chat'
+      );
+
+      const explicitAsks = asked.filter((a) => a.source === 'explicit');
+      expect(explicitAsks).toEqual([
+        { candidates: ['mistral'], source: 'explicit' },
+        { candidates: ['mistral'], source: 'explicit' },
+      ]);
+    });
+
+    it('keeps a list that named only the primary explicit and empty, not the system fill (t-954)', async () => {
+      setProviders([
+        makeProviderRow({ slug: 'anthropic' }),
+        makeProviderRow({ slug: 'openai', createdAt: new Date('2026-04-16T00:00:00Z') }),
+      ]);
+
+      const result = await resolveAgentProviderAndModel(
+        makeAgent({ fallbackProviders: ['anthropic'] }),
+        'chat'
+      );
+
+      expect(result.providerSlug).toBe('anthropic');
+      // Not ['openai']: the operator set a list, so the system does not fill it.
+      expect(result.fallbacks).toEqual([]);
+      expect(result.provenance?.fallbacks).toBe('explicit');
+    });
+
     it('attaches up to 3 system fallbacks when the agent fallback list is empty', async () => {
       const rows = [
         makeProviderRow({ slug: 'anthropic', apiKeyEnvVar: 'PRESENT_KEY' }),

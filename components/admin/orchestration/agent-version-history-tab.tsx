@@ -37,6 +37,7 @@
  * "After" for row i and "Before" for row i-1 (its newer neighbour).
  */
 
+import { PLATFORM_BINDING_FIELDS } from '@/lib/orchestration/agents/binding-owner';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Clock, Loader2, RotateCcw } from 'lucide-react';
 
@@ -101,7 +102,17 @@ export interface AgentVersionHistoryTabProps {
    * absent for an org's own agent, where a restore brings back everything.
    */
   platformTunableFields?: readonly string[] | null;
+  /**
+   * The platform picks this agent's provider and model and currently owns
+   * them (`bindingOwner: 'platform'`), so a restore leaves them as they are
+   * (t-821), and its provider configuration. The dialog then leaves those
+   * out of what it says a restore brings back, and says why.
+   */
+  bindingFollowsPlatform?: boolean;
 }
+
+/** What a restore leaves alone while the platform owns the binding: the route's own list (t-821). */
+const LEFT_WITH_THE_PLATFORM = new Set<string>(PLATFORM_BINDING_FIELDS);
 
 function formatDate(iso: string): string {
   const d = new Date(iso);
@@ -175,8 +186,24 @@ export function AgentVersionHistoryTab({
   agentId,
   onRestored,
   platformTunableFields,
+  bindingFollowsPlatform = false,
 }: AgentVersionHistoryTabProps) {
   const isPlatformAgent = platformTunableFields != null;
+  // What a restore brings back on a platform agent: while the platform owns
+  // the binding, not the provider, model or provider configuration (t-821).
+  const restoredFields = (platformTunableFields ?? []).filter(
+    (f) => !bindingFollowsPlatform || !LEFT_WITH_THE_PLATFORM.has(f)
+  );
+  // What it leaves alone, one line per kind: the binding (while the platform
+  // owns it), named from the route's own list, and the platform's settings.
+  const leftAlone = [
+    ...(bindingFollowsPlatform
+      ? [
+          `Its ${describeTunableFields(PLATFORM_BINDING_FIELDS, { includeProviderConfig: true })}. The platform picks these for this org, on the strongest tool-using model it can reach.`,
+        ]
+      : []),
+    'Its instructions, knowledge and the other settings the platform owns.',
+  ];
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -454,22 +481,48 @@ export function AgentVersionHistoryTab({
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Restore to version {restoreTarget?.version}?</AlertDialogTitle>
-            <AlertDialogDescription>
+            {/* A div, not Radix's default <p>: the platform-agent wording holds lists. */}
+            <AlertDialogDescription asChild>
               {isPlatformAgent ? (
-                <>
-                  This is a platform agent, so a restore brings back only this org&apos;s settings
-                  from version {restoreTarget?.version}: its{' '}
-                  {describeTunableFields(platformTunableFields, { includeProviderConfig: true })}.
-                  Its instructions, knowledge and the other settings the platform owns are left as
-                  they are. A new version entry will be created to record this action. Conversations
-                  and cost history are not affected.
-                </>
+                // Two labelled parts, so what comes back and what stays read apart (t-957).
+                <div className="space-y-3">
+                  <p>
+                    This is a platform agent, so a restore brings back only this org&apos;s
+                    settings.
+                  </p>
+                  <div data-testid="restore-brings-back">
+                    <p className="text-foreground font-medium">
+                      Brought back from version {restoreTarget?.version}
+                    </p>
+                    <p>
+                      {restoredFields.length > 0
+                        ? `Its ${describeTunableFields(restoredFields, { includeProviderConfig: true })}.`
+                        : 'None of the settings this org tunes. Only a new version entry is written.'}
+                    </p>
+                  </div>
+                  <div data-testid="restore-leaves">
+                    <p className="text-foreground font-medium">Left as they are</p>
+                    {leftAlone.length > 1 ? (
+                      <ul className="list-disc space-y-0.5 pl-5">
+                        {leftAlone.map((line) => (
+                          <li key={line}>{line}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>{leftAlone[0]}</p>
+                    )}
+                  </div>
+                  <p>
+                    A new version entry records the restore. Conversations and cost history are not
+                    affected.
+                  </p>
+                </div>
               ) : (
-                <>
+                <p>
                   This will revert the agent&apos;s configuration (model, instructions, settings) to
                   the state captured in version {restoreTarget?.version}. A new version entry will
                   be created to record this action. Conversations and cost history are not affected.
-                </>
+                </p>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>

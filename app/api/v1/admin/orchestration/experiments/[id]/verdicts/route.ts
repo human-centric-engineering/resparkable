@@ -104,7 +104,7 @@ export const POST = withAdminAuth<Params>(
     }
     if (!variantA.evaluationRunId || !variantB.evaluationRunId) {
       throw new ValidationError(
-        'Both variants must have a completed AiEvaluationRun before verdicts can be computed'
+        'Both variants must have an AiEvaluationRun before verdicts can be computed'
       );
     }
 
@@ -118,12 +118,26 @@ export const POST = withAdminAuth<Params>(
     // another admin, whose results the reads below would not return — judging
     // nothing and writing an empty verdict over the stored one.
     const runIds = [...new Set([variantA.evaluationRunId, variantB.evaluationRunId])];
-    const ownRuns = await prisma.aiEvaluationRun.count({
+    const ownRuns = await prisma.aiEvaluationRun.findMany({
       where: { id: { in: runIds }, userId: session.user.id },
+      select: { id: true, status: true },
     });
-    if (ownRuns !== runIds.length) {
+    if (ownRuns.length !== runIds.length) {
       throw new ValidationError(
         'Both variants must have been run by you before verdicts can be computed'
+      );
+    }
+
+    // Both runs must also have finished. A queued, running, failed or cancelled
+    // run has partial results or none, and judging them would overwrite the
+    // stored verdict with a comparison of incomplete data. Tested after the
+    // ownership check, not folded into its `where`: that would refuse an
+    // unfinished run of the caller's as "not run by you".
+    const unfinished = ownRuns.filter((r) => r.status !== 'completed');
+    if (unfinished.length > 0) {
+      throw new ValidationError(
+        'Both variants must have a completed AiEvaluationRun before verdicts can be computed',
+        { runs: unfinished.map((r) => ({ id: r.id, status: r.status })) }
       );
     }
 

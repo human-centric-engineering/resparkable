@@ -99,9 +99,17 @@ Every agent field declares its side (see
   Ownership is stored rather than inferred from the values because a value
   can't say who wrote it. The pick is asked at most once per agent per run,
   and only for a binding the platform owns or has yet to classify. A pick
-  that can't be answered (the org's policy unreadable, say) leaves that
-  agent's binding as it is and holds the org's marker back so the next pass
-  asks again; every other agent is still reconciled.
+  that can't be answered (the org's policy unreadable, or a fork's
+  eligibility or credential resolver down) leaves that agent's binding as it
+  is and holds the org's marker back so the next pass asks again; every
+  other agent is still reconciled. Both fork seams answer "nothing" by
+  default when a resolver fails, which would move the agent to inherit,
+  version the move, and move it back on the next pass. So the clean-up pick
+  asks for the difference (t-819): eligibility with `onFailure: 'throw'`, and
+  credentials through `classifyProvidersByCredential`, which keeps the rows
+  a resolver failed for apart. A failed row blocks the pick only when its
+  model would have won. A resolver that throws for a provider it doesn't
+  serve therefore changes nothing unless that provider has the best model.
 
 ## What an org's admin can change
 
@@ -118,8 +126,10 @@ accepted and then quietly undone
   A change to provider or model sets `bindingOwner: 'org'`. On an agent whose
   definition picks its binding, the body's `bindingOwner` hands the binding
   back (`'platform'`) or takes it as it stands (`'org'`). A hand-back that
-  also changes provider or model is refused with 400. The agent form has no
-  control for this yet, so a hand-back goes through the API.
+  also changes provider or model is refused with 400. The agent form shows
+  who decides on such an agent and offers the hand-back ("Let the platform
+  choose", t-818). `GET /agents/:id` says which agents those are, in
+  `platformAgent.picksOwnBinding`.
 - **The binding routes** refuse attach, detach, and switching a binding on
   or off (`isEnabled`): the reconcile writes both the set and the state back.
   A binding's `customConfig` and `customRateLimit` stay writable, because
@@ -130,8 +140,20 @@ accepted and then quietly undone
   agent's widget config is the platform's.
 - **Version restore** brings back only the org's fields and leaves the
   grants as they are. The Versions tab's confirm dialog says so and names
-  the fields. A restore that brings back a different provider or model sets
-  `bindingOwner: 'org'`, as a PATCH does.
+  the fields. While the platform owns the binding (`bindingOwner:
+'platform'`), a restore leaves provider and model as they are too (owner
+  ruling 2026-10-26, t-821). They move on their own, so almost every older
+  version holds another pair, and restoring one would freeze the agent on an
+  old pick, or be refused outright if that pick's provider has since been
+  revoked. The provider the restore leaves alone is not one it asks approval
+  for. It leaves the provider configuration as well, since that belongs to
+  whichever provider is primary. It does bring back the version's
+  fallbacks, the org's own list, minus the current primary, which would
+  otherwise fall back to itself. A fallback whose provider has since been
+  revoked still refuses the restore, as on any agent. An admin who wants an
+  old pair sets it on the form. Once the org owns the binding, a restore
+  brings provider, model and configuration back, and keeps the binding the
+  org's.
 - **Delete, bulk actions and the instructions revert** refuse system agents,
   as they always have. **Clone** is allowed: the copy is the org's own agent.
 
@@ -202,7 +224,12 @@ the org's own scope itself, and it has five callers:
    jurisdiction) keep their 60-second TTL, so a pick made in that minute is
    corrected next pass. Otherwise it is one `Org` read per org, plus, where
    an agent picks its own binding, that agent's binding, the org's provider
-   policy and the pick's provider and model reads.
+   policy and the pick's per-org filters (credential, eligibility). The
+   provider and model rows are read once per run, not once per org: the job
+   hands every org of a run one `PlatformAgentCatalogue` (t-816), since both
+   tables are global. A drifted org's reconcile reuses the picks its drift
+   check got rather than asking for them again; one the check could not get
+   is asked again.
 
 The digest covers every definition, the baseline, and the patterns
 document's slug (`PATTERNS_DOCUMENT_SLUG` in
@@ -299,6 +326,21 @@ It runs once, lazily, before the registry's first read, through the shared
 init gate ([fork init seams](../architecture/fork-init-seams.md)). A throwing
 init is rolled back. Registering a slug Sunrise uses replaces Sunrise's
 definition in every org, and that is logged at warn.
+
+A definition can pick its own provider and model with `defaultBinding(db,
+catalogue)`, as the clean-up agent does (`pickCleanupBinding`). The
+maintenance job asks it every pass while the platform owns the binding, so:
+
+- **Read provider and model rows from `catalogue`**, not `db`. It is shared by
+  every org of one run, so the tables are read once per run (t-816).
+- **Tell "no" from "could not ask"** (t-819): call
+  `resolveEligibleProviders(slugs, context, { onFailure: 'throw' })`, and
+  `classifyProvidersByCredential(rows)` rather than
+  `filterProvidersWithCredential`. Return `null` only for a real "nothing
+  qualifies", and throw when a row you couldn't ask about could change the
+  answer.
+- **Keep it deterministic**: a total order with no locale-dependent
+  comparison, or the agent moves back and forth between passes.
 
 Core's tests whose assertions a fork's agents would change hold this seam
 empty, so they measure core's registry alone, and the two-org smoke (`smoke:tenancy-isolation`,

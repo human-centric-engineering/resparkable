@@ -27,6 +27,22 @@ vi.mock('@/lib/email/send', () => ({
   sendEmail: vi.fn(),
 }));
 
+// Who the lock-holding check reports erased since the list was read (t-886).
+// The locks and the receipt query are `stale-sends.test.ts`'s; here, what the
+// notifier does with the answer.
+const erasedSince = vi.hoisted(() => ({ addresses: [] as string[] }));
+const erasedUserIds = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock('@/lib/privacy/stale-sends', () => ({
+  sendHoldingSubjects: vi.fn(
+    (
+      _subjects: unknown,
+      _takenAt: Date,
+      _timeoutMs: number,
+      send: (tx: unknown, erased: { addresses: string[]; userIds: string[] }) => Promise<unknown>
+    ) => send({}, { addresses: erasedSince.addresses, userIds: erasedUserIds.ids })
+  ),
+}));
+
 vi.mock('@/lib/logging', () => ({
   logger: {
     info: vi.fn(),
@@ -54,6 +70,8 @@ import { notifyEscalation } from '@/lib/orchestration/capabilities/built-in/esca
 import { prisma } from '@/lib/db/client';
 import { sendEmail } from '@/lib/email/send';
 import { logger } from '@/lib/logging';
+import { sendHoldingSubjects } from '@/lib/privacy/stale-sends';
+import { SUBJECT_LOCK_WAIT_MS } from '@/lib/privacy/erased-subjects';
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -504,17 +522,173 @@ describe('notifyEscalation', () => {
     );
     vi.mocked(sendEmail).mockRejectedValue(new Error('SMTP crashed'));
 
-    // sendEmail throws but the code doesn't re-throw it — it just checks result.success
-    // The outer catch will catch the re-throw and log it. Webhook should still be called
-    // if email rejection is caught. Looking at the implementation: the sendEmail result
-    // check happens AFTER await, so a rejection propagates to the outer try/catch.
-    // This means the webhook is NOT called when sendEmail throws (it's caught at the outer level).
-    // The test validates the outer catch fires and notifyEscalation still doesn't throw.
     await expect(notifyEscalation(makePayload())).resolves.toBeUndefined();
 
-    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-      'notifyEscalation failed',
-      expect.anything()
+    // The email's failure is its own: the webhook still goes.
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith('Escalation email may not have been sent', {
+      error: 'SMTP crashed',
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'https://hooks.example.com/escalation',
+      expect.objectContaining({ method: 'POST' })
     );
+    expect(vi.mocked(logger.error)).not.toHaveBeenCalled();
+  });
+});
+
+describe('people erased since the list was read (t-886)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    erasedSince.addresses = [];
+    erasedUserIds.ids = [];
+    vi.mocked(sendEmail).mockResolvedValue({ status: 'sent', success: true } as never);
+  });
+
+  it('checks the list it read against erasures since just before the read, under the locks', async () => {
+    let readAt = 0;
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockImplementation((() => {
+      readAt = Date.now();
+      return Promise.resolve(
+        makeSettings({
+          emailAddresses: ['ops@example.com', 'lead@example.com'],
+          notifyOnPriority: 'all',
+        })
+      );
+    }) as never);
+
+    await notifyEscalation(makePayload());
+
+    const [subjects, takenAt] = vi.mocked(sendHoldingSubjects).mock.calls[0];
+    // The recipients, and the person the escalation is about.
+    expect(subjects).toEqual({
+      addresses: ['ops@example.com', 'lead@example.com'],
+      userIds: ['user-1'],
+    });
+    // Taken no later than the read, so nothing on the list is newer than it.
+    expect(readAt).toBeGreaterThan(0);
+    expect(takenAt.getTime()).toBeLessThanOrEqual(readAt);
+  });
+
+  it('leaves out a recipient erased since, emails the rest, and counts rather than names them', async () => {
+    erasedSince.addresses = ['gone@example.com'];
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({
+        emailAddresses: ['Gone@Example.com', 'ops@example.com'],
+        notifyOnPriority: 'all',
+      }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    expect(vi.mocked(sendEmail)).toHaveBeenCalledOnce();
+    expect(vi.mocked(sendEmail)).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ['ops@example.com'], signal: expect.any(AbortSignal) })
+    );
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'Escalation email: left out recipients erased since the list was read',
+      { leftOut: 1 }
+    );
+  });
+
+  it('sends nothing when every recipient was erased since', async () => {
+    erasedSince.addresses = ['gone@example.com'];
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({ emailAddresses: ['gone@example.com'], notifyOnPriority: 'all' }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
+  });
+
+  it('logs a failed send with a count, never the addresses', async () => {
+    vi.mocked(sendEmail).mockResolvedValue({
+      status: 'failed',
+      success: false,
+      error: 'rejected',
+    } as never);
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({ emailAddresses: ['ops@example.com'], notifyOnPriority: 'all' }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith('Escalation email send failed', {
+      error: 'rejected',
+      recipients: 1,
+    });
+  });
+
+  it('posts the webhook without waiting behind the email, which may wait for locks', async () => {
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({
+        emailAddresses: ['ops@example.com'],
+        notifyOnPriority: 'all',
+        webhookUrl: 'https://hooks.example.com/escalation',
+      }) as never
+    );
+    let finishEmail!: () => void;
+    vi.mocked(sendHoldingSubjects).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishEmail = resolve;
+        })
+    );
+
+    const notifying = notifyEscalation(makePayload());
+
+    await vi.waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    // Settles only once the email has: nothing is left running.
+    let settled = false;
+    void notifying.then(() => (settled = true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    finishEmail();
+    await notifying;
+  });
+
+  it('sends no email about a person erased since, whose reason and thread it carries', async () => {
+    erasedUserIds.ids = ['user-1'];
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({ emailAddresses: ['ops@example.com'], notifyOnPriority: 'all' }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    expect(vi.mocked(sendEmail)).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'Escalation email not sent: the person it is about was erased'
+    );
+  });
+
+  it('posts no escalation webhook about a person erased since: it carries their reason too', async () => {
+    erasedUserIds.ids = ['user-1'];
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({
+        emailAddresses: [],
+        notifyOnPriority: 'all',
+        webhookUrl: 'https://hooks.example.com/escalation',
+      }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+      'Escalation webhook not posted: the person it is about was erased'
+    );
+  });
+
+  it('waits as long as the notification step for the locks: an escalation is never retried', async () => {
+    vi.mocked(prisma.aiOrchestrationSettings.findUnique).mockResolvedValue(
+      makeSettings({ emailAddresses: ['ops@example.com'], notifyOnPriority: 'all' }) as never
+    );
+
+    await notifyEscalation(makePayload());
+
+    const emailCall = vi
+      .mocked(sendHoldingSubjects)
+      .mock.calls.find(([subjects]) => [...(subjects.addresses ?? [])].length > 0);
+    expect(emailCall?.[4]).toEqual({ lockWaitMs: SUBJECT_LOCK_WAIT_MS });
   });
 });

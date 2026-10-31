@@ -38,12 +38,15 @@ import { CostOperation } from '@/types/orchestration';
 import type {
   LlmFinishReason,
   LlmMessage,
+  LlmReasoningBlock,
   LlmToolCall,
   LlmToolChoice,
   LlmToolDefinition,
+  LlmUsage,
 } from '@/lib/orchestration/llm/types';
 import { getBreaker } from '@/lib/orchestration/llm/circuit-breaker';
 import { narrowReasoningEffort } from '@/lib/orchestration/llm/model-heuristics';
+import { modelParamOptions, spendWebSearches } from '@/lib/orchestration/llm/model-params';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
 import {
   assertModelSupportsAttachments,
@@ -85,8 +88,15 @@ import { scanCitations, scanOutput } from '@/lib/orchestration/chat/output-guard
 import { capabilityDispatcher } from '@/lib/orchestration/capabilities/dispatcher';
 import type { CapabilityResult } from '@/lib/orchestration/capabilities/types';
 import { extractCitations } from '@/lib/orchestration/chat/citations';
+import {
+  fitToolCallTraces,
+  providerToolTraces,
+} from '@/lib/orchestration/chat/provider-tool-traces';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
-import { executionTraceSchema } from '@/lib/validations/orchestration';
+import {
+  executionTraceSchema,
+  MAX_PROVENANCE_CAPABILITY_CALLS,
+} from '@/lib/validations/orchestration';
 import {
   getCapabilityDefinitions,
   registerBuiltInCapabilities,
@@ -1438,7 +1448,8 @@ export class StreamingChatHandler {
       // Remaining fallback providers for mid-stream retry
       const remainingFallbacks = [...resolvedFallbackProviders];
       // Slugs this turn has already streamed through, so failover never
-      // retries one (the first may also be in the fallback list).
+      // retries one (the first is in the fallback list whenever
+      // getProviderWithFallbacks had to choose a fallback).
       const triedSlugs = new Set<string>([usedSlug]);
       let currentProvider = provider;
       // A provider slug is the stable identifier of a configured LLM provider
@@ -1533,6 +1544,14 @@ export class StreamingChatHandler {
        */
       let turnCostUsd = summariserCostUsd;
 
+      // Whether any reasoning has streamed yet this turn, so the next tool-loop
+      // iteration's reasoning starts on a new paragraph in the live panel.
+      let reasoningStreamed = false;
+
+      // Provider web searches this reply has run, across its tool-loop calls
+      // and failed attempts: the agent's search limit is per reply.
+      let searchesUsed = 0;
+
       let iteration = 0;
       while (iteration < MAX_TOOL_ITERATIONS) {
         iteration++;
@@ -1546,8 +1565,14 @@ export class StreamingChatHandler {
         }
 
         let assistantText = '';
+        // Readable reasoning streamed this turn — display only, persisted on
+        // the assistant message. Not the replayable blocks (`reasoning`).
+        let reasoningSummary = '';
         const toolCalls = new Map<number, LlmToolCall>();
-        let usage: { inputTokens: number; outputTokens: number } | null = null;
+        // Thinking blocks from this turn, replayed on the assistant message the
+        // tool loop appends — Anthropic requires them back unchanged.
+        let reasoning: LlmReasoningBlock[] | undefined;
+        let usage: LlmUsage | null = null;
         // Per-iteration, deliberately: the `done` event is emitted from inside
         // the terminal iteration, so this carries why the FINAL turn stopped —
         // which is the one whose text a consumer is about to parse.
@@ -1567,6 +1592,7 @@ export class StreamingChatHandler {
           ...(narrowedReasoningEffort !== undefined
             ? { reasoningEffort: narrowedReasoningEffort }
             : {}),
+          ...modelParamOptions(agent),
           ...(toolDefinitions.length > 0 ? { tools: toolDefinitions } : {}),
           // Only pin the forced tool on the first iteration — see forcedToolChoice above.
           ...(iteration === 1 && forcedToolChoice ? { toolChoice: forcedToolChoice } : {}),
@@ -1609,7 +1635,10 @@ export class StreamingChatHandler {
 
             async function* (llmSpan: Span): AsyncGenerator<ChatEvent, void, unknown> {
               try {
-                const stream = currentProvider.chatStream(messages, llmOptions);
+                const stream = currentProvider.chatStream(
+                  messages,
+                  spendWebSearches(llmOptions, searchesUsed)
+                );
 
                 let toolCallIndex = 0;
                 for await (const chunk of stream) {
@@ -1617,11 +1646,19 @@ export class StreamingChatHandler {
                     if (toolCalls.size > 0) continue;
                     assistantText += chunk.content;
                     yield { type: 'content', delta: chunk.content };
+                  } else if (chunk.type === 'reasoning') {
+                    if (request.includeTrace) {
+                      const separator = reasoningStreamed && !reasoningSummary ? '\n\n' : '';
+                      yield { type: 'reasoning', delta: separator + chunk.text };
+                      reasoningStreamed = true;
+                    }
+                    reasoningSummary += chunk.text;
                   } else if (chunk.type === 'tool_call') {
                     toolCalls.set(toolCallIndex++, chunk.toolCall);
                   } else if (chunk.type === 'done') {
                     usage = chunk.usage;
                     finishReason = chunk.finishReason;
+                    reasoning = chunk.reasoning;
                   }
                 }
                 streamSucceeded = true;
@@ -1662,10 +1699,12 @@ export class StreamingChatHandler {
                 // that only one of three paths was listening.
                 if (streamErr instanceof ProviderError && streamErr.usage) {
                   const errUsage = streamErr.usage;
+                  searchesUsed += errUsage.webSearchRequests ?? 0;
                   turnCostUsd += calculateCost(
                     resolvedModel,
                     errUsage.inputTokens,
-                    errUsage.outputTokens
+                    errUsage.outputTokens,
+                    errUsage
                   ).totalCostUsd;
                   void logCost({
                     agentId: agent.id,
@@ -1675,6 +1714,11 @@ export class StreamingChatHandler {
                     provider: resolvedProviderSlug ?? resolvedBinding.providerSlug,
                     inputTokens: errUsage.inputTokens,
                     outputTokens: errUsage.outputTokens,
+                    cacheReadTokens: errUsage.cacheReadTokens,
+                    cacheWriteTokens: errUsage.cacheWriteTokens,
+                    serviceTier: errUsage.serviceTier,
+                    webSearchRequests: errUsage.webSearchRequests,
+                    codeExecution: errUsage.codeExecution,
                     operation: CostOperation.CHAT,
                     // Read off the span directly: `llmTraceId`/`llmSpanId` are
                     // only assigned on the success path below, so they are
@@ -1868,7 +1912,11 @@ export class StreamingChatHandler {
 
                 // Reset accumulated content for the retry
                 assistantText = '';
+                reasoningSummary = '';
+                // The client clears its reasoning panel on `content_reset` too.
+                reasoningStreamed = false;
                 toolCalls.clear();
+                reasoning = undefined;
                 usage = null;
                 // Reset with its siblings. Not reachable via the two in-repo
                 // adapters — both yield `done` as their final statement, so a
@@ -1889,6 +1937,20 @@ export class StreamingChatHandler {
             },
             { manualStatus: true }
           );
+        }
+
+        // The web searches the provider ran itself this iteration go in the
+        // turn's trace beside the capabilities it dispatched.
+        for (const trace of providerToolTraces(reasoning)) {
+          turnToolCalls.push(trace);
+          if (request.includeTrace) {
+            yield {
+              type: 'capability_result',
+              capabilitySlug: trace.slug,
+              result: { success: trace.success, preview: trace.resultPreview ?? null },
+              trace,
+            };
+          }
         }
 
         if (toolCalls.size === 0) {
@@ -2025,7 +2087,7 @@ export class StreamingChatHandler {
           // `null` value at this point because the closure mutation inside
           // `withSpanGenerator` isn't visible to flow analysis. The cast
           // restores the declared union shape so the `if` guard works.
-          const finalUsage = usage as { inputTokens: number; outputTokens: number } | null;
+          const finalUsage = usage as LlmUsage | null;
           if (finalUsage) {
             assistantMetadata.tokenUsage = {
               inputTokens: finalUsage.inputTokens,
@@ -2035,10 +2097,12 @@ export class StreamingChatHandler {
             assistantMetadata.costUsd = calculateCost(
               resolvedModel,
               finalUsage.inputTokens,
-              finalUsage.outputTokens
+              finalUsage.outputTokens,
+              finalUsage
             ).totalCostUsd;
           }
           assistantMetadata.latencyMs = Date.now() - iterationStartedAt;
+          if (reasoningSummary.length > 0) assistantMetadata.reasoningSummary = reasoningSummary;
           if (isTerminalTurn && citations.length > 0) {
             assistantProvenance.citations = citations;
           }
@@ -2048,7 +2112,12 @@ export class StreamingChatHandler {
           // event surface streams the trace live, but the persisted
           // record is unconditional.
           if (isTerminalTurn && turnToolCalls.length > 0) {
-            assistantProvenance.capabilityCalls = turnToolCalls;
+            // Fitted to what the schema reads back, or the whole provenance
+            // is lost on read.
+            assistantProvenance.capabilityCalls = fitToolCallTraces(
+              turnToolCalls,
+              MAX_PROVENANCE_CAPABILITY_CALLS
+            );
           }
           // Snapshot workflow provenance from the LAST synchronously-
           // completed `run_workflow` capability call in this turn. The
@@ -2134,7 +2203,7 @@ export class StreamingChatHandler {
               ...((): {
                 tokenUsage?: { inputTokens: number; outputTokens: number; totalTokens: number };
               } => {
-                const u = usage as { inputTokens: number; outputTokens: number } | null;
+                const u = usage as LlmUsage | null;
                 if (!u) return {};
                 return {
                   tokenUsage: {
@@ -2151,7 +2220,7 @@ export class StreamingChatHandler {
 
         if (toolCalls.size === 0) {
           // Cast re-bind: see comment above the assistantMetadata block.
-          const u = usage as { inputTokens: number; outputTokens: number } | null;
+          const u = usage as LlmUsage | null;
           if (u) {
             // Update the per-turn running total BEFORE the
             // fire-and-forget DB write so the check below never depends
@@ -2159,7 +2228,12 @@ export class StreamingChatHandler {
             // iteration, so even a breach here is informational — we're
             // already returning. We still increment so trace + emitted
             // metadata reflect the true turn cost.
-            turnCostUsd += calculateCost(resolvedModel, u.inputTokens, u.outputTokens).totalCostUsd;
+            turnCostUsd += calculateCost(
+              resolvedModel,
+              u.inputTokens,
+              u.outputTokens,
+              u
+            ).totalCostUsd;
             void logCost({
               agentId: agent.id,
               conversationId: conversation.id,
@@ -2168,6 +2242,11 @@ export class StreamingChatHandler {
               provider: resolvedProviderSlug ?? resolvedBinding.providerSlug,
               inputTokens: u.inputTokens,
               outputTokens: u.outputTokens,
+              cacheReadTokens: u.cacheReadTokens,
+              cacheWriteTokens: u.cacheWriteTokens,
+              serviceTier: u.serviceTier,
+              webSearchRequests: u.webSearchRequests,
+              codeExecution: u.codeExecution,
               operation: CostOperation.CHAT,
               traceId: llmTraceId,
               spanId: llmSpanId,
@@ -2246,15 +2325,17 @@ export class StreamingChatHandler {
         // per-turn running total, then re-check both the per-turn cap
         // and the monthly budget before dispatching tools (which will
         // trigger another LLM turn that costs more).
-        const turnUsage = usage as { inputTokens: number; outputTokens: number } | null;
+        const turnUsage = usage as LlmUsage | null;
         if (turnUsage) {
+          searchesUsed += turnUsage.webSearchRequests ?? 0;
           // Increment the in-process running total BEFORE the
           // fire-and-forget logCost — the per-turn check below must
           // never depend on a successful DB write.
           turnCostUsd += calculateCost(
             resolvedModel,
             turnUsage.inputTokens,
-            turnUsage.outputTokens
+            turnUsage.outputTokens,
+            turnUsage
           ).totalCostUsd;
           void logCost({
             agentId: agent.id,
@@ -2264,6 +2345,11 @@ export class StreamingChatHandler {
             provider: resolvedProviderSlug ?? resolvedBinding.providerSlug,
             inputTokens: turnUsage.inputTokens,
             outputTokens: turnUsage.outputTokens,
+            cacheReadTokens: turnUsage.cacheReadTokens,
+            cacheWriteTokens: turnUsage.cacheWriteTokens,
+            serviceTier: turnUsage.serviceTier,
+            webSearchRequests: turnUsage.webSearchRequests,
+            codeExecution: turnUsage.codeExecution,
             operation: CostOperation.CHAT,
             traceId: llmTraceId,
             spanId: llmSpanId,
@@ -2479,7 +2565,12 @@ export class StreamingChatHandler {
             });
             messages = [
               ...messages,
-              { role: 'assistant', content: assistantText, toolCalls: [tc] },
+              {
+                role: 'assistant',
+                content: assistantText,
+                toolCalls: [tc],
+                ...(reasoning ? { reasoning } : {}),
+              },
               { role: 'tool', content: JSON.stringify(unavailableResult), toolCallId: tc.id },
             ];
             continue;
@@ -2621,7 +2712,12 @@ export class StreamingChatHandler {
 
           messages = [
             ...messages,
-            { role: 'assistant', content: assistantText, toolCalls: [tc] },
+            {
+              role: 'assistant',
+              content: assistantText,
+              toolCalls: [tc],
+              ...(reasoning ? { reasoning } : {}),
+            },
             { role: 'tool', content: JSON.stringify(augmentedResult), toolCallId: tc.id },
           ];
         } else {
@@ -2919,7 +3015,12 @@ export class StreamingChatHandler {
           // calls) followed by each tool result message.
           messages = [
             ...messages,
-            { role: 'assistant', content: assistantText, toolCalls: toolCallArray },
+            {
+              role: 'assistant',
+              content: assistantText,
+              toolCalls: toolCallArray,
+              ...(reasoning ? { reasoning } : {}),
+            },
             ...toolResultMessages,
           ];
         }
@@ -3594,7 +3695,7 @@ function extractCompletedWorkflowExecutionId(slug: string, result: unknown): str
 
 function buildDoneEvent(
   model: string,
-  usage: { inputTokens: number; outputTokens: number } | null,
+  usage: LlmUsage | null,
   providerSlug?: string | null,
   inputBreakdown?: InputBreakdown,
   sideEffectModels?: SideEffectModelUsage[],
@@ -3602,7 +3703,7 @@ function buildDoneEvent(
 ): ChatEvent {
   const inputTokens = usage?.inputTokens ?? 0;
   const outputTokens = usage?.outputTokens ?? 0;
-  const costUsd = usage ? calculateCost(model, inputTokens, outputTokens).totalCostUsd : 0;
+  const costUsd = usage ? calculateCost(model, inputTokens, outputTokens, usage).totalCostUsd : 0;
   const reconciled = inputBreakdown
     ? reconcileBreakdownToActual(inputBreakdown, inputTokens)
     : undefined;

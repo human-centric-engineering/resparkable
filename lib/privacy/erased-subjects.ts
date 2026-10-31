@@ -9,12 +9,15 @@
  * erasure audit trail. Row locks cannot stop that: the writer's read is long
  * over by the time it writes.
  *
- * So every such writer asks, in the transaction that writes: **does anything I
+ * So such a writer asks, in the transaction that writes: **does anything I
  * am about to write name a person who has been erased?** The erasure receipt
  * is the record of who that is — `subjectUserId`, and `subjectEmailHash` (the
- * same trimmed, lower-cased form erasure matches on). A writer that would write
- * one back is refused (interactive writers, with a 400 naming the field), or
- * strips it (the backup importer, with a warning).
+ * same trimmed, lower-cased form erasure matches on). A writer holding a copy
+ * asks only about erasures since the copy was taken ({@link FindOptions.since}),
+ * and strips who it finds: the backup importer, the scheduler, deliveries. The
+ * admin forms and the workflow builder refuse a stale copy by its version
+ * instead (§122 t-899, t-900, `lib/api/record-version.ts`), and the workflow
+ * writers still strip an erased approver id.
  *
  * **Why a lock.** A check alone races the erasure: a writer could check, find
  * no receipt, and write after an erasure that had already started — and that
@@ -53,7 +56,6 @@
 
 import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { ValidationError } from '@/lib/api/errors';
 import { normaliseAddress } from '@/lib/orchestration/webhooks/destination';
 
 /** The addresses and user ids a write would name. Raw: normalised here. */
@@ -103,6 +105,12 @@ function normalised(subjects: NamedSubjects): { addresses: string[]; userIds: st
   return { addresses: [...addresses], userIds: [...userIds] };
 }
 
+/** Whether `subjects` names anyone a lock or a receipt could be keyed on. */
+export function namesAnyone(subjects: NamedSubjects): boolean {
+  const { addresses, userIds } = normalised(subjects);
+  return addresses.length > 0 || userIds.length > 0;
+}
+
 /** The lock keys for `subjects`, sorted, so every holder takes them in one order. */
 function subjectKeys(subjects: NamedSubjects): string[] {
   const { addresses, userIds } = normalised(subjects);
@@ -124,6 +132,30 @@ export interface LockOptions {
    */
   shared?: boolean;
 }
+
+/** How {@link findErasedSubjects} looks. */
+export interface FindOptions extends LockOptions {
+  /**
+   * Only erasures since this moment, less {@link COPY_CLOCK_SKEW_MS} (§122
+   * t-886): for a writer holding a copy taken then. A person erased before the
+   * copy was taken is not in it, so whoever the copy names was put there after
+   * the erasure, on purpose — an address re-entered as a contact. Left out,
+   * every erasure ever counts: the check the §122 writers are moving off.
+   */
+  since?: Date;
+}
+
+/**
+ * How far before a copy was taken an erasure is still counted as since it
+ * (t-886). Two things put a receipt's `erasedAt` before the moment its erasure
+ * could be seen: it is stamped inside erasure's transaction, which runs for up
+ * to 60 s before it commits (`ERASURE_TRANSACTION_TIMEOUT_MS`), and it is
+ * stamped by one app host's clock and compared against another's. Generous on
+ * purpose, as `RUN_CLOCK_SKEW_MS` is: a wider margin only leaves out someone
+ * re-entered within minutes of their erasure, while a narrower one can send to
+ * a person whose erasure the copy predates.
+ */
+export const COPY_CLOCK_SKEW_MS = 5 * 60_000;
 
 /**
  * Take the transaction-scoped advisory lock for every address and user id in
@@ -255,14 +287,14 @@ export class SubjectLocksBusyError extends Error {
 export async function findErasedSubjects(
   tx: CheckClient,
   subjects: NamedSubjects,
-  options: LockOptions = {}
+  options: FindOptions = {}
 ): Promise<ErasedSubjects> {
   const named = normalised(subjects);
   if (named.addresses.length === 0 && named.userIds.length === 0) {
     return { addresses: [], userIds: [] };
   }
   await lockSubjects(tx, named, options);
-  return matchErasedSubjects(tx, named);
+  return matchErasedSubjects(tx, named, { since: options.since });
 }
 
 /**
@@ -272,7 +304,8 @@ export async function findErasedSubjects(
  */
 export async function matchErasedSubjects(
   tx: ReceiptClient,
-  subjects: NamedSubjects
+  subjects: NamedSubjects,
+  options: Pick<FindOptions, 'since'> = {}
 ): Promise<ErasedSubjects> {
   const { addresses, userIds } = normalised(subjects);
   if (addresses.length === 0 && userIds.length === 0) return { addresses: [], userIds: [] };
@@ -280,6 +313,7 @@ export async function matchErasedSubjects(
   const byHash = new Map(addresses.map((a) => [subjectEmailHash(a), a]));
   const receipts = await tx.dataErasureReceipt.findMany({
     where: {
+      ...(options.since ? { erasedAt: { gte: copyAnchor(options.since) } } : {}),
       OR: [
         ...(byHash.size > 0 ? [{ subjectEmailHash: { in: [...byHash.keys()] } }] : []),
         ...(userIds.length > 0 ? [{ subjectUserId: { in: userIds } }] : []),
@@ -313,6 +347,27 @@ export async function matchErasedSubjects(
   return { addresses: [...erasedAddresses], userIds: [...erasedIds] };
 }
 
+/** The earliest `erasedAt` that counts as since a copy taken at `takenAt`. */
+function copyAnchor(takenAt: Date): Date {
+  return new Date(takenAt.getTime() - COPY_CLOCK_SKEW_MS);
+}
+
+/**
+ * Whether anyone at all was erased since `takenAt` (t-886): for a copy naming
+ * something that no longer exists — a conversation or run that cascaded away
+ * with its owner — so its owner can no longer be asked for by id.
+ */
+export async function anyoneErasedSince(
+  tx: Pick<Prisma.TransactionClient, 'dataErasureReceipt'>,
+  takenAt: Date
+): Promise<boolean> {
+  const receipt = await tx.dataErasureReceipt.findFirst({
+    where: { erasedAt: { gte: copyAnchor(takenAt) } },
+    select: { id: true },
+  });
+  return receipt !== null;
+}
+
 /** `metadata.addressVerified === true` on a receipt; anything else is "not known". */
 function addressWasVerified(metadata: Prisma.JsonValue): boolean {
   return (
@@ -324,38 +379,21 @@ function addressWasVerified(metadata: Prisma.JsonValue): boolean {
 }
 
 /**
- * Options for a writer's transaction that calls {@link refuseErasedSubjects}.
+ * Options for a writer's transaction that waits on erasure: for its subject
+ * locks ({@link findErasedSubjects}), or for a row it holds (a versioned save,
+ * `lib/orchestration/config-versions.ts`).
  *
- * The check waits on erasure's lock, and an erasure may hold it for its whole
- * transaction — up to `ERASURE_TRANSACTION_TIMEOUT_MS` (60 s, in
- * `lib/privacy/erase-user.ts`). Under Prisma's 5 s default a writer queued
- * behind a slow erasure would time out with a 500 instead of being refused
- * with the 400 the field shows. Ten seconds of headroom past erasure's own
- * limit; `erased-subjects.test.ts` holds the two apart.
+ * An erasure may hold either for its whole transaction — up to
+ * `ERASURE_TRANSACTION_TIMEOUT_MS` (60 s, in `lib/privacy/erase-user.ts`).
+ * Under Prisma's 5 s default a writer queued behind a slow erasure would time
+ * out with a 500 instead of being answered. Ten seconds of headroom past
+ * erasure's own limit; `erased-subjects.test.ts` holds the two apart.
  */
 export const WRITER_TRANSACTION_OPTIONS = { timeout: 70_000 } as const;
 
-/** The message a refused field carries. */
+/** The message a field refused for naming an erased person carries. */
 export const ERASED_SUBJECT_MESSAGE =
   'This names a person whose data was erased. Remove it, or reload to see the current value.';
-
-/**
- * Refuse the write when anything in `subjects` names an erased person: a
- * `ValidationError` (400) whose `details` put {@link ERASED_SUBJECT_MESSAGE}
- * on `field`, so the form shows it beside the value. Call inside the
- * transaction that writes, before the write.
- */
-export async function refuseErasedSubjects(
-  tx: CheckClient,
-  subjects: NamedSubjects,
-  field: string
-): Promise<void> {
-  const erased = await findErasedSubjects(tx, subjects);
-  if (erased.addresses.length === 0 && erased.userIds.length === 0) return;
-  throw new ValidationError('A recipient belongs to a person whose data was erased', {
-    [field]: [ERASED_SUBJECT_MESSAGE],
-  });
-}
 
 /** Every string in a JSON value, for a free-form one such as a schedule's input template. */
 export function stringsIn(value: unknown): string[] {

@@ -94,6 +94,7 @@ import { SPAN_AGENT_CALL_TURN } from '@/lib/orchestration/tracing/attributes';
 import { createContext } from '@/lib/orchestration/engine/context';
 import { logger } from '@/lib/logging';
 import { ProviderCallRefusedError } from '@/lib/orchestration/llm/provider-eligibility';
+import { turnEntriesSchema } from '@/lib/validations/orchestration';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -563,6 +564,40 @@ describe('executeAgentCall', () => {
     expect(toolMessage?.toolCallId).toBe('tc_1');
     expect(toolMessage?.content).toContain('tool_not_advertised');
     expect(result.output).toBe('Answered without it.');
+  });
+
+  it('replays the turn’s thinking blocks on the assistant message it appends', async () => {
+    vi.mocked(getCapabilityDefinitions).mockResolvedValue([
+      {
+        name: 'search',
+        description: 'search tool',
+        parameters: { type: 'object', properties: {} },
+      },
+    ]);
+    const reasoning = [{ type: 'thinking' as const, thinking: '', signature: 'sig-1' }];
+    mockChat.mockResolvedValueOnce({
+      content: '',
+      toolCalls: [{ id: 'tc_1', name: 'apply_audit_changes', arguments: {} }],
+      reasoning,
+      usage: { inputTokens: 10, outputTokens: 5 },
+      finishReason: 'tool_use',
+      model: 'claude-opus-5-5',
+    });
+    mockChat.mockResolvedValueOnce({
+      content: 'Answered.',
+      usage: { inputTokens: 10, outputTokens: 5 },
+      finishReason: 'stop',
+      model: 'claude-opus-5-5',
+    });
+
+    await executeAgentCall(makeStep(), makeCtx());
+
+    const secondCallMessages = mockChat.mock.calls[1][0] as Array<{
+      role: string;
+      reasoning?: unknown;
+    }>;
+    const assistant = secondCallMessages.find((m) => m.role === 'assistant');
+    expect(assistant?.reasoning).toEqual(reasoning);
   });
 
   it('still dispatches a tool that IS advertised', async () => {
@@ -1117,6 +1152,34 @@ describe('executeAgentCall', () => {
     );
   });
 
+  it('prices the turn with its code execution runs and logs them on the cost row', async () => {
+    const codeExecution = { runs: 2, billedSeconds: 300, usdPerHour: 0.05 };
+    mockChat.mockResolvedValueOnce({
+      content: 'Computed.',
+      usage: { inputTokens: 100, outputTokens: 50, codeExecution },
+      finishReason: 'stop',
+      model: 'claude-sonnet-4-20250514',
+    });
+
+    await executeAgentCall(makeStep(), makeCtx());
+
+    expect(calculateCost).toHaveBeenCalledWith(
+      'claude-sonnet-4-20250514',
+      100,
+      50,
+      expect.objectContaining({ codeExecution })
+    );
+    expect(logCost).toHaveBeenCalledWith(
+      expect.objectContaining({ inputTokens: 100, outputTokens: 50, codeExecution })
+    );
+  });
+
+  it('logs no code execution on a turn that ran none', async () => {
+    await executeAgentCall(makeStep(), makeCtx());
+
+    expect(vi.mocked(logCost).mock.calls[0][0].codeExecution).toBeUndefined();
+  });
+
   // ── agent_call_depth_exceeded ─────────────────────────────────────────────
 
   it('throws agent_call_depth_exceeded when depth >= MAX_AGENT_CALL_DEPTH (3)', async () => {
@@ -1531,6 +1594,116 @@ describe('executeAgentCall', () => {
         'agent_call: resuming single-turn from prior iterations',
         expect.objectContaining({ stepId: 'step1' })
       );
+    });
+
+    // ── Test 3b: thinking blocks survive the checkpoint into the resume ─────
+
+    it('single-turn resume: replays the continuing turn’s thinking and web search blocks from the checkpoint', async () => {
+      // Anthropic rejects a continued tool loop whose assistant turn lacks its
+      // thinking blocks. Run 1 checkpoints a continuing turn; the checkpoint is
+      // JSON-round-tripped and parsed as the resume path parses the running-step
+      // row; run 2 resumes from it and must send the blocks back unchanged.
+      vi.mocked(getCapabilityDefinitions).mockResolvedValue([
+        { name: 'cap', description: 'cap', parameters: { type: 'object', properties: {} } },
+      ]);
+      const reasoning = [
+        { type: 'thinking' as const, thinking: 'look it up', signature: 'sig-1' },
+        { type: 'redacted_thinking' as const, data: 'opaque' },
+        {
+          type: 'server_tool_use' as const,
+          id: 'srvtoolu_1',
+          name: 'web_search' as const,
+          input: { query: 'sunrise' },
+        },
+        {
+          type: 'web_search_tool_result' as const,
+          toolUseId: 'srvtoolu_1',
+          results: [
+            { url: 'https://a.example', title: 'A', encryptedContent: 'enc', pageAge: null },
+          ],
+        },
+        {
+          type: 'web_search_tool_result' as const,
+          toolUseId: 'srvtoolu_2',
+          results: [],
+          errorCode: 'unavailable',
+        },
+      ];
+      mockChat.mockResolvedValueOnce({
+        content: '',
+        toolCalls: [{ id: 'tc_1', name: 'cap', arguments: {} }],
+        reasoning,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: 'tool_use',
+        model: 'claude-opus-5-5',
+      });
+      const recordTurn = vi.fn().mockResolvedValue(undefined);
+      await executeAgentCall(makeStep({ mode: 'single-turn' }), makeCtx({ recordTurn }));
+
+      const recorded: unknown[] = recordTurn.mock.calls.map((c) => c[0]);
+      const checkpoint = turnEntriesSchema.parse(
+        JSON.parse(
+          JSON.stringify(recorded.filter((t) => (t as { phase?: string }).phase === 'continuing'))
+        )
+      );
+      expect(checkpoint).toHaveLength(1);
+
+      mockChat.mockClear();
+      await executeAgentCall(
+        makeStep({ mode: 'single-turn' }),
+        makeCtx({ resumeTurns: checkpoint })
+      );
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      const resumedMessages = mockChat.mock.calls[0][0] as Array<{
+        role: string;
+        toolCalls?: Array<{ id: string }>;
+        reasoning?: unknown;
+      }>;
+      const continued = resumedMessages.find((m) => m.role === 'assistant');
+      expect(continued?.toolCalls?.[0]?.id).toBe('tc_1');
+      expect(continued?.reasoning).toEqual(reasoning);
+    });
+
+    it('holds the agent’s search limit across the tool loop and a resume', async () => {
+      // The limit caps the step's reply; Anthropic counts its own per request.
+      vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+        ...MOCK_AGENT,
+        providerTools: { webSearch: { maxUses: 3 } },
+      } as never);
+      mockChat.mockResolvedValueOnce({
+        content: '',
+        toolCalls: [{ id: 'tc_1', name: 'cap', arguments: {} }],
+        usage: { inputTokens: 10, outputTokens: 5, webSearchRequests: 2 },
+        finishReason: 'tool_use',
+        model: 'claude-sonnet-4-6',
+      });
+      const recordTurn = vi.fn().mockResolvedValue(undefined);
+      await executeAgentCall(makeStep({ mode: 'single-turn' }), makeCtx({ recordTurn }));
+
+      expect(mockChat).toHaveBeenCalledTimes(2);
+      expect(mockChat.mock.calls[0][1].providerTools).toEqual({ webSearch: { maxUses: 3 } });
+      // The whole limit rides along for OpenAI, which caps each call with it (t-955).
+      expect(mockChat.mock.calls[1][1].providerTools).toEqual({
+        webSearch: { maxUses: 1, replyLimit: 3 },
+      });
+
+      const recorded: unknown[] = recordTurn.mock.calls.map((c) => c[0]);
+      const checkpoint = turnEntriesSchema.parse(
+        JSON.parse(
+          JSON.stringify(recorded.filter((t) => (t as { phase?: string }).phase === 'continuing'))
+        )
+      );
+      expect(checkpoint).toEqual([expect.objectContaining({ webSearchRequests: 2 })]);
+
+      mockChat.mockClear();
+      await executeAgentCall(
+        makeStep({ mode: 'single-turn' }),
+        makeCtx({ resumeTurns: checkpoint })
+      );
+      expect(mockChat.mock.calls[0][1].providerTools).toEqual({
+        webSearch: { maxUses: 1, replyLimit: 3 },
+      });
     });
 
     // ── Test 4: Resume short-circuit (lastPrior has NO toolCall) ───────────

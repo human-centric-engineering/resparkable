@@ -26,6 +26,7 @@
 
 import OpenAI, { toFile } from 'openai';
 import type { TranscriptionVerbose } from 'openai/resources/audio/transcriptions';
+import type { Response as OpenAiResponse } from 'openai/resources/responses/responses';
 import type {
   ChatCompletion,
   ChatCompletionChunk,
@@ -39,9 +40,14 @@ import type {
 
 import { z } from 'zod';
 import { logger } from '@/lib/logging';
+import { isRecord } from '@/lib/utils';
 import { describeFetchFailure } from '@/lib/errors/fetch-error';
 import {
+  acceptsFlexTier,
+  acceptsVerbosity,
   deriveParamProfile,
+  openAiReasoningEffort,
+  reasoningModelAcceptsParallelToolCalls,
   supportedReasoningEfforts,
 } from '@/lib/orchestration/llm/model-heuristics';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
@@ -76,6 +82,22 @@ import type {
 } from '@/lib/orchestration/llm/types';
 import { getTextContent } from '@/lib/orchestration/llm/types';
 import { isCompleteJson } from '@/lib/orchestration/llm/json-completeness';
+import {
+  buildResponsesParams,
+  fromResponsesResult,
+  fromResponsesStream,
+  codeInterpreterRefusal,
+  isSummaryVerificationError,
+  isUndecryptableReasoningError,
+  pricedTier,
+  replayedReasoningIds,
+  safeParseJson,
+  takenProviderTools,
+  usesResponsesApi,
+  webSearchRefusal,
+  withoutOpenAiReasoning,
+} from '@/lib/orchestration/llm/openai-responses';
+import { earlierCodeRuns } from '@/lib/orchestration/llm/code-execution';
 
 /**
  * The embeddings response, as far as `embedMany` reads it. Validated rather
@@ -155,6 +177,23 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
   private readonly embeddingModel: string;
+  /**
+   * The base URL is OpenAI's own API. `service_tier` goes only there: other
+   * OpenAI-compatible hosts either ignore it or 400 on a value they lack.
+   */
+  private readonly isOpenAiHost: boolean;
+  /**
+   * OpenAI refused reasoning summaries to this credential's organisation (it
+   * isn't verified), so Responses requests stop asking for them. Lives as
+   * long as the cached instance, so a refusal costs one failed call per
+   * cache period, not one per request.
+   */
+  private summariesRefused = false;
+  /**
+   * Ids of replayed reasoning items OpenAI couldn't decrypt for this
+   * credential, left out of later requests (`withReasoningFallback`).
+   */
+  private readonly undecryptableReasoning = new Set<string>();
 
   constructor(options: OpenAiCompatibleProviderOptions) {
     if (!options.baseUrl) {
@@ -168,6 +207,9 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     this.isLocal = options.isLocal;
     this.timeoutMs = options.timeoutMs ?? (options.isLocal ? LOCAL_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.isOpenAiHost = URL.canParse(options.baseUrl)
+      ? new URL(options.baseUrl).hostname === 'api.openai.com'
+      : false;
     this.embeddingModel =
       options.embeddingModel ??
       (options.isLocal ? DEFAULT_LOCAL_EMBEDDING_MODEL : DEFAULT_CLOUD_EMBEDDING_MODEL);
@@ -197,6 +239,10 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   }
 
   async chat(messages: LlmMessage[], options: LlmOptions): Promise<LlmResponse> {
+    const isReasoning = resolveParamProfile(options.model, this.name) === 'openai-reasoning';
+    if (this.routesToResponses(options, isReasoning)) {
+      return this.chatResponses(messages, options, isReasoning);
+    }
     const params = this.buildNonStreamingParams(messages, options);
     logger.info('OpenAI-compatible chat request', {
       provider: this.name,
@@ -301,6 +347,10 @@ export class OpenAiCompatibleProvider implements LlmProvider {
                 usage: {
                   inputTokens: completion.usage.prompt_tokens ?? 0,
                   outputTokens: completion.usage.completion_tokens ?? 0,
+                  ...(completion.usage.prompt_tokens_details?.cached_tokens
+                    ? { cacheReadTokens: completion.usage.prompt_tokens_details.cached_tokens }
+                    : {}),
+                  ...pricedTier(completion.service_tier),
                 },
               }
             : {}),
@@ -308,12 +358,17 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       );
     }
 
+    const cacheReadTokens = completion.usage?.prompt_tokens_details?.cached_tokens;
     const response: LlmResponse = {
       content,
       usage: {
         inputTokens: completion.usage?.prompt_tokens ?? 0,
         outputTokens: completion.usage?.completion_tokens ?? 0,
         ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+        // OpenAI caches long prompts automatically and reports the hits here,
+        // already counted in `prompt_tokens`.
+        ...(cacheReadTokens ? { cacheReadTokens } : {}),
+        ...pricedTier(completion.service_tier),
       },
       model: completion.model,
       finishReason: mapFinishReason(choice.finish_reason),
@@ -323,6 +378,11 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   }
 
   async *chatStream(messages: LlmMessage[], options: LlmOptions): AsyncIterable<StreamChunk> {
+    const isReasoning = resolveParamProfile(options.model, this.name) === 'openai-reasoning';
+    if (this.routesToResponses(options, isReasoning)) {
+      yield* this.chatStreamResponses(messages, options, isReasoning);
+      return;
+    }
     const params = this.buildStreamingParams(messages, options);
     logger.info('OpenAI-compatible chat stream request', {
       provider: this.name,
@@ -341,6 +401,8 @@ export class OpenAiCompatibleProvider implements LlmProvider {
 
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let servedTier: string | null | undefined;
     let finishReason: LlmFinishReason = 'stop';
 
     // Tool-call fragments are streamed incrementally and keyed by index.
@@ -379,10 +441,15 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         if (chunk.usage) {
           inputTokens = chunk.usage.prompt_tokens;
           outputTokens = chunk.usage.completion_tokens;
+          cacheReadTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
         }
+        if (chunk.service_tier) servedTier = chunk.service_tier;
 
         const choice = chunk.choices[0];
         if (!choice) continue;
+
+        const reasoningText = reasoningDelta(choice.delta);
+        if (reasoningText) yield { type: 'reasoning', text: reasoningText };
 
         if (choice.delta.content) {
           if (wantsParseableJson) structuredText += choice.delta.content;
@@ -411,6 +478,8 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       throw toProviderErrorWithUsage(err, 'OpenAI-compatible stream iteration failed', {
         inputTokens,
         outputTokens,
+        ...(cacheReadTokens ? { cacheReadTokens } : {}),
+        ...pricedTier(servedTier),
       });
     }
 
@@ -445,14 +514,28 @@ export class OpenAiCompatibleProvider implements LlmProvider {
         {
           code: 'truncated_no_output',
           retriable: false,
-          ...(inputTokens > 0 || outputTokens > 0 ? { usage: { inputTokens, outputTokens } } : {}),
+          ...(inputTokens > 0 || outputTokens > 0
+            ? {
+                usage: {
+                  inputTokens,
+                  outputTokens,
+                  ...(cacheReadTokens ? { cacheReadTokens } : {}),
+                  ...pricedTier(servedTier),
+                },
+              }
+            : {}),
         }
       );
     }
 
     yield {
       type: 'done',
-      usage: { inputTokens, outputTokens },
+      usage: {
+        inputTokens,
+        outputTokens,
+        ...(cacheReadTokens ? { cacheReadTokens } : {}),
+        ...pricedTier(servedTier),
+      },
       finishReason,
     };
   }
@@ -636,6 +719,194 @@ export class OpenAiCompatibleProvider implements LlmProvider {
 
   // --- internal helpers ---
 
+  /**
+   * Does this request take the Responses API path (`openai-responses.ts`)?
+   * Only OpenAI itself, with web search or code interpreter on, on a model
+   * that offers one. On OpenAI, a tool the request can't take is dropped and
+   * logged with the reason, as Anthropic drops web search on Claude 3.0;
+   * other hosts ignore both.
+   */
+  private routesToResponses(options: LlmOptions, isReasoning: boolean): boolean {
+    const routes = usesResponsesApi(options, {
+      isOpenAiHost: this.isOpenAiHost,
+      isReasoning,
+      providerName: this.name,
+    });
+    if (!this.isOpenAiHost || options.responseFormat) return routes;
+    const context = { isReasoning, providerName: this.name };
+    const taken = takenProviderTools(options, context);
+    if (options.providerTools?.webSearch !== undefined && !taken.webSearch) {
+      logger.info('OpenAI: web search dropped, the request cannot take it', {
+        provider: this.name,
+        model: options.model,
+        reason: webSearchRefusal(options, context),
+      });
+    }
+    if (options.providerTools?.codeExecution !== undefined && !taken.codeExecution) {
+      logger.info('OpenAI: code interpreter dropped, the request cannot take it', {
+        provider: this.name,
+        model: options.model,
+        reason: codeInterpreterRefusal(options, context),
+      });
+    }
+    return routes;
+  }
+
+  private async chatResponses(
+    messages: LlmMessage[],
+    options: LlmOptions,
+    isReasoning: boolean
+  ): Promise<LlmResponse> {
+    logger.info('OpenAI Responses chat request', {
+      provider: this.name,
+      model: options.model,
+      messageCount: messages.length,
+      hasTools: Boolean(options.tools?.length),
+    });
+    const requestOptions = buildRequestOptions(options);
+    let response: OpenAiResponse;
+    // The attempt that answered, timed: a call that wasn't streamed costs its
+    // code runs by it (`CodeRunTiming.requestMs`).
+    let requestMs = 0;
+    try {
+      response = await this.withReasoningFallback(messages, options, (replayed) =>
+        this.withSummaryFallback(isReasoning, (summaries) => {
+          const params = buildResponsesParams(replayed, options, {
+            isReasoning,
+            providerName: this.name,
+            summaries,
+            tokenCap: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+          });
+          return withRetry<OpenAiResponse>(
+            async () => {
+              const started = Date.now();
+              const result = await this.client.responses.create(params, requestOptions);
+              requestMs = Date.now() - started;
+              return result;
+            },
+            {
+              maxRetries: this.maxRetries,
+              isLocal: this.isLocal,
+              ...(options.signal !== undefined ? { signal: options.signal } : {}),
+              operation: 'openai.responses.create',
+            }
+          );
+        })
+      );
+    } catch (err) {
+      throw toProviderError(err, 'OpenAI Responses chat request failed');
+    }
+    return fromResponsesResult(response, options, {
+      earlier: earlierCodeRuns(messages),
+      requestMs,
+    });
+  }
+
+  private async *chatStreamResponses(
+    messages: LlmMessage[],
+    options: LlmOptions,
+    isReasoning: boolean
+  ): AsyncIterable<StreamChunk> {
+    logger.info('OpenAI Responses chat stream request', {
+      provider: this.name,
+      model: options.model,
+      messageCount: messages.length,
+      hasTools: Boolean(options.tools?.length),
+    });
+    const requestOptions = buildRequestOptions(options);
+    let stream: Awaited<ReturnType<typeof this.openResponsesStream>>;
+    try {
+      // A refused request fails before its first event, so a retry yields
+      // nothing twice.
+      stream = await this.withReasoningFallback(messages, options, (replayed) =>
+        this.withSummaryFallback(isReasoning, (summaries) =>
+          this.openResponsesStream(
+            buildResponsesParams(replayed, options, {
+              isReasoning,
+              providerName: this.name,
+              summaries,
+              tokenCap: options.maxTokens ?? DEFAULT_MAX_TOKENS,
+            }),
+            requestOptions
+          )
+        )
+      );
+    } catch (err) {
+      throw toProviderError(err, 'OpenAI Responses chat stream failed');
+    }
+    yield* fromResponsesStream(stream, options.signal, earlierCodeRuns(messages));
+  }
+
+  private openResponsesStream(
+    params: ReturnType<typeof buildResponsesParams>,
+    requestOptions: ReturnType<typeof buildRequestOptions>
+  ) {
+    return this.client.responses.create({ ...params, stream: true }, requestOptions);
+  }
+
+  /**
+   * Run a Responses request replaying `messages`; when OpenAI can't decrypt
+   * a replayed reasoning item (`isUndecryptableReasoningError`), run it once
+   * more with the reasoning items left out (`withoutOpenAiReasoning`), the
+   * search and code items kept. A second refusal, or any other error, is
+   * raised as it is.
+   *
+   * The items left out are remembered on this instance (one per credential,
+   * cached 5 minutes) and left out of later requests up front: a tool loop
+   * replays them on every call that follows, and each would otherwise be
+   * refused first, then lose this credential's own reasoning with them.
+   */
+  private async withReasoningFallback<T>(
+    messages: LlmMessage[],
+    options: LlmOptions,
+    run: (replayed: LlmMessage[]) => Promise<T>
+  ): Promise<T> {
+    const replayed =
+      this.undecryptableReasoning.size > 0
+        ? withoutOpenAiReasoning(messages, this.undecryptableReasoning)
+        : messages;
+    try {
+      return await run(replayed);
+    } catch (err) {
+      if (!isUndecryptableReasoningError(err)) throw err;
+      const ids = replayedReasoningIds(replayed);
+      if (ids.length === 0) throw err;
+      for (const id of ids) this.undecryptableReasoning.add(id);
+      logger.warn('OpenAI could not decrypt replayed reasoning; retrying without it', {
+        provider: this.name,
+        model: options.model,
+        items: ids.length,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return run(withoutOpenAiReasoning(replayed));
+    }
+  }
+
+  /**
+   * Run a Responses request asking for reasoning summaries, unless this
+   * instance has already been refused them; on the refusal (an unverified
+   * organisation), remember it and run it once more without.
+   */
+  private async withSummaryFallback<T>(
+    isReasoning: boolean,
+    run: (summaries: boolean) => Promise<T>
+  ): Promise<T> {
+    const summaries = isReasoning && !this.summariesRefused;
+    try {
+      return await run(summaries);
+    } catch (err) {
+      if (!summaries || !isSummaryVerificationError(err)) throw err;
+      this.summariesRefused = true;
+      logger.warn(
+        'OpenAI refused reasoning summaries (organisation not verified); retrying without',
+        {
+          provider: this.name,
+        }
+      );
+      return run(false);
+    }
+  }
+
   private buildNonStreamingParams(
     messages: LlmMessage[],
     options: LlmOptions
@@ -676,6 +947,21 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     if (!isReasoning && options.temperature !== undefined) {
       params.temperature = options.temperature;
     }
+    // Reasoning models refuse `top_p` and `stop` as they refuse temperature.
+    if (!isReasoning && options.topP !== undefined) params.top_p = options.topP;
+    if (!isReasoning && options.stopSequences?.length) params.stop = options.stopSequences;
+    if (options.verbosity !== undefined && acceptsVerbosity(options.model)) {
+      params.verbosity = options.verbosity;
+    }
+    // Flex exists only on some models and 400s on the rest, so it goes only
+    // to those (`acceptsFlexTier`); the other tiers every model takes.
+    if (
+      options.serviceTier !== undefined &&
+      this.isOpenAiHost &&
+      (options.serviceTier !== 'flex' || acceptsFlexTier(options.model))
+    ) {
+      params.service_tier = options.serviceTier;
+    }
     // `reasoning_effort` is only honoured by the reasoning family. The
     // OpenAI SDK types only widen to include it on reasoning models, so
     // we cast through a Record<string, unknown> for the field set. Non-
@@ -688,9 +974,10 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     // Caller intent is still recorded on the trace's requestParams so
     // a misconfigured "minimal on o3-mini" is visible after the fact.
     if (isReasoning && options.reasoningEffort !== undefined) {
+      const effort = openAiReasoningEffort(options.reasoningEffort);
       const accepted = supportedReasoningEfforts(options.model, this.name);
-      if (accepted.has(options.reasoningEffort)) {
-        (params as unknown as Record<string, unknown>).reasoning_effort = options.reasoningEffort;
+      if (accepted.has(effort)) {
+        (params as unknown as Record<string, unknown>).reasoning_effort = effort;
       }
     }
     if (options.tools?.length) {
@@ -704,6 +991,14 @@ export class OpenAiCompatibleProvider implements LlmProvider {
       }));
       const choice = mapToolChoice(options.toolChoice);
       if (choice) params.tool_choice = choice;
+      // Only with tools: OpenAI 400s on `parallel_tool_calls` without them.
+      // The o-series refuses it outright; GPT-5 takes it.
+      if (
+        options.parallelToolCalls !== undefined &&
+        (!isReasoning || reasoningModelAcceptsParallelToolCalls(options.model))
+      ) {
+        params.parallel_tool_calls = options.parallelToolCalls;
+      }
     }
     if (options.responseFormat) {
       if (options.responseFormat.type === 'json_object') {
@@ -817,6 +1112,22 @@ function mapToolChoice(
   return { type: 'function', function: { name: choice.name } };
 }
 
+/**
+ * Reasoning text on a streamed delta, from providers that put it there:
+ * `reasoning_content` (DeepSeek, vLLM, Qwen) or `reasoning` (OpenRouter).
+ * Neither is in the OpenAI SDK's types, and OpenAI's own Chat Completions
+ * sends neither — its reasoning summaries come only from the Responses API.
+ */
+function reasoningDelta(delta: unknown): string | undefined {
+  if (!isRecord(delta)) return undefined;
+  // First non-empty one: a gateway may send `reasoning_content: ''` beside a
+  // populated `reasoning`.
+  for (const text of [delta.reasoning_content, delta.reasoning]) {
+    if (typeof text === 'string' && text.length > 0) return text;
+  }
+  return undefined;
+}
+
 function toolCallFromSdk(call: ChatCompletionMessageToolCall): LlmToolCall | null {
   if (call.type !== 'function') return null;
   return {
@@ -839,20 +1150,6 @@ function mapFinishReason(reason: string | null | undefined): LlmFinishReason {
       return 'error';
     default:
       return 'stop';
-  }
-}
-
-function safeParseJson(raw: string): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
-    return { value: parsed };
-  } catch {
-    logger.warn('Failed to parse OpenAI tool_call arguments', { length: raw.length });
-    return {};
   }
 }
 

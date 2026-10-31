@@ -14,13 +14,13 @@ import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Prisma } from '@prisma/client';
 
-import { ValidationError } from '@/lib/api/errors';
 import {
-  ERASED_SUBJECT_MESSAGE,
+  anyoneErasedSince,
+  COPY_CLOCK_SKEW_MS,
   findErasedSubjects,
   lockSubjects,
   matchErasedSubjects,
-  refuseErasedSubjects,
+  namesAnyone,
   stringsIn,
   subjectEmailHash,
   SUBJECT_LOCK_WAIT_MS,
@@ -498,48 +498,65 @@ describe('matchErasedSubjects (t-843)', () => {
   });
 });
 
-describe('refuseErasedSubjects', () => {
-  it('throws a ValidationError keyed by the field when a user id was erased', async () => {
-    const { tx, receiptFindMany } = makeTx();
-    receiptFindMany.mockResolvedValue([
-      { subjectUserId: 'gone-user', subjectEmailHash: null, metadata: null },
-    ]);
+describe('erasures since a copy was taken (§122 t-886)', () => {
+  const takenAt = new Date('2026-10-22T12:00:00Z');
+  const anchor = new Date(takenAt.getTime() - COPY_CLOCK_SKEW_MS);
 
-    const error = await refuseErasedSubjects(
-      tx,
-      { userIds: ['gone-user'] },
-      'approverUserIds'
-    ).catch((e: unknown) => e);
+  it('asks only for receipts since the copy, less the margin, with the same OR as ever', async () => {
+    const ctx = makeTx();
 
-    expect(error).toBeInstanceOf(ValidationError);
-    expect((error as ValidationError).status).toBe(400);
-    expect((error as ValidationError).details).toEqual({
-      approverUserIds: [ERASED_SUBJECT_MESSAGE],
+    await findErasedSubjects(ctx.tx, { userIds: ['u1'] }, { since: takenAt, shared: true });
+
+    expect(ctx.receiptFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { erasedAt: { gte: anchor }, OR: [{ subjectUserId: { in: ['u1'] } }] },
+      })
+    );
+    // Still under the lock, shared as asked.
+    expect(String((ctx.executeRaw.mock.calls[0] as unknown[])[0])).toContain(
+      'pg_advisory_xact_lock_shared'
+    );
+  });
+
+  it('counts every erasure ever when no copy time is given', async () => {
+    const ctx = makeTx();
+
+    await findErasedSubjects(ctx.tx, { userIds: ['u1'] });
+
+    const [args] = ctx.receiptFindMany.mock.calls[0] as [{ where: Record<string, unknown> }];
+    expect(args.where).not.toHaveProperty('erasedAt');
+  });
+
+  it('covers an erasure that stamped its receipt before it committed: the margin is wider than its transaction', () => {
+    // A receipt is stamped inside erasure's transaction (up to 60 s) and on
+    // another host's clock; a margin under that would miss one the copy predates.
+    expect(COPY_CLOCK_SKEW_MS).toBeGreaterThan(60_000);
+  });
+
+  it('anyoneErasedSince asks for one receipt since the copy, less the margin', async () => {
+    const findFirst = vi.fn().mockResolvedValue({ id: 'r-1' });
+
+    await expect(
+      anyoneErasedSince({ dataErasureReceipt: { findFirst } } as never, takenAt)
+    ).resolves.toBe(true);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { erasedAt: { gte: anchor } },
+      select: { id: true },
     });
+
+    findFirst.mockResolvedValue(null);
+    await expect(
+      anyoneErasedSince({ dataErasureReceipt: { findFirst } } as never, takenAt)
+    ).resolves.toBe(false);
   });
 
-  it('throws when an erased verified address is named', async () => {
-    const { tx, receiptFindMany } = makeTx();
-    receiptFindMany.mockResolvedValue([
-      {
-        subjectUserId: 'gone',
-        subjectEmailHash: sha256Hex('gone@example.com'),
-        metadata: { addressVerified: true },
-      },
-    ]);
-
-    await expect(
-      refuseErasedSubjects(tx, { addresses: ['Gone@example.com'] }, 'emailAddress')
-    ).rejects.toMatchObject({ details: { emailAddress: [ERASED_SUBJECT_MESSAGE] } });
-  });
-
-  it('resolves when nothing named is erased', async () => {
-    const { tx, receiptFindMany } = makeTx();
-
-    await expect(
-      refuseErasedSubjects(tx, { addresses: ['fine@example.com'], userIds: ['u1'] }, 'f')
-    ).resolves.toBeUndefined();
-    expect(receiptFindMany).toHaveBeenCalledTimes(1);
+  it.each([
+    [{ addresses: ['a@example.com'] }, true],
+    [{ userIds: ['u1'] }, true],
+    [{ addresses: ['{{input.email}}', 'not an address'], userIds: [''] }, false],
+    [{}, false],
+  ])('namesAnyone(%j) is %s', (subjects, expected) => {
+    expect(namesAnyone(subjects)).toBe(expected);
   });
 });
 
