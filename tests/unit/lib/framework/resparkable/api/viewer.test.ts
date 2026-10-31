@@ -170,9 +170,17 @@ describe('accountAddress', () => {
     ).toEqual({ email: 'new@example.com', emailVerified: true });
   });
 
-  it('verifies nothing for an account deleted mid-session', async () => {
+  it('answers null, not an empty address, for an account deleted mid-session', async () => {
+    // An empty address would reach the accept services and come back as
+    // `wrong_account` with the invitee's masked address.
     vi.mocked(readAddressOwner).mockResolvedValue(null);
 
-    expect(await accountAddress(session())).toEqual({ email: '', emailVerified: false });
+    expect(await accountAddress(session())).toBeNull();
+  });
+
+  it('gives a viewer for an account deleted mid-session no address', async () => {
+    vi.mocked(readAddressOwner).mockResolvedValue(null);
+
+    expect((await viewerFor(session(), PERSONAL)).email).toBeNull();
   });
 });

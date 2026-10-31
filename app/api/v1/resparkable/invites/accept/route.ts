@@ -37,7 +37,7 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, UnauthorizedError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
@@ -50,11 +50,12 @@ export const POST = withAuth(async (request, session) => {
 
   const body = await validateRequestBody(request, acceptInviteSchema);
 
-  const result = await acceptInvite(
-    // From the `user` row, not the session's five-minute cache (`accountAddress`).
-    { userId: session.user.id, ...(await accountAddress(session)) },
-    body.token
-  );
+  // From the `user` row, not the session's five-minute cache (`accountAddress`).
+  // An account erased since its session was cached has nothing to accept with.
+  const account = await accountAddress(session);
+  if (!account) throw new UnauthorizedError();
+
+  const result = await acceptInvite({ userId: session.user.id, ...account }, body.token);
 
   if (!result.ok && result.reason === 'unknown') {
     throw new NotFoundError('Not found');

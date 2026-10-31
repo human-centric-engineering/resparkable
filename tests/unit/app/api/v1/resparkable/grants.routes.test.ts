@@ -312,7 +312,7 @@ describe('POST /api/v1/resparkable/grants', () => {
       req('http://localhost/api/v1/resparkable/grants', {
         entityType: 'project',
         entityId: PROJECT_ID,
-        // The session is `A@Example.com`; the schema lower-cases before this
+        // The account is `A@Example.com`; the schema lower-cases before this
         // check, so the comparison has to be case-insensitive to catch it.
         granteeEmail: 'a@example.com',
       })
@@ -321,6 +321,27 @@ describe('POST /api/v1/resparkable/grants', () => {
     // The grant would be live — `granteeClauses` matches the session's own
     // address whoever owns the row — so it would appear under "Shared with me"
     // and 404 on open, because `readSharedWithMe` denies `basis: 'owner'`.
+    expect(response.status).toBe(400);
+    expect(issueGrant).not.toHaveBeenCalled();
+  });
+
+  it('knows the caller’s own address from the account, not the cached session', async () => {
+    // The account changed its address since the session was cached. Its new
+    // address is its own; the session's old one may now be somebody else's.
+    vi.mocked(readAddressOwner).mockResolvedValue({
+      email: 'new@example.com',
+      emailVerified: true,
+    });
+
+    const response = await invoke(
+      GRANTS_POST,
+      req('http://localhost/api/v1/resparkable/grants', {
+        entityType: 'project',
+        entityId: PROJECT_ID,
+        granteeEmail: 'new@example.com',
+      })
+    );
+
     expect(response.status).toBe(400);
     expect(issueGrant).not.toHaveBeenCalled();
   });

@@ -1427,6 +1427,18 @@ describe('POST /api/v1/resparkable/groups/invites/accept', () => {
     );
   });
 
+  it('401s an account erased since its session was cached, and asks the service nothing', async () => {
+    vi.mocked(readAddressOwner).mockResolvedValue(null);
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/groups/invites/accept', { token: 'a'.repeat(32) })
+    );
+
+    expect(response.status).toBe(401);
+    expect(acceptGroupInvite).not.toHaveBeenCalled();
+  });
+
   it('answers 200 with joined: false and the reason for an unverified account', async () => {
     vi.mocked(acceptGroupInvite).mockResolvedValue({ ok: false, reason: 'unverified' });
 

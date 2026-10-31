@@ -73,7 +73,7 @@ export async function viewerFor(
   const personal = scope.spaceId === session.user.id;
   return {
     userId: session.user.id,
-    email: personal ? matchableAddress(await accountAddress(session)) : null,
+    email: personal ? matchableAddress((await accountAddress(session)) ?? NO_ADDRESS) : null,
     group: personal
       ? null
       : {
@@ -96,11 +96,16 @@ export async function viewerFor(
  * an address the account no longer holds, letting it match, and accept, what
  * was sent to that address's owner.
  *
- * An account deleted mid-session has no address and is verified for nothing.
+ * `null` for an account deleted mid-session. Callers refuse rather than
+ * substitute an empty address: an accept compared against `''` would answer
+ * `wrong_account` with the invitee's masked address, to an account that no
+ * longer exists.
  */
 export async function accountAddress(
   session: AuthSession
-): Promise<{ email: string; emailVerified: boolean }> {
-  const row = await readAddressOwner(session.user.id);
-  return { email: row?.email ?? '', emailVerified: row?.emailVerified ?? false };
+): Promise<{ email: string; emailVerified: boolean } | null> {
+  return readAddressOwner(session.user.id);
 }
+
+/** An account that no longer exists, for `matchableAddress`: matches nothing. */
+const NO_ADDRESS = { email: null, emailVerified: false };

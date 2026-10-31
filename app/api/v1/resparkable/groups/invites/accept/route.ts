@@ -36,6 +36,7 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
+import { UnauthorizedError } from '@/lib/api/errors';
 import { withAuth } from '@/lib/auth/guards';
 import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
 import { acceptGroupInvite } from '@/lib/framework/resparkable/services/group-invites';
@@ -46,11 +47,12 @@ export const POST = withAuth(async (request, session) => {
 
   const body = await validateRequestBody(request, acceptGroupInviteSchema);
 
-  const result = await acceptGroupInvite(
-    // From the `user` row, not the session's five-minute cache (`accountAddress`).
-    { userId: session.user.id, ...(await accountAddress(session)) },
-    body.token
-  );
+  // From the `user` row, not the session's five-minute cache (`accountAddress`).
+  // An account erased since its session was cached has nothing to accept with.
+  const account = await accountAddress(session);
+  if (!account) throw new UnauthorizedError();
+
+  const result = await acceptGroupInvite({ userId: session.user.id, ...account }, body.token);
 
   // A 200 with `joined: false` rather than a 4xx, matching the share-accept
   // flow. The page renders a reason either way, and an HTTP error would put an

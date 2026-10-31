@@ -545,6 +545,20 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
     );
   });
 
+  it('401s an account erased since its session was cached, and asks the service nothing', async () => {
+    // Not `wrong_account`: comparing an empty address against the invite would
+    // hand a deleted account the invitee's masked address.
+    vi.mocked(readAddressOwner).mockResolvedValue(null);
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    expect(response.status).toBe(401);
+    expect(acceptInvite).not.toHaveBeenCalled();
+  });
+
   it('answers an unverified account with a 200 the page explains', async () => {
     vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unverified' });
 

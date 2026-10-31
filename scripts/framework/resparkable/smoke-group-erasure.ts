@@ -96,8 +96,11 @@ async function makeUser(
   });
 }
 
-/** A session for `viewerFor`, as `withAuth` would hand a route. */
-function sessionFor(user: { id: string; email: string }, emailVerified: boolean): AuthSession {
+/**
+ * A session for `viewerFor`, as `withAuth` would hand a route. Only `user.id`
+ * is read; the address and its flag come from the `user` row.
+ */
+function sessionFor(user: { id: string; email: string }): AuthSession {
   const now = new Date();
   return {
     session: {
@@ -112,7 +115,7 @@ function sessionFor(user: { id: string; email: string }, emailVerified: boolean)
       id: user.id,
       name: PREFIX,
       email: user.email,
-      emailVerified,
+      emailVerified: false,
       createdAt: now,
       updatedAt: now,
     },
@@ -332,7 +335,7 @@ async function main(): Promise<void> {
     });
 
     const unverifiedViewer = await viewerFor(
-      sessionFor(unverified, false),
+      sessionFor(unverified),
       spaceScopeFor({ spaceId: unverified.id, actorUserId: unverified.id, role: 'owner' })
     );
     check(
@@ -376,7 +379,7 @@ async function main(): Promise<void> {
     });
     users.push(owner.id);
     const ownerViewer = await viewerFor(
-      sessionFor(owner, true),
+      sessionFor(owner),
       spaceScopeFor({ spaceId: owner.id, actorUserId: owner.id, role: 'owner' })
     );
     check(
