@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 /**
- * Unit Tests: `UnconfirmedAddressNotice` — why "Shared with me" may be short
+ * Unit Tests: `UnconfirmedAddressNotice`. Why "Shared with me" may be short
  * (phase 66).
  *
  * The account is read from `GET /api/v1/users/me`, not the session, so a

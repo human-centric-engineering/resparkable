@@ -41,7 +41,7 @@ import { NotFoundError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { emailVerifiedNow } from '@/lib/framework/resparkable/api/viewer';
+import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
 import { acceptInvite } from '@/lib/framework/resparkable/services/invites';
 import { acceptInviteSchema } from '@/lib/framework/resparkable/validations';
 
@@ -51,11 +51,8 @@ export const POST = withAuth(async (request, session) => {
   const body = await validateRequestBody(request, acceptInviteSchema);
 
   const result = await acceptInvite(
-    {
-      userId: session.user.id,
-      email: session.user.email,
-      emailVerified: await emailVerifiedNow(session),
-    },
+    // From the `user` row, not the session's five-minute cache (`accountAddress`).
+    { userId: session.user.id, ...(await accountAddress(session)) },
     body.token
   );
 

@@ -63,10 +63,10 @@ vi.mock('@/lib/framework/resparkable/services/invites', () => ({
   acceptInvite: vi.fn(),
 }));
 
-// The accept route re-reads `emailVerified` when the cached session says false.
+// The account's address and flag come from the `user` row, not the session.
 vi.mock('@/lib/framework/resparkable/repo/grants', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/grants')>()),
-  readEmailVerified: vi.fn(),
+  readAddressOwner: vi.fn(),
 }));
 
 import {
@@ -86,7 +86,7 @@ import {
   updateComment,
 } from '@/lib/framework/resparkable/services/comments';
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
-import { readEmailVerified } from '@/lib/framework/resparkable/repo/grants';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 
 const SESSION = {
   user: { id: 'user_b', email: 'B@Example.com', emailVerified: true },
@@ -125,6 +125,8 @@ function invoke(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The account row agrees with SESSION unless a test says otherwise.
+  vi.mocked(readAddressOwner).mockResolvedValue({ email: 'B@Example.com', emailVerified: true });
 });
 
 describe('GET /api/v1/resparkable/comments', () => {
@@ -503,7 +505,7 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
     expect(JSON.stringify(body)).not.toContain('b@example.com');
   });
 
-  it("passes the session's address and whether it is verified to the service", async () => {
+  it("passes the account's address and whether it is verified to the service", async () => {
     vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
 
     await invoke(
@@ -517,12 +519,18 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
     );
   });
 
-  it('re-reads the account when the cached session says unverified', async () => {
-    // The session caches `emailVerified` for five minutes. Somebody who has just
-    // confirmed on another device must be let in, not told to confirm again.
+  it('takes the address and its flag from the account, not the cached session', async () => {
+    // The session caches both for five minutes. A fresh flag beside a cached
+    // address would vouch for an address the account no longer holds.
     vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
-    vi.mocked(readEmailVerified).mockResolvedValue(true);
-    const staleSession = { ...SESSION, user: { ...SESSION.user, emailVerified: false } };
+    vi.mocked(readAddressOwner).mockResolvedValue({
+      email: 'new@example.com',
+      emailVerified: true,
+    });
+    const staleSession = {
+      ...SESSION,
+      user: { ...SESSION.user, email: 'old@example.com', emailVerified: false },
+    };
 
     const handler = ACCEPT_POST as unknown as (r: unknown, s: unknown) => Promise<Response>;
     await handler(
@@ -530,9 +538,9 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
       staleSession
     );
 
-    expect(readEmailVerified).toHaveBeenCalledWith('user_b');
+    expect(readAddressOwner).toHaveBeenCalledWith('user_b');
     expect(acceptInvite).toHaveBeenCalledWith(
-      { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
+      { userId: 'user_b', email: 'new@example.com', emailVerified: true },
       TOKEN
     );
   });

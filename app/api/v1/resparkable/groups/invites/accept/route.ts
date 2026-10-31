@@ -37,7 +37,7 @@ import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
-import { emailVerifiedNow } from '@/lib/framework/resparkable/api/viewer';
+import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
 import { acceptGroupInvite } from '@/lib/framework/resparkable/services/group-invites';
 import { acceptGroupInviteSchema } from '@/lib/framework/resparkable/validations';
 
@@ -47,11 +47,8 @@ export const POST = withAuth(async (request, session) => {
   const body = await validateRequestBody(request, acceptGroupInviteSchema);
 
   const result = await acceptGroupInvite(
-    {
-      userId: session.user.id,
-      email: session.user.email,
-      emailVerified: await emailVerifiedNow(session),
-    },
+    // From the `user` row, not the session's five-minute cache (`accountAddress`).
+    { userId: session.user.id, ...(await accountAddress(session)) },
     body.token
   );
 

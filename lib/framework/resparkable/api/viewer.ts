@@ -13,11 +13,12 @@
  *      lookup service for other people's brains. There is no route in this tier
  *      that should build a viewer from anything but a session, and having one
  *      function makes `rg 'viewerFor\('` the list of places that build
- *      one — with a single deliberate exception: `invites/accept` constructs its
- *      own `{ userId, email }`, because accepting requires **both** to be
- *      present and a `ResparkableViewer` allows either to be null. It is not a
- *      viewer and is not passed anywhere that takes one; `acceptInvite`
- *      applies the same address rule itself.
+ *      one — with two deliberate exceptions: `invites/accept` and
+ *      `groups/invites/accept` build their own `{ userId, email,
+ *      emailVerified }` from `accountAddress`, because accepting requires an
+ *      address and a `ResparkableViewer` allows it to be null. It is not a
+ *      viewer and is not passed anywhere that takes one; `acceptInvite` and
+ *      `acceptGroupInvite` apply the same address rule themselves.
  *   2. **Forgetting to lower-case the address.** A grant is addressed by email
  *      until it is accepted, and `granteeClauses` in `access/store.ts` matches
  *      the lower-cased form. A session carrying `Bob@Example.com` against a
@@ -45,7 +46,7 @@
 import type { AuthSession } from '@/lib/auth/guards';
 import type { ResparkableViewer } from '@/lib/framework/resparkable/access/types';
 import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
-import { readEmailVerified } from '@/lib/framework/resparkable/repo/grants';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 
@@ -60,7 +61,10 @@ import { permissionsFor } from '@/lib/framework/resparkable/services/membership'
  * with that group.
  *
  * A personal scope's space key IS the session's user id (`createSpace`), which
- * is how the personal case is told apart without a second query.
+ * is how the personal case is told apart. Only the personal case reads the
+ * address (`accountAddress`, one query): inside a group the group is the
+ * grantee and `granteeClauses` never looks at `email`, so a group viewer
+ * carries none.
  */
 export async function viewerFor(
   session: AuthSession,
@@ -69,10 +73,7 @@ export async function viewerFor(
   const personal = scope.spaceId === session.user.id;
   return {
     userId: session.user.id,
-    email: matchableAddress({
-      email: session.user.email,
-      emailVerified: await emailVerifiedNow(session),
-    }),
+    email: personal ? matchableAddress(await accountAddress(session)) : null,
     group: personal
       ? null
       : {
@@ -84,14 +85,22 @@ export async function viewerFor(
 }
 
 /**
- * Whether the session's account has verified its address, as of now.
+ * The session account's address and whether it has verified it, read
+ * together from the `user` row.
  *
- * better-auth caches the session for five minutes (`lib/auth/config.ts`), so a
- * person who confirms on their phone and reopens an invite on their laptop
- * would be told to confirm again. A `true` is trusted as it stands, because an
- * address does not become unverified. A `false` is read again from the `user`
- * row, which costs a query only on the path that would otherwise refuse.
+ * Not from the session. better-auth caches it for five minutes
+ * (`lib/auth/config.ts`), and both fields can move in that time: a person who
+ * confirms on their phone would be refused on their laptop, an admin can
+ * un-verify an account, and an account can change its address. The two are
+ * read as a pair because a fresh flag beside a cached address would vouch for
+ * an address the account no longer holds, letting it match, and accept, what
+ * was sent to that address's owner.
+ *
+ * An account deleted mid-session has no address and is verified for nothing.
  */
-export async function emailVerifiedNow(session: AuthSession): Promise<boolean> {
-  return session.user.emailVerified || readEmailVerified(session.user.id);
+export async function accountAddress(
+  session: AuthSession
+): Promise<{ email: string; emailVerified: boolean }> {
+  const row = await readAddressOwner(session.user.id);
+  return { email: row?.email ?? '', emailVerified: row?.emailVerified ?? false };
 }

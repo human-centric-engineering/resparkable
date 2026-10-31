@@ -72,6 +72,12 @@ vi.mock('@/lib/framework/resparkable/api/space-request', async () => {
   };
 });
 
+// `viewerFor` takes the address and its flag from the `user` row.
+vi.mock('@/lib/framework/resparkable/repo/grants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/grants')>()),
+  readAddressOwner: vi.fn(),
+}));
+
 vi.mock('@/lib/framework/resparkable/services/shared-with-me', () => ({
   listSharedWithMe: vi.fn(),
   readSharedWithMe: vi.fn(),
@@ -99,6 +105,7 @@ import {
   readSharedWithMe,
   searchSharedWithMe,
 } from '@/lib/framework/resparkable/services/shared-with-me';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 
 const SESSION = {
   user: { id: 'user_a', email: 'A@Example.com', emailVerified: true },
@@ -142,6 +149,8 @@ function invoke(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The account row, as stored: whatever case the account was created with.
+  vi.mocked(readAddressOwner).mockResolvedValue({ email: 'A@Example.com', emailVerified: true });
 });
 
 describe('POST /api/v1/resparkable/grants', () => {
@@ -491,12 +500,12 @@ describe('the shared-with-me surface', () => {
     }
   });
 
-  it('builds the viewer from the session, lower-cased, and never from the request', async () => {
+  it('builds the viewer from the session and the account row, lower-cased, and never from the request', async () => {
     vi.mocked(listSharedWithMe).mockResolvedValue([]);
 
     await invoke(SHARED_GET, req('http://localhost/api/v1/resparkable/shared'));
 
-    // The session's address is `A@Example.com`; grants are stored lower-cased,
+    // The account's address is `A@Example.com`; grants are stored lower-cased,
     // so a viewer carrying the mixed-case form silently holds none of them.
     expect(vi.mocked(listSharedWithMe).mock.calls[0][0]).toEqual({
       userId: 'user_a',

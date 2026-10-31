@@ -53,7 +53,7 @@ import {
   findGrantByInviteTokenHash,
   findOwnGrant,
   listOwnGrants,
-  readEmailVerified,
+  readAddressOwner,
   revokeGrant,
   stampInviteToken,
   updateGrant,
@@ -415,26 +415,26 @@ describe('findAccountIdForEmail', () => {
   });
 });
 
-describe('readEmailVerified', () => {
-  it('reads the one column, by the id it is given', async () => {
-    vi.mocked(prisma.user.findUnique).mockResolvedValue({ emailVerified: true } as never);
+describe('readAddressOwner', () => {
+  it('reads the two columns that decide matching, by the id it is given', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      email: 'b@example.com',
+      emailVerified: true,
+    } as never);
 
-    expect(await readEmailVerified('user_b')).toBe(true);
+    expect(await readAddressOwner('user_b')).toEqual({
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     const args = vi.mocked(prisma.user.findUnique).mock.calls[0][0];
     expect(args.where).toEqual({ id: 'user_b' });
-    expect(args.select).toEqual({ emailVerified: true });
+    expect(args.select).toEqual({ email: true, emailVerified: true });
   });
 
-  it('answers false for an unverified account', async () => {
-    vi.mocked(prisma.user.findUnique).mockResolvedValue({ emailVerified: false } as never);
-
-    expect(await readEmailVerified('user_b')).toBe(false);
-  });
-
-  it('answers false for an account that no longer exists', async () => {
+  it('answers null for an account that no longer exists', async () => {
     vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
-    expect(await readEmailVerified('user_gone')).toBe(false);
+    expect(await readAddressOwner('user_gone')).toBeNull();
   });
 });

@@ -368,15 +368,20 @@ async function main(): Promise<void> {
         (await prisma.resparkableGroupInvite.count({ where: { email: address } })) === 1,
       "erasure: both rows are left for the address's real owner"
     );
-    // The same rows, read as a verified owner of the address would read them,
+    // The address's real owner signs up and verifies it. They hold the grant,
     // so the checks above are not passing because the rows are unreadable.
-    const verifiedViewer = await viewerFor(
-      sessionFor(unverified, true),
-      spaceScopeFor({ spaceId: unverified.id, actorUserId: unverified.id, role: 'owner' })
+    const owner = await prisma.user.create({
+      data: { name: `${PREFIX} owner`, email: unverified.email, emailVerified: true },
+      select: { id: true, email: true },
+    });
+    users.push(owner.id);
+    const ownerViewer = await viewerFor(
+      sessionFor(owner, true),
+      spaceScopeFor({ spaceId: owner.id, actorUserId: owner.id, role: 'owner' })
     );
     check(
-      (await findLiveGrantsForViewer(verifiedViewer)).length === 1,
-      'while a verified account on that address would hold the grant'
+      (await findLiveGrantsForViewer(ownerViewer)).length === 1,
+      'while the verified owner of that address holds the grant'
     );
 
     console.log('\nframework:resparkable:smoke-group-erasure passed');

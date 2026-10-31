@@ -112,6 +112,12 @@ vi.mock('@/lib/framework/resparkable/services/group-budget', () => ({
   releasePayerAndTell: vi.fn().mockResolvedValue(false),
 }));
 
+// The accept route takes the address and its flag from the `user` row.
+vi.mock('@/lib/framework/resparkable/repo/grants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/grants')>()),
+  readAddressOwner: vi.fn(),
+}));
+
 vi.mock('@/lib/framework/resparkable/services/group-invites', () => ({
   issueGroupInvite: vi.fn(),
   listInvitesForAdmin: vi.fn(),
@@ -145,6 +151,7 @@ import {
 } from '@/app/api/v1/resparkable/groups/[id]/invites/route';
 import { DELETE as INVITE_DELETE } from '@/app/api/v1/resparkable/groups/[id]/invites/[inviteId]/route';
 import { POST as ACCEPT_POST } from '@/app/api/v1/resparkable/groups/invites/accept/route';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 import {
   GET as JOIN_LINKS_GET,
   POST as JOIN_LINKS_POST,
@@ -284,6 +291,8 @@ beforeEach(() => {
   // Every pending-row fixture in this file is anonymous unless a test says
   // otherwise, so a test that forgets to stub this does not throw.
   vi.mocked(findAccountNames).mockResolvedValue(new Map());
+  // The account row agrees with SESSION unless a test says otherwise.
+  vi.mocked(readAddressOwner).mockResolvedValue({ email: 'a@example.com', emailVerified: true });
 });
 
 describe('POST /api/v1/resparkable/groups', () => {
@@ -1376,7 +1385,33 @@ describe('POST /api/v1/resparkable/groups/invites/accept', () => {
     expect(body.data).toEqual({ joined: false, reason: 'unknown' });
   });
 
-  it("passes the session's address and whether it is verified to the service", async () => {
+  it('takes the address and its flag from the account, not the cached session', async () => {
+    // The session caches both for five minutes. A fresh flag beside a cached
+    // address would vouch for an address the account no longer holds.
+    vi.mocked(acceptGroupInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+    vi.mocked(readAddressOwner).mockResolvedValue({
+      email: 'new@example.com',
+      emailVerified: true,
+    });
+    const staleSession = {
+      ...SESSION,
+      user: { ...SESSION.user, email: 'old@example.com', emailVerified: false },
+    };
+
+    const handler = ACCEPT_POST as unknown as (r: unknown, s: unknown) => Promise<Response>;
+    await handler(
+      req('http://localhost/api/v1/resparkable/groups/invites/accept', { token: 'a'.repeat(32) }),
+      staleSession
+    );
+
+    expect(readAddressOwner).toHaveBeenCalledWith('user_a');
+    expect(acceptGroupInvite).toHaveBeenCalledWith(
+      { userId: 'user_a', email: 'new@example.com', emailVerified: true },
+      'a'.repeat(32)
+    );
+  });
+
+  it("passes the account's address and whether it is verified to the service", async () => {
     vi.mocked(acceptGroupInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
 
     await invoke(

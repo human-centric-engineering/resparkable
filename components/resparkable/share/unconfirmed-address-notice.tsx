@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * UnconfirmedAddressNotice — why "Shared with me" may be missing things
+ * UnconfirmedAddressNotice: why "Shared with me" may be missing things
  * (phase 66).
  *
  * A share sent to an address reaches only an account that has confirmed it

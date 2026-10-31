@@ -64,7 +64,8 @@ export interface ResparkableViewer {
   userId: string | null;
   /**
    * Lower-cased, and `null` unless the account has verified it
-   * (`matchableAddress`). A grant is addressed by email until it is accepted,
+   * (`matchableAddress`), and always `null` in a group workspace, whose grants
+   * are matched by the group alone. A grant is addressed by email until it is accepted,
    * so a viewer whose account exists but whose grant has never been opened is
    * found by this and not by `userId`.
    */

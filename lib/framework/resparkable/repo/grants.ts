@@ -35,7 +35,7 @@ import {
   spaceWhere,
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
-import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableGrant } from '@prisma/client';
@@ -288,26 +288,27 @@ export async function revokeGrant(
  */
 export async function findAccountIdForEmail(email: string): Promise<string | null> {
   const user = await prisma.user.findUnique({
-    where: { email: email.toLowerCase() },
+    where: { email: normaliseAddress(email) },
     select: { id: true, email: true, emailVerified: true },
   });
   return user && matchableAddress(user) !== null ? user.id : null;
 }
 
 /**
- * Whether this account has verified its address, read from the `user` row.
+ * This account's address and whether it has verified it, from the `user` row.
  *
- * For `emailVerifiedNow` (`api/viewer.ts`) and nothing else: the session caches
- * the flag for five minutes, so an account that has just confirmed from another
- * device would still be refused by address. One column, by the session's own
- * id, so it cannot be asked about anybody else. A missing row is `false`.
+ * For `accountAddress` (`api/viewer.ts`) and nothing else, which explains why
+ * the session's copy will not do. The two columns that decide whether it may
+ * match by address, by the session's own id, so it cannot be asked about
+ * anybody else. `null` when the account no longer exists.
  */
-export async function readEmailVerified(userId: string): Promise<boolean> {
-  const user = await prisma.user.findUnique({
+export async function readAddressOwner(
+  userId: string
+): Promise<{ email: string; emailVerified: boolean } | null> {
+  return prisma.user.findUnique({
     where: { id: userId },
-    select: { emailVerified: true },
+    select: { email: true, emailVerified: true },
   });
-  return user?.emailVerified ?? false;
 }
 
 /**
