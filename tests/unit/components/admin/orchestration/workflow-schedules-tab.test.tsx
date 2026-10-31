@@ -36,9 +36,19 @@ vi.mock('@/lib/api/client', () => ({
     patch: vi.fn(),
     delete: vi.fn(),
   },
+  APIClientError: class APIClientError extends Error {
+    constructor(
+      message: string,
+      public code?: string,
+      public status?: number
+    ) {
+      super(message);
+      this.name = 'APIClientError';
+    }
+  },
 }));
 
-import { apiClient } from '@/lib/api/client';
+import { apiClient, APIClientError } from '@/lib/api/client';
 
 const EMPTY_DATA = { schedules: [] };
 
@@ -53,6 +63,7 @@ const POPULATED_DATA = {
       lastRunAt: '2026-04-19T09:00:00Z',
       inputTemplate: null,
       createdAt: '2026-04-01T00:00:00Z',
+      version: '"v1"',
     },
   ],
 };
@@ -279,12 +290,83 @@ describe('WorkflowSchedulesTab', () => {
     await waitFor(() => {
       expect(apiClient.patch).toHaveBeenCalledWith(
         API.ADMIN.ORCHESTRATION.workflowScheduleById('wf-1', 'sched-1'),
-        { body: { isEnabled: false } }
+        // The schedule's version from the list, as If-Match (t-899)
+        { body: { isEnabled: false }, options: { headers: { 'If-Match': '"v1"' } } }
       );
     });
 
     // Assert: refetch triggered (get called a second time)
     expect(apiClient.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('toggle in flight — the switch stays disabled until the list has reloaded (t-899)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.get).mockResolvedValue(POPULATED_DATA);
+    let settle: (v: unknown) => void = () => undefined;
+    vi.mocked(apiClient.patch).mockImplementation(
+      () => new Promise((resolve) => (settle = resolve))
+    );
+    render(<WorkflowSchedulesTab workflowId="wf-1" />);
+    await waitFor(() => {
+      expect(screen.getByText('Daily Morning Run')).toBeInTheDocument();
+    });
+    const toggle = screen.getByRole('switch', { name: /toggle daily morning run/i });
+
+    await user.click(toggle);
+
+    expect(toggle).toBeDisabled();
+    settle({});
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: /toggle daily morning run/i })).not.toBeDisabled()
+    );
+  });
+
+  it('toggles on two schedules keep each other’s switches disabled until each settles (t-899)', async () => {
+    const user = userEvent.setup();
+    const two = {
+      schedules: [
+        POPULATED_DATA.schedules[0],
+        { ...POPULATED_DATA.schedules[0], id: 'sched-2', name: 'Evening Run', version: '"v2"' },
+      ],
+    };
+    vi.mocked(apiClient.get).mockResolvedValue(two);
+    const settles: Array<(v: unknown) => void> = [];
+    vi.mocked(apiClient.patch).mockImplementation(
+      () => new Promise((resolve) => settles.push(resolve))
+    );
+    render(<WorkflowSchedulesTab workflowId="wf-1" />);
+    await waitFor(() => expect(screen.getByText('Evening Run')).toBeInTheDocument());
+    const morning = screen.getByRole('switch', { name: /toggle daily morning run/i });
+    const evening = screen.getByRole('switch', { name: /toggle evening run/i });
+
+    await user.click(morning);
+    await user.click(evening);
+
+    expect(morning).toBeDisabled();
+    expect(evening).toBeDisabled();
+  });
+
+  it('toggle refused as stale — says the schedule changed, and reloads the list on request (t-899)', async () => {
+    const user = userEvent.setup();
+    vi.mocked(apiClient.get).mockResolvedValue(POPULATED_DATA);
+    vi.mocked(apiClient.patch).mockRejectedValue(
+      new APIClientError('This changed since you opened it.', 'STALE_RECORD', 412)
+    );
+    render(<WorkflowSchedulesTab workflowId="wf-1" />);
+    await waitFor(() => {
+      expect(screen.getByText('Daily Morning Run')).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('switch', { name: /toggle daily morning run/i }));
+
+    const notice = await screen.findByRole('alert');
+    expect(notice).toHaveTextContent(/that schedule changed since you opened it/i);
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+
+    await user.click(within(notice).getByRole('button', { name: /reload/i }));
+
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledTimes(2));
   });
 
   it('delete schedule — opens confirmation, calls delete with correct URL, refetches, and closes dialog', async () => {

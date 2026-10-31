@@ -244,6 +244,9 @@ export const corePolicies: TransferPolicySet = {
         providerConfig: 'Temperature, token limits, provider-specific switches.',
         metadata: 'Free-form labels set by an operator.',
         widgetConfig: 'Embedded-widget colours, greeting and placement.',
+        providerTools:
+          "Switches for the provider's own web search and code execution: " +
+          'use limits and domain lists. Holds no row ids.',
       },
       secretReviewed: {
         knowledgeTriggerKeywords:

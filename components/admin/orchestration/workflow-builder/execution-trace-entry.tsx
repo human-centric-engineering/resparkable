@@ -521,6 +521,17 @@ export function ExecutionTraceEntryRow({
                 typeof requestParams.toolCount === 'number' && requestParams.toolCount > 0
                   ? `tools: ${requestParams.toolCount}`
                   : null,
+                requestParams.stopSequences?.length
+                  ? `stop: ${requestParams.stopSequences.length}`
+                  : null,
+                typeof requestParams.topP === 'number' ? `topP: ${requestParams.topP}` : null,
+                requestParams.verbosity ? `verbosity: ${requestParams.verbosity}` : null,
+                typeof requestParams.parallelToolCalls === 'boolean'
+                  ? `parallel tools: ${requestParams.parallelToolCalls ? 'on' : 'off'}`
+                  : null,
+                requestParams.serviceTier ? `tier: ${requestParams.serviceTier}` : null,
+                requestParams.providerTools?.webSearch ? 'web search: on' : null,
+                requestParams.providerTools?.codeExecution ? 'code execution: on' : null,
               ]
                 .filter(Boolean)
                 .join(' · ')}

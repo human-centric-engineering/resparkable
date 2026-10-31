@@ -474,9 +474,9 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
   },
   {
     file: 'lib/auth/admin-tier.ts',
-    holders: ['appPages', 'appPagesView'],
+    holders: ['appPages', 'appPagesView', 'closedSections', 'closedSectionsView'],
     posture: 'no-tenant-data',
-    why: 'Admin page patterns a fork lists as org-tier from code (t-817), and a frozen copy rebuilt when they change.',
+    why: 'Admin page patterns a fork lists as org-tier from code (t-817), the core sections it closes to org admins for the whole install (t-929), and a frozen copy of each rebuilt when it changes.',
   },
   {
     file: 'lib/auth/org-tier-admin-pages.ts',
@@ -739,7 +739,7 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
   },
   {
     file: 'lib/privacy/subject-source-registry.ts',
-    holders: ['sources', 'excluded', 'owners', 'appInitFailed', 'appInit'],
+    holders: ['registry', 'appInit'],
     posture: 'no-tenant-data',
     why: "A fork's subject-export dispositions, which say which MODELS a data subject's export reads; the rows themselves are read per request inside the caller's scope.",
   },
@@ -751,16 +751,7 @@ export const PROCESS_STATE: readonly ProcessStateDeclaration[] = [
   },
   {
     file: 'lib/privacy/org-source-registry.ts',
-    holders: [
-      'sources',
-      'excluded',
-      'owners',
-      'appInitFailed',
-      'rejectedSources',
-      'rejectedExclusions',
-      'unidentifiedRejection',
-      'appInit',
-    ],
+    holders: ['registry', 'appInit'],
     posture: 'no-tenant-data',
     why: "A fork's org-export sources: which MODELS an org's export reads and the function that reads them, registered from code; the rows are read per export as the org being exported.",
   },

@@ -21,10 +21,17 @@ import {
   capabilityScopeSchema,
 } from '@/lib/validations/common';
 import { logger } from '@/lib/logging';
+import { providerToolsSchema } from '@/lib/orchestration/llm/model-params';
 import { BINDING_OWNERS } from '@/lib/orchestration/agents/binding-owner';
 import { checkSafeProviderUrl, isSafeProviderUrl } from '@/lib/security/safe-url';
 import { KNOWN_STEP_TYPES, TASK_TYPES } from '@/types/orchestration';
 import { validateTaskDefaults } from '@/lib/orchestration/llm/model-registry';
+import {
+  MAX_STOP_SEQUENCES,
+  REASONING_EFFORTS,
+  SERVICE_TIERS,
+  VERBOSITIES,
+} from '@/lib/orchestration/llm/types';
 import { reviewSchemaSchema } from '@/lib/orchestration/review-schema/types';
 import { provenanceItemArraySchema } from '@/lib/orchestration/provenance/types';
 import { validateScopes, listValidApiKeyScopes } from '@/lib/auth/api-key-scopes';
@@ -66,6 +73,42 @@ export const capabilityFunctionDefinitionSchema = z.object({
  * as a bare `z.object` (without the keyword-mode refinement) so its field set is
  * introspectable for the registry parity test. `createAgentSchema` below wraps it.
  */
+/**
+ * Model parameters past temperature / max tokens / reasoning effort
+ * (`LlmOptions`), on an agent and on an `llm_call` step. Each is sent only
+ * to models that take it and dropped, never a 400, elsewhere. Null or absent
+ * leaves the provider's default.
+ */
+export const modelParamFields = {
+  stopSequences: z
+    .array(
+      z
+        .string()
+        .max(200)
+        // Anthropic refuses a stop sequence that is only whitespace.
+        .refine((stop) => stop.trim().length > 0, 'A stop sequence needs a visible character')
+    )
+    .max(MAX_STOP_SEQUENCES, `At most ${MAX_STOP_SEQUENCES} stop sequences`)
+    .optional(),
+  topP: z
+    .number()
+    .min(0, 'Top P must be at least 0')
+    .max(1, 'Top P must be at most 1')
+    .nullable()
+    .optional(),
+  verbosity: z.enum(VERBOSITIES).nullable().optional(),
+  parallelToolCalls: z.boolean().nullable().optional(),
+  serviceTier: z.enum(SERVICE_TIERS).nullable().optional(),
+};
+
+/**
+ * Tools the provider runs itself (`AiAgent.providerTools`), on an agent only:
+ * an `llm_call` step has no setting for them. Null turns them all off.
+ */
+export const agentProviderToolsField = {
+  providerTools: providerToolsSchema.nullable().optional(),
+};
+
 export const createAgentObjectSchema = z.object({
   name: z
     .string()
@@ -135,7 +178,10 @@ export const createAgentObjectSchema = z.object({
   // Reasoning-effort bucket. Honoured only by reasoning-capable models
   // (OpenAI o-series / gpt-5, Anthropic Claude 4 thinking). Silently
   // dropped by other models. Null / undefined = use provider default.
-  reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).nullable().optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
+
+  ...modelParamFields,
+  ...agentProviderToolsField,
 
   monthlyBudgetUsd: z
     .number()
@@ -334,7 +380,10 @@ export const updateAgentObjectSchema = z.object({
     .max(200000, 'Max tokens must be at most 200000')
     .optional(),
 
-  reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).nullable().optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
+
+  ...modelParamFields,
+  ...agentProviderToolsField,
 
   monthlyBudgetUsd: z
     .number()
@@ -1286,7 +1335,10 @@ export const bundledAgentSchema = z.object({
   // Reasoning-effort bucket. Optional — older bundles omit it, in which
   // case the agent is imported with null and the runtime sends no
   // reasoning_effort.
-  reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).nullable().optional(),
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
+  // Optional — bundles written before these existed import with none set.
+  ...modelParamFields,
+  ...agentProviderToolsField,
   monthlyBudgetUsd: z.number().positive().max(10000).nullable().optional(),
   // Per-turn cost cap (USD) — runaway-loop guard from improvement #39.
   // Optional so older backup bundles round-trip; null preserves "no cap".
@@ -1478,6 +1530,17 @@ export const dryRunWorkflowBodySchema = z
   });
 
 /**
+ * The stored workflow a definition was copied from, and the version it was
+ * copied at (§122 t-900): a custom template applied in the builder, a
+ * duplicated workflow. Checked under erasure's locks, so a copy taken before
+ * an erasure scrubbed its source is refused with 412.
+ */
+export const copiedFromSchema = z.object({
+  workflowId: cuidSchema,
+  definitionVersion: z.string().min(1).max(200),
+});
+
+/**
  * Create workflow schema (POST /api/v1/admin/orchestration/workflows)
  */
 export const createWorkflowSchema = z.object({
@@ -1496,6 +1559,8 @@ export const createWorkflowSchema = z.object({
     .max(5000, 'Description must be less than 5000 characters'),
 
   workflowDefinition: workflowDefinitionSchema,
+
+  copiedFrom: copiedFromSchema.optional(),
 
   patternsUsed: z.array(z.number().int().positive('Pattern number must be positive')).default([]),
 
@@ -3173,6 +3238,49 @@ export const updateOrchestrationSettingsSchema = z
 // column (mid-flight) and the trace entry's `turns` field (post-termination).
 // The shapes mirror the discriminated union in `types/orchestration.ts`.
 
+/**
+ * An Anthropic code execution result (`AnthropicCodeExecutionContent`) as a
+ * checkpoint stores it. Checked here because the provider sends it back to
+ * Anthropic as it is.
+ */
+const anthropicCodeExecutionContentSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('bash_code_execution_result'),
+    stdout: z.string(),
+    stderr: z.string(),
+    return_code: z.number().int(),
+    content: z.array(
+      z.object({ type: z.literal('bash_code_execution_output'), file_id: z.string() })
+    ),
+  }),
+  z.object({ type: z.literal('bash_code_execution_tool_result_error'), error_code: z.string() }),
+  z.object({
+    type: z.literal('text_editor_code_execution_view_result'),
+    content: z.string(),
+    file_type: z.enum(['text', 'image', 'pdf']),
+    num_lines: z.number().int().nullable(),
+    start_line: z.number().int().nullable(),
+    total_lines: z.number().int().nullable(),
+  }),
+  z.object({
+    type: z.literal('text_editor_code_execution_create_result'),
+    is_file_update: z.boolean(),
+  }),
+  z.object({
+    type: z.literal('text_editor_code_execution_str_replace_result'),
+    lines: z.array(z.string()).nullable(),
+    new_lines: z.number().int().nullable(),
+    new_start: z.number().int().nullable(),
+    old_lines: z.number().int().nullable(),
+    old_start: z.number().int().nullable(),
+  }),
+  z.object({
+    type: z.literal('text_editor_code_execution_tool_result_error'),
+    error_code: z.string(),
+    error_message: z.string().nullable(),
+  }),
+]);
+
 const agentCallTurnContinuingSchema = z.object({
   kind: z.literal('agent_call'),
   phase: z.literal('continuing'),
@@ -3185,8 +3293,79 @@ const agentCallTurnContinuingSchema = z.object({
     arguments: z.record(z.string(), z.unknown()),
   }),
   toolResult: z.unknown(),
+  // `LlmReasoningBlock[]` — replayed on resume so a thinking Claude model's
+  // continuing turn keeps its signed thinking blocks, and a web search or code
+  // execution turn keeps what it found or ran, on either provider. No `.catch`: replaying the turn
+  // without them makes Anthropic reject every retry, so a malformed value
+  // fails the parse, which the resume logs before starting the step fresh.
+  reasoning: z
+    .array(
+      z.discriminatedUnion('type', [
+        z.object({ type: z.literal('thinking'), thinking: z.string(), signature: z.string() }),
+        z.object({ type: z.literal('redacted_thinking'), data: z.string() }),
+        z.object({
+          type: z.literal('server_tool_use'),
+          id: z.string(),
+          name: z.enum(['web_search', 'bash_code_execution', 'text_editor_code_execution']),
+          input: z.record(z.string(), z.unknown()),
+        }),
+        z.object({
+          type: z.literal('code_execution_tool_result'),
+          tool: z.enum(['bash', 'text_editor']),
+          toolUseId: z.string(),
+          content: anthropicCodeExecutionContentSchema,
+          containerId: z.string(),
+          durationMs: z.number().nonnegative(),
+          fileNames: z.array(z.string()).optional(),
+        }),
+        z.object({
+          type: z.literal('web_search_tool_result'),
+          toolUseId: z.string(),
+          results: z.array(
+            z.object({
+              url: z.string(),
+              title: z.string(),
+              encryptedContent: z.string(),
+              pageAge: z.string().nullable().optional(),
+            })
+          ),
+          errorCode: z.string().optional(),
+        }),
+        // OpenAI's Responses path keeps nothing on OpenAI's side, so these
+        // are what the resumed request continues the turn from.
+        z.object({
+          type: z.literal('openai_reasoning'),
+          id: z.string(),
+          encryptedContent: z.string(),
+          summary: z.array(z.string()),
+        }),
+        z.object({
+          type: z.literal('openai_web_search_call'),
+          id: z.string(),
+          status: z.enum(['in_progress', 'searching', 'completed', 'failed', 'incomplete']),
+          action: z.record(z.string(), z.unknown()),
+        }),
+        z.object({
+          type: z.literal('openai_code_interpreter_call'),
+          id: z.string(),
+          status: z.enum(['in_progress', 'interpreting', 'completed', 'incomplete', 'failed']),
+          containerId: z.string(),
+          code: z.string().nullable(),
+          outputs: z.array(
+            z.discriminatedUnion('type', [
+              z.object({ type: z.literal('logs'), logs: z.string() }),
+              z.object({ type: z.literal('image'), url: z.string() }),
+            ])
+          ),
+          durationMs: z.number().nonnegative(),
+          fileNames: z.array(z.string()).optional(),
+        }),
+      ])
+    )
+    .optional(),
   tokensUsed: z.number().nonnegative(),
   costUsd: z.number().nonnegative(),
+  webSearchRequests: z.number().int().nonnegative().optional(),
 });
 
 const agentCallTurnTerminalSchema = z.object({
@@ -3197,6 +3376,7 @@ const agentCallTurnTerminalSchema = z.object({
   assistantContent: z.string(),
   tokensUsed: z.number().nonnegative(),
   costUsd: z.number().nonnegative(),
+  webSearchRequests: z.number().int().nonnegative().optional(),
 });
 
 // `phase` discriminates the two valid runtime states. One-sided entries
@@ -3294,7 +3474,13 @@ export const executionTraceEntrySchema = z
         temperature: z.number().optional(),
         responseFormat: z.enum(['json_object', 'json_schema']).optional(),
         toolCount: z.number().int().nonnegative().optional(),
-        reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).optional(),
+        reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
+        stopSequences: z.array(z.string()).optional(),
+        topP: z.number().optional(),
+        verbosity: z.enum(VERBOSITIES).optional(),
+        parallelToolCalls: z.boolean().optional(),
+        serviceTier: z.enum(SERVICE_TIERS).optional(),
+        providerTools: providerToolsSchema.optional(),
       })
       .optional()
       .catch(() => undefined),
@@ -3383,16 +3569,14 @@ export const llmResponseFormatSchema = z.discriminatedUnion('type', [
 // Step configs that already expose `temperature` / `maxTokens` get this
 // alongside — same surface area as the agent.reasoningEffort field.
 // Honoured by reasoning-capable models; silently dropped by others.
-const reasoningEffortConfigSchema = z
-  .enum(['minimal', 'low', 'medium', 'high'])
-  .nullable()
-  .optional();
+const reasoningEffortConfigSchema = z.enum(REASONING_EFFORTS).nullable().optional();
 
 export const llmCallConfigSchema = stepErrorConfigSchema.extend({
   prompt: z.string().optional(),
   modelOverride: z.string().optional(),
   temperature: z.number().optional(),
   maxTokens: z.number().optional(),
+  ...modelParamFields,
   reasoningEffort: reasoningEffortConfigSchema,
   responseFormat: llmResponseFormatSchema.optional(),
 });
@@ -4104,6 +4288,13 @@ export const pendingApprovalSchema = z.object({
  * capability — no `includeTrace` gate; audit substrate is not an
  * admin-only debug toggle.
  */
+/**
+ * Most tool-call traces a message's provenance keeps. The writer fits a
+ * turn's list to it (`fitToolCallTraces`): a longer one fails this schema on
+ * read, and the message's whole provenance is lost.
+ */
+export const MAX_PROVENANCE_CAPABILITY_CALLS = 64;
+
 export const toolCallTraceSchema = z.object({
   slug: z.string().min(1).max(120),
   arguments: z.unknown(),
@@ -4146,7 +4337,7 @@ export const messageProvenanceSchema = z.object({
     )
     .max(64)
     .optional(),
-  capabilityCalls: z.array(toolCallTraceSchema).max(64).optional(),
+  capabilityCalls: z.array(toolCallTraceSchema).max(MAX_PROVENANCE_CAPABILITY_CALLS).optional(),
 });
 
 export const messageMetadataSchema = z.object({
@@ -4160,6 +4351,7 @@ export const messageMetadataSchema = z.object({
   latencyMs: z.number().optional(),
   costUsd: z.number().optional(),
   pendingApproval: pendingApprovalSchema.optional(),
+  reasoningSummary: z.string().optional(),
 });
 
 // ============================================================================

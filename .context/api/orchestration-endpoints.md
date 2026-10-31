@@ -61,9 +61,9 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/workflows/:id/cost-estimate`            | GET                | Planning-grade USD estimate (any workflow) — see [cost-estimation.md](../orchestration/cost-estimation.md)                                                                                                                 | 5.4     |
 | `/workflows/:id/versions`                 | GET                | List published versions (paginated, desc by version)                                                                                                                                                                       | 5.1     |
 | `/workflows/:id/versions/:version`        | GET                | Single-version snapshot read                                                                                                                                                                                               | 5.1     |
-| `/workflows/:id/publish`                  | POST               | Promote `draftDefinition` to a new published version                                                                                                                                                                       | 5.1     |
-| `/workflows/:id/discard-draft`            | POST               | Clear `draftDefinition`; published version unchanged                                                                                                                                                                       | 5.1     |
-| `/workflows/:id/rollback`                 | POST               | Create a NEW version copied from a target version                                                                                                                                                                          | 5.1     |
+| `/workflows/:id/publish`                  | POST               | Promote `draftDefinition` to a new published version. Requires `If-Match`: the `definitionVersion` from `GET /workflows/:id` (428 without, 412 `STALE_RECORD` once it moved on, §122 t-900); returns the new one           | 5.1     |
+| `/workflows/:id/discard-draft`            | POST               | Clear `draftDefinition`; published version unchanged. Requires `If-Match` as `/publish` does                                                                                                                               | 5.1     |
+| `/workflows/:id/rollback`                 | POST               | Create a NEW version copied from a target version. No `If-Match`: it re-reads the target under erasure's locks                                                                                                             | 5.1     |
 | `/executions/:id`                         | GET                | Read execution + parsed trace + `currentRunningSteps[]` for live indicator                                                                                                                                                 | 3.2     |
 | `/executions/:id/status`                  | GET                | Lightweight status read (no trace, polling-friendly)                                                                                                                                                                       | —       |
 | `/executions/:id/live`                    | GET                | Snapshot + trace + cost entries + `currentRunningSteps[]` (1 s-poll friendly)                                                                                                                                              | —       |
@@ -140,10 +140,10 @@ Validation schemas for every request body / query live in `lib/validations/orche
 | `/agents/:id/embed-tokens`                | GET, POST          | List / create embed tokens for widget auth                                                                                                                                                                                 | 5.1     |
 | `/agents/:id/embed-tokens/:tokenId`       | PATCH, DELETE      | Update / delete an embed token                                                                                                                                                                                             | 5.1     |
 | `/agents/:id/widget-config`               | GET, PATCH         | Read / update per-agent widget appearance + copy                                                                                                                                                                           | 5.1     |
-| `/workflows/templates`                    | GET                | Built-in templates (from code) + the org's own; `?source=`                                                                                                                                                                 | 5.1     |
+| `/workflows/templates`                    | GET                | Built-in templates (from code) + the org's own; `?source=`. Each of the org's own carries `copySource` `{ workflowId, definitionVersion }`, which a workflow created from it sends as `copiedFrom` (§122 t-900)            | 5.1     |
 | `/workflows/:id/save-as-template`         | POST               | Save a workflow as a reusable template                                                                                                                                                                                     | 5.1     |
 | `/workflows/:id/schedules`                | GET, POST          | List / create cron schedules for a workflow                                                                                                                                                                                | 5.1     |
-| `/workflows/:id/schedules/:scheduleId`    | GET, PATCH, DELETE | Read / update / delete a workflow schedule                                                                                                                                                                                 | 5.1     |
+| `/workflows/:id/schedules/:scheduleId`    | GET, PATCH, DELETE | Read / update / delete a workflow schedule; PATCH needs `If-Match` with the `version` the read returned (428 without, 412 when changed — t-899)                                                                            | 5.1     |
 
 **Schedule constraints:** Maximum 10 schedules per workflow. Workflow must be active (`isActive: true`) to create schedules. Create, update, and delete operations are audit-logged via `logAdminAction`. Create/update accept an optional `scope` (a flat string→string map stamped onto fired runs; `null` on update clears it via `Prisma.DbNull`) — see [Scheduling — Static scope carrier](../orchestration/scheduling.md#static-scope-carrier). The `POST /triggers` + `PATCH /triggers/:id` inbound-trigger routes accept the same `scope` field.
 
@@ -428,7 +428,14 @@ CRUD. The body is a `WorkflowDefinition` — a DAG of step nodes. Stored as `Jso
 
 ### `GET / PATCH / DELETE /workflows/:id`
 
-Standard CRUD.
+Standard CRUD, with one rule (§122 t-900): `GET` returns `definitionVersion`,
+and a `PATCH` that sends `draftDefinition` (a draft, or `null` to clear it)
+must send it back as `If-Match`. Without one it is refused with 428
+`PRECONDITION_REQUIRED`; when the draft or the published version has moved on
+since (another admin, or an erasure), with 412 `STALE_RECORD`, nothing
+written. The response carries the new `definitionVersion`. A `PATCH` of other
+fields alone (name, `isActive`, cost cap) needs no `If-Match`. See
+[Data erasure → The workflow builder](../privacy/data-erasure.md#the-workflow-builder-version-t-900).
 
 ### `POST /workflows/:id/validate`
 
@@ -1165,6 +1172,8 @@ Body for PATCH (`updateOrchestrationSettingsSchema`):
 }
 ```
 
+**A save of `escalationConfig` is versioned** (§122 t-899). `GET` returns `escalationVersion`; a `PATCH` whose body carries `escalationConfig` must send it back as `If-Match` (not the response's `ETag` header, which covers the whole body and never matches), or it is refused with `428 PRECONDITION_REQUIRED`, and is refused with `412 STALE_RECORD` (nothing written) when the list changed since that read, an erasure included. A `PATCH` that does not write `escalationConfig` needs no `If-Match`. See [Saves of a record that moved on](../privacy/data-erasure.md#saves-of-a-record-that-moved-on-version-t-899).
+
 At least one top-level field must be present. Every model id is validated against the in-memory registry — unknown ids return `400`. `globalMonthlyBudgetUsd` must be `null`, `0`, or a positive number ≤ 1,000,000.
 
 `voiceInputGloballyEnabled` is the org-wide kill switch for the voice-input feature (default `true`). When `false`, every agent's `enableVoiceInput` flag is treated as off regardless of its own value: the mic surface disappears from admin chat / embed widgets and the transcribe endpoints reject with `VOICE_DISABLED`. Use this for incident response or compliance pause without editing each agent.
@@ -1357,7 +1366,7 @@ Create an event subscription. Channel-discriminated body:
 
 ### `GET / PATCH / DELETE /webhooks/:id`
 
-Standard CRUD for a single event subscription. Scoped to `session.user.id` — cross-user returns 404. `PATCH` body: `{ channel?, url?, secret?, emailAddress?, events?, description?, isActive?, maxAttempts?, retryBackoffMs? }`. Channel coherence is enforced: if the patch flips the row's channel, the destination field for the new channel must be present (either in the patch or already on the row). `DELETE` is a hard delete of the subscription; its deliveries are kept, with `subscriptionId` set to null, as the record of where its events went (see [Where a delivery went](../admin/orchestration-webhooks.md#where-a-delivery-went)).
+Standard CRUD for a single event subscription. Scoped to `session.user.id` — cross-user returns 404. `PATCH` body: `{ channel?, url?, secret?, emailAddress?, events?, description?, isActive?, maxAttempts?, retryBackoffMs? }`. Channel coherence is enforced: if the patch flips the row's channel, the destination field for the new channel must be present (either in the patch or already on the row). **`PATCH` is versioned** (§122 t-899): `GET` (and each row of `GET /webhooks`) carries `version` as a field (there is no `ETag` header); send it as `If-Match`. No `If-Match` → `428 PRECONDITION_REQUIRED`; a subscription changed since that read, an erasure included → `412 STALE_RECORD`, nothing written. `POST /webhooks` is not checked. See [Saves of a record that moved on](../privacy/data-erasure.md#saves-of-a-record-that-moved-on-version-t-899). `DELETE` is a hard delete of the subscription; its deliveries are kept, with `subscriptionId` set to null, as the record of where its events went (see [Where a delivery went](../admin/orchestration-webhooks.md#where-a-delivery-went)).
 
 ### `DELETE /webhooks/deliveries/:id`
 

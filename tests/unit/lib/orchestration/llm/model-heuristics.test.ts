@@ -12,8 +12,16 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  acceptsFlexTier,
+  acceptsNativeStructuredOutput,
+  refusesForcedToolChoice,
+  acceptsCodeExecution,
+  acceptsOpenAiCodeInterpreter,
+  acceptsOpenAiWebSearch,
+  acceptsOpenAiWebSearchFilters,
   acceptsSamplingTemperature,
   acceptsThinkingBudget,
+  acceptsWebSearch,
   anthropicAdaptiveEffort,
   anthropicThinkingBudget,
   deriveBestRole,
@@ -27,6 +35,7 @@ import {
   deriveTierRole,
   deriveToolUse,
   narrowReasoningEffort,
+  openAiReasoningEffort,
   stripModelDateStamp,
   supportedReasoningEfforts,
   supportsReasoningEffort,
@@ -372,9 +381,25 @@ describe('supportsReasoningEffort', () => {
     );
   });
 
-  it('Claude Haiku is NOT a thinking model regardless of version', () => {
-    expect(supportsReasoningEffort('claude-haiku-4-5', 'anthropic', 'anthropic')).toBe(false);
+  it('Claude Haiku thinks from 4.5 on', () => {
+    expect(supportsReasoningEffort('claude-haiku-4-5', 'anthropic', 'anthropic')).toBe(true);
+    expect(supportsReasoningEffort('claude-haiku-4-5-20251001', 'anthropic', 'anthropic')).toBe(
+      true
+    );
+    expect(supportsReasoningEffort('claude-haiku-5-5', 'anthropic', 'anthropic')).toBe(true);
+    expect(supportsReasoningEffort('anthropic.claude-haiku-5-5', 'anthropic', 'anthropic')).toBe(
+      true
+    );
     expect(supportsReasoningEffort('claude-haiku-4', 'anthropic', 'anthropic')).toBe(false);
+    expect(supportsReasoningEffort('claude-3-5-haiku-latest', 'anthropic', 'anthropic')).toBe(
+      false
+    );
+  });
+
+  it('Fable and Mythos think on every release', () => {
+    for (const id of ['claude-fable-5', 'claude-fable-5-1', 'claude-mythos-5-1']) {
+      expect(supportsReasoningEffort(id, 'anthropic', 'anthropic')).toBe(true);
+    }
   });
 
   it('strips Bedrock and OpenRouter prefixes before matching', () => {
@@ -450,11 +475,13 @@ describe('acceptsSamplingTemperature', () => {
 });
 
 describe('narrowReasoningEffort', () => {
-  it('passes through the four enum values verbatim', () => {
+  it('passes through every enum value verbatim', () => {
     expect(narrowReasoningEffort('minimal')).toBe('minimal');
     expect(narrowReasoningEffort('low')).toBe('low');
     expect(narrowReasoningEffort('medium')).toBe('medium');
     expect(narrowReasoningEffort('high')).toBe('high');
+    expect(narrowReasoningEffort('xhigh')).toBe('xhigh');
+    expect(narrowReasoningEffort('max')).toBe('max');
   });
 
   it('returns undefined for null / undefined / empty input', () => {
@@ -535,6 +562,82 @@ describe('anthropicThinkingBudget', () => {
     expect(anthropicThinkingBudget('medium')).toBe(4096);
     expect(anthropicThinkingBudget('high')).toBe(16384);
   });
+
+  it('gives xhigh and max larger budgets than high', () => {
+    expect(anthropicThinkingBudget('xhigh')).toBe(32768);
+    expect(anthropicThinkingBudget('max')).toBe(65536);
+  });
+});
+
+describe('openAiReasoningEffort', () => {
+  it('clamps xhigh and max to high, which every OpenAI reasoning model takes', () => {
+    expect(openAiReasoningEffort('xhigh')).toBe('high');
+    expect(openAiReasoningEffort('max')).toBe('high');
+  });
+
+  it.each(['minimal', 'low', 'medium', 'high'] as const)('keeps %s as it is', (effort) => {
+    expect(openAiReasoningEffort(effort)).toBe(effort);
+  });
+});
+
+describe('acceptsNativeStructuredOutput', () => {
+  it.each([
+    'claude-fable-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+    'claude-opus-5-5',
+    'claude-opus-5',
+    'claude-opus-4-8',
+    'claude-opus-4-5',
+    'claude-opus-4-1-20250805',
+    'claude-sonnet-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-5-5',
+    'claude-haiku-4-5',
+    'anthropic.claude-sonnet-5-5',
+    'anthropic/claude-opus-5-5',
+  ])('accepts it on %s', (id) => {
+    expect(acceptsNativeStructuredOutput(id)).toBe(true);
+  });
+
+  it.each([
+    'claude-opus-4-7',
+    'claude-opus-4-6',
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-6',
+    'claude-sonnet-4-5',
+    'claude-3-5-sonnet-latest',
+    'claude-3-5-haiku-latest',
+    'some-other-model',
+  ])('keeps the extraction tool on %s', (id) => {
+    expect(acceptsNativeStructuredOutput(id)).toBe(false);
+  });
+});
+
+describe('refusesForcedToolChoice', () => {
+  it.each([
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-fable-5-1',
+    'claude-mythos-5-1',
+    'claude-opus-6',
+    'anthropic.claude-opus-5-5',
+    'claude-opus-5-5[1m]',
+  ])('refuses on %s', (id) => {
+    expect(refusesForcedToolChoice(id)).toBe(true);
+  });
+
+  it.each([
+    'claude-opus-5',
+    'claude-fable-5',
+    'claude-sonnet-5',
+    'claude-opus-4-8',
+    'claude-haiku-5-5',
+    'claude-haiku-4-5',
+    'claude-3-5-sonnet-latest',
+  ])('accepts a forced tool on %s', (id) => {
+    expect(refusesForcedToolChoice(id)).toBe(false);
+  });
 });
 
 describe('acceptsThinkingBudget', () => {
@@ -575,6 +678,11 @@ describe('anthropicAdaptiveEffort', () => {
     expect(anthropicAdaptiveEffort('medium')).toBe('medium');
     expect(anthropicAdaptiveEffort('high')).toBe('high');
   });
+
+  it('sends xhigh and max by name — every adaptive-thinking model takes them', () => {
+    expect(anthropicAdaptiveEffort('xhigh')).toBe('xhigh');
+    expect(anthropicAdaptiveEffort('max')).toBe('max');
+  });
 });
 
 describe('deriveMatrixSlug', () => {
@@ -594,4 +702,175 @@ describe('deriveMatrixSlug', () => {
       expect(deriveMatrixSlug(providerSlug, modelId)).toBe(expected);
     });
   }
+});
+
+describe('acceptsFlexTier', () => {
+  it.each([
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    'openai/gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5-2025-08-07',
+    'o3',
+    'o3-2025-04-16',
+    'o4-mini',
+  ])('offers flex on %s', (id) => expect(acceptsFlexTier(id)).toBe(true));
+
+  it.each([
+    'gpt-4o',
+    'gpt-4.1-mini',
+    'o3-mini',
+    'o3-pro',
+    'o1',
+    'my-gpt-5',
+    'gpt-5-chat-latest',
+    'gpt-5-pro',
+    'gpt-5-codex',
+  ])('does not on %s', (id) => expect(acceptsFlexTier(id)).toBe(false));
+});
+
+describe('acceptsWebSearch (t-912)', () => {
+  it.each([
+    'claude-3-5-sonnet-20241022',
+    'claude-3-5-haiku-20241022',
+    'claude-3-7-sonnet-20250219',
+    'claude-sonnet-4-6',
+    'claude-opus-4-20250514',
+    'claude-haiku-4-5',
+    'claude-opus-5-5',
+    'claude-fable-5-1',
+  ])('takes it on %s', (id) => {
+    expect(acceptsWebSearch(id)).toBe(true);
+  });
+
+  it.each(['claude-3-haiku-20240307', 'claude-3-opus-20240229', 'claude-2.1', 'gpt-5'])(
+    'drops it on %s',
+    (id) => {
+      expect(acceptsWebSearch(id)).toBe(false);
+    }
+  );
+});
+
+describe('acceptsOpenAiWebSearch / acceptsOpenAiWebSearchFilters (t-955)', () => {
+  // Measured against the live Responses API on 2026-10-27, except o3 and
+  // o4-mini, which OpenAI documents.
+  it.each([
+    ['gpt-5', true],
+    ['gpt-5-mini', true],
+    ['gpt-5-nano', true],
+    ['gpt-5.5', true],
+    ['openai/gpt-5-mini-2025-08-07', true],
+    ['gpt-4.1', true],
+    ['gpt-4.1-2025-04-14', true],
+    ['gpt-4o', true],
+    ['gpt-4o-2024-08-06', true],
+    ['o3', true],
+    ['o4-mini', true],
+  ])('offers web search with site filters on %s', (id) => {
+    expect(acceptsOpenAiWebSearch(id)).toBe(true);
+    expect(acceptsOpenAiWebSearchFilters(id)).toBe(true);
+  });
+
+  it.each(['gpt-4o-mini', 'gpt-4o-mini-2024-07-18', 'gpt-4.1-mini'])(
+    'offers web search on %s, but no site filters',
+    (id) => {
+      expect(acceptsOpenAiWebSearch(id)).toBe(true);
+      expect(acceptsOpenAiWebSearchFilters(id)).toBe(false);
+    }
+  );
+
+  it.each([
+    'gpt-4.1-nano',
+    'o3-mini',
+    'gpt-3.5-turbo',
+    'gpt-4',
+    'gpt-4o-audio-preview',
+    // Search and media variants of families that do search: the Responses
+    // API refuses the first two (measured), and the rest aren't chat models.
+    'gpt-4o-mini-search-preview',
+    'gpt-5-search-api',
+    'gpt-4o-mini-realtime-preview',
+    'gpt-4o-mini-tts',
+    'gpt-4o-mini-transcribe',
+    'my-gpt-5',
+    'claude-opus-5-5',
+  ])('offers none on %s', (id) => {
+    expect(acceptsOpenAiWebSearch(id)).toBe(false);
+    expect(acceptsOpenAiWebSearchFilters(id)).toBe(false);
+  });
+});
+
+describe('acceptsCodeExecution (t-956)', () => {
+  it.each([
+    'claude-opus-4-5',
+    'claude-opus-4-6',
+    'claude-opus-4-5-20251101',
+    'claude-sonnet-4-5',
+    'claude-sonnet-4-5-20250929',
+    'claude-sonnet-4.6',
+    'claude-haiku-4-5',
+    'claude-haiku-4-5-20251001',
+    'claude-opus-5-5',
+    'claude-sonnet-5',
+    'claude-haiku-5-1',
+    'claude-fable-5-1',
+    'claude-fable-1',
+    'claude-mythos-1',
+    'anthropic/claude-sonnet-4-5',
+    'us.anthropic.claude-opus-4-5-v1:0',
+  ])('takes it on %s', (id) => {
+    expect(acceptsCodeExecution(id)).toBe(true);
+  });
+
+  it.each([
+    'claude-3-5-sonnet-20241022',
+    'claude-3-7-sonnet-20250219',
+    'claude-3-haiku-20240307',
+    'claude-opus-4-0',
+    'claude-opus-4-1',
+    'claude-opus-4-1-20250805',
+    'claude-opus-4-20250514',
+    'claude-sonnet-4-0',
+    'claude-sonnet-4-20250514',
+    'claude-haiku-4-4',
+    'claude-2.1',
+    'claude-unknown-9',
+    'gpt-5',
+    '',
+  ])('drops it on %s', (id) => {
+    expect(acceptsCodeExecution(id)).toBe(false);
+  });
+});
+
+describe('acceptsOpenAiCodeInterpreter (t-956)', () => {
+  it.each([
+    'gpt-5',
+    'gpt-5-mini',
+    'gpt-5.5',
+    'openai/gpt-5-mini-2025-08-07',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4o-mini-2024-07-18',
+    'o3',
+    'o4-mini',
+  ])('takes it on %s', (id) => {
+    expect(acceptsOpenAiCodeInterpreter(id)).toBe(true);
+  });
+
+  it.each([
+    'gpt-4o-mini-search-preview',
+    'gpt-5-search-api',
+    'gpt-4.1-nano',
+    'o3-mini',
+    'gpt-3.5-turbo',
+    'gpt-4',
+    'gpt-4o-audio-preview',
+    'my-gpt-5',
+    'claude-opus-5-5',
+  ])('drops it on %s', (id) => {
+    expect(acceptsOpenAiCodeInterpreter(id)).toBe(false);
+  });
 });

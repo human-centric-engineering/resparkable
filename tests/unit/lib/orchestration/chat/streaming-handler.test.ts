@@ -240,7 +240,8 @@ const {
   getProviderIfBreakerClosed,
   isLocalProvider,
 } = await import('@/lib/orchestration/llm/provider-manager');
-const { checkBudget, logCost } = await import('@/lib/orchestration/llm/cost-tracker');
+const { calculateCost, checkBudget, logCost } =
+  await import('@/lib/orchestration/llm/cost-tracker');
 const { capabilityDispatcher } = await import('@/lib/orchestration/capabilities/dispatcher');
 // Registry mocks are established via vi.mock above; capture getCapabilityDefinitions
 // so forced-retrieval tests can make search_knowledge_base appear in the tool set.
@@ -2303,6 +2304,63 @@ describe('StreamingChatHandler', () => {
     const done = events.find((e) => (e as { type: string }).type === 'done');
     expect(done).toBeDefined();
   });
+
+  // 28b ---------------------------------------------------------------------
+  it.each([
+    {
+      shape: 'one tool call',
+      calls: [{ id: 'tc-a', name: 'search_knowledge_base', arguments: { query: 'react' } }],
+    },
+    {
+      shape: 'parallel tool calls',
+      calls: [
+        { id: 'tc-a', name: 'search_knowledge_base', arguments: { query: 'react' } },
+        { id: 'tc-b', name: 'get_weather', arguments: { city: 'London' } },
+      ],
+    },
+  ])(
+    'carries the turn’s thinking blocks onto the assistant message it replays ($shape)',
+    async ({ calls }) => {
+      const reasoning = [
+        { type: 'thinking', thinking: '', signature: 'sig-1' },
+        { type: 'redacted_thinking', data: 'opaque' },
+      ];
+      const provider = mockProvider([
+        [
+          ...calls.map((toolCall) => ({ type: 'tool_call', toolCall })),
+          {
+            type: 'done',
+            usage: { inputTokens: 20, outputTokens: 5 },
+            finishReason: 'tool_use',
+            reasoning,
+          },
+        ],
+        [
+          { type: 'text', content: 'Done.' },
+          { type: 'done', usage: { inputTokens: 40, outputTokens: 10 }, finishReason: 'stop' },
+        ],
+      ]);
+      (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider,
+        usedSlug: 'anthropic',
+      });
+      vi.mocked(capabilityDispatcher.dispatch).mockResolvedValue({ success: true, data: {} });
+
+      await collect(streamChat(baseRequest));
+
+      expect(provider.chatStream).toHaveBeenCalledTimes(2);
+      const turn2Messages = (
+        provider.chatStream.mock.calls[1] as unknown as unknown[][]
+      )[0] as Array<{
+        role: string;
+        toolCalls?: unknown[];
+        reasoning?: unknown;
+      }>;
+      const assistantMsg = turn2Messages.find((m) => m.role === 'assistant' && m.toolCalls);
+      expect(assistantMsg?.toolCalls).toHaveLength(calls.length);
+      expect(assistantMsg?.reasoning).toEqual(reasoning);
+    }
+  );
 
   // 29 ----------------------------------------------------------------------
   it('parallel tool calls: any skipFollowup result short-circuits after all dispatches', async () => {
@@ -7221,6 +7279,90 @@ describe('attachment gate', () => {
     expect(assertModelSupportsAttachments).not.toHaveBeenCalled();
   });
 
+  // ─── Reasoning summary (t-953) ─────────────────────────────────────────────
+
+  describe('reasoning summary', () => {
+    function setupReasoningTurns() {
+      const provider = mockProvider([
+        [
+          { type: 'reasoning', text: 'Need the order. ' },
+          { type: 'reasoning', text: 'Look it up.' },
+          {
+            type: 'tool_call',
+            toolCall: { id: 'tc1', name: 'lookup_order', arguments: { orderId: 'o_1' } },
+          },
+          { type: 'done', usage: { inputTokens: 5, outputTokens: 2 }, finishReason: 'tool_use' },
+        ],
+        [
+          { type: 'reasoning', text: 'It shipped.' },
+          { type: 'text', content: 'Your order shipped.' },
+          { type: 'done', usage: { inputTokens: 6, outputTokens: 4 }, finishReason: 'stop' },
+        ],
+      ]);
+      (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider,
+        usedSlug: 'anthropic',
+      });
+      (capabilityDispatcher.dispatch as ReturnType<typeof vi.fn>).mockResolvedValue({
+        success: true,
+        data: { id: 'o_1' },
+      });
+    }
+
+    function persistedAssistantMetadata(): Array<Record<string, unknown> | undefined> {
+      return (prisma.aiMessage.create as ReturnType<typeof vi.fn>).mock.calls
+        .map(
+          ([args]) => (args as { data: { role: string; metadata?: Record<string, unknown> } }).data
+        )
+        .filter((data) => data.role === 'assistant')
+        .map((data) => data.metadata);
+    }
+
+    it('streams reasoning deltas on includeTrace, with a paragraph break between iterations', async () => {
+      setupReasoningTurns();
+      const events = await collect(streamChat({ ...baseRequest, includeTrace: true }));
+      const reasoning = events.filter((e) => (e as { type: string }).type === 'reasoning');
+      expect(reasoning).toEqual([
+        { type: 'reasoning', delta: 'Need the order. ' },
+        { type: 'reasoning', delta: 'Look it up.' },
+        { type: 'reasoning', delta: '\n\nIt shipped.' },
+      ]);
+    });
+
+    it('streams no reasoning event when includeTrace is unset (consumer and embed)', async () => {
+      setupReasoningTurns();
+      const events = await collect(streamChat(baseRequest));
+      expect(events.some((e) => (e as { type: string }).type === 'content')).toBe(true);
+      expect(events.some((e) => (e as { type: string }).type === 'reasoning')).toBe(false);
+    });
+
+    it('persists each iteration’s reasoning on its own assistant message, with or without includeTrace', async () => {
+      setupReasoningTurns();
+      await collect(streamChat(baseRequest));
+      expect(persistedAssistantMetadata().map((m) => m?.reasoningSummary)).toEqual([
+        'Need the order. Look it up.',
+        'It shipped.',
+      ]);
+    });
+
+    it('leaves reasoningSummary off when the provider streamed none', async () => {
+      const provider = mockProvider([
+        [
+          { type: 'text', content: 'Hi.' },
+          { type: 'done', usage: { inputTokens: 1, outputTokens: 1 }, finishReason: 'stop' },
+        ],
+      ]);
+      (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider,
+        usedSlug: 'anthropic',
+      });
+      await collect(streamChat({ ...baseRequest, includeTrace: true }));
+      const metadata = persistedAssistantMetadata();
+      expect(metadata).toHaveLength(1);
+      expect(metadata[0]).not.toHaveProperty('reasoningSummary');
+    });
+  });
+
   // ─── includeTrace opt-in ─────────────────────────────────────────────────
 
   describe('includeTrace', () => {
@@ -7350,6 +7492,47 @@ describe('attachment gate', () => {
       };
       expect(terminal.data.provenance?.capabilityCalls).toBeDefined();
       expect(terminal.data.provenance?.capabilityCalls?.[0]?.slug).toBe('lookup_order');
+    });
+
+    it('fits a turn with more provider runs than provenance keeps to its limit (t-956)', async () => {
+      const runs = Array.from({ length: 70 }, (_, i) => ({
+        type: 'openai_code_interpreter_call' as const,
+        id: `ci_${i}`,
+        status: 'completed' as const,
+        containerId: 'cntr_1',
+        code: `print(${i})`,
+        outputs: [{ type: 'logs' as const, logs: String(i) }],
+        durationMs: 10,
+      }));
+      const provider = mockProvider([
+        [
+          { type: 'text', content: 'Done.' },
+          {
+            type: 'done',
+            usage: { inputTokens: 5, outputTokens: 2 },
+            finishReason: 'stop',
+            reasoning: runs,
+          },
+        ],
+      ]);
+      (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+        provider,
+        usedSlug: 'openai',
+      });
+
+      await collect(streamChat(baseRequest));
+
+      const createCalls = (prisma.aiMessage.create as ReturnType<typeof vi.fn>).mock.calls;
+      const terminal = createCalls
+        .filter((c: unknown[]) => (c[0] as { data: { role: string } }).data.role === 'assistant')
+        .at(-1)?.[0] as {
+        data: { provenance?: { capabilityCalls?: Array<{ arguments: unknown }> } };
+      };
+      const kept = terminal.data.provenance?.capabilityCalls ?? [];
+      // The read schema's limit: a 70-entry list would fail it and lose the provenance.
+      expect(kept).toHaveLength(64);
+      expect(kept[0].arguments).toEqual({ code: 'print(0)' });
+      expect(kept[63].arguments).toEqual({ code: 'print(63)' });
     });
 
     it('omits the SSE `trace` field on capability_result events when includeTrace=false', async () => {
@@ -8314,10 +8497,15 @@ describe('agent-opened turns (#474)', () => {
     const messages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Array<{
       role: string;
       content: unknown;
+      turnInstruction?: boolean;
     }>;
     const opener = messages.find((m) => m.content === openingRequest.openingTurn.content);
     expect(opener).toBeDefined();
     expect(opener?.role).toBe('system');
+    // Marked so a provider that hoists system messages keeps it in place (t-937);
+    // the system prompt itself is not.
+    expect(opener?.turnInstruction).toBe(true);
+    expect(messages[0].turnInstruction).toBeUndefined();
     // And no user-role message at all this turn.
     expect(messages.filter((m) => m.role === 'user')).toHaveLength(0);
   });
@@ -8485,5 +8673,268 @@ describe('app message metadata (#475)', () => {
     const createCalls = (prisma.aiMessage.create as ReturnType<typeof vi.fn>).mock.calls;
     const userRow = createCalls.find((c: any) => c[0].data.role === 'user');
     expect(userRow?.[0].data.metadata).toBeUndefined();
+  });
+});
+
+describe('provider code execution (t-956)', () => {
+  const codeExecution = { runs: 2, billedSeconds: 300, usdPerHour: 0.05 };
+
+  function setupAgent() {
+    (prisma.aiAgent.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeAgent({ providerTools: { codeExecution: {} } })
+    );
+  }
+
+  function useProvider(provider: ReturnType<typeof mockProvider>) {
+    (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider,
+      usedSlug: 'anthropic',
+    });
+  }
+
+  /** The usage object each `calculateCost` call was handed (4th argument). */
+  function usagesPricedSoFar(): unknown[] {
+    return vi.mocked(calculateCost).mock.calls.map((c) => c[3]);
+  }
+
+  it('asks the provider for code execution with the agent’s setting', async () => {
+    setupAgent();
+    const provider = mockProvider([
+      [
+        { type: 'text', content: 'Done.' },
+        { type: 'done', usage: { inputTokens: 10, outputTokens: 5 }, finishReason: 'stop' },
+      ],
+    ]);
+    useProvider(provider);
+
+    await collect(streamChat(baseRequest));
+
+    expect((provider.chatStream.mock.calls[0] as unknown[])[1]).toMatchObject({
+      providerTools: { codeExecution: {} },
+    });
+  });
+
+  it('logs and prices the runs on the final turn’s cost row', async () => {
+    setupAgent();
+    useProvider(
+      mockProvider([
+        [
+          { type: 'text', content: 'The answer is 42.' },
+          {
+            type: 'done',
+            usage: { inputTokens: 10, outputTokens: 5, codeExecution },
+            finishReason: 'stop',
+          },
+        ],
+      ])
+    );
+
+    await collect(streamChat(baseRequest));
+    await Promise.resolve();
+
+    expect(logCost).toHaveBeenCalledWith(expect.objectContaining({ codeExecution }));
+    expect(usagesPricedSoFar()).toContainEqual(expect.objectContaining({ codeExecution }));
+  });
+
+  it('logs and prices the runs of a turn that goes on to call a tool', async () => {
+    setupAgent();
+    useProvider(
+      mockProvider([
+        [
+          {
+            type: 'tool_call',
+            toolCall: { id: 'tc-a', name: 'search_knowledge_base', arguments: { query: 'sun' } },
+          },
+          {
+            type: 'done',
+            usage: { inputTokens: 10, outputTokens: 5, codeExecution },
+            finishReason: 'tool_use',
+          },
+        ],
+        [
+          { type: 'text', content: 'Done.' },
+          { type: 'done', usage: { inputTokens: 20, outputTokens: 5 }, finishReason: 'stop' },
+        ],
+      ])
+    );
+    vi.mocked(capabilityDispatcher.dispatch).mockResolvedValue({ success: true, data: {} });
+
+    await collect(streamChat(baseRequest));
+    await Promise.resolve();
+
+    // The tool-call turn carries the runs; the closing turn made none.
+    const logged = vi.mocked(logCost).mock.calls.map(([row]) => row.codeExecution);
+    expect(logged).toEqual([codeExecution, undefined]);
+    expect(usagesPricedSoFar()[0]).toMatchObject({ codeExecution });
+  });
+
+  it('logs and prices the runs an errored call reports on ProviderError.usage', async () => {
+    setupAgent();
+    const failing = {
+      name: 'failing',
+      isLocal: false,
+      chat: vi.fn(),
+      embed: vi.fn(),
+      listModels: vi.fn(),
+      testConnection: vi.fn(),
+      // eslint-disable-next-line require-yield
+      chatStream: vi.fn(async function* () {
+        throw new ProviderError('hit max_tokens before a complete response', {
+          code: 'truncated_no_output',
+          retriable: false,
+          usage: { inputTokens: 10, outputTokens: 5, codeExecution },
+        });
+      }),
+    };
+    (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider: failing,
+      usedSlug: 'anthropic',
+    });
+
+    await collect(streamChat(baseRequest));
+    await Promise.resolve();
+
+    expect(logCost).toHaveBeenCalledWith(expect.objectContaining({ codeExecution }));
+    expect(usagesPricedSoFar()).toContainEqual(expect.objectContaining({ codeExecution }));
+  });
+});
+
+describe('provider web search (t-912)', () => {
+  const searchBlocks = [
+    { type: 'server_tool_use', id: 's1', name: 'web_search', input: { query: 'sunrise' } },
+    {
+      type: 'web_search_tool_result',
+      toolUseId: 's1',
+      results: [{ url: 'https://a.example', title: 'A', encryptedContent: 'x' }],
+    },
+  ];
+
+  function setupSearchTurn() {
+    (prisma.aiAgent.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeAgent({ providerTools: { webSearch: { maxUses: 2 } } })
+    );
+    const provider = mockProvider([
+      [
+        { type: 'text', content: 'It rises at 6.' },
+        {
+          type: 'done',
+          usage: { inputTokens: 10, outputTokens: 5, webSearchRequests: 1 },
+          finishReason: 'stop',
+          reasoning: searchBlocks,
+        },
+      ],
+    ]);
+    (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider,
+      usedSlug: 'anthropic',
+    });
+    return provider;
+  }
+
+  type Provenance = { capabilityCalls?: Array<Record<string, unknown>> };
+
+  function terminalProvenance(): Provenance | undefined {
+    const assistant = (prisma.aiMessage.create as ReturnType<typeof vi.fn>).mock.calls
+      .map(([args]) => (args as { data: { role: string; provenance?: Provenance } }).data)
+      .filter((data) => data.role === 'assistant');
+    return assistant[assistant.length - 1]?.provenance;
+  }
+
+  it('asks the provider for web search with the agent’s options', async () => {
+    const provider = setupSearchTurn();
+    await collect(streamChat(baseRequest));
+    expect((provider.chatStream.mock.calls[0] as unknown[])[1]).toMatchObject({
+      providerTools: { webSearch: { maxUses: 2 } },
+    });
+  });
+
+  it('records each search in the turn’s trace, with or without includeTrace', async () => {
+    setupSearchTurn();
+    await collect(streamChat(baseRequest));
+    expect(terminalProvenance()?.capabilityCalls).toEqual([
+      expect.objectContaining({
+        slug: 'provider:web_search',
+        arguments: { query: 'sunrise' },
+        success: true,
+        resultPreview: 'A — https://a.example',
+      }),
+    ]);
+  });
+
+  it('streams the search as a traced capability_result only on includeTrace', async () => {
+    setupSearchTurn();
+    const traced = await collect(streamChat({ ...baseRequest, includeTrace: true }));
+    expect(traced.filter((e) => (e as { type: string }).type === 'capability_result')).toEqual([
+      expect.objectContaining({
+        capabilitySlug: 'provider:web_search',
+        trace: expect.objectContaining({ slug: 'provider:web_search' }),
+      }),
+    ]);
+
+    vi.mocked(prisma.aiMessage.create).mockClear();
+    setupSearchTurn();
+    const plain = await collect(streamChat(baseRequest));
+    expect(plain.some((e) => (e as { type: string }).type === 'capability_result')).toBe(false);
+  });
+
+  it('logs the searches on the turn’s cost row', async () => {
+    setupSearchTurn();
+    await collect(streamChat(baseRequest));
+    await Promise.resolve();
+    expect(logCost).toHaveBeenCalledWith(expect.objectContaining({ webSearchRequests: 1 }));
+  });
+
+  it('sends the tool loop’s next call only the searches the reply has left', async () => {
+    (prisma.aiAgent.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeAgent({ providerTools: { webSearch: { maxUses: 2 } } })
+    );
+    const provider = mockProvider([
+      [
+        {
+          type: 'tool_call',
+          toolCall: { id: 'tc-a', name: 'search_knowledge_base', arguments: { query: 'sun' } },
+        },
+        {
+          type: 'done',
+          usage: { inputTokens: 10, outputTokens: 5, webSearchRequests: 1 },
+          finishReason: 'tool_use',
+          reasoning: searchBlocks,
+        },
+      ],
+      [
+        { type: 'text', content: 'It rises at 6.' },
+        { type: 'done', usage: { inputTokens: 20, outputTokens: 5 }, finishReason: 'stop' },
+      ],
+    ]);
+    (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider,
+      usedSlug: 'anthropic',
+    });
+    vi.mocked(capabilityDispatcher.dispatch).mockResolvedValue({ success: true, data: {} });
+
+    await collect(streamChat(baseRequest));
+
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect((provider.chatStream.mock.calls[0] as unknown[])[1]).toMatchObject({
+      providerTools: { webSearch: { maxUses: 2 } },
+    });
+    expect((provider.chatStream.mock.calls[1] as unknown[])[1]).toMatchObject({
+      providerTools: { webSearch: { maxUses: 1 } },
+    });
+  });
+
+  it('sends no provider tool for an agent without one', async () => {
+    (prisma.aiAgent.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(
+      makeAgent({ providerTools: null })
+    );
+    const provider = mockProvider([
+      [{ type: 'done', usage: { inputTokens: 1, outputTokens: 1 }, finishReason: 'stop' }],
+    ]);
+    (getProviderWithFallbacks as ReturnType<typeof vi.fn>).mockResolvedValue({
+      provider,
+      usedSlug: 'anthropic',
+    });
+    await collect(streamChat(baseRequest));
+    expect((provider.chatStream.mock.calls[0] as unknown[])[1]).not.toHaveProperty('providerTools');
   });
 });

@@ -24,7 +24,14 @@ import type {
   AiProviderModel,
 } from '@/types/prisma';
 import type { ProvenanceItem } from '@/lib/orchestration/provenance/types';
-import type { LlmFinishReason } from '@/lib/orchestration/llm/types';
+import type {
+  LlmFinishReason,
+  LlmReasoningBlock,
+  ProviderTools,
+  ReasoningEffort,
+  ServiceTier,
+  Verbosity,
+} from '@/lib/orchestration/llm/types';
 
 // ============================================================================
 // Enums
@@ -376,6 +383,11 @@ interface AgentCallTurnBase {
   assistantContent: string;
   tokensUsed: number;
   costUsd: number;
+  /**
+   * Provider web searches this iteration ran. Summed on resume, so the
+   * agent's per-reply search limit holds across a crash. Absent means none.
+   */
+  webSearchRequests?: number;
 }
 
 /**
@@ -388,6 +400,13 @@ export interface AgentCallTurnContinuing extends AgentCallTurnBase {
   toolCall: { id: string; name: string; arguments: Record<string, unknown> };
   /** The dispatcher's result for `toolCall`, JSON-serialisable. */
   toolResult: unknown;
+  /**
+   * The reasoning blocks the provider returned with this turn, replayed on
+   * resume (Anthropic rejects a continued tool loop without them when
+   * thinking is on). Kept on the running-step checkpoint only — the engine
+   * strips it from the `executionTrace` copy of the turns.
+   */
+  reasoning?: LlmReasoningBlock[];
 }
 
 /**
@@ -651,7 +670,19 @@ export interface LlmRequestParamsSnapshot {
    * the caller intent so a misconfiguration (caller set 'high' on a
    * model that ignores it) is visible in the trace.
    */
-  reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
+  reasoningEffort?: ReasoningEffort;
+  /**
+   * The further model parameters the caller set (`modelParamOptions`), in
+   * the same spirit: a provider drops one its model can't take, and this
+   * keeps what was asked for.
+   */
+  stopSequences?: string[];
+  topP?: number;
+  verbosity?: Verbosity;
+  parallelToolCalls?: boolean;
+  serviceTier?: ServiceTier;
+  /** The tools the provider was asked to run itself (Anthropic web search). */
+  providerTools?: ProviderTools;
 }
 
 /**
@@ -856,6 +887,16 @@ export type ChatEvent =
   // than the wire contract. No bundled consumer reads it off `start`.
   | { type: 'start'; conversationId: string; messageId?: string }
   | { type: 'content'; delta: string }
+  | {
+      // Admin-only: the model's reasoning text as it streams (Claude's
+      // summarized thinking, or an OpenAI-compatible provider's reasoning
+      // deltas). Emitted only when the request sets `includeTrace: true`,
+      // so consumer and embed streams never carry it. Cleared by
+      // `content_reset` along with the content. The persisted copy is
+      // `MessageMetadata.reasoningSummary`.
+      type: 'reasoning';
+      delta: string;
+    }
   | { type: 'status'; message: string }
   | {
       type: 'capability_result';
@@ -1139,6 +1180,14 @@ export interface MessageMetadata {
    * full picture even on reloads / when replayed from history.
    */
   sideEffectModels?: SideEffectModelUsage[];
+  /**
+   * The model's readable reasoning for this turn, concatenated as it streamed
+   * (Claude's summarized thinking, or an OpenAI-compatible provider's
+   * reasoning deltas). Always persisted when the provider sent any, so the
+   * admin trace viewer can show it; it streams live only on `includeTrace`.
+   * Display only — the replayable thinking blocks are not stored here.
+   */
+  reasoningSummary?: string;
   // Present on tool messages
   toolCall?: { id: string; name: string; arguments: unknown };
   result?: unknown;
@@ -1336,9 +1385,13 @@ export type AiWorkflowListItem = AiWorkflow & {
  * workflow endpoints. The builder reads the snapshot from `publishedVersion`
  * (or `draftDefinition` when present) — the legacy `workflowDefinition`
  * column has been removed.
+ *
+ * `definitionVersion` is the version of what the builder edits, sent back as
+ * `If-Match` when it saves, publishes or discards (§122 t-900).
  */
 export type AiWorkflowWithVersion = AiWorkflow & {
   publishedVersion: AiWorkflowVersion | null;
+  definitionVersion: string;
 };
 
 /** Minimal agent projection nested in capability list items. */

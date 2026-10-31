@@ -123,6 +123,9 @@ const ORACLE_SKIPPED_FILES = new Set([
   // as data (`"delegate": "aiMessage"`) and reads none of them. Sunrise offers
   // no seam for a fork's own skip, so this is a local patch until it does.
   'lib/portability/model-graph.generated.ts',
+  // The stale-writer manifest names each scrubbed model's table as data (§122
+  // t-887), for its own scanner to match SQL against; it reads nothing.
+  'lib/privacy/stale-writers.ts',
 ]);
 
 function isOwnerlessModel(value: string): value is OwnerlessModel {

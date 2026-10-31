@@ -79,6 +79,17 @@ safe.
 
 Both actions update the status pill in place without a hard refresh.
 
+**A workflow that moved on** (§122 t-900). The builder holds the
+`definitionVersion` it loaded and sends it as `If-Match` on save, publish and
+discard, adopting the one each returns (or reloads, after a discard or a
+rollback). When another admin or an erasure has changed the draft or the
+published version since, the write is refused with 412 and the builder shows
+`<StaleSaveNotice>` above the canvas instead of a red error. The canvas is
+untouched. The builder does not track which edits are unsaved, so the notice
+says reloading discards them and offers **Copy my changes** (the canvas JSON,
+as **Copy JSON** gives it) before **Reload**. See
+[Data erasure → The workflow builder](../privacy/data-erasure.md#the-workflow-builder-version-t-900).
+
 ## Step registry
 
 `lib/orchestration/engine/step-registry.ts` is the data-driven source of truth for pattern step types. The palette iterates over `STEP_REGISTRY` and renders one draggable block per entry; the `PatternNode` custom node looks entries up by `type` for its icon and colour, and calls `getStepOutputs(type, config)` for dynamic output handle counts and labels.
@@ -139,7 +150,7 @@ Anti-optimism mechanics are structural:
 - Mandatory `unverifiedAreas[]` makes blind spots first-class.
 - Temperature 0.2; one retry at temperature 0 on parse failure; double-failure produces `inconclusive` verdict (never throws).
 
-**Persisted columns** on `AiWorkflowExecution`: `supervisorVerdict`, `supervisorScore`, `supervisorReport`, `supervisorReviewedAt`. Written via the generic `StepResult.contextPatch` mechanism (allowlisted in `lib/orchestration/engine/orchestration-engine.ts:drainContextPatch`) so the supervisor and any future post-hoc audit step share one write path.
+**Persisted columns** on `AiWorkflowExecution`: `supervisorVerdict`, `supervisorScore`, `supervisorReport`, `supervisorReviewedAt`. Written via the generic `StepResult.contextPatch` mechanism (allowlisted in `lib/orchestration/engine/orchestration-engine.ts:drainContextPatch`) so the supervisor and any future post-hoc audit step share one write path. When the patch carries a `supervisorReport`, the engine reads the run's stored verdict under its row lock and archives it into `previousVerdicts[]`, by the same rule the retroactive review route uses (`lib/orchestration/supervisor/verdict-history.ts`), so a retried run's supervisor step keeps the history.
 
 **Run-time toggle.** The "Execute workflow" dialog renders a **"Run neutral supervisor review"** checkbox when the workflow contains a `supervisor` step. Pre-checked from the step's `defaultEnabled` config. On submit, the dialog injects `inputData.__runSupervisor: <boolean>`. When explicitly false, the executor short-circuits with `expectedSkip: true` — no judge-model tokens billed.
 

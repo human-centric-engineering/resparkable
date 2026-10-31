@@ -84,6 +84,47 @@ describe('backupSchema', () => {
     vi.resetAllMocks();
   });
 
+  it.each(['xhigh', 'max', undefined])(
+    'imports an agent whose reasoning effort is %s',
+    (reasoningEffort) => {
+      const agent = makeValidAgent({ reasoningEffort });
+      const payload = makeValidPayload({
+        data: {
+          agents: [agent],
+          capabilities: [],
+          workflows: [],
+          webhooks: [],
+          settings: makeValidSettings(),
+        },
+      });
+      expect(backupSchema.parse(payload).data.agents[0].reasoningEffort).toBe(reasoningEffort);
+    }
+  );
+
+  it('restores the model parameters, and an older backup without them', () => {
+    const payload = (agent: Record<string, unknown>) =>
+      makeValidPayload({
+        data: {
+          agents: [agent],
+          capabilities: [],
+          workflows: [],
+          webhooks: [],
+          settings: makeValidSettings(),
+        },
+      });
+    const withParams = backupSchema.parse(
+      payload(makeValidAgent({ stopSequences: ['END'], topP: 0.5, serviceTier: 'flex' }))
+    );
+    expect(withParams.data.agents[0]).toMatchObject({
+      stopSequences: ['END'],
+      topP: 0.5,
+      serviceTier: 'flex',
+    });
+    expect(
+      backupSchema.parse(payload(makeValidAgent())).data.agents[0].stopSequences
+    ).toBeUndefined();
+  });
+
   it('accepts a valid complete payload', () => {
     const payload = makeValidPayload({
       data: {

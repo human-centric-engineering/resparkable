@@ -180,6 +180,37 @@ describe('saveWorkflow', () => {
     });
   });
 
+  describe('a canvas copied from a custom template (§122 t-900)', () => {
+    const COPY = { workflowId: 'cmjbv4i3x00003wslotemplate', definitionVersion: '"tpl-v1"' };
+
+    it('sends copiedFrom with the create', async () => {
+      await saveWorkflow({
+        mode: 'create',
+        name: 'From template',
+        nodes: [makeNode('step-1')],
+        edges: [],
+        details: VALID_DETAILS,
+        copiedFrom: COPY,
+      });
+
+      const [, options] = vi.mocked(apiClient.post).mock.calls[0];
+      expect((options?.body as Record<string, unknown>).copiedFrom).toEqual(COPY);
+    });
+
+    it('sends no copiedFrom with a create typed from scratch', async () => {
+      await saveWorkflow({
+        mode: 'create',
+        name: 'Scratch',
+        nodes: [makeNode('step-1')],
+        edges: [],
+        details: VALID_DETAILS,
+      });
+
+      const [, options] = vi.mocked(apiClient.post).mock.calls[0];
+      expect(options?.body).not.toHaveProperty('copiedFrom');
+    });
+  });
+
   describe('edit mode', () => {
     it('calls apiClient.patch with the workflowById URL', async () => {
       const nodes: PatternNode[] = [makeNode('step-1')];
@@ -188,6 +219,7 @@ describe('saveWorkflow', () => {
       await saveWorkflow({
         mode: 'edit',
         workflowId: 'wf-edit-1',
+        definitionVersion: '"v-loaded"',
         name: 'My Workflow',
         nodes,
         edges,
@@ -206,6 +238,7 @@ describe('saveWorkflow', () => {
       await saveWorkflow({
         mode: 'edit',
         workflowId: 'wf-edit-1',
+        definitionVersion: '"v-loaded"',
         name: 'Updated Workflow',
         nodes,
         edges,
@@ -230,6 +263,7 @@ describe('saveWorkflow', () => {
       await saveWorkflow({
         mode: 'edit',
         workflowId: 'wf-edit-1',
+        definitionVersion: '"v-loaded"',
         name: 'My Workflow',
         nodes,
         edges,
@@ -244,8 +278,44 @@ describe('saveWorkflow', () => {
       const edges: Edge[] = [];
 
       await expect(
-        saveWorkflow({ mode: 'edit', name: 'My Workflow', nodes, edges, details: VALID_DETAILS })
-      ).rejects.toThrow('workflowId is required when saving in edit mode');
+        saveWorkflow({
+          mode: 'edit',
+          definitionVersion: '"v-loaded"',
+          name: 'My Workflow',
+          nodes,
+          edges,
+          details: VALID_DETAILS,
+        })
+      ).rejects.toThrow('workflowId and definitionVersion are required when saving in edit mode');
+    });
+
+    it('throws rather than send a save with no definition version (§122 t-900)', async () => {
+      await expect(
+        saveWorkflow({
+          mode: 'edit',
+          workflowId: 'wf-edit-1',
+          name: 'My Workflow',
+          nodes: [makeNode('step-1')],
+          edges: [],
+          details: VALID_DETAILS,
+        })
+      ).rejects.toThrow('workflowId and definitionVersion are required');
+      expect(apiClient.patch).not.toHaveBeenCalled();
+    });
+
+    it('sends the definition version it loaded as If-Match (§122 t-900)', async () => {
+      await saveWorkflow({
+        mode: 'edit',
+        workflowId: 'wf-edit-1',
+        definitionVersion: '"v-loaded"',
+        name: 'My Workflow',
+        nodes: [makeNode('step-1')],
+        edges: [],
+        details: VALID_DETAILS,
+      });
+
+      const [, options] = vi.mocked(apiClient.patch).mock.calls[0];
+      expect(options?.options?.headers).toEqual({ 'If-Match': '"v-loaded"' });
     });
   });
 
@@ -273,6 +343,7 @@ describe('saveWorkflow', () => {
         saveWorkflow({
           mode: 'edit',
           workflowId: 'wf-edit-1',
+          definitionVersion: '"v-loaded"',
           name: 'My Workflow',
           nodes,
           edges,

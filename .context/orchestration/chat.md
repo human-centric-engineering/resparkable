@@ -126,7 +126,8 @@ Concretely:
 
 8. **`error`** — terminal alternative. Carries a stable `code` and user-safe `message`. See "Error codes" below.
 9. **`warning`** — non-terminal, may appear at any point. Carries `code` and `message`. Codes: `budget_warning` (agent at ≥80% spend), `input_flagged` (input guard detected a pattern), `output_flagged` (output guard detected a pattern), `citation_missing` / `citation_hallucinated` (citation guard detected a violation in `warn_and_continue` mode), `provider_retry` (falling back to next provider), `tool_not_advertised` (the model asked for a tool the agent was never offered this turn — refused before dispatch, and also emitted as the `capability.refused_not_advertised` hook event), `tool_unavailable` (the repeated-failure circuit breaker skipped a tool). Clients should display transiently and clear when the stream ends. **The embed widget currently drops `warning` frames entirely** — its event dispatch handles `start` / `content` / `content_reset` / `status` / `citations` / `approval_required` / `error` / `done` and nothing else — so every code above is admin-surface-only today. That predates the codes added for #488 and applies to all of them equally; it is worth knowing before relying on a warning reaching an end user.
-10. **`content_reset`** — emitted when the provider fallback activates mid-stream. Carries `reason: 'provider_fallback'`. **Clients must discard all buffered `content` deltas** received before this event and start accumulating fresh.
+10. **`content_reset`** — emitted when the provider fallback activates mid-stream. Carries `reason: 'provider_fallback'`. **Clients must discard all buffered `content` deltas** received before this event and start accumulating fresh. Discard any buffered `reasoning` deltas too.
+11. **`reasoning`** — admin-only, sent only when the request sets `includeTrace`. Carries `delta`: readable text of the model's reasoning, before or between `content` deltas. Claude sends a summary of its thinking (the adapter asks for `display: 'summarized'`), and OpenAI-compatible providers send their `reasoning_content` / `reasoning` deltas. OpenAI's own models send nothing here: Chat Completions does not return their reasoning summaries. When a tool loop makes more than one LLM call, the first delta of each later call starts with a blank line (`\n\n`). See [Reasoning summary](#reasoning-summary-admin-only).
 
 ## Pre-token latency
 
@@ -161,12 +162,33 @@ await streamChat({
 | `role:'user'` row      | persisted                        | **none**                                                                                                           |
 | `start.messageId`      | present                          | **absent**                                                                                                         |
 | `message.created` hook | fires for `user` and `assistant` | `assistant` only                                                                                                   |
-| Model sees the text as | `user`                           | **`system`**                                                                                                       |
+| Model sees the text as | `user`                           | **`system`** (Anthropic: a last user turn headed as an app instruction — see below)                                |
 | Injection scanner      | runs                             | **skipped** — the text is composed by your own server, and scanning it would flag an app instructing its own agent |
 | Conversation title     | derived from `message`           | derived from the opener                                                                                            |
 
 `message` wins if both are supplied: the person's own words are the turn, and
 the opener is ignored rather than prepended.
+
+**On Anthropic** the opener cannot stay a `system` message: the provider moves
+system messages into the request's `system` field, and Anthropic only accepts
+a user turn last. The message-builder marks it `turnInstruction: true`, and
+the provider sends it in place as a user turn headed
+`[Instruction from the application, not a message from the user]`. Before
+sending, the provider re-words any copy of that heading in a user message's
+text (`(typed by the user: ...)`) or in a tool result
+(`(written in a tool result: ...)`), so the heading as written comes only from
+the opener. Matching ignores case, spacing, full-width characters, zero-width
+characters and soft hyphens; it accepts any of `[ ( 【 〔 〖` or no bracket at
+all, a missing second clause, and a heading split across adjacent text parts.
+It is a pattern, not a guarantee: look-alike letters from other alphabets
+(Cyrillic `о` for `o`) and text inside a PDF document are not checked. If history
+ends on a tool call with no reply after it (a `skipFollowup` capability such
+as `run_workflow` pending approval) and the request thinks, that call and its
+results are sent as a text note on the assistant turn
+(`[Called run_workflow; result: {...}]`) instead, since thinking blocks are
+not persisted and Anthropic would read the opener as continuing that turn. The
+note keeps the model from repeating a call that already ran. Without thinking
+the call is sent as it is. Nothing about the stored transcript changes.
 
 **A turn must carry something.** `message`, `openingTurn.content`, or at least
 one attachment — a request with none of the three is rejected with
@@ -330,11 +352,21 @@ Internal admin chat surfaces — the Learning Lab pattern advisor and quiz, the 
 | `errorCode`     | `CapabilityResult.error.code` when present                                                        |
 | `resultPreview` | First ~480 chars of `JSON.stringify(result)` — keeps the persisted JSON column compact            |
 
+**Provider web search.** A web search the provider ran itself (an agent with `providerTools.webSearch`, see [llm-providers.md](./llm-providers.md#provider-tools-web-search)) is never dispatched, so the handler reads it from the turn's replayable blocks (`providerToolTraces()`, `lib/orchestration/chat/provider-tool-traces.ts`) and adds one `ToolCallTrace` per search to the same list: slug `provider:web_search`, the query as `arguments`, `latencyMs` 0 (the provider reports none per search), `costUsd` 0.01 on a search that succeeded, and the result titles and URLs as `resultPreview`. On OpenAI there is one per `web_search_call` item: its `action` without the sources as `arguments`, the source URLs as `resultPreview`, and `costUsd` only on a `search` action that didn't fail. The `open_page` and `find_in_page` steps a reasoning model takes are listed too, unbilled. A code run the provider made (an agent with `providerTools.codeExecution`) is listed the same way, with slug `provider:code_execution`: the command or code as `arguments`, its measured run time as `latencyMs`, success from the exit code on Anthropic (`exit_N` otherwise), and on OpenAI from the item's status, with a Python traceback in its output read as a failure (`exception`), since OpenAI reports no exit code, and what it printed as `resultPreview`, ending with `Files made (not delivered): <names>` when it made any. A run has no `costUsd` of its own: its container is billed per reply with a 5-minute minimum, so the cost is on the call's cost row. A message's provenance keeps at most `MAX_PROVENANCE_CAPABILITY_CALLS` (64) traces, the read schema's limit. A longer list is fitted by `fitToolCallTraces()`, which drops provider runs from the end first, keeping the dispatched capabilities. On `includeTrace` each is also streamed as a `capability_result` with its slug; without it, only the persisted record carries it.
+
 **Persistence.** When `includeTrace: true`, the streaming handler also writes the accumulated `ToolCallTrace[]` onto the _terminal_ assistant message's `metadata.toolCalls`. The conversation trace viewer reads this through `messageMetadataSchema` and renders the same `<MessageTrace>` component used live. Pre-trace conversations have no `toolCalls` field and the strip is simply absent — no migration required.
 
 **Wire-format guarantee.** The consumer route does not thread `includeTrace` into `streamChat`, even if a client sets the flag in its POST body. A regression test in `tests/unit/app/api/v1/chat/stream/route.test.ts` locks this in: a body with `includeTrace: true` must result in `streamChat()` being called without that field. If you add a new consumer-facing chat surface, follow the same pattern — leave the flag unset.
 
 **Client integration.** The shared admin parser (`components/admin/orchestration/chat/chat-events.ts`) validates every SSE block through a discriminated-union Zod schema so the new `trace` field arrives strongly typed. UI consumers should never reach into `parseSseBlock`'s `data: Record<string, unknown>` for trace fields; route them through `parseChatStreamEvent()` instead.
+
+### Reasoning summary (admin-only)
+
+Providers yield the model's readable reasoning as `{ type: 'reasoning', text }` stream chunks. The streaming handler forwards each one as a `reasoning` event only when `includeTrace` is set, so consumer and embed streams never carry it.
+
+Whether or not `includeTrace` is set, the handler collects each LLM call's reasoning text and saves it as `metadata.reasoningSummary` on the assistant message written for that call. A turn that loops through tools therefore has one summary per assistant row. A provider fallback clears the text along with the content. Only the normal assistant-message write saves the summary; the budget, approval and error paths do not. The consumer messages route returns no metadata, so the saved text stays admin-only. Message metadata is part of the subject export and is erased with its conversation.
+
+This is the readable summary only. The signed thinking blocks that a Claude tool loop replays are separate (`LlmMessage.reasoning`; see [LLM providers](./llm-providers.md)).
 
 ### Input-token breakdown on the `done` event
 

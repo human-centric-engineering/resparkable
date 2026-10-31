@@ -46,6 +46,7 @@ import { WorkflowDefinitionHistoryPanel } from '@/components/admin/orchestration
 import { BlockConfigPanel } from '@/components/admin/orchestration/workflow-builder/block-config-panel';
 import { BuilderToolbar } from '@/components/admin/orchestration/workflow-builder/builder-toolbar';
 import { PublishDialog } from '@/components/admin/orchestration/workflow-builder/publish-dialog';
+import { StaleSaveNotice } from '@/components/admin/orchestration/stale-save-notice';
 import { ExecutionInputDialog } from '@/components/admin/orchestration/workflow-builder/execution-input-dialog';
 import { ExecutionPanel } from '@/components/admin/orchestration/workflow-builder/execution-panel';
 import { PatternPalette } from '@/components/admin/orchestration/workflow-builder/pattern-palette';
@@ -74,7 +75,10 @@ import type {
   AgentOption,
   CapabilityOption,
 } from '@/components/admin/orchestration/workflow-builder/block-editors';
-import type { TemplateItem } from '@/components/admin/orchestration/workflow-builder/template-types';
+import type {
+  TemplateCopySource,
+  TemplateItem,
+} from '@/components/admin/orchestration/workflow-builder/template-types';
 import {
   templateMetadataSchema,
   toTemplateItem,
@@ -101,6 +105,7 @@ export interface WorkflowBuilderProps {
     patternsUsed: number[];
     isTemplate: boolean;
     metadata: unknown;
+    copySource?: TemplateCopySource;
   }>;
 }
 
@@ -121,6 +126,11 @@ function pickEditableDefinition(workflow: AiWorkflowWithVersion): unknown {
     return workflow.draftDefinition;
   }
   return workflow.publishedVersion?.snapshot ?? null;
+}
+
+/** A save, publish or discard refused because the workflow moved on (412, §122 t-900). */
+function isStale(err: unknown): boolean {
+  return err instanceof APIClientError && err.code === 'STALE_RECORD';
 }
 
 function initialState(
@@ -230,6 +240,19 @@ function WorkflowBuilderInner({
   const [publishing, setPublishing] = useState(false);
   const [published, setPublished] = useState(false);
   const [publishError, setPublishError] = useState<string | null>(null);
+
+  // The definition version this builder holds (§122 t-900): sent as If-Match
+  // on save, publish and discard, and moved on by each of them and by a
+  // rollback. `stale` is set when one is refused because the stored workflow
+  // moved on; the canvas keeps the admin's edits until they reload.
+  const [definitionVersion, setDefinitionVersion] = useState<string | undefined>(
+    workflow?.definitionVersion
+  );
+  const [stale, setStale] = useState(false);
+  // The custom template the canvas was loaded from, until the next save: its
+  // addresses are the template's, not typed here, so the save names it and
+  // is refused if the template moved on (an erasure, say) since it loaded.
+  const [copiedFrom, setCopiedFrom] = useState<TemplateCopySource | null>(null);
 
   // Capabilities for the Tool Call editor — server-prefetched via props,
   // with a client-side fallback if the page didn't provide them.
@@ -484,7 +507,8 @@ function WorkflowBuilderInner({
       steps: def.steps.map((s) => ({ ...s, config: stripLayout(s.config) })),
     };
     const json = JSON.stringify(cleaned, null, 2);
-    void navigator.clipboard.writeText(json);
+    // Returned, so the reload prompt can say whether the copy really landed.
+    return navigator.clipboard.writeText(json);
   }, [nodes, edges, details?.errorStrategy]);
 
   const handleValidate = useCallback(() => {
@@ -512,6 +536,7 @@ function WorkflowBuilderInner({
     );
     setNodes(templateNodes);
     setEdges(templateEdges);
+    setCopiedFrom(pendingTemplate.copySource ?? null);
     setWorkflowName(pendingTemplate.name);
     setSelectedNodeId(null);
     setSaveError(null);
@@ -539,6 +564,8 @@ function WorkflowBuilderInner({
         const savedWorkflow = await saveWorkflow({
           mode,
           workflowId: editingWorkflowId,
+          definitionVersion,
+          ...(copiedFrom ? { copiedFrom } : {}),
           name: workflowName.trim() || 'Untitled workflow',
           nodes,
           edges,
@@ -552,11 +579,18 @@ function WorkflowBuilderInner({
           // the toolbar's status pill flips to "Editing draft" without a
           // round-trip refresh.
           setHasDraft(true);
+          setDefinitionVersion(savedWorkflow.definitionVersion);
+          // Saved: the draft is this workflow's own from here on.
+          setCopiedFrom(null);
           setSaved(true);
           schedule(() => setSaved(false), 2500);
           router.refresh();
         }
       } catch (err) {
+        if (isStale(err)) {
+          setStale(true);
+          return;
+        }
         const message =
           err instanceof APIClientError
             ? err.message
@@ -569,7 +603,17 @@ function WorkflowBuilderInner({
         setSaving(false);
       }
     },
-    [edges, mode, nodes, router, editingWorkflowId, workflowName, schedule]
+    [
+      edges,
+      mode,
+      nodes,
+      router,
+      editingWorkflowId,
+      definitionVersion,
+      copiedFrom,
+      workflowName,
+      schedule,
+    ]
   );
 
   const handleSave = useCallback(() => {
@@ -654,6 +698,11 @@ function WorkflowBuilderInner({
         );
         setNodes(revertedNodes);
         setEdges(revertedEdges);
+        // Only with the canvas it describes: a version for content the canvas
+        // does not hold would let the next save write that over it.
+        setDefinitionVersion(fresh.definitionVersion);
+        // The canvas is current again, so the reload prompt no longer applies.
+        setStale(false);
       }
       // A rollback creates a new published version and clears the draft —
       // sync the toolbar pill to match.
@@ -676,16 +725,24 @@ function WorkflowBuilderInner({
       try {
         const result = await apiClient.post<{
           version: { version: number };
+          definitionVersion: string;
         }>(API.ADMIN.ORCHESTRATION.workflowPublish(workflow.id), {
           body: changeSummary ? { changeSummary } : {},
+          options: { headers: { 'If-Match': definitionVersion ?? '' } },
         });
         setPublishedVersion(result.version.version);
+        setDefinitionVersion(result.definitionVersion);
         setHasDraft(false);
         setPublishDialogOpen(false);
         setPublished(true);
         schedule(() => setPublished(false), 2500);
         router.refresh();
       } catch (err) {
+        if (isStale(err)) {
+          setPublishDialogOpen(false);
+          setStale(true);
+          return;
+        }
         const message =
           err instanceof APIClientError
             ? err.message
@@ -698,7 +755,7 @@ function WorkflowBuilderInner({
         setPublishing(false);
       }
     },
-    [router, workflow, schedule]
+    [router, workflow, definitionVersion, schedule]
   );
 
   const handleDiscardDraft = useCallback(async () => {
@@ -707,7 +764,9 @@ function WorkflowBuilderInner({
       return;
     }
     try {
-      await apiClient.post(API.ADMIN.ORCHESTRATION.workflowDiscardDraft(workflow.id), {});
+      await apiClient.post(API.ADMIN.ORCHESTRATION.workflowDiscardDraft(workflow.id), {
+        options: { headers: { 'If-Match': definitionVersion ?? '' } },
+      });
       // Reload the canvas from the published snapshot now that the draft is gone.
       const fresh = await apiClient.get<AiWorkflowWithVersion>(
         API.ADMIN.ORCHESTRATION.workflowById(workflow.id)
@@ -719,13 +778,21 @@ function WorkflowBuilderInner({
         );
         setNodes(revertedNodes);
         setEdges(revertedEdges);
+        // As after a rollback: the version only with the canvas it describes.
+        setDefinitionVersion(fresh.definitionVersion);
+        // The canvas is current again, so the reload prompt no longer applies.
+        setStale(false);
       }
       setHasDraft(false);
       router.refresh();
     } catch (err) {
+      if (isStale(err)) {
+        setStale(true);
+        return;
+      }
       logger.error('Workflow discard-draft failed', { err });
     }
-  }, [router, setEdges, setNodes, workflow]);
+  }, [router, setEdges, setNodes, workflow, definitionVersion]);
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
 
@@ -814,6 +881,17 @@ function WorkflowBuilderInner({
           <WorkflowDefinitionHistoryPanel
             workflowId={workflow.id}
             onReverted={() => void handleHistoryRevert()}
+          />
+        </div>
+      )}
+
+      {stale && (
+        <div className="border-b px-4 py-2">
+          <StaleSaveNotice
+            what={
+              copiedFrom ? 'This workflow, or the template it was started from,' : 'This workflow'
+            }
+            onCopyChanges={handleCopyJson}
           />
         </div>
       )}

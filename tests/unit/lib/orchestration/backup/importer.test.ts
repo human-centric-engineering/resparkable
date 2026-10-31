@@ -10,7 +10,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // The org's provider policy (§120 t-743): approves everything unless a test
 // refuses a slug.
@@ -36,6 +36,14 @@ vi.mock('@/lib/orchestration/llm/org-provider-policy', async (importOriginal) =>
 }));
 
 // ─── Mocks (declared before imports) ────────────────────────────────────────
+
+// The backup seal's key (§122 t-902). happy-dom hides the server env.
+vi.mock('@/lib/env', async (importOriginal) => ({
+  env: {
+    ...(await importOriginal<typeof import('@/lib/env')>()).env,
+    BETTER_AUTH_SECRET: 'test-secret-that-is-at-least-32-characters-long',
+  },
+}));
 
 const mockTx = {
   // The erased-person check (t-805): advisory locks, receipts, live users
@@ -127,7 +135,8 @@ import {
   importOrchestrationConfig,
   isWorkflowSlugConflict,
 } from '@/lib/orchestration/backup/importer';
-import { SUBJECT_LOCK_WAIT_MS } from '@/lib/privacy/erased-subjects';
+import { bundleContacts, sealExport } from '@/lib/orchestration/backup/export-seal';
+import { COPY_CLOCK_SKEW_MS, SUBJECT_LOCK_WAIT_MS } from '@/lib/privacy/erased-subjects';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db/client';
 import { getTenantContext } from '@/lib/tenancy/context';
@@ -1028,16 +1037,21 @@ describe('importOrchestrationConfig — people whose data was erased (t-805)', (
         expect.stringMatching(/onboarding-flow.*people whose data was erased were removed/i),
       ])
     );
-    // Asked up front, under the locks, about the address and the approver together
+    // Asked up front, under the locks, about the approvers and the addresses
     expect(mockTx.$executeRaw).toHaveBeenCalled();
-    expect(mockTx.dataErasureReceipt.findMany.mock.calls[0]?.[0]).toMatchObject({
-      where: {
-        OR: [
-          { subjectEmailHash: { in: expect.arrayContaining([expect.any(String)]) } },
-          { subjectUserId: { in: expect.arrayContaining([ERASED_ID, 'live-approver']) } },
-        ],
-      },
-    });
+    const asked = mockTx.dataErasureReceipt.findMany.mock.calls.map((c) => c[0]);
+    expect(asked).toContainEqual(
+      expect.objectContaining({
+        where: {
+          OR: [{ subjectUserId: { in: expect.arrayContaining([ERASED_ID, 'live-approver']) } }],
+        },
+      })
+    );
+    expect(asked).toContainEqual(
+      expect.objectContaining({
+        where: { OR: [{ subjectEmailHash: { in: expect.arrayContaining([expect.any(String)]) } }] },
+      })
+    );
   });
 
   it('strips the erased person from a new version of an existing workflow too', async () => {
@@ -2718,5 +2732,369 @@ describe('isWorkflowSlugConflict', () => {
 
   it('is false for a plain Error', () => {
     expect(isWorkflowSlugConflict(new Error('boom'))).toBe(false);
+  });
+});
+
+describe("importOrchestrationConfig — only people erased after a sealed bundle's exportedAt (§122 t-902)", () => {
+  const EXPORTED_AT = '2026-06-01T00:00:00.000Z';
+  const ADDRESS = 'readded@example.com';
+  const APPROVER = 'cmerasedapprover00000000';
+
+  /**
+   * Receipts as Postgres would return them for the importer's query: only
+   * those at or after the query's `erasedAt.gte`, when it sets one. So the
+   * test follows the anchor the importer chose, not a canned answer.
+   */
+  function erasedAt(erased: Date) {
+    mockTx.dataErasureReceipt.findMany.mockImplementation(((args: {
+      where: { erasedAt?: { gte: Date } };
+    }) => {
+      const gte = args.where.erasedAt?.gte;
+      return Promise.resolve(
+        gte && erased < gte
+          ? []
+          : [
+              erasedAddressReceipt(ADDRESS),
+              { subjectUserId: APPROVER, subjectEmailHash: null, metadata: null },
+            ]
+      );
+    }) as never);
+  }
+
+  type Data = Omit<typeof minPayload.data, 'webhooks' | 'settings' | 'workflows'> & {
+    workflows: Array<ReturnType<typeof makeWorkflow>>;
+    webhooks: Array<ReturnType<typeof makeWebhook> & { channel?: string; emailAddress?: string }>;
+    settings:
+      | (Omit<ReturnType<typeof makeSettings>, 'escalationConfig'> & {
+          escalationConfig: unknown;
+        })
+      | null;
+  };
+  const DATA: Data = {
+    ...minPayload.data,
+    webhooks: [makeWebhook({ channel: 'email', url: null, emailAddress: ADDRESS })],
+  };
+
+  /** This install's seal, as the exporter makes it. */
+  function sealFor(data: Data, { exportedAt = EXPORTED_AT, orgId = 'install' } = {}) {
+    return sealExport({ exportedAt, orgId, contacts: bundleContacts(data) });
+  }
+
+  function bundle(
+    data: Data = DATA,
+    exportSeal: string | null = sealFor(data),
+    exportedAt = EXPORTED_AT
+  ) {
+    return { ...minPayload, exportedAt, ...(exportSeal === null ? {} : { exportSeal }), data };
+  }
+  const sealed = () => bundle();
+
+  const keptWarning = (w: string) => /Kept \d+ contact address/.test(w);
+  const strippedWarning = (w: string) => /person whose data was erased/.test(w);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-22T12:00:00Z'));
+    mockTx.aiWebhookSubscription.findFirst.mockReset();
+    mockTx.aiWebhookSubscription.findFirst.mockResolvedValue(null);
+    mockTx.aiWebhookSubscription.create.mockReset();
+    mockTx.aiWebhookSubscription.create.mockResolvedValue({});
+    mockTx.aiOrchestrationSettings.upsert.mockReset();
+    mockTx.aiOrchestrationSettings.upsert.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('asks about the contacts both ever and since the export, less the clock-skew margin', async () => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+
+    await importOrchestrationConfig(sealed(), 'user-1', SHARED_SCOPE);
+
+    // Locked first, for everyone; then every erasure (to count what is kept),
+    // then the contacts' question, anchored.
+    expect(mockTx.$executeRaw).toHaveBeenCalled();
+    expect(mockTx.dataErasureReceipt.findMany).toHaveBeenCalledTimes(2);
+    expect(mockTx.dataErasureReceipt.findMany.mock.calls[0]?.[0]).not.toHaveProperty(
+      'where.erasedAt'
+    );
+    expect(mockTx.dataErasureReceipt.findMany.mock.calls[1]?.[0]).toMatchObject({
+      where: {
+        erasedAt: { gte: new Date(Date.parse(EXPORTED_AT) - COPY_CLOCK_SKEW_MS) },
+      },
+    });
+  });
+
+  it('keeps a subscription whose address was erased before the export, and says so without naming it', async () => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+
+    const result = await importOrchestrationConfig(sealed(), 'user-1', SHARED_SCOPE);
+
+    expect(mockTx.aiWebhookSubscription.create).toHaveBeenCalledOnce();
+    expect(result.webhooks.created).toBe(1);
+    expect(result.warnings.some(strippedWarning)).toBe(false);
+    const kept = result.warnings.filter(keptWarning);
+    expect(kept).toEqual([expect.stringMatching(/^Kept 1 contact address belonging/)]);
+    expect(kept[0]).not.toContain(ADDRESS);
+  });
+
+  it('strips a subscription whose address was erased after the export, and warns', async () => {
+    erasedAt(new Date('2026-07-01T00:00:00Z'));
+
+    const result = await importOrchestrationConfig(sealed(), 'user-1', SHARED_SCOPE);
+
+    expect(mockTx.aiWebhookSubscription.create).not.toHaveBeenCalled();
+    expect(result.warnings.some(strippedWarning)).toBe(true);
+    expect(result.warnings.some(keptWarning)).toBe(false);
+  });
+
+  it('does not count a re-added address as kept when its subscription already exists', async () => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+    mockTx.aiWebhookSubscription.findFirst.mockResolvedValue({ id: 'already-here' });
+
+    const result = await importOrchestrationConfig(sealed(), 'user-1', SHARED_SCOPE);
+
+    expect(mockTx.aiWebhookSubscription.create).not.toHaveBeenCalled();
+    expect(result.webhooks.skipped).toBe(1);
+    expect(result.warnings.some(keptWarning)).toBe(false);
+  });
+
+  it('says when a seal is present but does not verify, and not for a bundle with none', async () => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+    const rejected = (w: string) => /seal did not verify/.test(w);
+
+    const edited = await importOrchestrationConfig(
+      bundle(DATA, sealFor(DATA, { orgId: 'org_customer' })),
+      'user-1',
+      SHARED_SCOPE
+    );
+    const unsealed = await importOrchestrationConfig(bundle(DATA, null), 'user-1', SHARED_SCOPE);
+
+    expect(edited.warnings.filter(rejected)).toHaveLength(1);
+    expect(unsealed.warnings.some(rejected)).toBe(false);
+  });
+
+  it('strips an address copied from a subscription into the escalation list after sealing', async () => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+    const copied: Data = {
+      ...DATA,
+      settings: {
+        ...makeSettings(),
+        escalationConfig: { emailAddresses: [ADDRESS], notifyOnPriority: 'high' },
+      },
+    };
+
+    await importOrchestrationConfig(bundle(copied, sealFor(DATA)), 'user-1', SHARED_SCOPE);
+
+    const upsert = mockTx.aiOrchestrationSettings.upsert.mock.calls[0]?.[0] as {
+      update: { escalationConfig: { emailAddresses: string[] } };
+    };
+    expect(upsert.update.escalationConfig.emailAddresses).toEqual([]);
+    expect(mockTx.aiWebhookSubscription.create).not.toHaveBeenCalled();
+  });
+
+  describe('the escalation list', () => {
+    const WITH_LIST: Data = {
+      ...minPayload.data,
+      webhooks: [],
+      settings: {
+        ...makeSettings(),
+        escalationConfig: {
+          emailAddresses: [ADDRESS, 'keep@example.com'],
+          notifyOnPriority: 'high',
+        },
+      },
+    };
+    const written = () =>
+      (
+        mockTx.aiOrchestrationSettings.upsert.mock.calls[0]?.[0] as {
+          update: { escalationConfig: { emailAddresses: string[] } };
+        }
+      ).update.escalationConfig.emailAddresses;
+
+    it('keeps an address erased before a sealed export', async () => {
+      erasedAt(new Date('2026-01-01T00:00:00Z'));
+
+      const result = await importOrchestrationConfig(bundle(WITH_LIST), 'user-1', SHARED_SCOPE);
+
+      expect(written()).toEqual([ADDRESS, 'keep@example.com']);
+      expect(result.warnings.some(keptWarning)).toBe(true);
+    });
+
+    it('strips an address erased after a sealed export', async () => {
+      erasedAt(new Date('2026-07-01T00:00:00Z'));
+
+      const result = await importOrchestrationConfig(bundle(WITH_LIST), 'user-1', SHARED_SCOPE);
+
+      expect(written()).toEqual(['keep@example.com']);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/Escalation list.*were removed/)])
+      );
+    });
+
+    it('strips an address erased before the export when the bundle is unsealed', async () => {
+      erasedAt(new Date('2026-01-01T00:00:00Z'));
+
+      await importOrchestrationConfig(bundle(WITH_LIST, null), 'user-1', SHARED_SCOPE);
+
+      expect(written()).toEqual(['keep@example.com']);
+    });
+  });
+
+  it.each([
+    ['unsealed', () => bundle(DATA, null)],
+    ['sealed over another date', () => bundle(DATA, sealFor(DATA), '2026-09-01T00:00:00.000Z')],
+    ['sealed for another org', () => bundle(DATA, sealFor(DATA, { orgId: 'org_customer' }))],
+    [
+      'given the address after it was sealed',
+      () => bundle(DATA, sealFor({ ...DATA, webhooks: [] })),
+    ],
+    ['sealed with garbage', () => bundle(DATA, 'not-a-seal')],
+  ])('strips an address erased before the export when the bundle is %s', async (_label, make) => {
+    erasedAt(new Date('2026-01-01T00:00:00Z'));
+
+    const result = await importOrchestrationConfig(make(), 'user-1', SHARED_SCOPE);
+
+    expect(mockTx.aiWebhookSubscription.create).not.toHaveBeenCalled();
+    expect(result.warnings.some(strippedWarning)).toBe(true);
+    expect(result.warnings.some(keptWarning)).toBe(false);
+    for (const [args] of mockTx.dataErasureReceipt.findMany.mock.calls) {
+      expect(args).not.toHaveProperty('where.erasedAt');
+    }
+  });
+
+  describe("a workflow definition, sealed with the bundle's other contacts (t-900)", () => {
+    function workflowNaming() {
+      return makeWorkflow({
+        workflowDefinition: {
+          steps: [
+            {
+              id: 'notify',
+              name: 'Notify',
+              type: 'send_notification',
+              config: {
+                channel: 'email',
+                to: [ADDRESS, 'keep@example.com'],
+                subject: 'Hi',
+                bodyTemplate: 'x',
+              },
+              nextSteps: [{ targetStepId: 'approve' }],
+            },
+            {
+              id: 'approve',
+              name: 'Approve',
+              type: 'human_approval',
+              config: { prompt: 'OK?', approverUserIds: [APPROVER, 'live-approver'] },
+              nextSteps: [],
+            },
+          ],
+          entryStepId: 'notify',
+          errorStrategy: 'fail',
+        },
+      });
+    }
+
+    beforeEach(() => {
+      erasedAt(new Date('2026-01-01T00:00:00Z'));
+      mockTx.aiWorkflow.findUnique.mockReset();
+      mockTx.aiWorkflow.findUnique.mockResolvedValue(null);
+      mockTx.aiWorkflow.create.mockReset();
+      mockTx.aiWorkflow.create.mockResolvedValue({ id: 'wf-1' });
+      mockTx.aiWorkflow.update.mockReset();
+      mockTx.aiWorkflow.update.mockResolvedValue({ id: 'wf-1' });
+      mockTx.aiWorkflowVersion.findFirst.mockReset();
+      mockTx.aiWorkflowVersion.create.mockReset();
+      mockTx.aiWorkflowVersion.create.mockResolvedValue({ id: 'wfv-1', version: 1 });
+      mockTx.knowledgeTag.findMany.mockResolvedValue([]);
+      mockWorkflowSlugsHeldAnywhere.mockReset();
+      mockWorkflowSlugsHeldAnywhere.mockResolvedValue(new Set());
+      mockOrgWorkflowFindMany.mockReset();
+      mockOrgWorkflowFindMany.mockResolvedValue([]);
+    });
+
+    const WORKFLOW_DATA: Data = { ...DATA, webhooks: [], workflows: [workflowNaming()] };
+    /** Sealed over its own definitions, as the exporter seals it. */
+    const payload = () => bundle(WORKFLOW_DATA);
+
+    function snapshotSteps() {
+      const created = mockTx.aiWorkflowVersion.create.mock.calls[0]?.[0] as {
+        data: { snapshot: { steps: Array<{ config: Record<string, unknown> }> } };
+      };
+      return created.data.snapshot.steps;
+    }
+
+    it('creates a new workflow keeping an address erased before a sealed export, and counts it', async () => {
+      const result = await importOrchestrationConfig(payload(), 'user-1', SHARED_SCOPE);
+
+      expect(result.workflows.created).toBe(1);
+      expect(snapshotSteps()[0].config.to).toEqual([ADDRESS, 'keep@example.com']);
+      expect(result.warnings.filter(keptWarning)).toEqual([
+        expect.stringMatching(/^Kept 1 contact address belonging/),
+      ]);
+    });
+
+    it('counts a kept address once, however many places it is written', async () => {
+      const both: Data = {
+        ...WORKFLOW_DATA,
+        webhooks: [makeWebhook({ channel: 'email', url: null, emailAddress: ADDRESS })],
+      };
+
+      const result = await importOrchestrationConfig(bundle(both), 'user-1', SHARED_SCOPE);
+
+      // In the workflow's recipients and in an email subscription: one address.
+      expect(mockTx.aiWebhookSubscription.create).toHaveBeenCalledOnce();
+      expect(result.warnings.filter(keptWarning)).toEqual([
+        expect.stringMatching(/^Kept 1 contact address belonging/),
+      ]);
+    });
+
+    it('still strips an erased approver id: nobody can re-add an id', async () => {
+      const result = await importOrchestrationConfig(payload(), 'user-1', SHARED_SCOPE);
+
+      expect(snapshotSteps()[1].config.approverUserIds).toEqual(['live-approver']);
+      expect(result.warnings.some((w) => /were removed/.test(w))).toBe(true);
+    });
+
+    it('strips an address erased after the sealed export', async () => {
+      erasedAt(new Date('2026-07-01T00:00:00Z'));
+
+      const result = await importOrchestrationConfig(payload(), 'user-1', SHARED_SCOPE);
+
+      expect(snapshotSteps()[0].config.to).toEqual(['keep@example.com']);
+      expect(result.warnings.some(keptWarning)).toBe(false);
+    });
+
+    it('strips an address erased before the export when its definition was edited after sealing', async () => {
+      const sealedWithout = sealFor({ ...WORKFLOW_DATA, workflows: [] });
+
+      const result = await importOrchestrationConfig(
+        bundle(WORKFLOW_DATA, sealedWithout),
+        'user-1',
+        SHARED_SCOPE
+      );
+
+      expect(snapshotSteps()[0].config.to).toEqual(['keep@example.com']);
+      expect(result.warnings.some(keptWarning)).toBe(false);
+    });
+
+    it('keeps it in a new version of an existing workflow too', async () => {
+      mockTx.aiWorkflow.findUnique.mockResolvedValue({ id: 'wf-existing' });
+      mockTx.aiWorkflowVersion.findFirst.mockResolvedValue({ version: 1 });
+
+      const result = await importOrchestrationConfig(payload(), 'user-1', SHARED_SCOPE);
+
+      expect(result.workflows.updated).toBe(1);
+      expect(snapshotSteps()[0].config.to).toEqual([ADDRESS, 'keep@example.com']);
+      expect(snapshotSteps()[1].config.approverUserIds).toEqual(['live-approver']);
+    });
+  });
+
+  it('refuses a bundle with no exportedAt, as before, importing nothing', async () => {
+    const { exportedAt: _omit, ...noDate } = sealed();
+
+    await expect(importOrchestrationConfig(noDate, 'user-1', SHARED_SCOPE)).rejects.toThrow();
+
+    expect(mockTx.aiWebhookSubscription.create).not.toHaveBeenCalled();
   });
 });

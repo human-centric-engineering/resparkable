@@ -52,7 +52,8 @@ import {
   type SubjectFilter,
 } from '@/lib/auth/authorization';
 import { resolveUnattributedReads, type UnattributedReads } from '@/lib/auth/orphan-reads';
-import type { AdminTier } from '@/lib/auth/admin-tier';
+import { effectiveRouteTier, type AdminTier } from '@/lib/auth/admin-tier';
+import { closedCoreOrgTierSections } from '@/lib/auth/org-tier-admin-pages';
 import { env } from '@/lib/env';
 import { runAsOrg } from '@/lib/tenancy/context';
 import { runAsSubject } from '@/lib/auth/subject-context';
@@ -65,9 +66,9 @@ import {
 } from '@/lib/tenancy/entry';
 import { TENANT_HEADER_NAME } from '@/lib/tenancy/resolver';
 import {
-  isRefusedReadOnlyWrite,
   presentedRole,
   presentedSession,
+  refuseReadOnlySupportWrite,
 } from '@/lib/auth/support-principal';
 import {
   canChangeSharedSettings,
@@ -409,14 +410,36 @@ export interface WithAdminAuthOptions<TParams = Record<string, string>> {
    * platform admin. Absent — every route that has not opted in, a fork's
    * included — the route stays platform-only.
    *
-   * Opening a route is a reviewed diff in two places: here, and
-   * `ORG_TIER_ADMIN_ROUTES` in `lib/auth/admin-tier.ts`, which
-   * `tests/unit/scripts/ci/admin-tier-roster.test.ts` holds to the tree. It
+   * Opening a route is a reviewed diff in two places: here, and a list —
+   * `ORG_TIER_ADMIN_ROUTES` in `lib/auth/admin-tier.ts` for core's,
+   * `APP_ORG_TIER_ADMIN_ROUTES` in `lib/app/admin-tier-routes.ts` for a
+   * fork's — which `tests/unit/scripts/ci/admin-tier-roster.test.ts` holds to
+   * the tree. A fork that closed the core section the route is in
+   * (`closeCoreOrgTierSection()`, t-929) turns the declaration off for that
+   * install, with the section's pages and nav items. It
    * widens admission only: the handler still runs in the entered org, so what
    * it reads is that org's by row isolation, and `writesSharedSettings` still
    * refuses a shared-settings write from outside the install org.
    */
   tier?: AdminTier;
+}
+
+/**
+ * The `tier` a route passes the policy: what it declared, unless the fork
+ * closed the core section the route is in (t-929,
+ * `closeCoreOrgTierSection()`), when it is the platform's like any undeclared
+ * route. Read from the same registration as the pages and the nav, so the
+ * three agree. With nothing closed it is the declaration, unchanged.
+ */
+function tierScope(
+  declared: AdminTier | undefined,
+  pathname: string | undefined
+): { tier?: AdminTier } {
+  // An undeclared route is the platform's whatever is closed: no need to run
+  // the fork's init to learn that.
+  if (!declared) return {};
+  const tier = effectiveRouteTier(declared, pathname, closedCoreOrgTierSections());
+  return tier ? { tier } : {};
 }
 
 /**
@@ -507,18 +530,13 @@ async function sessionEntryFor(
   }
   // A READ_ONLY support grant refuses every write here, before the resolver,
   // the policy or the handler runs (§121 t-824) — one rule in the one place
-  // both guards enter a session's org, so no route can forget it.
-  if (isRefusedReadOnlyWrite(entry, request.method)) {
-    logger.warn('tenancy: refused a write under a read-only support grant', {
-      guard,
-      path: loggablePath(request.nextUrl?.pathname),
-      method: request.method,
-      userId: session.user.id,
-      orgId: entry.orgId,
-      grantId: entry.support?.grantId,
-    });
-    throw new ForbiddenError('Support access to this organisation is read-only');
-  }
+  // both guards enter a session's org, so no route can forget it. The same
+  // function refuses for routes that enter an org outside the guards.
+  refuseReadOnlySupportWrite(entry, request.method, {
+    guard,
+    path: loggablePath(request.nextUrl?.pathname),
+    userId: session.user.id,
+  });
   return entry;
 }
 
@@ -1394,7 +1412,7 @@ export function withAdminAuth(
           resource === UNRESOLVED ||
           !(await canAdminister(principal, resource, {
             ...orgScope(entry),
-            ...(options?.tier ? { tier: options.tier } : {}),
+            ...tierScope(options?.tier, (request as NextRequest).nextUrl?.pathname),
           }))
         ) {
           // Same reason as the `canRead` refusal above: the guard owns the

@@ -24,10 +24,11 @@ import { AgentForm, type AgentWithGrants } from '@/components/admin/orchestratio
 import { platformAgentFieldNames } from '@/lib/orchestration/agents/agent-field-registry';
 import type { AiAgent } from '@/types/prisma';
 
+const mockRefresh = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', async () => {
   const { createMockRouter } = await import('@/tests/types/mocks');
   return {
-    useRouter: () => createMockRouter({ push: vi.fn() }),
+    useRouter: () => createMockRouter({ push: vi.fn(), refresh: mockRefresh }),
     useSearchParams: () => ({ get: () => null }),
   };
 });
@@ -163,7 +164,7 @@ describe('AgentForm — platform agent', () => {
     expect(banner).toHaveTextContent('This is a platform agent');
     expect(banner).toHaveTextContent('knowledge and capabilities');
     expect(banner).toHaveTextContent(
-      'Here, this org sets its provider, model, fallback providers, monthly budget, per-turn cost cap, rate limit and how long its conversations are kept.'
+      'Here, this org sets its provider, model, fallback providers, monthly budget, per-turn cost cap, rate limit, service tier and how long its conversations are kept.'
     );
     // providerConfig is tunable through the API but has no control on this form.
     expect(banner).not.toHaveTextContent(/provider config/i);
@@ -271,10 +272,36 @@ describe('AgentForm — platform agent', () => {
 
       // The same list the API enforces (`platformAgentFieldNames('org')`),
       // including the provider configuration the form has no control for.
-      expect(dialog).toHaveTextContent(
-        "only this org's settings from version 1: its provider, model, fallback providers, provider configuration, monthly budget, per-turn cost cap, rate limit and how long its conversations are kept."
+      expect(within(dialog).getByTestId('restore-brings-back')).toHaveTextContent(
+        'Its provider, model, fallback providers, provider configuration, monthly budget, per-turn cost cap, rate limit, service tier and how long its conversations are kept.'
       );
       expect(dialog).not.toHaveTextContent(/revert the agent's configuration/);
+    });
+
+    it('leaves provider and model out of a restore while the platform owns them (t-821)', async () => {
+      const dialog = await openRestore(
+        makeAgent({
+          slug: 'cleanup-agent',
+          bindingOwner: 'platform',
+          platformAgent: {
+            lockedFields: platformAgentFieldNames('code'),
+            tunableFields: platformAgentFieldNames('org'),
+            bindingsLocked: true,
+            picksOwnBinding: true,
+            bindingFollowsPlatform: true,
+          },
+        })
+      );
+
+      expect(within(dialog).getByTestId('restore-brings-back')).toHaveTextContent(
+        'Its fallback providers, monthly budget'
+      );
+      expect(within(dialog).getByTestId('restore-brings-back')).not.toHaveTextContent(
+        /provider configuration/
+      );
+      expect(within(dialog).getByTestId('restore-leaves')).toHaveTextContent(
+        'Its provider, model and provider configuration. The platform picks these for this org, on the strongest tool-using model'
+      );
     });
 
     it("keeps the full-restore wording on an org's own agent", async () => {
@@ -299,5 +326,105 @@ describe('AgentForm — platform agent', () => {
     await user.click(help);
 
     expect(await screen.findByText('Agent name')).toBeInTheDocument();
+  });
+
+  describe('who picks the provider and model (t-818)', () => {
+    afterEach(async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      vi.mocked(apiClient.get).mockReset();
+      vi.mocked(apiClient.patch).mockReset();
+    });
+
+    const cleanupAgent = (bindingOwner: string | null) =>
+      makeAgent({
+        slug: 'cleanup-agent',
+        provider: 'anthropic',
+        model: 'claude-opus-4-6',
+        bindingOwner,
+        platformAgent: {
+          lockedFields: platformAgentFieldNames('code'),
+          tunableFields: platformAgentFieldNames('org'),
+          bindingsLocked: true,
+          picksOwnBinding: true,
+          bindingFollowsPlatform: bindingOwner === 'platform',
+        },
+      });
+
+    async function openModelTab(agent: AgentWithGrants) {
+      const user = userEvent.setup();
+      renderForm(agent);
+      await user.click(screen.getByRole('tab', { name: /^model$/i }));
+      return user;
+    }
+
+    it('is shown on a platform agent whose provider and model the platform picks', async () => {
+      await openModelTab(cleanupAgent('platform'));
+
+      expect(screen.getByTestId('binding-owner-platform')).toBeInTheDocument();
+    });
+
+    it("is absent on every other platform agent and on an org's own agent", async () => {
+      for (const agent of [
+        makeAgent(),
+        makeAgent({ isSystem: false, slug: 'mine', platformAgent: null }),
+      ]) {
+        const user = userEvent.setup();
+        const { unmount } = renderForm(agent);
+        await user.click(screen.getByRole('tab', { name: /^model$/i }));
+        expect(screen.queryByTestId('platform-binding-owner')).toBeNull();
+        unmount();
+      }
+    });
+
+    it('hands the binding back, takes the row it returned, and refreshes the page', async () => {
+      const { apiClient } = await import('@/lib/api/client');
+      // The row after the hand-back's reconcile: on the platform's pick.
+      vi.mocked(apiClient.patch).mockResolvedValue({
+        ...cleanupAgent('platform'),
+        provider: 'openai',
+        model: 'gpt-4.1',
+      });
+      const user = await openModelTab(cleanupAgent('org'));
+
+      await user.click(screen.getByRole('button', { name: /let the platform choose/i }));
+
+      await waitFor(() => expect(mockRefresh).toHaveBeenCalled());
+      expect(apiClient.patch).toHaveBeenCalledWith(expect.stringContaining('agent-1'), {
+        body: { bindingOwner: 'platform' },
+      });
+      // The form now holds the row's new binding, not the one it opened with,
+      // and without a second read of the agent.
+      expect(screen.getByRole('textbox', { name: /^provider/i })).toHaveValue('openai');
+      expect(apiClient.get).not.toHaveBeenCalledWith(expect.stringMatching(/agents\/agent-1$/)); // test-review:accept no_arg_called — the PATCH's row replaces the reload
+    });
+
+    it('withholds the hand-back while a save is in flight', async () => {
+      // The save re-seeds the form when it lands, which would put back the
+      // binding a hand-back made in the meantime.
+      const { apiClient } = await import('@/lib/api/client');
+      let finishSave: (value: unknown) => void = () => undefined;
+      vi.mocked(apiClient.patch).mockImplementation(
+        () => new Promise((resolve) => (finishSave = resolve))
+      );
+      const user = await openModelTab(cleanupAgent('org'));
+      const button = screen.getByRole('button', { name: /let the platform choose/i });
+
+      await user.click(screen.getByRole('button', { name: /save changes/i }));
+
+      await waitFor(() => expect(button).toBeDisabled());
+      finishSave({});
+      await waitFor(() => expect(button).toBeEnabled());
+    });
+
+    it('withholds the hand-back while provider or model has an unsaved edit', async () => {
+      const user = await openModelTab(cleanupAgent('org'));
+      const button = screen.getByRole('button', { name: /let the platform choose/i });
+      expect(button).toBeEnabled();
+
+      // providers={null} renders the provider field as a text input.
+      await user.type(screen.getByRole('textbox', { name: /^provider/i }), 'x');
+
+      expect(button).toBeDisabled();
+    });
   });
 });

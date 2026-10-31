@@ -21,7 +21,7 @@
 import { logger } from '@/lib/logging';
 import { CostOperation } from '@/types/orchestration';
 import type { LlmRequestParamsSnapshot } from '@/types/orchestration';
-import type { LlmResponseFormat, ReasoningEffort } from '@/lib/orchestration/llm/types';
+import type { LlmOptions, LlmResponseFormat, ReasoningEffort } from '@/lib/orchestration/llm/types';
 import { calculateCost, logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { getModel } from '@/lib/orchestration/llm/model-registry';
 import { getProvider } from '@/lib/orchestration/llm/provider-manager';
@@ -70,6 +70,14 @@ export interface LlmRunParams {
   reasoningEffort?: ReasoningEffort;
   /** Request structured JSON output from the model. */
   responseFormat?: LlmResponseFormat;
+  /**
+   * Stop sequences, top_p, verbosity, parallel tool calls and service tier —
+   * see `modelParamOptions`. Each is dropped by models that don't take it.
+   */
+  modelParams?: Pick<
+    LlmOptions,
+    'stopSequences' | 'topP' | 'verbosity' | 'parallelToolCalls' | 'serviceTier'
+  >;
   /**
    * Origin tag for steps whose `ctx.stepTelemetry` mixes calls of
    * different intent (today: only `orchestrator`'s planner call).
@@ -202,6 +210,7 @@ export async function runLlmCall(
           maxTokens: params.maxTokens,
           ...(params.reasoningEffort ? { reasoningEffort: params.reasoningEffort } : {}),
           ...(params.responseFormat ? { responseFormat: params.responseFormat } : {}),
+          ...params.modelParams,
           signal: ctx.signal,
         });
       } catch (err) {
@@ -224,7 +233,9 @@ export async function runLlmCall(
           err,
           !isRequestFault(err),
           billed ? billed.inputTokens + billed.outputTokens : 0,
-          billed ? calculateCost(modelId, billed.inputTokens, billed.outputTokens).totalCostUsd : 0
+          billed
+            ? calculateCost(modelId, billed.inputTokens, billed.outputTokens, billed).totalCostUsd
+            : 0
         );
       }
       const callDurationMs = Date.now() - callStarted;
@@ -239,6 +250,7 @@ export async function runLlmCall(
       if (params.temperature !== undefined) requestParams.temperature = params.temperature;
       if (params.responseFormat) requestParams.responseFormat = params.responseFormat.type;
       if (params.reasoningEffort) requestParams.reasoningEffort = params.reasoningEffort;
+      Object.assign(requestParams, params.modelParams);
       ctx.stepTelemetry?.push({
         model: modelId,
         provider: modelInfo.provider,
@@ -249,7 +261,12 @@ export async function runLlmCall(
         ...(params.source ? { source: params.source } : {}),
       });
 
-      const cost = calculateCost(modelId, response.usage.inputTokens, response.usage.outputTokens);
+      const cost = calculateCost(
+        modelId,
+        response.usage.inputTokens,
+        response.usage.outputTokens,
+        response.usage
+      );
 
       const totalTokens = response.usage.inputTokens + response.usage.outputTokens;
       setSpanAttributes(span, {
@@ -269,6 +286,9 @@ export async function runLlmCall(
         provider: modelInfo.provider,
         inputTokens: response.usage.inputTokens,
         outputTokens: response.usage.outputTokens,
+        cacheReadTokens: response.usage.cacheReadTokens,
+        cacheWriteTokens: response.usage.cacheWriteTokens,
+        serviceTier: response.usage.serviceTier,
         operation: CostOperation.CHAT,
         isLocal: cost.isLocal,
         traceId: span.traceId(),

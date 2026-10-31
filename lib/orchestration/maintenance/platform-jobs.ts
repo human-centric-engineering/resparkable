@@ -56,6 +56,7 @@ import { expireTransferArchives } from '@/lib/portability/jobs/expiry';
 import { processTransferJobs } from '@/lib/portability/jobs/worker';
 import { requireOrgId, runAsOrg } from '@/lib/tenancy/context';
 import { INSTALL_ORG_ID } from '@/lib/tenancy/constants';
+import { createPlatformAgentCatalogue } from '@/lib/orchestration/agents/platform-agents';
 import { processPendingErasures } from '@/lib/privacy/erasure-requests';
 
 const MINUTE = 60 * 1000;
@@ -95,25 +96,33 @@ export interface PlatformJob {
  * that type and ORs the answers, which is what lets `PlatformJob` erase the
  * type without a cast.
  */
-function job<T>(spec: {
+function job<T, R = undefined>(spec: {
   name: string;
   intervalMs: number;
   scope: JobScope;
-  run: () => Promise<T>;
+  /**
+   * State for one run of the job, shared by every org that run visits — made
+   * when the job starts, dropped when it ends. For reads that are the same
+   * for every org (t-816).
+   */
+  perRun?: () => R;
+  run: (shared: R | undefined) => Promise<T>;
   foundWork: (result: T) => boolean;
 }): PlatformJob {
   return {
     name: spec.name,
     intervalMs: spec.intervalMs,
     scope: spec.scope,
-    run: (orgIds) =>
-      runScopedJob({
+    run: (orgIds) => {
+      const shared = spec.perRun?.();
+      return runScopedJob({
         name: spec.name,
         scope: spec.scope,
-        run: spec.run,
+        run: () => spec.run(shared),
         foundWork: spec.foundWork,
         orgIds,
-      }),
+      });
+    },
   };
 }
 
@@ -229,7 +238,10 @@ export const PLATFORM_JOBS: readonly PlatformJob[] = [
     name: 'platformAgents',
     scope: 'per-org',
     intervalMs: 15 * MINUTE,
-    run: () => reconcilePlatformAgentsIfStale(requireOrgId()),
+    // One provider and model catalogue for every org in the run: the tables
+    // are global, and only the pick's filters differ by org (t-816).
+    perRun: createPlatformAgentCatalogue,
+    run: (catalogue) => reconcilePlatformAgentsIfStale(requireOrgId(), { catalogue }),
     // A run that wrote nothing is not work: an org held back by a missing
     // capability or tag is re-read every run until it appears, and counting
     // that would keep the idle gate from ever arming. Writing an org's copy of

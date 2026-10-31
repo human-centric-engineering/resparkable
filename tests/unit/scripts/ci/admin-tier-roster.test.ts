@@ -14,6 +14,14 @@
  *
  * Whole-tree: declared in `ALWAYS_RUN_TESTS`, because no import chain connects
  * a new route's `tier` to this file.
+ *
+ * FORK NOTE — this file reads your `lib/app/admin-tier.ts`,
+ * `lib/app/admin-tier-routes.ts` and `lib/app/admin-landing.ts` for real, and
+ * judges them; it does not pin them. Filling them correctly passes here, and
+ * the pins below stay core's. A failure names the entry that is wrong — a
+ * route listed but not declared, a page that does not exist, a landing an org
+ * admin may not open — so fix that entry rather than this file. Pin your
+ * values in `tests/unit/lib/app/defaults.test.ts`.
  */
 import { describe, it, expect } from 'vitest';
 import { execSync } from 'node:child_process';
@@ -32,8 +40,13 @@ import {
 } from '@/lib/auth/admin-tier';
 import {
   appOrgTierAdminPagesInitState,
+  closedCoreOrgTierSections,
   getAppOrgTierAdminPages,
+  orgTierAdminPages,
 } from '@/lib/auth/org-tier-admin-pages';
+import { APP_ORG_TIER_ADMIN_ROUTES } from '@/lib/app/admin-tier-routes';
+import { appOrgAdminLandingRoute } from '@/lib/app/admin-landing';
+import { defaultOrgAdminLanding, orgAdminLandingProblem } from '@/lib/auth/admin-landing';
 import { coreNavSections } from '@/components/admin/admin-sidebar';
 import { getRegisteredNavSections } from '@/lib/admin-nav/registry';
 
@@ -45,12 +58,11 @@ function tracked(dir: string): string[] {
     .filter(Boolean);
 }
 
-// The routes, and every module under lib/ — where a wrapper that bakes the
-// tier in would live.
-const ROUTES: SourceFile[] = [
-  ...tracked('app').filter((p) => /\/route\.tsx?$/.test(p)),
-  ...tracked('lib').filter((p) => /\.tsx?$/.test(p) && !p.endsWith('.d.ts')),
-].map((path) => ({ path, source: readFileSync(path, 'utf8') }));
+// Every module under app/ and lib/: the routes, and wherever a wrapper that
+// bakes the tier in may live — lib/, or a fork's app/api/v1/app/x/_lib/.
+const ROUTES: SourceFile[] = [...tracked('app'), ...tracked('lib')]
+  .filter((p) => /\.tsx?$/.test(p) && !p.endsWith('.d.ts'))
+  .map((path) => ({ path, source: readFileSync(path, 'utf8') }));
 const PAGE_FILES = tracked('app/admin').filter((p) => p.endsWith('/page.tsx'));
 // Core sections and whatever the fork registered: importing the sidebar has
 // already run `initAppNav()`.
@@ -64,6 +76,9 @@ const NAV_ITEMS: NavItemFacts[] = itemsOf([...coreNavSections, ...getRegisteredN
 const TREE: RosterInput = {
   routes: ROUTES,
   listedRoutes: ORG_TIER_ADMIN_ROUTES,
+  // The fork's, from lib/app/admin-tier-routes.ts: held to the same checks,
+  // and pinned by the fork in tests/unit/lib/app/defaults.test.ts, not here.
+  appListedRoutes: APP_ORG_TIER_ADMIN_ROUTES,
   listedPages: ORG_TIER_ADMIN_PAGES,
   // The fork's, from lib/app/admin-tier.ts: held to the same checks. Not
   // pinned here — the fork pins its own list in tests/unit/lib/app/defaults.test.ts.
@@ -72,6 +87,9 @@ const TREE: RosterInput = {
   navItems: NAV_ITEMS,
   coreSections: CORE_ADMIN_SECTIONS,
   coreNavHrefs: itemsOf(coreNavSections).map((item) => item.href),
+  // The core sections the fork closed, from lib/app/admin-tier.ts: its nav
+  // items are judged against what is left open.
+  closedSections: closedCoreOrgTierSections(),
 };
 
 describe('the pins', () => {
@@ -316,12 +334,21 @@ describe('the tree', () => {
     expect(appOrgTierAdminPagesInitState()).toBe('ok');
   });
 
+  it('lands an org admin on a page they may open (t-928)', () => {
+    // A landing outside the org tier turns an org admin away the moment they
+    // arrive; /admin falls back to the default at runtime, and this says so in CI.
+    const landing = appOrgAdminLandingRoute ?? defaultOrgAdminLanding(orgTierAdminPages());
+    expect(orgAdminLandingProblem(landing, orgTierAdminPages())).toBeNull();
+  });
+
   it('sees the tree it judges', () => {
     // A check that reads nothing passes everything; these are the floor.
     expect(ROUTES.length).toBeGreaterThan(100);
     expect(PAGE_FILES.length).toBeGreaterThan(50);
     expect(NAV_ITEMS.length).toBeGreaterThan(15);
     expect(PAGE_FILES).toContain('app/admin/orchestration/agents/page.tsx');
+    // Modules beside the routes are read too, where a fork's wrapper may sit.
+    expect(ROUTES.map((r) => r.path)).toContain('app/admin/page.tsx');
   });
 });
 
@@ -497,7 +524,7 @@ describe('what it catches', () => {
     (_l, source, method) => {
       expect(findAdminTierRosterProblems(input({ routes: [{ path: ROUTE, source }] }))).toEqual(
         expect.arrayContaining([
-          `${ROUTE}#${method}: declared tier 'org' but not listed in ORG_TIER_ADMIN_ROUTES.`,
+          `${ROUTE}#${method}: declared tier 'org' but not listed in ORG_TIER_ADMIN_ROUTES (core's) or lib/app/admin-tier-routes.ts (the fork's).`,
         ])
       );
     }
@@ -522,7 +549,67 @@ describe('what it catches', () => {
     const path = 'lib/api/org-admin.ts';
     const source = `export const withOrgAdmin = (h: H) => withAdminAuth(h, { tier: 'org', ${OWNED} });`;
     expect(findAdminTierRosterProblems(input({ routes: [{ path, source }] }))).toEqual([
-      `${path}#withOrgAdmin: declared tier 'org' but not listed in ORG_TIER_ADMIN_ROUTES.`,
+      `${path}#withOrgAdmin: declared tier 'org' but not listed in ORG_TIER_ADMIN_ROUTES (core's) or lib/app/admin-tier-routes.ts (the fork's).`,
+    ]);
+  });
+
+  it('accepts a fork’s route listed in its own list, not core’s (t-927)', () => {
+    const path = 'app/api/v1/app/reports/route.ts';
+    const source = `export const GET = withAdminAuth(h, { tier: 'org', ${OWNED} });`;
+    const fork = input({ routes: [{ path, source }], appListedRoutes: [`${path}#GET`] });
+    expect(findAdminTierRosterProblems(fork)).toEqual([]);
+    // …and the same route unlisted fails, naming the fork's list as a home for it.
+    expect(findAdminTierRosterProblems({ ...fork, appListedRoutes: [] })).toEqual([
+      expect.stringContaining("or lib/app/admin-tier-routes.ts (the fork's)"),
+    ]);
+  });
+
+  it('a route the fork lists that does not declare the tier, named as the fork’s (t-927)', () => {
+    expect(
+      findAdminTierRosterProblems(
+        input({ routes: [route(`{ ${OWNED} }`)], appListedRoutes: [`${ROUTE}#GET`] })
+      )
+    ).toEqual([
+      `${ROUTE}#GET: listed in lib/app/admin-tier-routes.ts but does not declare tier 'org'.`,
+    ]);
+  });
+
+  it('a core route the fork re-lists in its own list (t-927)', () => {
+    expect(
+      findAdminTierRosterProblems(
+        input({
+          routes: [route(`{ tier: 'org', ${OWNED} }`)],
+          listedRoutes: [`${ROUTE}#GET`],
+          appListedRoutes: [`${ROUTE}#GET`],
+        })
+      )
+    ).toEqual([
+      `${ROUTE}#GET: listed in lib/app/admin-tier-routes.ts, but it is core's and ORG_TIER_ADMIN_ROUTES already lists it. Remove it from the fork's list.`,
+    ]);
+  });
+
+  it('holds a fork’s wrapper to the same checks: listed, literal tier, ownership (t-927)', () => {
+    const path = 'app/api/v1/app/reports/_lib/read-route.ts';
+    const wrapper = (options: string): SourceFile => ({
+      path,
+      source: `export const withReportsRead = (h: H) => withAdminAuth(h, ${options});`,
+    });
+    const listed = { appListedRoutes: [`${path}#withReportsRead`] };
+    expect(
+      findAdminTierRosterProblems(
+        input({ routes: [wrapper(`{ tier: 'org', ${OWNED} }`)], ...listed })
+      )
+    ).toEqual([]);
+    expect(
+      findAdminTierRosterProblems(input({ routes: [wrapper(`{ tier: 'org' }`)], ...listed }))
+    ).toEqual([expect.stringContaining('no `ownership`')]);
+    expect(
+      findAdminTierRosterProblems(
+        input({ routes: [wrapper(`{ tier: TIER, ${OWNED} }`)], ...listed })
+      )
+    ).toEqual([
+      expect.stringContaining('not the literal'),
+      expect.stringContaining('listed in lib/app/admin-tier-routes.ts but does not declare'),
     ]);
   });
 
@@ -590,6 +677,35 @@ describe('what it catches', () => {
         })
       )
     ).toEqual([]);
+  });
+
+  it('judges a fork’s nav item against the sections left open, and not core’s own (t-929)', () => {
+    const closing = input({
+      listedPages: ['/admin/orchestration/agents'],
+      navItems: [
+        { href: '/admin/orchestration/agents', tier: 'org' },
+        { href: '/admin/orchestration/agents?from=reports', tier: 'org' },
+      ],
+      coreNavHrefs: ['/admin/orchestration/agents'],
+    });
+    // Nothing closed: both items point at an open page.
+    expect(findAdminTierRosterProblems(closing)).toEqual([]);
+    // Orchestration closed: the sidebar hides core's item, so it is not
+    // reported; the fork's link to the same page would bounce an org admin.
+    expect(findAdminTierRosterProblems({ ...closing, closedSections: ['orchestration'] })).toEqual([
+      "nav item /admin/orchestration/agents?from=reports: marked tier 'org' over a page in a core section lib/app/admin-tier.ts closed to org admins, so an org admin would follow it to a redirect.",
+    ]);
+  });
+
+  it('reports a fork route declared org-tier in a core section the fork closed (t-929)', () => {
+    const fork = input({
+      routes: [route(`{ tier: 'org', ${OWNED} }`)],
+      appListedRoutes: [`${ROUTE}#GET`],
+    });
+    expect(findAdminTierRosterProblems(fork)).toEqual([]);
+    expect(findAdminTierRosterProblems({ ...fork, closedSections: ['orchestration'] })).toEqual([
+      `${ROUTE}#GET: declared tier 'org' in a core section lib/app/admin-tier.ts closed to org admins, so the guard refuses org admins it. Move the route out of the section or drop its tier.`,
+    ]);
   });
 
   it('reads one declaration per exported handler, by method', () => {

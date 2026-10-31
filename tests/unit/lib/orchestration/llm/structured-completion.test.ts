@@ -187,6 +187,44 @@ describe('runStructuredCompletion', () => {
     expect(firstFormat).not.toHaveProperty('strict');
   });
 
+  it('forwards reasoningEffort on both attempts', async () => {
+    // First attempt malformed → forces the retry so we can assert both calls.
+    const provider = makeProvider([
+      { content: 'nope', usage: { inputTokens: 1, outputTokens: 1 } },
+      { content: '{"ok":true}', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    await runStructuredCompletion<DummyShape>({
+      provider,
+      model: 'claude-sonnet-4-6',
+      messages: [{ role: 'user', content: 'go' }],
+      parse: dummyParse,
+      retryUserMessage: 'STRICT',
+      reasoningEffort: 'high',
+    });
+    const calls = (provider.chat as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect((calls[0] as unknown[])[1]).toMatchObject({ reasoningEffort: 'high' });
+    expect((calls[1] as unknown[])[1]).toMatchObject({ reasoningEffort: 'high' });
+  });
+
+  it('sends no reasoningEffort when none is supplied', async () => {
+    const provider = makeProvider([
+      { content: '{"ok":true}', usage: { inputTokens: 1, outputTokens: 1 } },
+    ]);
+    await runStructuredCompletion<DummyShape>({
+      provider,
+      model: 'claude-sonnet-4-6',
+      messages: [{ role: 'user', content: 'go' }],
+      parse: dummyParse,
+      retryUserMessage: 'try again',
+    });
+    const opts = (provider.chat as ReturnType<typeof vi.fn>).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(opts).not.toHaveProperty('reasoningEffort');
+  });
+
   it('uses responseSchemaName when provided and forwards strict when set', async () => {
     const provider = makeProvider([
       { content: '{"ok":true}', usage: { inputTokens: 1, outputTokens: 1 } },
@@ -648,5 +686,50 @@ describe('runStructuredCompletion', () => {
       expect(result.value).toEqual({ ok: true });
       expect(result.finishReason).toBe('length');
     });
+  });
+});
+
+describe('runStructuredCompletion — cache and tier billing (t-909, t-911)', () => {
+  it('adds both attempts’ cache counts and prices each attempt at its own tier', async () => {
+    const { calculateCost } = await import('@/lib/orchestration/llm/cost-tracker');
+    const first = {
+      inputTokens: 100,
+      outputTokens: 5,
+      cacheReadTokens: 60,
+      serviceTier: 'priority' as const,
+    };
+    const retry = { inputTokens: 100, outputTokens: 5, cacheReadTokens: 90, cacheWriteTokens: 10 };
+    const provider = makeProvider([
+      { content: 'not json', usage: first },
+      { content: '{"ok":true}', usage: retry },
+    ] as never);
+
+    const result = await runStructuredCompletion<DummyShape>({
+      provider,
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'go' }],
+      parse: dummyParse,
+      retryUserMessage: 'try again',
+    });
+
+    // The attempts disagreed on tier, so the summary names none.
+    expect(result.tokenUsage).toEqual({ input: 200, output: 10, cacheRead: 150, cacheWrite: 10 });
+    expect(vi.mocked(calculateCost)).toHaveBeenCalledWith('gpt-5', 100, 5, first);
+    expect(vi.mocked(calculateCost)).toHaveBeenCalledWith('gpt-5', 100, 5, retry);
+    // The mocked calculateCost returns 0.003 per call.
+    expect(result.costUsd).toBeCloseTo(0.006);
+  });
+
+  it('names the tier when every attempt was served at it', async () => {
+    const usage = { inputTokens: 10, outputTokens: 5, serviceTier: 'flex' as const };
+    const result = await runStructuredCompletion<DummyShape>({
+      provider: makeProvider([{ content: '{"ok":true}', usage }] as never),
+      model: 'gpt-5',
+      messages: [{ role: 'user', content: 'go' }],
+      parse: dummyParse,
+      retryUserMessage: 'try again',
+    });
+
+    expect(result.tokenUsage.serviceTier).toBe('flex');
   });
 });

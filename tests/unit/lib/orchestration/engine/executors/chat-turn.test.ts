@@ -63,7 +63,7 @@ vi.mock('@/lib/orchestration/llm/agent-resolver', async (importOriginal) => {
 });
 
 vi.mock('@/lib/orchestration/llm/cost-tracker', () => ({
-  calculateCost: vi.fn(() => ({ inputCostUsd: 0.001, outputCostUsd: 0.002 })),
+  calculateCost: vi.fn(() => ({ inputCostUsd: 0.001, outputCostUsd: 0.002, totalCostUsd: 0.003 })),
   logCost: vi.fn(async () => null),
 }));
 
@@ -97,7 +97,7 @@ import {
   NoEligibleProviderError,
   NoProviderConfiguredError,
 } from '@/lib/orchestration/llm/agent-resolver';
-import { logCost } from '@/lib/orchestration/llm/cost-tracker';
+import { calculateCost, logCost } from '@/lib/orchestration/llm/cost-tracker';
 import { executeChatTurn } from '@/lib/orchestration/engine/executors/chat-turn';
 import {
   LATEST_AGENT_VERSION_ID_INCLUDE,
@@ -582,6 +582,33 @@ describe('chat_turn — provider config precedence', () => {
     const { opts } = await lastChatCall();
     expect(opts.reasoningEffort).toBe('high');
   });
+
+  it("forwards the agent's model parameters to the provider (t-911, t-913)", async () => {
+    vi.mocked(prisma.aiConversation.findUnique).mockResolvedValue({
+      id: 'conv_1',
+      agentId: 'agent_1',
+      messages: [],
+    } as never);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue({
+      ...mockAgent,
+      stopSequences: ['END'],
+      topP: 0.8,
+      verbosity: 'low',
+      parallelToolCalls: false,
+      serviceTier: 'flex',
+    } as never);
+
+    await executeChatTurn(makeStep(), makeCtx());
+
+    const { opts } = await lastChatCall();
+    expect(opts).toMatchObject({
+      stopSequences: ['END'],
+      topP: 0.8,
+      verbosity: 'low',
+      parallelToolCalls: false,
+      serviceTier: 'flex',
+    });
+  });
 });
 
 // ─── Resilience to unusual upstream shapes ───────────────────────────────────
@@ -740,6 +767,46 @@ describe('chat_turn — resilience to unusual upstream shapes', () => {
         include: expect.objectContaining({ versions: LATEST_AGENT_VERSION_ID_INCLUDE }),
       })
     );
+  });
+});
+
+// ─── Provider code execution (t-956) ─────────────────────────────────────────
+
+describe('chat_turn — provider code execution cost', () => {
+  const codeExecution = { runs: 2, billedSeconds: 300, usdPerHour: 0.05 };
+
+  async function runWith(usage: Record<string, unknown>) {
+    vi.mocked(prisma.aiConversation.findUnique).mockResolvedValue({
+      id: 'conv_1',
+      agentId: 'agent_1',
+      messages: [],
+    } as never);
+    vi.mocked(prisma.aiAgent.findFirst).mockResolvedValue(mockAgent as never);
+    vi.mocked(getProviderWithFallbacks).mockResolvedValue({
+      provider: { chat: vi.fn(async () => ({ content: 'Computed.', usage })) } as never,
+      usedSlug: 'openai',
+    });
+    return executeChatTurn(makeStep(), makeCtx());
+  }
+
+  it('prices the call with the runs, and logs them on the cost row', async () => {
+    await runWith({ inputTokens: 30, outputTokens: 10, codeExecution });
+
+    expect(calculateCost).toHaveBeenCalledWith(
+      'gpt-4o-mini',
+      30,
+      10,
+      expect.objectContaining({ codeExecution })
+    );
+    expect(logCost).toHaveBeenCalledWith(
+      expect.objectContaining({ inputTokens: 30, outputTokens: 10, codeExecution })
+    );
+  });
+
+  it('logs no code execution when the call ran none', async () => {
+    await runWith({ inputTokens: 30, outputTokens: 10 });
+
+    expect(vi.mocked(logCost).mock.calls[0][0].codeExecution).toBeUndefined();
   });
 });
 

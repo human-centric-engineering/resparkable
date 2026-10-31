@@ -1022,6 +1022,39 @@ release process.
   filter.
 
 
+- **Merged Sunrise 0.16.0 (37 commits, v0.15.0..v0.16.0).** Three
+  migrations, then `npm run db:seed`. All three only add nullable columns
+  (`ai_cost_log`, `ai_agent`), so none rewrites a table. Agents can now use
+  the providers' own web search and code execution, both off until an agent
+  turns them on. Workflow, settings, webhook and schedule saves now need
+  `If-Match`; Resparkable's own code makes none of those writes.
+
+  **This tier's tables are classified for the owner layer.** The guard now
+  counts any `…UserId` column as a user link, so it sees 26 more of this
+  tier's models. All are `not-personal`, each with its reason, in
+  `lib/framework/resparkable/owner-classification.ts`: a Resparkable row is
+  read by its workspace (owner, group members, grants and share links), which
+  the owner layer cannot express. The data-layer check this gives up is
+  asked for upstream as Sunrise ask #56
+  ([sunrise#1145](https://github.com/human-centric-engineering/sunrise/issues/1145)).
+
+  **The briefing and summary runs are declared stale-safe.**
+  `queueResparkableWorkflowRun()` is the tier's one write to a column
+  erasure scrubs (`AiWorkflowExecution.inputData`). It is registered with
+  `registerStaleWriter()` as `intent`: it creates a fresh run from the
+  caller's options and copies nothing stored. `AiAgent.providerTools` is
+  declared to hold no row ids for account transfer.
+
+  **Erasure deletes grants and group invites by address only for a verified
+  account.** 0.16.0 tells erasure hooks the subject's `email` and
+  `emailVerified`. `scrubGranteeEmail` now uses both instead of re-reading
+  the user row, and for an unverified address deletes nothing and logs how
+  many grants and invites it left: with verification off, anyone can open an
+  account under someone else's address, and erasing it used to revoke what
+  other people had shared with the real owner. Under the production default
+  every account is verified, so nothing changes there. Access, invite
+  acceptance and export still match an unverified address; plan.md phase 66.
+
 - **Merged Sunrise 0.15.0 (135 commits, v0.14.0..v0.15.0).** Seventeen
   migrations, then `npm run db:seed`. Eight take locks that scale with table
   size (the delivery tables, `ai_cost_log`, `ai_admin_audit_log` and `user`;
@@ -2925,6 +2958,650 @@ release process.
 - **`GET /api/v1/resparkable/search` does not log the query text.** It is the most
   sensitive string a user sends this product, and a log line outlives the search;
   the route logs its length and the hit count instead.
+
+## [0.16.0] — 2026-10-27
+
+> **Alpha release.** Twenty-second tagged Sunrise release. **MINOR bump**. It
+> lets agents use the providers' own tools: web search on Claude and on
+> OpenAI (through a new opt-in Responses API path), and code execution on
+> both. It adds the newer model parameters (stop sequences, top P, verbosity,
+> parallel tool calls, service tier, `xhigh` and `max` reasoning effort),
+> prompt caching on Claude with cache-priced cost rows, the model's reasoning
+> summary in the admin chat and trace, and Claude thinking blocks kept across
+> a tool loop. And it finishes erasure's stale-write protection (§122):
+> versioned saves that require `If-Match`, backups this install sealed,
+> actions on a run under its row lock, and deliveries checked for erasures
+> since their copy was taken. Measured against `v0.15.0`: 36 PRs merged, no
+> direct commits, 16 issues closed (15 fixed, 1 declined); the suite is 1,400
+> files and 30,364 tests.
+>
+> ## What a fork has to do
+>
+> **Three migrations, then `npm run db:seed`.** All three only add nullable
+> columns (one with a constant default), so none rewrites or scans a table:
+> `20261026120000_cost_log_cache_tokens` (`ai_cost_log`),
+> `20261026130000_agent_model_params` and
+> `20261027100000_agent_provider_tools` (`ai_agent`). The seed re-runs the
+> platform-agents unit, whose reconcile now shares one provider catalogue
+> across orgs; its result is unchanged.
+>
+> **API clients must read before they write.** These routes now require the
+> record's version back as `If-Match`, and answer `428
+> PRECONDITION_REQUIRED` without it and `412 STALE_RECORD` once the record
+> moved on, an erasure included, with nothing written:
+>
+> - `PATCH /workflows/:id` with `draftDefinition`, `POST
+>   /workflows/:id/publish` and `POST /workflows/:id/discard-draft`
+>   (`definitionVersion` from `GET /workflows/:id`). `POST /workflows` with
+>   `copiedFrom` is refused with 412 when its source moved on.
+> - `PATCH /settings` with `escalationConfig` (`escalationVersion`), `PATCH
+>   /webhooks/:id` and `PATCH /workflows/:id/schedules/:scheduleId`
+>   (`version`).
+>
+> **Your type-check will flag:** a hand-built `ErasureExternalContext` or
+> `ErasureTxContext` (new required `email` and `emailVerified`), and the
+> removed `refuseErasedSubjects` (see Removed).
+>
+> **Your tests will flag:**
+>
+> - **`stale-writers.test.ts`, new in this release**, fails for any fork file
+>   that writes a column erasure scrubs in place (`SCRUBBED_COLUMNS`, on
+>   `AiWorkflowExecution`, `AiWorkflowRunningStep`, `AiWorkflowStepDispatch`,
+>   `AiWorkflowExecutionLeaseEvent`, `AiWebhookDelivery`,
+>   `AiEventHookDelivery`, `AiWorkflow`, `AiWorkflowVersion`,
+>   `AiOrchestrationSettings`, `AiWebhookSubscription` and
+>   `AiWorkflowSchedule`), until it declares how it knows its copy is stale
+>   with `registerStaleWriter()`.
+> - **The owner-classification test** now counts a `String` column named
+>   `…UserId` as a user link, so an unclassified one fails until it is
+>   classified in `lib/app/owner-classification.ts`.
+> - **A test asserting Anthropic's joined `system` string**: it is now sent as
+>   one text block per system message.
+>
+> **Changes a build will not catch:**
+>
+> - **Claude's `inputTokens` now counts cached input**, as OpenAI's already
+>   did. A fork that prices `inputTokens` itself should pass the usage to
+>   `calculateCost`, or it prices cache hits at the full rate.
+> - **Backups are now sealed.** A backup this install sealed keeps contacts
+>   re-added after an erasure when restored into the same org. Every bundle
+>   exported before 0.16.0 is unsealed, so restoring one strips anyone ever
+>   erased, as before. Rotating `BETTER_AUTH_SECRET` unseals the bundles
+>   sealed before it.
+> - **The app export collector is also passed `emailVerified`.** A
+>   collector that spreads its argument into a Prisma query passes the extra
+>   field, which Prisma refuses on a model without that column.
+> - **Erasure checks count only erasures since a copy was taken.** A
+>   `send_notification` step emails an address re-entered after an older
+>   erasure again; deliveries naming someone hold a database connection while
+>   they wait for an erasure's locks (up to 30 s).
+> - **Provider tools are off until an agent turns them on**, and then they
+>   cost: $0.01 a web search, and code execution's container time, estimated
+>   as the measured run time with a 5-minute minimum per container. Files the
+>   code makes are not delivered; Anthropic's copies are deleted. Turning on
+>   Anthropic web search needs an organisation admin to enable it in the
+>   Console.
+> - **Replayed provider blocks.** The new `LlmReasoningBlock` rides on
+>   `LlmResponse.reasoning` and the `done` chunk: Claude's thinking, and both
+>   providers' web search and code runs. A fork with its own tool loop must
+>   copy `reasoning` onto the assistant message it appends, or Claude rejects
+>   a thinking turn and the searches and code runs are lost. A fork that
+>   checks `agent_call` turns against its own schema must accept the blocks,
+>   or a resumed step starts again.
+> - **An agent's fallbacks never include its own primary**, and a platform
+>   agent's `defaultBinding` is now called with a shared `catalogue` (a
+>   one-argument one still works).
+> - **The Anthropic SDK (0.137) traces itself with OpenTelemetry** when a
+>   global `TracerProvider` is registered, sending `traceparent` and
+>   metadata-only spans. Sunrise registers none; a fork that does can opt out
+>   with `ANTHROPIC_OPEN_TELEMETRY=false`.
+>
+> **Dependencies.** Late October's bumps, including two majors:
+> `@hookform/resolvers` 6, whose only break is the effect-ts resolver (Sunrise
+> uses `/zod`), and happy-dom 21, test-only, which makes CSS and iframe loading
+> opt-in, so a fork's component tests that rely on either must switch it on.
+> Also `@anthropic-ai/sdk` 0.137, better-auth 1.7.13, dompurify 3.4.17 and
+> fast-uri 3.1.9 (see Security). Held back in `.github/dependabot.yml`: undici
+> 8, `@anthropic-ai/sdk` 1.x, OpenTelemetry 3.x, and `@opentelemetry/api`
+> 1.10, which every OpenTelemetry 2.x package caps its peer below.
+>
+> **Dependency alerts accepted for this release:**
+>
+> - `zod` < 4.6.6 (high, memory exhaustion on oversized input), under
+>   `@vercel/blob` → `@vercel/oidc` → `@vercel/cli-config`, which pins zod
+>   4.1.11 exactly; no release of it takes a patched zod yet. That copy only
+>   validates the Vercel CLI's own config files on disk, not untrusted input.
+>   Sunrise's own zod is 4.6.7.
+> - `postcss-selector-parser` (moderate), under `@tailwindcss/typography`, as
+>   in 0.15.0: the fix is in a major the plugin doesn't accept yet, and it
+>   parses only the app's own CSS, at build time.
+
+### Added
+
+- **The providers' own code execution on agents (t-956).** `ProviderTools`
+  gains `codeExecution` (`{}`, stored in `AiAgent.providerTools` beside
+  `webSearch`), with a switch on the agent form. On Claude Opus, Sonnet and
+  Haiku 4.5 and later (new `acceptsCodeExecution()`) Anthropic's
+  `code_execution_20260521` tool is sent; on OpenAI itself the request takes
+  the Responses API path with `code_interpreter` in a no-network container
+  (new `acceptsOpenAiCodeInterpreter()`, `takenProviderTools()`,
+  `codeInterpreterRefusal()`). `LlmReasoningBlock` gains
+  `code_execution_tool_result` and `openai_code_interpreter_call`, and
+  `server_tool_use` now also names `bash_code_execution` /
+  `text_editor_code_execution`. A tool loop replays them, so the next call
+  reuses the container, and the `agent_call` checkpoint keeps them. What the
+  code prints reaches the model and the trace (`provider:code_execution`);
+  files it makes are not delivered, and Anthropic's copies are deleted from
+  its Files storage straight after the call that made them. New `LlmUsage.codeExecution`
+  (`{ runs, billedSeconds, usdPerHour }`) is priced by `calculateCost` and
+  stamped on the cost row: each container a reply uses is billed the larger
+  of its measured run time and 5 minutes (`lib/orchestration/llm/code-execution.ts`),
+  an estimate since neither provider reports the time. On OpenAI, with code execution on, the search limit isn't sent as `max_tool_calls`, which would cap code runs too. New exports on
+  `@/lib/orchestration/llm`: `CodeExecutionOptions`, `CodeExecutionUsage`,
+  `CODE_EXECUTION_MIN_BILLED_SECONDS`, `CODE_EXECUTION_USD_PER_HOUR`,
+  `AnthropicCodeExecutionContent` and `AnthropicServerToolName`. New
+  `withProviderTool()` sets one provider tool and keeps the others: turning
+  web search off on the form no longer clears the whole value. **Forks:** a
+  consumer that switches on `LlmReasoningBlock.type`, or reads
+  `server_tool_use` as a web search, meets the new variants and names; a fork
+  that checks `agent_call` turns against its own schema must accept them; a
+  fork that logs cost itself should pass `codeExecution` to `logCost` beside
+  `webSearchRequests`.
+
+- **OpenAI's web search on agents, through the Responses API (t-955).** An
+  agent with `providerTools.webSearch` on OpenAI itself (`api.openai.com`)
+  now searches. The request goes through the Responses API
+  (`lib/orchestration/llm/openai-responses.ts`) when the model offers web
+  search (new `acceptsOpenAiWebSearch()`, plus `acceptsOpenAiWebSearchFilters()`
+  when a site list is set) and isn't structured output or at `minimal`
+  effort. Every other OpenAI-compatible request stays on Chat Completions
+  unchanged. The path is stateless (`store: false`). `LlmReasoningBlock`
+  gains `openai_reasoning` and `openai_web_search_call` variants, which a
+  tool loop replays and the `agent_call` checkpoint keeps; the Anthropic
+  adapter leaves them out. Reasoning summaries stream as `reasoning` chunks,
+  and an unverified OpenAI organisation's refusal is retried without them.
+  On OpenAI a site with a path is sent as its host. The search limit caps
+  each call, not the reply: `spendWebSearches()` now keeps the agent's whole
+  limit on the new `WebSearchOptions.replyLimit`. Searches cost $0.01 each and
+  show in the trace, as on Anthropic. `stopSequences` is dropped on this
+  path. A replayed reasoning item OpenAI can't decrypt (`400
+  invalid_encrypted_content`, as a damaged checkpoint gets) is retried once
+  without the reasoning items, keeping the search and code items; it is
+  meant for a fallback onto another organisation's credential too (t-959).
+  **Forks:** a fork `LlmProvider` or consumer that switches on
+  `LlmReasoningBlock.type` meets two more variants. A fork that checks
+  `agent_call` turns against its own schema must accept them, or a resumed
+  OpenAI step starts again.
+
+- **Anthropic's web search on agents (t-912).** New `LlmOptions.providerTools`
+  (`ProviderTools`, `WebSearchOptions` in `lib/orchestration/llm/types.ts`)
+  sends Anthropic's `web_search` server tool, with a search limit and allowed
+  or blocked domains, on Claude models that offer it (`acceptsWebSearch()`).
+  `AiAgent` gains a nullable `providerTools` JSON column (migration
+  `20261027100000_agent_provider_tools`), platform-owned on a platform agent,
+  in the agent registry, the create / update / export / backup schemas
+  (`agentProviderToolsField`, `providerToolsSchema`) and a Web search control
+  on the agent form. `LlmReasoningBlock` gains `server_tool_use` and
+  `web_search_tool_result` variants (results as `WebSearchResult`), returned in
+  order with thinking blocks so a tool loop replays the searches. A
+  `pause_turn` stop is now sent back to carry on (up to three times) instead of
+  read as a finished answer. `WebSearchOptions.maxUses` caps one reply, not
+  one request: the adapter sends each paused-turn continuation the searches
+  left, and `spendWebSearches()` (`lib/orchestration/llm/model-params.ts`)
+  does the same for a tool loop's next call; at 0 the tool comes off and a
+  search left waiting gets Anthropic's `max_uses_exceeded` result.
+  `AgentCallTurn` gains an optional `webSearchRequests`, so the cap holds
+  across an `agent_call` resume.
+  `LlmUsage.webSearchRequests` counts the searches; `calculateCost` adds
+  `WEB_SEARCH_USD_PER_REQUEST` ($0.01) a search to the total and reports it as
+  `webSearchCostUsd`, and `logCost` (new `LogCostParams.webSearchRequests`)
+  records both in the row's metadata. Each search is a `provider:web_search`
+  entry in the chat trace. **Forks:** an `AiAgent` fixture typed against
+  Prisma needs `providerTools`; a fork tool loop that sends `providerTools`
+  should pass each call's options through `spendWebSearches()`, or the search
+  limit applies per call; a fork `LlmProvider` or consumer that switches
+  on `LlmReasoningBlock.type` meets two new variants; a consumer that summed
+  `inputCostUsd + outputCostUsd` for a total should read `totalCostUsd`.
+
+- **The model's reasoning in the admin chat and trace (t-953).** `StreamChunk`
+  (`lib/orchestration/llm/types.ts`) gains a `{ type: 'reasoning'; text }`
+  variant, yielded as the model reasons: Claude's thinking deltas (adaptive
+  models now send `thinking.display: 'summarized'`, since they default to
+  `'omitted'`), and the `reasoning_content` / `reasoning` deltas some
+  OpenAI-compatible providers (DeepSeek, OpenRouter, vLLM) put on Chat
+  Completions. OpenAI's own summaries need the Responses API, so they come
+  only on its web search path (t-955). `ChatEvent` gains `{ type: 'reasoning'; delta }`, sent only when
+  the request sets `includeTrace`, so consumer and embed streams don't carry
+  it. `MessageMetadata.reasoningSummary` stores the text on every assistant
+  message that had some. The admin chat and the conversation trace viewer
+  show it in a collapsed panel. **Forks:** a fork `LlmProvider` doesn't have
+  to yield the new chunk, and a fork consumer of `chatStream` or `streamChat`
+  that switches on `type` can ignore it.
+
+- **Stop sequences, top P, verbosity, parallel tool calls and service tier
+  (t-911, t-913).** New `LlmOptions` fields `stopSequences`, `topP`,
+  `verbosity`, `parallelToolCalls`, `serviceTier` (types and their lists
+  `VERBOSITIES`, `SERVICE_TIERS`, `MAX_STOP_SEQUENCES` in `types.ts`), each
+  sent only to models that take it and dropped elsewhere. `AiAgent` gains the
+  same five columns (migration `20261026130000_agent_model_params`), in the
+  agent registry, the create / update / export / backup schemas
+  (`modelParamFields`) and the agent form; `serviceTier` is org-owned on a
+  platform agent, the rest platform-owned. An `llm_call` step takes them as
+  config. `modelParamOptions()` (new `lib/orchestration/llm/model-params.ts`)
+  turns stored values into options. `LlmUsage.serviceTier` reports a flex or
+  priority call, which `calculateCost` prices at 0.5× / 2× and `logCost`
+  stamps on the row's `metadata.serviceTier`. **Forks:** an `AiAgent` fixture
+  typed against Prisma needs the five fields, and the platform-agent banner
+  now lists the service tier among the org's settings.
+- **Prompt caching on Claude, and cache-priced cost rows (t-909).** Every
+  Anthropic request now carries a `cache_control` breakpoint on the agent's
+  composed system prompt (with the tools ahead of it), and one on the last
+  turn when the request has earlier turns. No
+  configuration and no top-level automatic caching, which some gateways
+  refuse. New `LlmUsage` (`lib/orchestration/llm/types.ts`), now the type of
+  `LlmResponse.usage`, the stream's `done` chunk and `ProviderError.usage`,
+  adds `cacheReadTokens` / `cacheWriteTokens`; OpenAI's
+  `prompt_tokens_details.cached_tokens` is read too. `calculateCost` takes an
+  optional fourth argument with those counts and prices them from the new
+  `ModelInfo.cacheReadCostPerMillion` / `cacheWriteCostPerMillion` (read from
+  OpenRouter), else Anthropic's 0.1× / 1.25×, else the full input rate.
+  `LogCostParams` takes the same counts, and `AiCostLog` gains nullable
+  `cacheReadTokens` / `cacheWriteTokens` columns (migration
+  `20261026120000_cost_log_cache_tokens`). The structured-completion
+  helper's `tokenUsage` gains optional `cacheRead` / `cacheWrite`.
+- **`xhigh` and `max` reasoning effort (t-906).** `ReasoningEffort`
+  (`lib/orchestration/llm/types.ts`) gains `'xhigh' | 'max'`, accepted on
+  agents, every LLM step's `reasoningEffort`, the agent export bundle and the
+  backup format, and offered as Extra high / Max in the admin select. The full
+  list is the new exported `REASONING_EFFORTS` (`types.ts`).
+  Adaptive-thinking Claude models get them as `output_config.effort`;
+  budget-taking Claude models get a 32768 / 65536 thinking budget, clamped as
+  before; OpenAI-compatible reasoning models get `high`
+  (`openAiReasoningEffort()`). Older bundles import unchanged. **Forks:** a
+  `switch` over `ReasoningEffort` needs the two new cases.
+- **Routes can declare credential path segments (t-933, #971).** New scaffold
+  `lib/app/credential-paths.ts` (`appCredentialPaths`, ships empty) lists route
+  patterns such as `'/m/[joinRef]'`; the declared segments are collapsed to
+  `[param]` whatever their length by `collapseDynamicSegments()`, so a short
+  share or room code no longer reaches the access log, guard log lines, client
+  error reports, Sentry or page-view analytics. Core declares its own in the
+  exported `CREDENTIAL_PATHS` (better-auth's
+  `/api/auth/reset-password/[token]`), so that token is now collapsed
+  whatever its length; nothing else changes while the fork's list is empty.
+  `credentialPathProblem()` says why a pattern would be skipped. The
+  20-character shape rule stays as the backstop.
+- **`sendEmail` takes message headers (t-935, #854).** New optional
+  `headers` on `SendEmailOptions` (`lib/email/send.ts`) is passed to Resend
+  unchanged, so a fork can send the one-click unsubscribe headers
+  (`List-Unsubscribe`, `List-Unsubscribe-Post`) bulk senders need. Only the
+  header names are logged. No change to sends that omit it.
+- **A fork's org-tier admin routes (§111, t-927).** New scaffold
+  `lib/app/admin-tier-routes.ts` (`APP_ORG_TIER_ADMIN_ROUTES`, ships empty)
+  lists the fork's admin API routes and wrappers that declare `tier: 'org'`, so
+  the roster test passes without the fork editing core's
+  `ORG_TIER_ADMIN_ROUTES`. Held to core's checks; nothing reads it at runtime.
+  The roster test now reads every module under `app/`, not only route files,
+  so a tier-baking wrapper under `app/` is seen — **a fork with an unlisted one
+  will now fail that test** until it is listed here. See
+  `.context/auth/authorization.md` ("Admin tiers").
+- **A fork's landing page for org admins (§111, t-928).** New scaffold
+  `lib/app/admin-landing.ts` (`appOrgAdminLandingRoute`, ships `null`) names
+  where `/admin` sends an org OWNER/ADMIN. Used only if it is an org-tier page;
+  otherwise `/admin` logs an error and keeps `/admin/orchestration`, and the
+  roster test fails.
+- **A fork can keep core's orchestration platform-only (§111, t-929).**
+  `closeCoreOrgTierSection('orchestration')` from `lib/auth/admin-tier.ts`,
+  called in `initAppOrgTierAdminPages()`, closes the section's pages, nav items
+  and admin API routes to org admins on that install. They read one narrowed
+  answer: `orgTierAdminPages()` for pages and nav, `closedCoreOrgTierSections()`
+  for the guard. Members and Support access stay open. With no landing named,
+  `/admin` sends an org admin to Members. Behaviour-neutral when unused; rolled
+  back with the rest of the init on a throw. `AdminSidebar` now takes a
+  required `orgTierPages` prop. See `.context/auth/authorization.md`
+  ("Admin tiers").
+
+- **Stale-writer manifest for erasure (§122, t-887).** `lib/privacy/stale-writers.ts`
+  lists every file that writes a column erasure scrubs in place, with how it
+  knows its copy is stale. `tests/unit/lib/privacy/stale-writers.test.ts` parses
+  the tree and fails on an unlisted writer, so **a fork file that writes one of
+  those columns fails the build until it declares itself** with the new
+  `registerStaleWriter()` (`lib/privacy/erasure-hooks.ts`), called from
+  `initAppErasureHooks()` in `lib/app/erasure.ts`. Nothing changes at runtime.
+  See `.context/privacy/data-erasure.md`.
+- **Thinking blocks across a tool loop (t-897, t-908).** New type
+  `LlmReasoningBlock` on `@/lib/orchestration/llm`, and an optional `reasoning`
+  field on `LlmResponse`, `LlmMessage` and the `done` `StreamChunk`. The
+  Anthropic provider returns a turn's `thinking` / `redacted_thinking` blocks
+  there and replays an assistant message's blocks unchanged; the chat and
+  `agent_call` tool loops carry them between requests. Optional, so a fork's
+  `LlmProvider` that ignores the field is unaffected; a fork with its own
+  tool loop over Claude should copy `reasoning` from the response onto the
+  assistant message it appends. See `.context/orchestration/llm-providers.md`.
+- **`runStructuredCompletion` takes a `reasoningEffort` (t-940, #981).**
+  Optional, forwarded on both attempts; no core caller sets it. A thinking
+  model's reasoning counts against `maxTokens`, so a caller setting it should
+  raise `maxTokens` and `timeoutMs` from their plain-extraction defaults; the
+  option's doc comment in `lib/orchestration/llm/structured-completion.ts` says
+  why.
+- **`presentSessionEntry()` for routes that enter an org outside the guards
+  (t-941, #1068).** New on `lib/auth/support-principal.ts`, with
+  `refuseReadOnlySupportWrite()` (the guards' own refusal, now shared) and
+  `READ_ONLY_SUPPORT_MESSAGE`. After `enterSessionOrg()`, it refuses and logs a
+  write under a READ_ONLY support grant with a 403 and returns the session with the
+  default user role inside a support session, as the guards do. **A fork route
+  that calls `enterSessionOrg()` itself should adopt it**, and run its work in
+  `runAsOrg()` so the audit log stamps the grant: since 0.15.0 such a
+  route sees a support actor as a platform `ADMIN`, and a READ_ONLY grant does
+  not stop its writes. See `.context/tenancy/support-access.md` ("Entering an
+  org outside the guards").
+- **A leaf fork's own `lib/app/` modules (t-942, #847).** New scaffold
+  `lib/app/own-modules.ts` (`appOwnModules`, ships empty) lists a fork's own
+  modules under `lib/app/`. VERSIONING.md's seam check, CUSTOMIZATION.md §4's
+  table check and the `SEAM_DEFAULTS` row check skip them, so a leaf fork no
+  longer carries a row per module in those three Sunrise files. An entry that
+  is not on disk, or that still has a row in any of the three (as every Sunrise
+  seam does), fails the seam-coverage tests; delete a module's old rows when
+  you list it. Unlike other seams it needs no `SEAM_DEFAULTS` pin: its row
+  checks the entries instead. A fork others build on should not declare. See CUSTOMIZATION.md §4.
+
+- **Provider seams can say "could not ask" instead of "nothing" (t-819).**
+  `resolveEligibleProviders` takes an optional `{ onFailure: 'throw' }`.
+  Under it, a fork resolver that throws, a registrar that failed, or an
+  unreadable org policy throws the new `ProviderSeamUnavailableError` instead
+  of answering "nothing eligible". The new `classifyProvidersByCredential`
+  (`lib/orchestration/llm/provider-credentials.ts`) returns the rows
+  `filterProvidersWithCredential` would keep, plus, separately, each row the
+  credential resolver failed for, with its error. Both are for a caller that
+  records its answer rather than acting on it. The defaults are unchanged:
+  every call-time path still fails closed.
+
+- **The agent form shows who picks a platform agent's provider and model,
+  and can hand them back (t-818).** `GET /agents/:id`'s `platformAgent` gains
+  `picksOwnBinding`, which is true on an agent whose definition picks its own
+  binding (the clean-up assistant in core). It also gains
+  `bindingFollowsPlatform`, which is true while the platform owns that binding
+  (see Changed). On such an agent, the Model tab says whether the platform or
+  the org decides its provider and model. Once the org owns them, "Let the
+  platform choose" sends `PATCH { bindingOwner: 'platform' }` and takes the
+  row the PATCH returns. That row is on the platform's pick, or stays where
+  it was until the next maintenance pass if the platform can't pick right
+  then. The control is disabled while the form has unsaved changes.
+
+### Changed
+
+- **Claude `inputTokens` now counts cached input (t-909).** Anthropic reports
+  cache reads and writes apart from `input_tokens`; the provider now adds
+  them back in, so `LlmUsage.inputTokens` (and `AiCostLog.inputTokens`) is the
+  whole input on every provider, as it already was for OpenAI. A fork
+  computing cost from `inputTokens` itself should pass the usage as
+  `calculateCost`'s fourth argument, or it prices cache hits at the full
+  rate. Anthropic's `system` is now sent as one text block per system
+  message, which a fork's test asserting the old joined string will notice.
+- **Erasure reaches the rest of what a run keeps (t-882).** Besides a run's
+  input, trace, output and error, erasure now redacts its `supervisorReport`,
+  its running-step `turns`, its cached step-dispatch `result` and its
+  lease-event `metadata`, under the run's row lock; a run naming the person
+  only in those rows is found too. The engine's writes of the report and the
+  turns, and `recordDispatch`, now leave out anyone erased since the run
+  started.
+  `SCRUBBED_COLUMNS` (`lib/privacy/stale-writers.ts`, new in this release:
+  see Added) lists the four too, so **a fork file that writes `AiWorkflowRunningStep`, `AiWorkflowStepDispatch`,
+  `AiWorkflowExecutionLeaseEvent` or `supervisorReport` fails
+  `stale-writers.test.ts` until it declares itself** with
+  `registerStaleWriter()`. See `.context/privacy/data-erasure.md`.
+
+- **Erasure hooks are told the subject's email and whether it is verified
+  (t-944).** `ErasureExternalContext` and `ErasureTxContext`
+  (`lib/privacy/erasure-hooks.ts`) gain required `email` and `emailVerified`,
+  read from the user row. These are the same fields the export collector gets,
+  so a fork table keyed by address can share one match between export and
+  erasure, and delete by address only for a verified account. Hooks only read
+  the context, so hook code is unaffected, but **a fork test that builds a
+  context by hand stops compiling** until it adds the two fields. An install
+  with a `cleanupExternal` hook makes one extra user-row read per erasure. See
+  `.context/privacy/data-erasure.md` ("What the FK cascade can't do").
+- **The app export collector is told whether the subject's email is verified
+  (t-934, #972).** `exportUserData()` now passes `emailVerified` to
+  `collectAppSubjectData()` alongside `userId` and `email`, so a fork table
+  keyed by address can hand rows over only to an account that proved the
+  address. The scaffold `lib/app/data-export.ts` is unchanged: to read the
+  flag, add `emailVerified: boolean` to your own `AppSubjectQuery`. A
+  collector that spreads its whole argument into a query will now see the
+  extra field. See `.context/privacy/data-export.md` ("Extending It").
+- **The workflow builder's save, publish and discard are versioned, and
+  `If-Match` is required (§122, t-900).** `GET /workflows/:id` returns
+  `definitionVersion` (the draft or published snapshot the builder edits, and
+  which version is published). `PATCH /workflows/:id` with `draftDefinition`
+  (including `null`), `POST /workflows/:id/publish` and `POST
+  /workflows/:id/discard-draft` must send it back as `If-Match`: `428
+  PRECONDITION_REQUIRED` without, `412 STALE_RECORD` once the workflow moved
+  on, an erasure included, nothing written. **API clients must read before
+  they save, publish or discard.** A `PATCH` of other fields alone, a
+  rollback and a create are unchanged. The builder shows the reload prompt
+  with a **Copy my changes** option (`StaleSaveNotice` gains
+  `onCopyChanges`). An address typed into a freshly loaded builder is now
+  saved even if its owner was once erased; an erased approver id is still
+  stripped. A new workflow copied from a stored one (a custom template,
+  Duplicate, save-as-template) sends `copiedFrom: { workflowId,
+  definitionVersion }` on `POST /workflows` and is refused with 412 when that
+  source moved on; `GET /workflows/templates` gives each of the org's own
+  templates its `copySource`. A `PATCH` that sends a draft writes its
+  other fields in the same update, after the check, and one that clears the
+  draft is now audited as `workflow.draft.discard`. `AiWorkflowWithVersion` gains `definitionVersion`;
+  `lib/orchestration/config-versions.ts` gains the workflow's version and
+  lock. Backup seals now cover workflow definitions' addresses too, so a
+  sealed import strips only people erased since its `exportedAt` from them,
+  and a bundle sealed by an earlier build of this release no longer
+  verifies (every erasure counts, as for an unsealed bundle); no released
+  bundle was ever sealed. The stale-writer manifest's `pending` anchor,
+  `PendingStaleWriter` and `StaleWriterTask`, added earlier in this release,
+  are gone again: §122 has converted every writer. See `.context/privacy/data-erasure.md` ("The workflow
+  builder").
+
+- **Saves of the escalation list, a webhook subscription and a schedule are
+  versioned, and `If-Match` is required (§122, t-899).** `GET /settings`
+  returns `escalationVersion`; webhook subscriptions and schedules carry
+  `version` in their lists and single reads (a field, not an `ETag`). `PATCH
+  /settings` with `escalationConfig`, `PATCH /webhooks/:id` and `PATCH
+  /workflows/:id/schedules/:scheduleId` must send it back as `If-Match`:
+  without it they answer `428 PRECONDITION_REQUIRED`, and when the record
+  changed since it was read, an erasure included, `412 STALE_RECORD` with
+  nothing written. **API clients must read before they save.** A settings
+  PATCH that does not write `escalationConfig` is unchanged. These routes no
+  longer refuse an address ever erased: one typed into a freshly loaded form,
+  or a create, is saved. New `StaleRecordError`, `PreconditionRequiredError`
+  and their codes in `lib/api/errors.ts`; the mechanism, for forks, is
+  `lib/api/record-version.ts`. `refuseErasedSubjects` is removed from
+  `lib/privacy/erased-subjects.ts`: use the versioned save, or
+  `findErasedSubjects`. See `.context/privacy/data-erasure.md` ("Saves of a
+  record that moved on").
+
+- **A backup this install sealed keeps contacts re-added after an erasure
+  (§122, t-902).** Exports now stamp `exportedAt` before reading and carry
+  `exportSeal`: an HMAC keyed by `BETTER_AUTH_SECRET` over `exportedAt`, the
+  exporting org, and the subscriptions' and escalation list's addresses
+  (`lib/orchestration/backup/export-seal.ts`). Imported into the same org with
+  the seal intact, the email subscriptions and escalation list are stripped
+  only of people erased since `exportedAt`, so an address an admin re-added
+  after an older erasure survives a restore, with a warning counting such
+  addresses. Unsealed bundles (every one exported before this), another
+  install's or org's, and edited ones still strip anyone ever erased; a seal
+  that does not verify is reported. Workflow definitions joined the seal in
+  t-900.
+  Rotating `BETTER_AUTH_SECRET` unseals earlier bundles, and environments
+  sharing one share seals. See `.context/privacy/data-erasure.md`
+  ("Backup import").
+
+- **Actions on a run read and write it under its row lock (§122, t-901).**
+  Approve, reject and retry-step now take the run's row lock before reading
+  its trace (`withRunRowLocked()`, `lib/orchestration/engine/run-row-lock.ts`),
+  so a copy read before an erasure cannot write the person back. A scheduled
+  run now blanks anyone erased since the tick read its schedule rather than
+  anyone ever erased; the schedule routes still refuse an erased address until
+  t-899, so nothing reaches a template that way yet. An approve, reject or
+  retry-step that waits past the lock's bound answers 409 ("the run is busy;
+  nothing was changed") rather than 500. See `.context/privacy/data-erasure.md` ("Actions on a run").
+
+- **Deliveries and email sends leave out people erased since their copy was
+  taken (§122, t-886).** Every webhook and event-hook delivery attempt, first
+  or retry, and the escalation email now hold erasure's subject locks across
+  the send and check for erasures **since** their copy was taken — the oldest
+  of the subscriptions', hook row's or settings' read, the delivery row's
+  creation, and the start of the run its payload names
+  (`sendHoldingSubjects()`, `lib/privacy/stale-sends.ts`).
+  A delivery to an erased address, or about an erased person's activity, is
+  stopped as erasure stops one (`stoppedByErasure`, never retried); one naming
+  them only as an admin acting is sent without who acted. The
+  `send_notification` step's check moves from every erasure ever to erasures
+  since its run started, so **an address re-entered after an older erasure is
+  emailed again** — except one resolved from an earlier step's output, whose
+  source erasure never scrubs, which still counts every erasure. `findErasedSubjects()` takes a `since` option for a fork's
+  own sender of a copy. A delivery naming someone holds a database connection
+  while it waits for an erasure's locks (up to 30 s), and an email for its send
+  (15 s); a webhook or hook post goes after the decision commits. A check that
+  cannot run is retried without counting against the delivery's attempts, for
+  the row's first hour. See
+  `.context/privacy/data-erasure.md`.
+
+- **A platform agent's `defaultBinding` is handed a shared provider catalogue
+  (t-816).** `PlatformAgentDefinition.defaultBinding` is now called as
+  `(db, catalogue)`. The new `PlatformAgentCatalogue`
+  (`createPlatformAgentCatalogue()` in
+  `lib/orchestration/agents/platform-agents.ts`) holds the active provider and
+  model rows, each read once on first use. The `platformAgents` maintenance
+  job shares one catalogue across every org it visits in a run, so a pass over
+  N orgs reads those tables once, not N times. A drifted org's reconcile also
+  reuses the picks its drift check got, rather than asking for them again. A
+  one-argument `defaultBinding` still type-checks and works.
+  **Forks:** if you implement one, read rows from `catalogue`, and use the
+  seams' "could not ask" forms (see Added).
+
+- **Version restore leaves a platform-owned provider and model alone
+  (t-821).** While the platform owns a platform agent's binding
+  (`bindingOwner: 'platform'`), `POST /agents/:id/versions/:versionId/restore`
+  no longer brings back the snapshot's provider, model or provider
+  configuration, and doesn't check that provider against the org's approved
+  providers. The version's fallbacks are still restored, minus the current
+  primary, and still checked. Before, restoring any org setting, such as the
+  budget, also froze the agent on an older pick and made the binding the
+  org's. If that pick's provider had since been revoked, the whole restore was
+  refused. Once the org owns the binding, a restore brings all of them back as
+  before. The Versions tab's confirm dialog says which fields come back in
+  each case. On such an agent a restore that races a reconcile or a hand-back
+  now returns 409 rather than undoing it.
+
+- **An agent's fallbacks never include its own primary (t-954).**
+  `resolveAgentProviderAndModel` drops the resolved primary's slug, and any
+  repeat, from an agent's explicit `fallbackProviders`, keeping the rest in
+  order. So a fork's eligibility rule (`registerProviderEligibility`) is no
+  longer asked about the primary as one of its own fallbacks under `source:
+  'explicit'`. `getProviderWithFallbacks` also tries each slug once. The
+  state arose when the reconcile moved a platform-picked primary onto a listed
+  fallback (t-798), or when an inherited primary was a listed one. A list that
+  named only the primary is now an empty explicit list, not the system fill.
+
+### Removed
+
+- **`refuseErasedSubjects`** (`lib/privacy/erased-subjects.ts`, added in
+  0.15.0). A save that must not write an erased person back now uses a
+  versioned save (`lib/api/record-version.ts`); a fork's own check uses
+  `findErasedSubjects`, which takes a `since` option. See the §122 entries
+  under Changed.
+
+### Fixed
+
+- **A wrongly typed subject-source declaration is dropped, not thrown
+  (t-787).** `registerAppSubjectSources()` called `.trim()` on whatever it
+  was given, so a non-string `model` or `description`, or a `null` source or
+  exclusion, threw out of `initAppSubjectSources()`. The tier was rolled back
+  and `exportUserData()` refused every request for the life of the process.
+  Such a row is now dropped with a `subject-sources: declaration rejected`
+  log, like any other malformed row, and the coverage guard names the model.
+  An exclusion is now stored as exactly `{ model, reason }` with the reason
+  trimmed, so extra fields a fork passed no longer reach the bundle's
+  `meta.excluded`, and `getAppExcludedSubjectSources()` returns copies. Both
+  registries are now built on `createDeclarationRegistry()`
+  (`lib/privacy/declaration-registry.ts`); their exports are unchanged. In
+  both, a contribution that is not an object, has a non-string `tier`, or has
+  a `sources` / `excluded` that is not an array is now rejected with a log
+  rather than throwing; a non-string `tier` had also let a second tier claim a
+  model another tier already owned. A source's `description` is stored
+  trimmed, so `meta.app` shows what was checked. The `App*SourceContribution`
+  and `AppExcluded*Source` types are now aliases of the shared
+  `DeclarationContribution` and `DeclaredExclusion`, with the same shape.
+
+- **The clean-up agent stays put while a fork resolver is down (t-819).**
+  Since t-798, a fork's eligibility or credential resolver that threw during
+  a maintenance pass moved the clean-up agent to inherit and wrote a version
+  row. The next pass moved it back and wrote another. `pickCleanupBinding`
+  now leaves the binding where it is, and the job asks again next pass. This
+  happens when the eligibility resolver fails, or when the credential
+  resolver fails for a provider whose model would have won. A credential
+  failure for any other provider can't change the pick, so the pick goes
+  ahead. The pick also asks the eligibility rule before the credential
+  resolver now, so the resolver is only asked about providers the org may
+  use. **Forks:** a credential resolver that throws for a provider it doesn't
+  serve keeps the clean-up agent off that provider for as long as it would
+  have won, with a warning every pass saying so. Answer with no key for such
+  a provider instead.
+
+- **A run's supervisor verdict history is kept (t-925, t-951).** Two
+  overlapping retroactive reviews of one run both stay in
+  `supervisorReport.previousVerdicts[]`, and an in-workflow supervisor step
+  that runs again on a retried run archives the verdict it replaces instead of
+  dropping the history. `POST …/executions/:id/review` now answers **409**,
+  writing nothing, when the run was retried during its model call.
+
+- **A tool call with invalid arguments names the field on a dev server
+  (t-946, #1058).** `CapabilityValidationError`
+  (`lib/orchestration/capabilities/base-capability.ts`) is now recognised by
+  `instanceof` across module graphs, so a capability loaded from a different
+  graph under `next dev` returns `invalid_args` with the field at fault, not a
+  generic execution failure. Production was unaffected.
+
+- **Agent-opened turns work on Claude agents (t-937).** An `openingTurn` now
+  reaches Anthropic as the request's last turn: a user turn headed as an
+  instruction from the application, not the person's words. Before, it was
+  folded into the system prompt, so a new conversation sent no messages (a
+  `400`), a history ending on a reply was read as a prefill, and on a thinking
+  agent a history ending on a tool result was rejected. A tool call left
+  unanswered at the end of history, without its thinking blocks, is sent to a
+  thinking request as a text note of the call and its result. New optional `turnInstruction` on
+  `LlmMessage`, which a custom provider may honour; OpenAI-compatible providers
+  are unchanged. The stored transcript is unchanged.
+- **The owner-classification test sees a fork's user columns named for their
+  role (§115, #1069, #1067).** A `String` column named `…UserId`
+  (`respondentUserId`) now counts as a user link, so its model must be
+  classified and may name it as its owner. Before, the test skipped such a model
+  and refused a classification of it. For a user id named any other way, put a
+  `/// owner-classification: user-id` doc line above the field. A comment
+  mentioning `@relation` no longer hides a column. **A fork with an unclassified
+  `…UserId` model will now fail that test** until it classifies the model in
+  `lib/app/owner-classification.ts`. See `.context/auth/authorization.md`.
+- **Pairwise verdicts refuse unfinished runs (t-938, #923).** `POST
+  /experiments/:id/verdicts` now answers `400` unless both variants' runs have
+  completed, naming each unfinished run and its status in `details.runs`.
+  Before, it judged queued, running, failed or cancelled runs and overwrote the
+  stored verdict with a comparison of partial results.
+- **`RouteErrorBoundary` shows "Session Expired" only when the session is gone
+  (t-939, #1066).** With `checkSession`, the sign-in card now needs a null
+  session or a `401` from the lookup. An auth outage or a rejected lookup keeps
+  the normal card and its retry, and is logged. A later error that finds a
+  valid session clears the card. See `.context/ui/components.md`.
+
+### Security
+
+- **dompurify 3.4.17 clears three alerts** (#1083, in t-952):
+  GHSA-cg2g-xh64-v4q7 (critical, a `SAFE_FOR_TEMPLATES` bypass in shadow-root
+  content), GHSA-mrv2-3pqr-j5jr (high, `IN_PLACE` hooks leaving event
+  handlers armed) and GHSA-c6gr-qvv4-5v3f (low, under
+  `PARSER_MEDIA_TYPE: application/xhtml+xml`). Sunrise's own call, the Learn
+  page's Mermaid diagrams, uses the SVG profile and none of those options;
+  Mermaid shares the same copy.
+- **fast-uri 3.1.9 clears four alerts** (#1107): GHSA-wjr9-j795-jxcr and
+  GHSA-w74x-v6f9-j3xg (medium, host confusion and scheme spoofing) and
+  GHSA-333x-w4r6-6crp and GHSA-xhq7-xmqj-769h (low). It comes in through
+  `ajv`, lockfile only.
 
 ## [0.15.0] — 2026-10-21
 
@@ -12400,7 +13077,8 @@ Resparkable safe to fork and to merge upstream releases into.
 
 ---
 
-[Unreleased]: https://github.com/human-centric-engineering/sunrise/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/human-centric-engineering/sunrise/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/human-centric-engineering/sunrise/compare/v0.12.1...v0.13.0

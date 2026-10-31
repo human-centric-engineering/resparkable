@@ -54,6 +54,7 @@ import {
 } from '@/lib/orchestration/agents/resolve-effective-prompt';
 import { registerStepType } from '@/lib/orchestration/engine/executor-registry';
 import { narrowReasoningEffort } from '@/lib/orchestration/llm/model-heuristics';
+import { modelParamOptions } from '@/lib/orchestration/llm/model-params';
 import { platformSlugWhere } from '@/lib/orchestration/agents/platform-agent-guard';
 import {
   LATEST_AGENT_VERSION_ID_INCLUDE,
@@ -243,6 +244,7 @@ export async function executeChatTurn(
           ? { maxTokens: agent.maxTokens }
           : {}),
       ...(effectiveReasoning !== undefined ? { reasoningEffort: effectiveReasoning } : {}),
+      ...modelParamOptions(agent),
       signal: ctx.signal,
     });
   } catch (err) {
@@ -256,8 +258,12 @@ export async function executeChatTurn(
       // See the note in `llm-runner.ts`: the vendor billed this attempt.
       billedOnFailure ? billedOnFailure.inputTokens + billedOnFailure.outputTokens : 0,
       billedOnFailure
-        ? calculateCost(model, billedOnFailure.inputTokens, billedOnFailure.outputTokens)
-            .totalCostUsd
+        ? calculateCost(
+            model,
+            billedOnFailure.inputTokens,
+            billedOnFailure.outputTokens,
+            billedOnFailure
+          ).totalCostUsd
         : 0
     );
   }
@@ -270,9 +276,11 @@ export async function executeChatTurn(
   const computedCost = calculateCost(
     model,
     response.usage?.inputTokens ?? 0,
-    response.usage?.outputTokens ?? 0
+    response.usage?.outputTokens ?? 0,
+    response.usage
   );
-  const totalCostUsd = computedCost.inputCostUsd + computedCost.outputCostUsd;
+  // The total, not input + output: a web search is billed outside both.
+  const totalCostUsd = computedCost.totalCostUsd;
 
   // logCost is async but explicitly fire-and-forget per its contract.
   void logCost({
@@ -285,6 +293,11 @@ export async function executeChatTurn(
     model,
     inputTokens: response.usage?.inputTokens ?? 0,
     outputTokens: response.usage?.outputTokens ?? 0,
+    cacheReadTokens: response.usage?.cacheReadTokens,
+    cacheWriteTokens: response.usage?.cacheWriteTokens,
+    serviceTier: response.usage?.serviceTier,
+    webSearchRequests: response.usage?.webSearchRequests,
+    codeExecution: response.usage?.codeExecution,
     metadata: {
       ...(ctx.costLogMetadata ?? {}),
       stepId: step.id,

@@ -19,6 +19,8 @@ import {
   erasedPayload,
   preRedactSubjectFromDeliveries,
   subjectViewOfPayload,
+  subjectsOfPayload,
+  withoutErasedSubjects,
   type RawClient,
 } from '@/lib/privacy/delivery-payloads';
 
@@ -970,5 +972,235 @@ describe('byCreatedAtThenId', () => {
     expect(byCreatedAtThenId(at(2, 'a'), at(1, 'a'))).toBeGreaterThan(0);
     expect(byCreatedAtThenId(at(1, 'a'), at(1, 'b'))).toBeLessThan(0);
     expect(byCreatedAtThenId(at(1, 'b'), at(1, 'a'))).toBeGreaterThan(0);
+  });
+});
+
+describe('who a payload about to be sent names (t-886)', () => {
+  function owners(conversation: { userId: string | null } | null, execution = conversation) {
+    return {
+      aiConversation: { findUnique: vi.fn().mockResolvedValue(conversation) },
+      aiWorkflowExecution: { findUnique: vi.fn().mockResolvedValue(execution) },
+    };
+  }
+
+  it('looks up the conversation and the run side by side, naming them in the same order (t-926)', async () => {
+    let releaseConversation: (value: { userId: string }) => void = () => undefined;
+    const client = {
+      aiConversation: {
+        findUnique: vi.fn(
+          () => new Promise<{ userId: string }>((resolve) => (releaseConversation = resolve))
+        ),
+      },
+      aiWorkflowExecution: {
+        findUnique: vi.fn().mockResolvedValue({
+          userId: 'run-owner',
+          startedAt: new Date('2026-10-01T00:00:00Z'),
+          createdAt: new Date('2026-09-30T00:00:00Z'),
+        }),
+      },
+    };
+
+    const pending = subjectsOfPayload(client as never, 'workflow_failed', {
+      event: 'workflow_failed',
+      data: { conversationId: 'conv-1', executionId: 'exec-1' },
+    });
+    // The run's lookup has started while the conversation's is still out.
+    await vi.waitFor(() => expect(client.aiWorkflowExecution.findUnique).toHaveBeenCalled());
+    releaseConversation({ userId: 'chat-owner' });
+    const named = await pending;
+
+    expect([...named.userIds.keys()]).toEqual(['chat-owner', 'run-owner']);
+    expect(named.runStartedAt).toEqual(new Date('2026-10-01T00:00:00Z'));
+    expect(named.dangling).toBe(false);
+  });
+
+  it('counts a conversation or run asked about and not returned as dangling, whatever the client says', async () => {
+    const client = {
+      aiConversation: { findUnique: vi.fn().mockResolvedValue(undefined) },
+      aiWorkflowExecution: { findUnique: vi.fn().mockResolvedValue(undefined) },
+    };
+
+    const named = await subjectsOfPayload(client as never, 'workflow_failed', {
+      event: 'workflow_failed',
+      data: { conversationId: 'conv-gone' },
+    });
+
+    expect(named.dangling).toBe(true);
+  });
+
+  it('reads the payload as it was handed over, not as it is after the lookups', async () => {
+    let release: (value: null) => void = () => undefined;
+    const client = {
+      aiConversation: {
+        findUnique: vi.fn(() => new Promise<null>((resolve) => (release = resolve))),
+      },
+      aiWorkflowExecution: { findUnique: vi.fn() },
+    };
+    const data: Record<string, unknown> = { conversationId: 'conv-1', userId: 'u-1' };
+
+    const pending = subjectsOfPayload(client as never, 'message_created', {
+      event: 'message_created',
+      data,
+    } as never);
+    // The caller reuses its object after handing it over.
+    delete data.userId;
+    release(null);
+    const named = await pending;
+
+    expect([...named.userIds.keys()]).toEqual(['u-1']);
+  });
+
+  it('names every person key, on the basis erasure matches it on, activity winning', async () => {
+    const client = owners(null);
+    const named = await subjectsOfPayload(client as never, 'workflow_failed', {
+      event: 'workflow_failed',
+      data: { userId: 'u-1', actorUserId: 'u-2', approverUserIds: ['u-3', 'u-1', 7] },
+    });
+
+    expect([...named.userIds]).toEqual([
+      ['u-1', 'activity'],
+      ['u-2', 'activity'],
+      ['u-3', 'actor'],
+    ]);
+    expect(named.dangling).toBe(false);
+    expect(client.aiConversation.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('reads actorUserId on an admin action as the actor, not the activity', async () => {
+    const named = await subjectsOfPayload(owners(null) as never, ADMIN_ACTION_EVENTS[0], {
+      data: { actorUserId: 'admin-1' },
+    });
+
+    expect(named.userIds.get('admin-1')).toBe('actor');
+  });
+
+  it('names the owners of the conversation and the run the payload names', async () => {
+    const client = {
+      aiConversation: { findUnique: vi.fn().mockResolvedValue({ userId: 'conv-owner' }) },
+      aiWorkflowExecution: { findUnique: vi.fn().mockResolvedValue({ userId: 'run-owner' }) },
+    };
+    const named = await subjectsOfPayload(client as never, 'x', {
+      data: { conversationId: 'c-1', executionId: 'e-1' },
+    });
+
+    expect([...named.userIds]).toEqual([
+      ['conv-owner', 'activity'],
+      ['run-owner', 'activity'],
+    ]);
+    expect(client.aiConversation.findUnique).toHaveBeenCalledWith({
+      where: { id: 'c-1' },
+      select: { userId: true },
+    });
+    expect(named.dangling).toBe(false);
+  });
+
+  it('is dangling when a conversation or run it names no longer exists', async () => {
+    const named = await subjectsOfPayload(
+      { ...owners(null), aiWorkflowExecution: { findUnique: vi.fn() } } as never,
+      'x',
+      { data: { conversationId: 'gone' } }
+    );
+
+    expect(named).toEqual({ userIds: new Map(), dangling: true, runStartedAt: null });
+  });
+
+  it('names nobody in a payload with no data, or a system-owned run', async () => {
+    expect(await subjectsOfPayload(owners(null) as never, 'x', null)).toEqual({
+      userIds: new Map(),
+      dangling: false,
+      runStartedAt: null,
+    });
+    const createdAt = new Date('2026-10-22T08:00:00Z');
+    expect(
+      await subjectsOfPayload(
+        owners({ userId: null, startedAt: null, createdAt } as never) as never,
+        'x',
+        { data: { executionId: 'scheduled' } }
+      )
+    ).toEqual({ userIds: new Map(), dangling: false, runStartedAt: createdAt });
+  });
+
+  it('says when the run it names started: an event from run memory holds a copy from then', async () => {
+    const startedAt = new Date('2026-10-20T09:00:00Z');
+    const client = {
+      aiConversation: { findUnique: vi.fn() },
+      aiWorkflowExecution: {
+        findUnique: vi.fn().mockResolvedValue({ userId: 'u-1', startedAt, createdAt: new Date(0) }),
+      },
+    };
+
+    const named = await subjectsOfPayload(client as never, 'workflow.paused_for_approval', {
+      data: { executionId: 'e-1', approverUserIds: ['a-1'] },
+    });
+
+    expect(named.runStartedAt).toEqual(startedAt);
+    expect(client.aiWorkflowExecution.findUnique).toHaveBeenCalledWith({
+      where: { id: 'e-1' },
+      select: { userId: true, startedAt: true, createdAt: true },
+    });
+  });
+});
+
+describe('a payload with the people erased since taken out (t-886)', () => {
+  const activity = new Map<string, 'activity' | 'actor'>([['u-1', 'activity']]);
+  const actor = new Map<string, 'activity' | 'actor'>([['admin-1', 'actor']]);
+
+  it('stops an activity payload, redacted as erasure redacts the row', () => {
+    const result = withoutErasedSubjects(
+      { event: 'e', data: { workflowId: 'wf', userId: 'u-1', reason: 'theirs' } },
+      { userIds: activity, dangling: false },
+      ['u-1'],
+      false
+    );
+
+    expect(result).toEqual({
+      stop: true,
+      payload: { event: 'e', data: { workflowId: 'wf', userId: null } },
+    });
+  });
+
+  it('sends an actor payload without who acted', () => {
+    const result = withoutErasedSubjects(
+      {
+        event: 'agent_updated',
+        data: { changes: { a: 1 }, actorUserId: 'admin-1', actorUserName: 'Ada' },
+      },
+      { userIds: actor, dangling: false },
+      ['admin-1'],
+      false
+    );
+
+    expect(result).toEqual({
+      stop: false,
+      payload: { event: 'agent_updated', data: { changes: { a: 1 }, actorUserId: null } },
+    });
+  });
+
+  it('leaves a payload alone when nobody it names was erased, or only someone it does not name', () => {
+    const payload = { event: 'e', data: { userId: 'u-1' } };
+
+    expect(
+      withoutErasedSubjects(payload, { userIds: activity, dangling: false }, [], false)
+    ).toEqual({ stop: false, payload: null });
+    expect(
+      withoutErasedSubjects(payload, { userIds: activity, dangling: false }, ['stranger'], false)
+    ).toEqual({ stop: false, payload: null });
+  });
+
+  it('stops a dangling payload, to its record keys, only when someone was erased since', () => {
+    const payload = {
+      event: 'e',
+      data: { conversationId: 'gone', prompt: 'theirs', actorUserName: 'Ada', userId: 'u-x' },
+    };
+    const dangling = { userIds: new Map<string, 'activity' | 'actor'>(), dangling: true };
+
+    expect(withoutErasedSubjects(payload, dangling, [], true)).toEqual({
+      stop: true,
+      payload: { event: 'e', data: { conversationId: 'gone' } },
+    });
+    expect(withoutErasedSubjects(payload, dangling, [], false)).toEqual({
+      stop: false,
+      payload: null,
+    });
   });
 });

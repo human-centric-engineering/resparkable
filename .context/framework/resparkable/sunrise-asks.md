@@ -743,3 +743,23 @@ on both at every sync until the seams land.
 
 **At the 0.15.0 merge (2026-10-27):** both still open upstream (#964, #1041,
 #1053). The two FORK edits merged without a conflict this time.
+
+**At the 0.16.0 merge (2026-10-30):** all three still open. Both FORK edits
+merged cleanly again.
+
+### Found by the Sunrise 0.16.0 merge (2026-10-30)
+
+0.16.0's owner-classification guard counts any `String` column named
+`…UserId` as a user link, so it saw 26 of this tier's tables for the first
+time, all through `createdByUserId`. The owner layer cannot express who reads
+them.
+
+| #   | Ask                                                                  | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Priority                                                                                                                                       | Issue                                                                     |
+| --- | -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 56  | **Let a fork supply the owner layer's read rule for its own models** | A Resparkable row is read by its workspace: a personal space's owner, a group's members, or whoever a grant or share link names. The owner layer knows one owner per row plus core's fixed exceptions (`ownerless` kinds, `alsoVisible: ['active-share']`). Labelled `personal` and switched on, it would refuse a member's read of their group's rows and a grantee's read of a shared item. So the tables are `not-personal`, and a query that forgets its `spaceId` has no data-layer check under it. | Medium. Nothing leaks today, but this is the second wall for the most private data in the product, and the D5 split is currently the only one. | [#1145](https://github.com/human-centric-engineering/sunrise/issues/1145) |
+
+**Downstream status (#56):** no core edit. All 26 tables are classified
+`not-personal` from the tier's own seam, each with its reason, in
+`lib/framework/resparkable/owner-classification.ts`. When the seam lands,
+reclassify them `personal` under a Resparkable reader and switch on
+`enforced`.

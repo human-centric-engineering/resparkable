@@ -48,6 +48,7 @@ vi.mock('@/lib/api/client', () => ({
 }));
 
 const FULL_SETTINGS: OrchestrationSettings = {
+  escalationVersion: '"v0"',
   inputGuardMode: 'log_only',
   outputGuardMode: 'warn_and_continue',
   citationGuardMode: 'log_only',
@@ -71,6 +72,7 @@ const FULL_SETTINGS: OrchestrationSettings = {
 };
 
 const EMPTY_SETTINGS: OrchestrationSettings = {
+  escalationVersion: '"v0"',
   inputGuardMode: null,
   outputGuardMode: null,
   citationGuardMode: null,
@@ -871,29 +873,175 @@ describe('SettingsForm', () => {
       });
     });
 
-    it('sends null escalationConfig when escalation is disabled', async () => {
-      // Arrange: escalation disabled (checkbox unchecked, default state)
-      const { apiClient } = await import('@/lib/api/client');
-      vi.mocked(apiClient.patch).mockResolvedValue({ success: true });
+    // t-899: the list is a versioned save. It is sent, with the version the
+    // page loaded as If-Match, only when this page changed it.
+    describe('a versioned save of the list (t-899)', () => {
+      const WITH_LIST: OrchestrationSettings = {
+        ...FULL_SETTINGS,
+        escalationConfig: { emailAddresses: ['admin@example.com'], notifyOnPriority: 'all' },
+        escalationVersion: '"v1"',
+      };
 
-      render(<SettingsForm initialSettings={FULL_SETTINGS} />);
+      async function submit() {
+        const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
+        await act(async () => {
+          fireEvent.submit(form!);
+        });
+      }
 
-      // Submit with escalation off (default)
-      const form = screen.getByRole('button', { name: /save settings/i }).closest('form');
-      await act(async () => {
-        fireEvent.submit(form!);
+      async function addEmail(user: ReturnType<typeof userEvent.setup>, address: string) {
+        await user.type(screen.getByPlaceholderText(/add email address/i), address);
+        await user.click(screen.getByRole('button', { name: /^add$/i }));
+      }
+
+      type PatchCall = [
+        string,
+        { body: Record<string, unknown>; options?: { headers?: Record<string, string> } },
+      ];
+      const lastPatch = async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        return vi.mocked(apiClient.patch).mock.calls.at(-1) as unknown as PatchCall;
+      };
+
+      it('leaves the list out, and sends no If-Match, when it was not changed', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({});
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalled());
+        const [, options] = await lastPatch();
+        expect(options.body).not.toHaveProperty('escalationConfig');
+        expect(options.options?.headers?.['If-Match']).toBeUndefined();
       });
 
-      // Assert: escalationConfig is null
-      await waitFor(() => {
-        expect(apiClient.patch).toHaveBeenCalledWith(
-          expect.stringContaining('/settings'),
-          expect.objectContaining({
-            body: expect.objectContaining({
-              escalationConfig: null,
-            }),
-          })
+      it('sends the list with the version it loaded when an address was added', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({});
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await addEmail(user, 'ops@example.com');
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalled());
+        const [, options] = await lastPatch();
+        expect(options.options?.headers?.['If-Match']).toBe('"v1"');
+        expect(options.body.escalationConfig).toMatchObject({
+          emailAddresses: ['admin@example.com', 'ops@example.com'],
+        });
+      });
+
+      it('sends null with the version it loaded when escalation is switched off', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({});
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await user.click(
+          screen.getByRole('checkbox', { name: /enable escalation notifications/i })
         );
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalled());
+        const [, options] = await lastPatch();
+        expect(options.body.escalationConfig).toBeNull();
+        expect(options.options?.headers?.['If-Match']).toBe('"v1"');
+      });
+
+      it('sends the version the last save returned on the next change', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ escalationVersion: '"v2"' });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await addEmail(user, 'ops@example.com');
+        await submit();
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+        await addEmail(user, 'oncall@example.com');
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(2));
+        const [, options] = await lastPatch();
+        expect(options.options?.headers?.['If-Match']).toBe('"v2"');
+      });
+
+      it('keeps the version it loaded after a save that left the list alone', async () => {
+        // The response to an unrelated save carries the list's current
+        // version, which may be past an erasure this page still shows.
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ escalationVersion: '"after-erasure"' });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await submit();
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+        await addEmail(user, 'ops@example.com');
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(2));
+        const [, options] = await lastPatch();
+        expect(options.options?.headers?.['If-Match']).toBe('"v1"');
+      });
+
+      it('sends the list again when it is changed back after a save (measured from the last save)', async () => {
+        // Round 3: the form's defaults stay at page load after a save, so a
+        // change back to the loaded value must still be seen as a change.
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ escalationVersion: '"v2"' });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+        const toggle = () =>
+          user.click(screen.getByRole('checkbox', { name: /enable escalation notifications/i }));
+
+        await toggle();
+        await submit();
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+        await toggle();
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(2));
+        const [, options] = await lastPatch();
+        expect(options.body.escalationConfig).toMatchObject({
+          emailAddresses: ['admin@example.com'],
+        });
+        expect(options.options?.headers?.['If-Match']).toBe('"v2"');
+      });
+
+      it('does not resend the list on a later save that leaves it as last saved', async () => {
+        const { apiClient } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockResolvedValue({ escalationVersion: '"v2"' });
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await addEmail(user, 'ops@example.com');
+        await submit();
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(1));
+        await submit();
+
+        await waitFor(() => expect(apiClient.patch).toHaveBeenCalledTimes(2));
+        const [, options] = await lastPatch();
+        expect(options.body).not.toHaveProperty('escalationConfig');
+        expect(options.options?.headers?.['If-Match']).toBeUndefined();
+      });
+
+      it('says the list changed, and keeps what was typed, when the save is refused as stale', async () => {
+        const { apiClient, APIClientError } = await import('@/lib/api/client');
+        vi.mocked(apiClient.patch).mockRejectedValue(
+          new APIClientError('This changed since you opened it.', 'STALE_RECORD', 412)
+        );
+        const user = userEvent.setup();
+        render(<SettingsForm initialSettings={WITH_LIST} />);
+
+        await addEmail(user, 'ops@example.com');
+        await submit();
+
+        const notice = await screen.findByRole('alert');
+        expect(notice).toHaveTextContent(/the escalation list changed since you opened it/i);
+        expect(notice).toHaveTextContent(/nothing was saved/i);
+        expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument();
+        expect(screen.getByText('ops@example.com')).toBeInTheDocument();
       });
     });
 

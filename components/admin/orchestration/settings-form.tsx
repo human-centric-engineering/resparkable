@@ -15,6 +15,7 @@ import { useForm, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { AlertCircle, Check, Loader2, Save, Plus, X } from 'lucide-react';
+import { StaleSaveNotice } from '@/components/admin/orchestration/stale-save-notice';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -78,6 +79,12 @@ export interface OrchestrationSettings {
   maxMessagesPerConversation: number | null;
   stuckExecutionThresholdMins?: number;
   escalationConfig?: EscalationConfig | null;
+  /**
+   * The escalation list's version, sent back as If-Match when a save changes
+   * the list (§122 t-899). A save that leaves the list alone does not send it.
+   * Required: without it the form could not save the list at all.
+   */
+  escalationVersion: string;
   voiceInputGloballyEnabled?: boolean;
   imageInputGloballyEnabled?: boolean;
   documentInputGloballyEnabled?: boolean;
@@ -193,6 +200,21 @@ function guardModeToApi(v: string): string | null {
   return v === 'none' ? null : v;
 }
 
+/**
+ * The escalation config a save of these values sends: `null` when escalation
+ * is off. Enabled with no recipients never reaches a save: the schema refuses it.
+ */
+function escalationConfigFrom(
+  enabled: boolean,
+  emailAddresses: string[],
+  notifyOnPriority: (typeof ESCALATION_PRIORITY_FILTERS)[number],
+  webhookUrl: string
+): EscalationConfig | null {
+  return enabled && emailAddresses.length > 0
+    ? { emailAddresses, notifyOnPriority, ...(webhookUrl ? { webhookUrl } : {}) }
+    : null;
+}
+
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function SettingsForm({
@@ -208,6 +230,30 @@ export function SettingsForm({
   const [escalationEmails, setEscalationEmails] = React.useState<string[]>(
     initialSettings.escalationConfig?.emailAddresses ?? []
   );
+  // The version of the list this page loaded, or last saved (§122 t-899).
+  const [escalationVersion, setEscalationVersion] = React.useState(
+    initialSettings.escalationVersion
+  );
+  // The list changed since this page loaded it, and the save was refused.
+  const [escalationStale, setEscalationStale] = React.useState(false);
+  // What the list was when this page loaded it, or last saved it (§122 t-899).
+  // A save sends the list only when it differs: measured against this, not the
+  // form's defaults, which a save does not move on.
+  const [savedEscalation, setSavedEscalation] = React.useState(() => {
+    // As stored, in the shape `escalationConfigFrom` builds: a config with no
+    // recipients left (an erasure took the last, t-791) is still a config, so
+    // turning escalation off is a change.
+    const stored = initialSettings.escalationConfig;
+    return JSON.stringify(
+      stored
+        ? {
+            emailAddresses: stored.emailAddresses,
+            notifyOnPriority: stored.notifyOnPriority,
+            ...(stored.webhookUrl ? { webhookUrl: stored.webhookUrl } : {}),
+          }
+        : null
+    );
+  });
 
   // Mirror the server's SSRF refine so an unsafe webhook is caught beside the
   // field. Without it the PATCH 400s and, because this page saves every
@@ -340,6 +386,17 @@ export function SettingsForm({
   // so `values` here is the parsed output type (numbers/null, not strings).
   const onSubmit = async (values: z.output<typeof settingsFormSchema>) => {
     setError(null);
+    setEscalationStale(false);
+    const escalationConfig = escalationConfigFrom(
+      values.escalationEnabled,
+      escalationEmails,
+      values.escalationPriorityFilter,
+      values.escalationWebhookUrl ?? ''
+    );
+    // The list is sent only when it differs from what this page last loaded or
+    // saved, so a save of anything else is not refused because the list moved
+    // on (§122 t-899).
+    const escalationChanged = JSON.stringify(escalationConfig) !== savedEscalation;
     try {
       // Send searchConfig if the admin has set anything non-default — including
       // just toggling hybrid on with no explicit weights. The Zod schema makes
@@ -366,51 +423,56 @@ export function SettingsForm({
           }
         : null;
 
-      // Enabled with no recipients never reaches here: the schema refuses it.
-      const escalationConfig =
-        values.escalationEnabled && escalationEmails.length > 0
-          ? {
-              emailAddresses: escalationEmails,
-              notifyOnPriority: values.escalationPriorityFilter,
-              ...(values.escalationWebhookUrl ? { webhookUrl: values.escalationWebhookUrl } : {}),
-            }
-          : null;
-
-      await apiClient.patch(API.ADMIN.ORCHESTRATION.SETTINGS, {
-        body: {
-          inputGuardMode: guardModeToApi(values.inputGuardMode),
-          outputGuardMode: guardModeToApi(values.outputGuardMode),
-          citationGuardMode: guardModeToApi(values.citationGuardMode),
-          globalMonthlyBudgetUsd: values.globalMonthlyBudgetUsd,
-          defaultMaxCostPerExecutionUsd: values.defaultMaxCostPerExecutionUsd,
-          defaultMaxCostPerTurnUsd: values.defaultMaxCostPerTurnUsd,
-          maxConversationsPerUser: values.maxConversationsPerUser,
-          maxMessagesPerConversation: values.maxMessagesPerConversation,
-          // PATCH route only honours defined values. Sending null would
-          // be a no-op (Zod schema rejects it); omit when the field is
-          // null so an empty input doesn't clobber the existing value.
-          ...(values.stuckExecutionThresholdMins !== null
-            ? { stuckExecutionThresholdMins: values.stuckExecutionThresholdMins }
-            : {}),
-          webhookRetentionDays: values.webhookRetentionDays,
-          webhookDlqRetentionDays: values.webhookDlqRetentionDays,
-          costLogRetentionDays: values.costLogRetentionDays,
-          auditLogRetentionDays: values.auditLogRetentionDays,
-          executionRetentionDays: values.executionRetentionDays,
-          evaluationRetentionDays: values.evaluationRetentionDays,
-          defaultApprovalTimeoutMs: values.approvalTimeout,
-          approvalDefaultAction: values.approvalDefaultAction,
-          voiceInputGloballyEnabled: values.voiceInputGloballyEnabled,
-          imageInputGloballyEnabled: values.imageInputGloballyEnabled,
-          documentInputGloballyEnabled: values.documentInputGloballyEnabled,
-          searchConfig,
-          escalationConfig,
-        },
-      });
+      const saved = await apiClient.patch<{ escalationVersion?: string }>(
+        API.ADMIN.ORCHESTRATION.SETTINGS,
+        {
+          ...(escalationChanged ? { options: { headers: { 'If-Match': escalationVersion } } } : {}),
+          body: {
+            inputGuardMode: guardModeToApi(values.inputGuardMode),
+            outputGuardMode: guardModeToApi(values.outputGuardMode),
+            citationGuardMode: guardModeToApi(values.citationGuardMode),
+            globalMonthlyBudgetUsd: values.globalMonthlyBudgetUsd,
+            defaultMaxCostPerExecutionUsd: values.defaultMaxCostPerExecutionUsd,
+            defaultMaxCostPerTurnUsd: values.defaultMaxCostPerTurnUsd,
+            maxConversationsPerUser: values.maxConversationsPerUser,
+            maxMessagesPerConversation: values.maxMessagesPerConversation,
+            // PATCH route only honours defined values. Sending null would
+            // be a no-op (Zod schema rejects it); omit when the field is
+            // null so an empty input doesn't clobber the existing value.
+            ...(values.stuckExecutionThresholdMins !== null
+              ? { stuckExecutionThresholdMins: values.stuckExecutionThresholdMins }
+              : {}),
+            webhookRetentionDays: values.webhookRetentionDays,
+            webhookDlqRetentionDays: values.webhookDlqRetentionDays,
+            costLogRetentionDays: values.costLogRetentionDays,
+            auditLogRetentionDays: values.auditLogRetentionDays,
+            executionRetentionDays: values.executionRetentionDays,
+            evaluationRetentionDays: values.evaluationRetentionDays,
+            defaultApprovalTimeoutMs: values.approvalTimeout,
+            approvalDefaultAction: values.approvalDefaultAction,
+            voiceInputGloballyEnabled: values.voiceInputGloballyEnabled,
+            imageInputGloballyEnabled: values.imageInputGloballyEnabled,
+            documentInputGloballyEnabled: values.documentInputGloballyEnabled,
+            searchConfig,
+            ...(escalationChanged ? { escalationConfig } : {}),
+          },
+        }
+      );
       reset(undefined, { keepValues: true });
       setSavedEmails([...escalationEmails]);
+      // Only a save that wrote the list moves this page's copy of it on. One
+      // that left it alone returns the list's current version, which may
+      // already be past an erasure this page still shows the person from.
+      if (escalationChanged) {
+        setSavedEscalation(JSON.stringify(escalationConfig));
+        if (saved.escalationVersion) setEscalationVersion(saved.escalationVersion);
+      }
       setSavedAt(new Date());
     } catch (err) {
+      if (err instanceof APIClientError && err.code === 'STALE_RECORD') {
+        setEscalationStale(true);
+        return;
+      }
       setError(
         err instanceof APIClientError
           ? err.message
@@ -430,6 +492,7 @@ export function SettingsForm({
           {error}
         </div>
       )}
+      {escalationStale && <StaleSaveNotice what="The escalation list" />}
 
       {/* ── Safety ──────────────────────────────────────────────────────── */}
       <Card>

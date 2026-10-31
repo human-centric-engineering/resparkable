@@ -61,6 +61,7 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { runAcrossOwners } from '@/lib/auth/subject-context';
 import {
   AWAITING_RETRY_STATUSES,
   SUBJECT_ERASED,
@@ -321,6 +322,132 @@ export function erasedPayload(
 
 function isPersonKey(key: string): boolean {
   return key === APPROVERS_KEY || PERSON_KEYS.some(({ id, name }) => key === id || key === name);
+}
+
+/**
+ * Who a delivery's payload names, by the rule erasure matches rows on
+ * ({@link matchArms}), for a sender about to send it (§122 t-886): each user id
+ * with the basis it is named on, `activity` winning. A conversation or run the
+ * payload names is asked for its owner. `dangling` when one no longer exists:
+ * it may have cascaded away with an owner erased since, who can then no longer
+ * be named.
+ */
+export interface PayloadSubjects {
+  userIds: Map<string, DeliveryBasis>;
+  dangling: boolean;
+  /**
+   * When the run the payload names started, or null when it names none. An
+   * event built from a run's memory — its approvers, its outputs — holds a
+   * copy from then, however long ago the run started (code review, t-886).
+   */
+  runStartedAt: Date | null;
+}
+
+type OwnerClient = Pick<Prisma.TransactionClient, 'aiConversation' | 'aiWorkflowExecution'>;
+
+/** See {@link PayloadSubjects}. */
+export async function subjectsOfPayload(
+  client: OwnerClient,
+  eventType: string,
+  payload: Prisma.JsonValue
+): Promise<PayloadSubjects> {
+  const userIds = new Map<string, DeliveryBasis>();
+  const name = (id: unknown, basis: DeliveryBasis): void => {
+    if (typeof id !== 'string' || id === '') return;
+    if (userIds.get(id) !== 'activity') userIds.set(id, basis);
+  };
+  const data = dataOf(payload);
+  if (!data) return { userIds, dangling: false, runStartedAt: null };
+
+  let dangling = false;
+  let runStartedAt: Date | null = null;
+  // Every key read now, before any await: a caller's payload object may be
+  // changed after it hands it over (t-926 review), and the row it stores is
+  // what this must describe.
+  const { conversationId, executionId, userId, actorUserId } = data;
+  const approvers = data[APPROVERS_KEY];
+  const approverIds = Array.isArray(approvers) ? [...approvers] : [];
+  // Across owners: an event a narrowed caller set off can name someone else's
+  // run (an approver acting on it), and the owner layer would refuse that read
+  // by id. Only the owner's id leaves, to be locked and checked, never shown.
+  await runAcrossOwners(
+    'erasure check before a delivery: the owner its payload names',
+    async () => {
+      // Side by side (t-926); named in the same order as before, conversation
+      // first, once both are back.
+      const [conversation, execution] = await Promise.all([
+        typeof conversationId === 'string'
+          ? client.aiConversation.findUnique({
+              where: { id: conversationId },
+              select: { userId: true },
+            })
+          : undefined,
+        typeof executionId === 'string'
+          ? client.aiWorkflowExecution.findUnique({
+              where: { id: executionId },
+              select: { userId: true, startedAt: true, createdAt: true },
+            })
+          : undefined,
+      ]);
+      // Asked about and not found, however the client says so: dangling.
+      if (conversation) name(conversation.userId, 'activity');
+      else if (typeof conversationId === 'string') dangling = true;
+      if (execution) {
+        name(execution.userId, 'activity');
+        runStartedAt = execution.startedAt ?? execution.createdAt;
+      } else if (typeof executionId === 'string') dangling = true;
+    }
+  );
+  name(userId, 'activity');
+  name(actorUserId, ADMIN_ACTION_EVENTS.includes(eventType) ? 'actor' : 'activity');
+  for (const approver of approverIds) name(approver, 'actor');
+  return { userIds, dangling, runStartedAt };
+}
+
+/** What a sender does with a payload once it knows who in it was erased. */
+export interface ErasedPayloadDisposition {
+  /** The payload with them taken out, or null when it names none of them. */
+  payload: Prisma.JsonValue | null;
+  /**
+   * Not sent at all: it is about an erased person's own activity, which
+   * erasure stops (t-793). An `actor` row is sent without who acted.
+   */
+  stop: boolean;
+}
+
+/**
+ * Erasure's disposition ({@link erasedPayload}) for a payload a sender holds,
+ * given who among {@link subjectsOfPayload} was erased since its copy was
+ * taken, and whether anyone was when the payload is `dangling` (t-886).
+ */
+export function withoutErasedSubjects(
+  payload: Prisma.JsonValue,
+  subjects: Pick<PayloadSubjects, 'userIds' | 'dangling'>,
+  erasedUserIds: readonly string[],
+  danglingErased: boolean
+): ErasedPayloadDisposition {
+  let next = payload;
+  let stop = false;
+  let changed = false;
+  for (const userId of erasedUserIds) {
+    const basis = subjects.userIds.get(userId);
+    if (!basis) continue;
+    next = erasedPayload(next, basis, userId);
+    changed = true;
+    stop ||= basis === 'activity';
+  }
+  if (subjects.dangling && danglingErased) {
+    // Nobody left to name: the conversation or run is gone, and with it who it
+    // was about. Kept to its record keys only — no person key either, since
+    // the id or name left in one may be the owner's (code review round 2).
+    const envelope = objectOf(next);
+    const data = objectOf(envelope?.data);
+    if (envelope && data)
+      next = { ...envelope, data: pick(data, (key) => EVENT_RECORD_KEYS.has(key)) };
+    changed = true;
+    stop = true;
+  }
+  return { payload: changed ? next : null, stop };
 }
 
 /**

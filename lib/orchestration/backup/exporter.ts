@@ -17,9 +17,16 @@
 import { prisma } from '@/lib/db/client';
 import { runAsOrg } from '@/lib/tenancy/context';
 import type { BackupPayload } from '@/lib/orchestration/backup/schema';
+import { bundleContacts, sealExport } from '@/lib/orchestration/backup/export-seal';
 import type { BackupScope } from '@/lib/orchestration/backup/scope';
 import { IMPORTED_FROM_SLUG_KEY } from '@/lib/orchestration/backup/schema';
 import { z } from 'zod';
+import { REASONING_EFFORTS } from '@/lib/orchestration/llm/types';
+import {
+  narrowProviderTools,
+  narrowServiceTier,
+  narrowVerbosity,
+} from '@/lib/orchestration/llm/model-params';
 import {
   BUILTIN_TEMPLATE_SLUGS,
   SYSTEM_WORKFLOW_SLUGS,
@@ -38,10 +45,14 @@ function withoutImportMarker(metadata: unknown): unknown {
 }
 
 export function exportOrchestrationConfig(scope: BackupScope): Promise<BackupPayload> {
-  return runAsOrg(scope.orgId, () => readConfig(scope.includeShared));
+  return runAsOrg(scope.orgId, () => readConfig(scope.includeShared, scope.orgId));
 }
 
-async function readConfig(includeShared: boolean): Promise<BackupPayload> {
+async function readConfig(includeShared: boolean, orgId: string): Promise<BackupPayload> {
+  // Stamped before the reads start, so the copy is no older than the date the
+  // importer trusts (§122 t-902): the reads share no snapshot, and one that
+  // ran before an erasure committed may still name the person.
+  const exportedAt = new Date().toISOString();
   /** The shared-part query when it is included, else its empty value without a read. */
   const sharedOr = <T>(empty: T, read: () => Promise<T>): Promise<T> =>
     includeShared ? read() : Promise.resolve(empty);
@@ -84,6 +95,12 @@ async function readConfig(includeShared: boolean): Promise<BackupPayload> {
         // persona/guardrails/toggles lost). Restored here for full fidelity.
         kind: true,
         reasoningEffort: true,
+        stopSequences: true,
+        topP: true,
+        verbosity: true,
+        parallelToolCalls: true,
+        serviceTier: true,
+        providerTools: true,
         persona: true,
         guardrails: true,
         personaMode: true,
@@ -216,7 +233,7 @@ async function readConfig(includeShared: boolean): Promise<BackupPayload> {
   // nested entity each) — flatten them before serialising. The narrowing tables
   // and helper are loop-invariant, so they live outside the per-agent map.
   const retrievalModes = ['model', 'first_turn', 'every_turn', 'keywords'] as const;
-  const reasoningEfforts = ['minimal', 'low', 'medium', 'high'] as const;
+  const reasoningEfforts = REASONING_EFFORTS;
   const narrowMode = (m: string) => (m === 'append' ? ('append' as const) : ('override' as const));
   const flattenedAgents = agents.map((a) => {
     const {
@@ -229,6 +246,9 @@ async function readConfig(includeShared: boolean): Promise<BackupPayload> {
       voiceMode,
       guardrailsMode,
       reasoningEffort,
+      verbosity,
+      serviceTier,
+      providerTools,
       ...rest
     } = a;
     return {
@@ -246,6 +266,9 @@ async function readConfig(includeShared: boolean): Promise<BackupPayload> {
       reasoningEffort: (reasoningEfforts as readonly string[]).includes(reasoningEffort ?? '')
         ? (reasoningEffort as (typeof reasoningEfforts)[number])
         : null,
+      verbosity: narrowVerbosity(verbosity) ?? null,
+      serviceTier: narrowServiceTier(serviceTier) ?? null,
+      providerTools: narrowProviderTools(providerTools) ?? null,
       // `knowledgeCategories` was dropped from the DB in Phase 6 but the
       // backup schema keeps the field on the wire for older importers
       // that still read it. Always emit empty.
@@ -268,7 +291,16 @@ async function readConfig(includeShared: boolean): Promise<BackupPayload> {
 
   return {
     schemaVersion: 3 as const,
-    exportedAt: new Date().toISOString(),
+    exportedAt,
+    exportSeal: sealExport({
+      exportedAt,
+      orgId,
+      contacts: bundleContacts({
+        webhooks: exportedWebhooks,
+        settings,
+        workflows: flattenedWorkflows,
+      }),
+    }),
     data: {
       agents: flattenedAgents,
       capabilities,

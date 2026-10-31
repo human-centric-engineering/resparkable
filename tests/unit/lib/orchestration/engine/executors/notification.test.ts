@@ -61,9 +61,13 @@ vi.mock('@/lib/orchestration/engine/dispatch-cache', () => ({
 // normalised address, the receipt hash, verified-only) is the code's own.
 const tx = vi.hoisted(() => ({
   $executeRaw: vi.fn(),
+  aiWorkflowExecution: { findUnique: vi.fn() },
   dataErasureReceipt: { findMany: vi.fn() },
   user: { findMany: vi.fn() },
 }));
+
+/** When the run under test started: its copy of `to` is from then (t-886). */
+const RUN_STARTED_AT = new Date('2026-10-22T09:00:00Z');
 vi.mock('@/lib/db/client', () => ({
   prisma: {
     $transaction: vi.fn((run: (client: typeof tx) => Promise<unknown>) => run(tx)),
@@ -85,7 +89,11 @@ import { ExecutorError } from '@/lib/orchestration/engine/errors';
 import { lookupDispatch, recordDispatch } from '@/lib/orchestration/engine/dispatch-cache';
 import { logger } from '@/lib/logging';
 import { prisma } from '@/lib/db/client';
-import { subjectEmailHash, SUBJECT_LOCK_WAIT_MS } from '@/lib/privacy/erased-subjects';
+import {
+  COPY_CLOCK_SKEW_MS,
+  subjectEmailHash,
+  SUBJECT_LOCK_WAIT_MS,
+} from '@/lib/privacy/erased-subjects';
 import { EMAIL_SEND_TIMEOUT_MS } from '@/lib/orchestration/engine/executors/notification';
 
 type StepExecutorFn = (
@@ -175,6 +183,9 @@ describe('executeNotification', () => {
     tx.$executeRaw.mockReset().mockResolvedValue(1);
     tx.dataErasureReceipt.findMany.mockReset().mockResolvedValue([]);
     tx.user.findMany.mockReset().mockResolvedValue([]);
+    tx.aiWorkflowExecution.findUnique
+      .mockReset()
+      .mockResolvedValue({ startedAt: RUN_STARTED_AT, createdAt: new Date(0) });
   });
 
   /** Erasure receipts for `addresses`, as erasure writes them for a verified address. */
@@ -407,6 +418,114 @@ describe('executeNotification', () => {
         'Notification step: left out recipients whose data was erased',
         { stepId: 'notify-1', leftOut: 1 }
       );
+    });
+
+    it('counts only erasures since the run started, so an address re-entered before it is emailed', async () => {
+      // §122 t-886: someone erased before the run started is not in what it
+      // read, so a `to` naming them was written after the erasure, on purpose.
+      await executor(makeEmailStep({ to: 'back@example.com' }), makeCtx());
+
+      expect(tx.aiWorkflowExecution.findUnique).toHaveBeenCalledWith({
+        where: { id: 'exec-1' },
+        select: { startedAt: true, createdAt: true },
+      });
+      const [args] = tx.dataErasureReceipt.findMany.mock.calls[0] as [
+        { where: { erasedAt?: { gte: Date } } },
+      ];
+      expect(args.where.erasedAt).toEqual({
+        gte: new Date(RUN_STARTED_AT.getTime() - COPY_CLOCK_SKEW_MS),
+      });
+    });
+
+    it('checks a recipient from an earlier step against every erasure ever: its source is never scrubbed', async () => {
+      // Owner ruling 2026-10-22 (t-886): a knowledge document, a conversation
+      // or an outside system still holds the address erasure removed elsewhere.
+      vi.mocked(interpolatePrompt).mockImplementation((template: string) => {
+        if (template === '{{lookup.output.email}}') return 'Old@Example.com';
+        if (template === '{{input.contact}}') return 'kept@example.com';
+        return template;
+      });
+      // Nobody erased since the run started; one person erased long before.
+      tx.dataErasureReceipt.findMany.mockImplementation(
+        async (args: { where: { erasedAt?: unknown } }) =>
+          args.where.erasedAt
+            ? []
+            : [
+                {
+                  subjectUserId: 'gone',
+                  subjectEmailHash: subjectEmailHash('old@example.com'),
+                  metadata: { addressVerified: true },
+                },
+              ]
+      );
+
+      const result = await executor(
+        makeEmailStep({ to: ['{{lookup.output.email}}', '{{input.contact}}'] }),
+        makeCtx()
+      );
+
+      expect(vi.mocked(sendEmail)).toHaveBeenCalledWith(
+        expect.objectContaining({ to: ['kept@example.com'] })
+      );
+      expect(result.output).toMatchObject({ recipientsLeftOut: 1 });
+      // The all-time question asked only about the step-output address.
+      const allTime = tx.dataErasureReceipt.findMany.mock.calls
+        .map(([args]) => args as { where: { erasedAt?: unknown; OR: unknown } })
+        .filter((args) => !args.where.erasedAt);
+      expect(allTime).toEqual([
+        expect.objectContaining({
+          where: { OR: [{ subjectEmailHash: { in: [subjectEmailHash('old@example.com')] } }] },
+        }),
+      ]);
+    });
+
+    it('CONTROL — an older erasure does not stop a literal or input recipient', async () => {
+      vi.mocked(interpolatePrompt).mockImplementation((template: string) =>
+        template === '{{input.contact}}' ? 'old@example.com' : template
+      );
+      tx.dataErasureReceipt.findMany.mockImplementation(
+        async (args: { where: { erasedAt?: unknown } }) =>
+          args.where.erasedAt
+            ? []
+            : [
+                {
+                  subjectUserId: 'gone',
+                  subjectEmailHash: subjectEmailHash('old@example.com'),
+                  metadata: { addressVerified: true },
+                },
+              ]
+      );
+
+      await executor(makeEmailStep({ to: ['{{input.contact}}', 'Old@Example.com'] }), makeCtx());
+
+      expect(vi.mocked(sendEmail)).toHaveBeenCalledWith(
+        expect.objectContaining({ to: ['old@example.com', 'Old@Example.com'] })
+      );
+    });
+
+    it('anchors a run not yet started on when it was created', async () => {
+      const createdAt = new Date('2026-10-22T08:00:00Z');
+      tx.aiWorkflowExecution.findUnique.mockResolvedValue({ startedAt: null, createdAt });
+
+      await executor(makeEmailStep({ to: 'someone@example.com' }), makeCtx());
+
+      const [args] = tx.dataErasureReceipt.findMany.mock.calls[0] as [
+        { where: { erasedAt?: { gte: Date } } },
+      ];
+      expect(args.where.erasedAt).toEqual({
+        gte: new Date(createdAt.getTime() - COPY_CLOCK_SKEW_MS),
+      });
+    });
+
+    it('counts every erasure when the run cannot be found: the stricter reading', async () => {
+      tx.aiWorkflowExecution.findUnique.mockResolvedValue(null);
+
+      await executor(makeEmailStep({ to: 'someone@example.com' }), makeCtx());
+
+      const [args] = tx.dataErasureReceipt.findMany.mock.calls[0] as [
+        { where: { erasedAt?: unknown } },
+      ];
+      expect(args.where.erasedAt).toBeUndefined();
     });
 
     it('fails, not retried, when every recipient was erased, and sends nothing', async () => {

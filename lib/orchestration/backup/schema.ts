@@ -7,6 +7,9 @@
 
 import { z } from 'zod';
 
+import { REASONING_EFFORTS } from '@/lib/orchestration/llm/types';
+import { agentProviderToolsField, modelParamFields } from '@/lib/validations/orchestration';
+
 export const agentBackupSchema = z.object({
   name: z.string(),
   slug: z.string(),
@@ -20,8 +23,12 @@ export const agentBackupSchema = z.object({
   // Reasoning-effort bucket. Added with the param-profile work; older
   // backup bundles omit the field, in which case the agent is imported
   // with `null` and the runtime sends no reasoning_effort. The enum
-  // includes 'minimal' / 'low' / 'medium' / 'high'.
-  reasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).nullable().optional(),
+  // is `REASONING_EFFORTS`; bundles written before `xhigh` / `max`
+  // existed still parse, since the enum only grew.
+  reasoningEffort: z.enum(REASONING_EFFORTS).nullable().optional(),
+  // Optional — backups written before these existed restore with none set.
+  ...modelParamFields,
+  ...agentProviderToolsField,
   monthlyBudgetUsd: z.number().nullable(),
   // Per-turn cost cap added with improvement #39. Optional so older
   // backup bundles round-trip; null preserves "no cap" semantics on
@@ -201,6 +208,9 @@ export const IMPORTED_FROM_SLUG_KEY = 'importedFromSlug';
 export const backupSchema = z.object({
   schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
   exportedAt: z.string(),
+  // This install's seal over `exportedAt` (§122 t-902, `export-seal.ts`). The
+  // importer trusts the date only when it verifies. Absent from older bundles.
+  exportSeal: z.string().optional(),
   data: z.object({
     agents: z.array(agentBackupSchema),
     capabilities: z.array(capabilityBackupSchema),
