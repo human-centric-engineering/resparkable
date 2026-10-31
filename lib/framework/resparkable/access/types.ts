@@ -63,9 +63,10 @@ export interface ResparkableViewer {
   /** From the session. Never from a request body or a route param. */
   userId: string | null;
   /**
-   * Lower-cased. A grant is addressed by email until it is accepted, so a
-   * viewer whose account exists but whose grant has never been opened is found
-   * by this and not by `userId`.
+   * Lower-cased, and `null` unless the account has verified it
+   * (`matchableAddress`). A grant is addressed by email until it is accepted,
+   * so a viewer whose account exists but whose grant has never been opened is
+   * found by this and not by `userId`.
    */
   email: string | null;
   /**

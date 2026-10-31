@@ -98,6 +98,26 @@ describe('AcceptInvite', () => {
     expect(screen.getByText(/a\*\*\*@e\*\*\*\.com/)).toBeInTheDocument();
   });
 
+  it('asks an unverified reader to confirm their address, and links to where they can', async () => {
+    const router = createMockRouter();
+    vi.mocked(useRouter).mockReturnValue(router);
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { accepted: false, reason: 'unverified' } })
+    );
+
+    render(<AcceptInvite token={TOKEN} />);
+
+    // Phase 66: nothing is bound until the account has proven the address, and
+    // the reader is very likely its owner, so the page says what to do.
+    expect(await screen.findByText('Confirm your email address first')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Confirm my address' })).toHaveAttribute(
+      'href',
+      '/dashboard'
+    );
+    expect(screen.queryByText('This was shared with a different account')).not.toBeInTheDocument();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
   it('renders the "not available" state on a 404, without prompting for a new link', async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({ success: false, error: { code: 'NOT_FOUND' } }, 404)

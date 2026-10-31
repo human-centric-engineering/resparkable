@@ -47,6 +47,7 @@ import {
   stampInviteToken,
 } from '@/lib/framework/resparkable/repo/grants';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
+import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
@@ -158,6 +159,8 @@ export type AcceptResult =
       alreadyAccepted: boolean;
     }
   | { ok: false; reason: 'unknown' }
+  /** Addressed to this account's address, which it has not verified yet. */
+  | { ok: false; reason: 'unverified' }
   | {
       ok: false;
       reason: 'wrong_account';
@@ -180,6 +183,15 @@ export type AcceptResult =
  * Matching is case-insensitive because `granteeEmail` is stored lower-cased and
  * a session's address is whatever the account was created with.
  *
+ * ## The right address, not yet verified
+ *
+ * An account whose address matches but which has never proven it owns that
+ * address is told `unverified` and nothing is written. Binding it would hand a
+ * share to whoever typed the address at sign-up, which on a deploy with
+ * verification off is anybody (`privacy/address.ts`). It is told so plainly,
+ * rather than `unknown`, because the reader is very likely the real owner and
+ * one click on their verification link fixes it.
+ *
  * ## `unknown` covers more than "no such token"
  *
  * A malformed token, an unknown one, a revoked grant, an expired one and a
@@ -187,7 +199,7 @@ export type AcceptResult =
  * turns this page into an oracle about which invitations once existed.
  */
 export async function acceptInvite(
-  viewer: { userId: string; email: string },
+  viewer: { userId: string; email: string; emailVerified: boolean },
   token: string,
   now: Date = new Date()
 ): Promise<AcceptResult> {
@@ -199,11 +211,18 @@ export async function acceptInvite(
     return { ok: false, reason: 'unknown' };
   }
 
-  if (grant.granteeEmail !== viewer.email.toLowerCase()) {
+  if (grant.granteeEmail !== viewer.email.trim().toLowerCase()) {
     logger.info('Resparkable share invite opened by the wrong account', {
       entityType: grant.entityType,
     });
     return { ok: false, reason: 'wrong_account', expectedEmail: maskEmail(grant.granteeEmail) };
+  }
+
+  if (matchableAddress(viewer) === null) {
+    logger.info('Resparkable share invite opened by an unverified account', {
+      entityType: grant.entityType,
+    });
+    return { ok: false, reason: 'unverified' };
   }
 
   const alreadyAccepted = grant.granteeUserId === viewer.userId && grant.acceptedAt !== null;

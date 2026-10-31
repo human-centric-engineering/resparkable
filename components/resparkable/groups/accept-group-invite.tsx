@@ -17,11 +17,15 @@
  * one made by clicking a link in an email if this page accepts on mount. So it
  * says what joining means and waits.
  *
- * ## The three failure states, and why two say almost nothing
+ * ## The failure states, and why most say almost nothing
  *
- * **Wrong account** is the only one that explains itself, with a *masked*
- * address: enough to recognise which of your own mailboxes to sign in with, and
- * not enough for a stranger holding a forwarded email to learn a working one.
+ * **Wrong account** explains itself with a *masked* address: enough to
+ * recognise which of your own mailboxes to sign in with, and not enough for a
+ * stranger holding a forwarded email to learn a working one.
+ *
+ * **Unverified** is the right address on an account that has not confirmed it,
+ * which joins nothing until it has (`privacy/address.ts`). The reader is very
+ * likely the real owner, so it says what to do, as the share page does.
  *
  * **Not available** covers a bad token, an unknown one, a withdrawn invitation,
  * an expired one and one already spent, deliberately indistinguishable. Here
@@ -34,6 +38,7 @@
  */
 
 import * as React from 'react';
+import Link from 'next/link';
 import { Users } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -46,6 +51,7 @@ type State =
   | { kind: 'joining' }
   | { kind: 'joined'; groupName: string; alreadyMember: boolean }
   | { kind: 'wrong_account'; expectedEmail: string }
+  | { kind: 'unverified' }
   | { kind: 'unavailable' };
 
 export function AcceptGroupInvite({ token }: { token: string }): React.ReactElement {
@@ -79,7 +85,9 @@ export function AcceptGroupInvite({ token }: { token: string }): React.ReactElem
         setState(
           parsed.data.reason === 'wrong_account'
             ? { kind: 'wrong_account', expectedEmail: parsed.data.expectedEmail ?? '' }
-            : { kind: 'unavailable' }
+            : parsed.data.reason === 'unverified'
+              ? { kind: 'unverified' }
+              : { kind: 'unavailable' }
         );
         return;
       }
@@ -118,6 +126,21 @@ export function AcceptGroupInvite({ token }: { token: string }): React.ReactElem
     );
   }
 
+  if (state.kind === 'unverified') {
+    return (
+      <EmptyState
+        icon={Users}
+        title="Confirm your email address first"
+        description="This invitation was sent to your address, but your account has not confirmed it yet. Confirm it, then open this link again."
+        action={
+          <Button asChild>
+            <Link href={CONFIRM_ADDRESS_HREF}>Confirm my address</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
   if (state.kind === 'unavailable') {
     return (
       <EmptyState
@@ -141,6 +164,9 @@ export function AcceptGroupInvite({ token }: { token: string }): React.ReactElem
     />
   );
 }
+
+/** Sunrise's dashboard, whose email status card sends the confirmation link. */
+const CONFIRM_ADDRESS_HREF = '/dashboard';
 
 function isSuccess(payload: unknown): payload is { success: true; data: unknown } {
   return (

@@ -35,6 +35,7 @@ import {
   spaceWhere,
   type SpaceScope,
 } from '@/lib/framework/resparkable/repo/space-scope';
+import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
 import type { ResparkableShareableType } from '@/lib/framework/resparkable/validations';
 import { isShareActive } from '@/lib/utils/share-window';
 import type { Prisma, ResparkableGrant } from '@prisma/client';
@@ -265,8 +266,17 @@ export async function revokeGrant(
  * It takes no `SpaceScope` because it reads no brain rows. `owner-contact.ts`
  * resolves an account id to an address; this resolves an address to an account
  * id. Neither can reach an item, a task or a note, and this one is deliberately
- * narrowed to a single column so it cannot quietly grow into an account-detail
- * lookup for whoever imports it next.
+ * narrowed to the id it returns and the two columns that decide whether it may,
+ * so it cannot quietly grow into an account-detail lookup for whoever imports
+ * it next.
+ *
+ * ## Only a verified account
+ *
+ * An account that has not verified its address is not this address's owner
+ * yet, so it gets `null` and the grant is left addressed to the mailbox
+ * (`privacy/address.ts`). Binding it here would hand the share to whoever typed
+ * the address at sign-up, without even the accept step. Once the account
+ * verifies, the access layer matches it by address.
  *
  * ## What the caller must not do with the answer
  *
@@ -279,9 +289,9 @@ export async function revokeGrant(
 export async function findAccountIdForEmail(email: string): Promise<string | null> {
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
-    select: { id: true },
+    select: { id: true, email: true, emailVerified: true },
   });
-  return user?.id ?? null;
+  return user && matchableAddress(user) !== null ? user.id : null;
 }
 
 /**

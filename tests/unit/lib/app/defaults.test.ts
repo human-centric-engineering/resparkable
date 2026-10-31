@@ -521,6 +521,7 @@ const SEAM_DEFAULTS: SeamDefault[] = [
       const bundle = await collectAppSubjectData({
         userId: 'user-1',
         email: 'user@example.com',
+        emailVerified: true,
       });
 
       expect(Object.keys(bundle)).toEqual(['ownSection', 'crossSection']);

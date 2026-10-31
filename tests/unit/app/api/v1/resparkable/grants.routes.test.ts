@@ -101,7 +101,7 @@ import {
 } from '@/lib/framework/resparkable/services/shared-with-me';
 
 const SESSION = {
-  user: { id: 'user_a', email: 'A@Example.com' },
+  user: { id: 'user_a', email: 'A@Example.com', emailVerified: true },
   session: { userId: 'user_a' },
 };
 

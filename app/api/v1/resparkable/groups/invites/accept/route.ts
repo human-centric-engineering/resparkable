@@ -18,7 +18,9 @@
  *
  * The one exception is a signed-in reader whose address does not match, who is
  * told which address it was for, **masked**. They need enough to recognise their
- * own mailbox and a stranger must not be handed a working address.
+ * own mailbox and a stranger must not be handed a working address. A reader on
+ * the right address who has not verified it is told `unverified`, and joins
+ * nothing until they have (`privacy/address.ts`).
  *
  * ## Not under `/groups/[id]/`
  *
@@ -44,7 +46,11 @@ export const POST = withAuth(async (request, session) => {
   const body = await validateRequestBody(request, acceptGroupInviteSchema);
 
   const result = await acceptGroupInvite(
-    { userId: session.user.id, email: session.user.email },
+    {
+      userId: session.user.id,
+      email: session.user.email,
+      emailVerified: session.user.emailVerified,
+    },
     body.token
   );
 

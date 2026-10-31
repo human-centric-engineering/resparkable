@@ -12,12 +12,17 @@
  * already happened, and a button labelled "Accept" would imply that not pressing
  * it means not having access, which is untrue.
  *
- * ## The three states, and why two of them say almost nothing
+ * ## The states, and why most of them say almost nothing
  *
  * **Accepted** redirects straight to the item. The invite page is a doorway, not
  * a destination.
  *
- * **Wrong account** is the only state that explains itself, and it explains
+ * **Unverified** is the right address on an account that has not confirmed it.
+ * Nothing is bound until it has (`privacy/address.ts`), and the reader is very
+ * likely the real owner, so the page says what to do: confirm the address from
+ * the account page, where Sunrise's email status card sends the link.
+ *
+ * **Wrong account** is the other state that explains itself, and it explains
  * itself with a *masked* address: enough to recognise which of your own mailboxes
  * to sign in with, not enough for a stranger holding a forwarded email to learn
  * a working address. §13 asks for both halves of that.
@@ -31,9 +36,11 @@
  */
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Handshake } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { SkeletonList } from '@/components/resparkable/ui/skeleton';
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
@@ -41,7 +48,10 @@ import { acceptInviteResponseSchema } from '@/lib/framework/resparkable/ui/paylo
 import { RESPARKABLE_ROUTES } from '@/lib/framework/resparkable/ui/routes';
 
 type State =
-  { kind: 'working' } | { kind: 'wrong_account'; expectedEmail: string } | { kind: 'unavailable' };
+  | { kind: 'working' }
+  | { kind: 'wrong_account'; expectedEmail: string }
+  | { kind: 'unverified' }
+  | { kind: 'unavailable' };
 
 export function AcceptInvite({ token }: { token: string }): React.ReactElement {
   const router = useRouter();
@@ -94,10 +104,11 @@ export function AcceptInvite({ token }: { token: string }): React.ReactElement {
         }
 
         if (!parsed.data.accepted) {
-          setState({
-            kind: 'wrong_account',
-            expectedEmail: parsed.data.expectedEmail ?? '',
-          });
+          setState(
+            parsed.data.reason === 'unverified'
+              ? { kind: 'unverified' }
+              : { kind: 'wrong_account', expectedEmail: parsed.data.expectedEmail ?? '' }
+          );
           return;
         }
 
@@ -133,6 +144,21 @@ export function AcceptInvite({ token }: { token: string }): React.ReactElement {
     );
   }
 
+  if (state.kind === 'unverified') {
+    return (
+      <EmptyState
+        icon={Handshake}
+        title="Confirm your email address first"
+        description="This was shared with your address, but your account has not confirmed it yet. Confirm it, then open this link again."
+        action={
+          <Button asChild>
+            <Link href={CONFIRM_ADDRESS_HREF}>Confirm my address</Link>
+          </Button>
+        }
+      />
+    );
+  }
+
   return (
     <EmptyState
       icon={Handshake}
@@ -141,6 +167,9 @@ export function AcceptInvite({ token }: { token: string }): React.ReactElement {
     />
   );
 }
+
+/** Sunrise's dashboard, whose email status card sends the confirmation link. */
+const CONFIRM_ADDRESS_HREF = '/dashboard';
 
 function isSuccess(payload: unknown): payload is { success: true; data: unknown } {
   return (

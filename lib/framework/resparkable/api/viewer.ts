@@ -17,7 +17,7 @@
  *      own `{ userId, email }`, because accepting requires **both** to be
  *      present and a `ResparkableViewer` allows either to be null. It is not a
  *      viewer and is not passed anywhere that takes one; `acceptInvite`
- *      lower-cases the address itself.
+ *      applies the same address rule itself.
  *   2. **Forgetting to lower-case the address.** A grant is addressed by email
  *      until it is accepted, and `granteeClauses` in `access/store.ts` matches
  *      the lower-cased form. A session carrying `Bob@Example.com` against a
@@ -34,10 +34,17 @@
  * account, and the address matches grants issued to a mailbox before its owner
  * ever signed in. A viewer built from the id alone would drop every unaccepted
  * invite, which is most of them on the day they are sent.
+ *
+ * **But only a verified one.** `matchableAddress` gives `null` for an account
+ * that has not proven it owns its address, so such a viewer holds only the
+ * grants bound to its id. Without that, anybody who opened an account under
+ * another person's address on a deploy with verification off would read
+ * everything shared with them (`privacy/address.ts`).
  */
 
 import type { AuthSession } from '@/lib/auth/guards';
 import type { ResparkableViewer } from '@/lib/framework/resparkable/access/types';
+import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 
@@ -58,7 +65,7 @@ export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableV
   const personal = scope.spaceId === session.user.id;
   return {
     userId: session.user.id,
-    email: session.user.email.toLowerCase(),
+    email: matchableAddress(session.user),
     group: personal
       ? null
       : {

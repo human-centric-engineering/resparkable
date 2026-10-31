@@ -14,6 +14,8 @@
  *      `bob@example.com` produces a viewer holding NONE of the grants issued to
  *      them — which looks like "sharing is broken for some people" and is
  *      invisible to any test written with lower-case fixtures.
+ *   3. Carrying an address the account has not verified (phase 66), which on a
+ *      deploy with verification off hands a stranger the real owner's shares.
  *
  * @see lib/framework/resparkable/api/viewer.ts
  */
@@ -68,6 +70,17 @@ describe('viewerFor', () => {
     expect(viewerFor(session({ email: 'Bob@Example.COM' }), PERSONAL).email).toBe(
       'bob@example.com'
     );
+  });
+
+  it('carries no address for an account that has not verified it', () => {
+    // Phase 66. With verification off, anybody can sign up under somebody
+    // else's address, and a viewer carrying it would read every share made to
+    // that mailbox. The id still matches the grants bound to this account.
+    expect(viewerFor(session({ emailVerified: false }), PERSONAL)).toEqual({
+      userId: 'user_b',
+      email: null,
+      group: null,
+    });
   });
 
   it('carries nothing else from the session', () => {

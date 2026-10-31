@@ -185,7 +185,7 @@ import {
 } from '@/lib/framework/resparkable/services/group-join-links';
 
 const SESSION = {
-  user: { id: 'user_a', email: 'a@example.com' },
+  user: { id: 'user_a', email: 'a@example.com', emailVerified: true },
   session: { userId: 'user_a' },
 };
 
@@ -1374,6 +1374,36 @@ describe('POST /api/v1/resparkable/groups/invites/accept', () => {
     // monitoring alongside real faults.
     expect(response.status).toBe(200);
     expect(body.data).toEqual({ joined: false, reason: 'unknown' });
+  });
+
+  it("passes the session's address and whether it is verified to the service", async () => {
+    vi.mocked(acceptGroupInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+
+    await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/groups/invites/accept', {
+        token: 'a'.repeat(32),
+      })
+    );
+
+    expect(acceptGroupInvite).toHaveBeenCalledWith(
+      { userId: 'user_a', email: 'a@example.com', emailVerified: true },
+      'a'.repeat(32)
+    );
+  });
+
+  it('answers 200 with joined: false and the reason for an unverified account', async () => {
+    vi.mocked(acceptGroupInvite).mockResolvedValue({ ok: false, reason: 'unverified' });
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/groups/invites/accept', {
+        token: 'a'.repeat(32),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual({ joined: false, reason: 'unverified' });
   });
 
   it('answers 200 with joined: false and a masked address on the wrong account', async () => {

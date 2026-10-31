@@ -82,7 +82,7 @@ import {
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
 
 const SESSION = {
-  user: { id: 'user_b', email: 'B@Example.com' },
+  user: { id: 'user_b', email: 'B@Example.com', emailVerified: true },
   session: { userId: 'user_b' },
 };
 
@@ -494,6 +494,34 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
     expect(body.data.accepted).toBe(false);
     expect(body.data.expectedEmail).toBe('b***@e***.com');
     expect(JSON.stringify(body)).not.toContain('b@example.com');
+  });
+
+  it("passes the session's address and whether it is verified to the service", async () => {
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+
+    await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    expect(acceptInvite).toHaveBeenCalledWith(
+      { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
+      TOKEN
+    );
+  });
+
+  it('answers an unverified account with a 200 the page explains', async () => {
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unverified' });
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    // Phase 66. Not a 404: the reader is very likely the real owner, and one
+    // click on their verification link fixes it.
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual({ accepted: false, reason: 'unverified' });
   });
 
   it('404s unknown, revoked and expired alike', async () => {

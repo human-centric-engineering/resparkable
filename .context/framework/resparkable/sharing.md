@@ -252,12 +252,12 @@ So the list is keyed on the **share**, not on the entity. An inventory ordered b
 
 The distinction that makes this flow safe, and the one most easily lost:
 
-|                             | Share link           | Invite token                                                         |
-| --------------------------- | -------------------- | -------------------------------------------------------------------- |
-| Holding it is               | **access**           | nothing                                                              |
-| What it does                | resolves to the item | binds an **account** to a grant that already exists                  |
-| Why the grant already works | —                    | `granteeClauses` matches on `granteeEmail`, so the address is enough |
-| A forwarded email gets you  | the content          | a masked address and a refusal                                       |
+|                             | Share link           | Invite token                                                                |
+| --------------------------- | -------------------- | --------------------------------------------------------------------------- |
+| Holding it is               | **access**           | nothing                                                                     |
+| What it does                | resolves to the item | binds an **account** to a grant that already exists                         |
+| Why the grant already works | —                    | `granteeClauses` matches on `granteeEmail`, so a verified address is enough |
+| A forwarded email gets you  | the content          | a masked address and a refusal                                              |
 
 The grant is live for its address from the moment it is issued. Accepting connects an account to it, so the relationship survives that person changing their address, and so the owner can tell an opened share from one still sitting in a mailbox. The token is hashed anyway — not because holding one is access, but because a dump full of live ones would let an attacker who _does_ control some of those mailboxes bind accounts silently, and there is no reason to make that cheaper.
 
@@ -268,6 +268,23 @@ The grant is live for its address from the moment it is issued. Accepting connec
 **The wrong-account path shows a masked address.** §13 asks for two things that pull against each other — a different signed-in user cannot accept, and the wrong-user path must not leak the target address unmasked. `maskEmail` resolves it: `b***@e***.com` is enough to recognise your own mailbox and not enough to write to somebody else's.
 
 Everything else is one answer. Unknown, malformed, revoked, expired and already-spent tokens all give the same 404, because anything distinguishable is an oracle about which invitations once existed.
+
+### Only a verified address matches (phase 66)
+
+One rule decides whether an account is the owner of an address: `matchableAddress()` in `privacy/address.ts`, which gives the trimmed, lower-cased address only when the account's `emailVerified` is true. Every reader of an address-keyed row calls it, so they cannot disagree:
+
+| Reader           | Where                                             | An unverified account                                       |
+| ---------------- | ------------------------------------------------- | ----------------------------------------------------------- |
+| Access           | `viewerFor` (`api/viewer.ts`)                     | carries `email: null`, so holds only grants bound to its id |
+| Share accept     | `acceptInvite` (`services/invites.ts`)            | gets `unverified`, and nothing is bound                     |
+| Group accept     | `acceptGroupInvite` (`services/group-invites.ts`) | gets `unverified`, and joins nothing                        |
+| Binding at issue | `findAccountIdForEmail` (`repo/grants.ts`)        | is not bound; the grant stays addressed to the mailbox      |
+| Subject export   | `collectResparkableCrossSubjectData`              | is handed no row matched by address                         |
+| Erasure          | `scrubGranteeEmail` (`privacy/erasure.ts`)        | deletes nothing by address, and logs what it left           |
+
+Under the production default an unverified account cannot sign in, so this only bites on a deploy with `REQUIRE_EMAIL_VERIFICATION=false`, where anybody can open an account under somebody else's address. There, the person confirms their address from the dashboard's email card and the shares appear. The `unverified` answer is a 200 that both accept pages explain with a link to do that, rather than the 404 every other failure gets: the token was already checked first, so it confirms nothing about which invitations once existed, and the reader is very likely the real owner.
+
+Rows addressed to an unverified account's address **stay when it is erased**. That is decided, not open: somebody else addressed them to a mailbox, nothing shows the erased account owned it, and no account can reach them by address until one verifies it. Deleting them would let anybody wipe what was sent to another person by signing up under their address and asking to be erased.
 
 **20/day per user**, the `resparkable-invite` tier — the only daily cap in the tier and the only one that is about somebody else's inbox rather than this deployment's bill. A share invite costs nothing to send and looks exactly like a real product notification, because it is one; the abuse shape is volume over time, not burst.
 
@@ -314,7 +331,7 @@ Even so, what rides on the hook is an unaccepted invite and some blobs, not the 
 
 `repo/subject-export.ts` is owner-scoped, so it cannot answer two questions that are about a subject but live on **somebody else's rows**: what has been shared _with_ them, and comments _they_ wrote elsewhere. `access/subject-export.ts` answers both — reading across a person is what that layer is named for — and `lib/app/data-export.ts` merges the two into one `resparkable` section.
 
-It matches on **both** the account id and the address (an unaccepted invite has only the latter), **includes revoked and expired grants** (this is a record of what was done with the subject's data, and a withdrawn share is part of it), and carries **no content of what was shared** — a grant says _that_ somebody shared a project, and the project is theirs.
+It matches on **both** the account id and the address (an unaccepted invite has only the latter; the address only when verified, as above), **includes revoked and expired grants** (this is a record of what was done with the subject's data, and a withdrawn share is part of it), and carries **no content of what was shared** — a grant says _that_ somebody shared a project, and the project is theirs.
 
 ---
 
