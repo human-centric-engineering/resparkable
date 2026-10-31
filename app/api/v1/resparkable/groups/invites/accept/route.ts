@@ -37,6 +37,7 @@ import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { emailVerifiedNow } from '@/lib/framework/resparkable/api/viewer';
 import { acceptGroupInvite } from '@/lib/framework/resparkable/services/group-invites';
 import { acceptGroupInviteSchema } from '@/lib/framework/resparkable/validations';
 
@@ -49,7 +50,7 @@ export const POST = withAuth(async (request, session) => {
     {
       userId: session.user.id,
       email: session.user.email,
-      emailVerified: session.user.emailVerified,
+      emailVerified: await emailVerifiedNow(session),
     },
     body.token
   );

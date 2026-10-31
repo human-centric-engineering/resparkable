@@ -45,6 +45,7 @@
 import type { AuthSession } from '@/lib/auth/guards';
 import type { ResparkableViewer } from '@/lib/framework/resparkable/access/types';
 import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { readEmailVerified } from '@/lib/framework/resparkable/repo/grants';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 
@@ -61,11 +62,17 @@ import { permissionsFor } from '@/lib/framework/resparkable/services/membership'
  * A personal scope's space key IS the session's user id (`createSpace`), which
  * is how the personal case is told apart without a second query.
  */
-export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableViewer {
+export async function viewerFor(
+  session: AuthSession,
+  scope: SpaceScope
+): Promise<ResparkableViewer> {
   const personal = scope.spaceId === session.user.id;
   return {
     userId: session.user.id,
-    email: matchableAddress(session.user),
+    email: matchableAddress({
+      email: session.user.email,
+      emailVerified: await emailVerifiedNow(session),
+    }),
     group: personal
       ? null
       : {
@@ -74,4 +81,17 @@ export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableV
           canAdminister: permissionsFor(scope.role).administer,
         },
   };
+}
+
+/**
+ * Whether the session's account has verified its address, as of now.
+ *
+ * better-auth caches the session for five minutes (`lib/auth/config.ts`), so a
+ * person who confirms on their phone and reopens an invite on their laptop
+ * would be told to confirm again. A `true` is trusted as it stands, because an
+ * address does not become unverified. A `false` is read again from the `user`
+ * row, which costs a query only on the path that would otherwise refuse.
+ */
+export async function emailVerifiedNow(session: AuthSession): Promise<boolean> {
+  return session.user.emailVerified || readEmailVerified(session.user.id);
 }

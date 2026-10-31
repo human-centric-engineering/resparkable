@@ -331,7 +331,7 @@ async function main(): Promise<void> {
       },
     });
 
-    const unverifiedViewer = viewerFor(
+    const unverifiedViewer = await viewerFor(
       sessionFor(unverified, false),
       spaceScopeFor({ spaceId: unverified.id, actorUserId: unverified.id, role: 'owner' })
     );
@@ -370,7 +370,7 @@ async function main(): Promise<void> {
     );
     // The same rows, read as a verified owner of the address would read them,
     // so the checks above are not passing because the rows are unreadable.
-    const verifiedViewer = viewerFor(
+    const verifiedViewer = await viewerFor(
       sessionFor(unverified, true),
       spaceScopeFor({ spaceId: unverified.id, actorUserId: unverified.id, role: 'owner' })
     );

@@ -27,6 +27,7 @@
 import * as React from 'react';
 import { Handshake, Search } from 'lucide-react';
 
+import { UnconfirmedAddressNotice } from '@/components/resparkable/share/unconfirmed-address-notice';
 import { EmptyState } from '@/components/resparkable/ui/empty-state';
 import { WorkspaceLink } from '@/components/resparkable/workspace/workspace-link';
 import { Badge } from '@/components/ui/badge';
@@ -104,6 +105,10 @@ export function SharedWithMeView({ items }: { items: SharedWithMeItemWire[] }): 
 
   return (
     <div className="space-y-4">
+      {/* Personal workspace only: a group's shares are addressed to the group,
+          never to anybody's email (phase 66). */}
+      {!inGroup && <UnconfirmedAddressNotice />}
+
       <form
         className="flex gap-2"
         onSubmit={(event) => {

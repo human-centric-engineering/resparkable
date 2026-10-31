@@ -39,7 +39,7 @@ export const GET = withAuth<{ entityType: string; entityId: string }>(
   async (request, session, { params }) => {
     const log = await getRouteLogger(request);
     // The workspace decides which grants are this viewer's (phase 49).
-    const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
+    const viewer = await viewerFor(session, await requestSpaceScope(request, session.user.id));
     const { entityType, entityId } = await params;
 
     // The type is not validated against the shareable list here on purpose. The

@@ -53,6 +53,7 @@ import {
   findGrantByInviteTokenHash,
   findOwnGrant,
   listOwnGrants,
+  readEmailVerified,
   revokeGrant,
   stampInviteToken,
   updateGrant,
@@ -411,5 +412,29 @@ describe('findAccountIdForEmail', () => {
     vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
     expect(await findAccountIdForEmail('nobody@example.com')).toBeNull();
+  });
+});
+
+describe('readEmailVerified', () => {
+  it('reads the one column, by the id it is given', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({ emailVerified: true } as never);
+
+    expect(await readEmailVerified('user_b')).toBe(true);
+
+    const args = vi.mocked(prisma.user.findUnique).mock.calls[0][0];
+    expect(args.where).toEqual({ id: 'user_b' });
+    expect(args.select).toEqual({ emailVerified: true });
+  });
+
+  it('answers false for an unverified account', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({ emailVerified: false } as never);
+
+    expect(await readEmailVerified('user_b')).toBe(false);
+  });
+
+  it('answers false for an account that no longer exists', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
+
+    expect(await readEmailVerified('user_gone')).toBe(false);
   });
 });

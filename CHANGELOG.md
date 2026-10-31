@@ -2810,9 +2810,12 @@ release process.
   `lib/app/data-export.ts`'s `AppSubjectQuery` gains the field core already
   passes. Erasure of an unverified account still leaves rows addressed to its
   address, now as a decision: nothing shows it owned that mailbox, and no
-  account can reach them by address until one verifies it. Under the
-  production default every signed-in account is verified, so nothing changes
-  there.
+  account can reach them by address until one verifies it. A session's
+  cached `emailVerified: false` is re-read from the `user` row
+  (`emailVerifiedNow`, so `viewerFor` is now async), so a confirmation made on
+  another device counts at once. "Shared with me" tells an unconfirmed
+  account why shares to its address are missing. Under the production default
+  every signed-in account is verified, so nothing changes there.
 
 - **A group viewer could write to the group's content.** The read-only role
   was enforced on sharing, invitations, comments, budget and administration,

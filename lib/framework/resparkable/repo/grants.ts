@@ -295,6 +295,22 @@ export async function findAccountIdForEmail(email: string): Promise<string | nul
 }
 
 /**
+ * Whether this account has verified its address, read from the `user` row.
+ *
+ * For `emailVerifiedNow` (`api/viewer.ts`) and nothing else: the session caches
+ * the flag for five minutes, so an account that has just confirmed from another
+ * device would still be refused by address. One column, by the session's own
+ * id, so it cannot be asked about anybody else. A missing row is `false`.
+ */
+export async function readEmailVerified(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { emailVerified: true },
+  });
+  return user?.emailVerified ?? false;
+}
+
+/**
  * Stamp an invite token onto a grant, and record that it was sent.
  *
  * The digest, never the plaintext — the same discipline as the share link, and

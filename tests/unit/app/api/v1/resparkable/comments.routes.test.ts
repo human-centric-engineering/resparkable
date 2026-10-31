@@ -63,6 +63,12 @@ vi.mock('@/lib/framework/resparkable/services/invites', () => ({
   acceptInvite: vi.fn(),
 }));
 
+// The accept route re-reads `emailVerified` when the cached session says false.
+vi.mock('@/lib/framework/resparkable/repo/grants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/grants')>()),
+  readEmailVerified: vi.fn(),
+}));
+
 import {
   GET as COMMENTS_GET,
   POST as COMMENTS_POST,
@@ -80,6 +86,7 @@ import {
   updateComment,
 } from '@/lib/framework/resparkable/services/comments';
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
+import { readEmailVerified } from '@/lib/framework/resparkable/repo/grants';
 
 const SESSION = {
   user: { id: 'user_b', email: 'B@Example.com', emailVerified: true },
@@ -504,6 +511,26 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
       req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
     );
 
+    expect(acceptInvite).toHaveBeenCalledWith(
+      { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
+      TOKEN
+    );
+  });
+
+  it('re-reads the account when the cached session says unverified', async () => {
+    // The session caches `emailVerified` for five minutes. Somebody who has just
+    // confirmed on another device must be let in, not told to confirm again.
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+    vi.mocked(readEmailVerified).mockResolvedValue(true);
+    const staleSession = { ...SESSION, user: { ...SESSION.user, emailVerified: false } };
+
+    const handler = ACCEPT_POST as unknown as (r: unknown, s: unknown) => Promise<Response>;
+    await handler(
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN }),
+      staleSession
+    );
+
+    expect(readEmailVerified).toHaveBeenCalledWith('user_b');
     expect(acceptInvite).toHaveBeenCalledWith(
       { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
       TOKEN
