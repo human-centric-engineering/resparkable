@@ -54,6 +54,7 @@ import {
   upsertInvite,
 } from '@/lib/framework/resparkable/repo/groups';
 import { findOwnerContact } from '@/lib/framework/resparkable/repo/owner-contact';
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import { spaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import {
   permissionsFor,
@@ -250,6 +251,8 @@ export async function listInvitesForAdmin(
 export type AcceptGroupInviteResult =
   | { ok: true; groupId: string; groupName: string; spaceId: string; alreadyMember: boolean }
   | { ok: false; reason: 'unknown' }
+  /** Addressed to this account's address, which it has not verified yet. */
+  | { ok: false; reason: 'unverified' }
   | { ok: false; reason: 'wrong_account'; expectedEmail: string };
 
 /**
@@ -262,6 +265,10 @@ export type AcceptGroupInviteResult =
  * because the reader needs enough to recognise their own mailbox and a stranger
  * must not be handed a working address. `maskEmail` resolves the two: `a***@e***.com`
  * is recognisable and not writable-to. Same treatment as `acceptInvite`.
+ *
+ * The right address on an account that has not verified it gets `unverified`
+ * and joins nothing, as in `acceptInvite`: joining would put whoever typed the
+ * address at sign-up into the group (`privacy/address.ts`).
  *
  * ## `unknown` covers more than "no such token"
  *
@@ -278,7 +285,7 @@ export type AcceptGroupInviteResult =
  * a second, differently authorised path to the same content.
  */
 export async function acceptGroupInvite(
-  viewer: { userId: string; email: string },
+  viewer: { userId: string; email: string; emailVerified: boolean },
   token: string,
   now: Date = new Date()
 ): Promise<AcceptGroupInviteResult> {
@@ -287,11 +294,18 @@ export async function acceptGroupInvite(
     return { ok: false, reason: 'unknown' };
   }
 
-  if (invite.email !== viewer.email.toLowerCase()) {
+  if (invite.email !== normaliseAddress(viewer.email)) {
     logger.info('Resparkable group invite opened by the wrong account', {
       groupId: invite.groupId,
     });
     return { ok: false, reason: 'wrong_account', expectedEmail: maskEmail(invite.email) };
+  }
+
+  if (matchableAddress(viewer) === null) {
+    logger.info('Resparkable group invite opened by an unverified account', {
+      groupId: invite.groupId,
+    });
+    return { ok: false, reason: 'unverified' };
   }
 
   const outcome = await acceptInviteAndJoin(

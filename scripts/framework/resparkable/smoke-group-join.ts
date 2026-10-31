@@ -284,7 +284,10 @@ async function main(): Promise<void> {
       inviteTokenHash: hashShareToken(inviteToken),
       expiresAt: null,
     });
-    const accepted = await acceptGroupInvite({ userId: invitee, email: inviteeEmail }, inviteToken);
+    const accepted = await acceptGroupInvite(
+      { userId: invitee, email: inviteeEmail, emailVerified: true },
+      inviteToken
+    );
     check(accepted.ok, 'then accept an invitation as a member');
     check(
       (await resolveGroupSpaceScope(invitee, spaceId))?.role === 'member',

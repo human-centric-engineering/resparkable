@@ -28,6 +28,12 @@ import userEvent from '@testing-library/user-event';
 import { useSearchParams } from 'next/navigation';
 
 import { SharedWithMeView } from '@/components/resparkable/share/shared-with-me-view';
+
+// The notice reads the account on mount. Stubbed so the fetch counts below are
+// the search box's alone; it has its own tests.
+vi.mock('@/components/resparkable/share/unconfirmed-address-notice', () => ({
+  UnconfirmedAddressNotice: () => <div data-testid="unconfirmed-address-notice" />,
+}));
 import { RESPARKABLE_API } from '@/lib/framework/resparkable/api/endpoints';
 import type {
   SharedWithMeItemWire,
@@ -127,6 +133,22 @@ describe('SharedWithMeView', () => {
 
       expect(screen.getByText('Nothing has been shared with this group')).toBeInTheDocument();
       expect(screen.queryByText('Nothing has been shared with you')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('unconfirmed-address notice', () => {
+    it('is offered in the personal workspace, where shares are addressed to an email', () => {
+      render(<SharedWithMeView items={[]} />);
+
+      expect(screen.getByTestId('unconfirmed-address-notice')).toBeInTheDocument();
+    });
+
+    it('is not offered inside a group, whose shares are addressed to the group', () => {
+      inGroupWorkspace('space_b');
+
+      render(<SharedWithMeView items={[]} />);
+
+      expect(screen.queryByTestId('unconfirmed-address-notice')).not.toBeInTheDocument();
     });
   });
 

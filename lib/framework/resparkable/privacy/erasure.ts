@@ -60,6 +60,7 @@
  * definition of what erasure means, and the two drift.
  */
 
+import { matchableAddress, normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import { classifyStoredKeyScope } from '@/lib/framework/resparkable/mcp/key-scope';
 import { readResparkableScheduleSpaceId } from '@/lib/framework/resparkable/repo/space-scope';
 import { settleGroupsAfterErasure } from '@/lib/framework/resparkable/services/membership';
@@ -129,6 +130,13 @@ export async function cleanupResparkableBlobs(ctx: ErasureExternalContext): Prom
  * nothing, and the rows it would have matched are counted in the log for a
  * person to judge, as core does for contact messages.
  *
+ * Those rows then stay, which was decided in phase 66 rather than left open.
+ * Somebody else addressed them to a mailbox, nothing shows the erased account
+ * owned it, and no account can read, accept or export them by address until
+ * one verifies it (`privacy/address.ts`, the rule all six readers share).
+ * Deleting them would let anybody wipe what was sent to another person by
+ * signing up under their address and asking to be erased.
+ *
  * ## Why this deletes rather than nulls
  *
  * There is nothing to retain. A grant is a permission, not a record of
@@ -142,15 +150,21 @@ export async function cleanupResparkableBlobs(ctx: ErasureExternalContext): Prom
  *
  * `granteeEmail` is stored lower-cased at the boundary, and a `User.email` is
  * whatever the account was created with. Matching them raw would leave the row
- * of anybody who signed up with a capital letter — which is the quietest
- * possible way for this to not work.
+ * of anybody who signed up with a capital letter, which is the quietest
+ * possible way for this to not work. `matchableAddress` does it, for every
+ * reader at once.
  */
 export async function scrubGranteeEmail(ctx: ErasureTxContext): Promise<void> {
-  const email = ctx.email.trim().toLowerCase();
+  const email = matchableAddress(ctx);
 
-  if (!ctx.emailVerified) {
-    const grantsLeft = await ctx.tx.resparkableGrant.count({ where: { granteeEmail: email } });
-    const groupInvitesLeft = await ctx.tx.resparkableGroupInvite.count({ where: { email } });
+  if (email === null) {
+    // Counted on the address as typed, only to say what was left. Nothing here
+    // reads or deletes by it.
+    const typed = normaliseAddress(ctx.email);
+    const grantsLeft = await ctx.tx.resparkableGrant.count({ where: { granteeEmail: typed } });
+    const groupInvitesLeft = await ctx.tx.resparkableGroupInvite.count({
+      where: { email: typed },
+    });
     if (grantsLeft > 0 || groupInvitesLeft > 0) {
       logger.warn(
         'Resparkable grants and invites not erased: the account never verified its address',

@@ -36,7 +36,7 @@ import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 export const GET = withAuth(async (request, session) => {
   const log = await getRouteLogger(request);
   // The workspace decides which grants are this viewer's (phase 49).
-  const viewer = viewerFor(session, await requestSpaceScope(request, session.user.id));
+  const viewer = await viewerFor(session, await requestSpaceScope(request, session.user.id));
 
   const query = validateQueryParams(new URL(request.url).searchParams, sharedSearchQuerySchema);
 

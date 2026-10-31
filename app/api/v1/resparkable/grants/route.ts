@@ -30,6 +30,8 @@ import { NotFoundError, ValidationError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateQueryParams, validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
+import { normaliseAddress } from '@/lib/framework/resparkable/privacy/address';
 import { requestSpaceScope } from '@/lib/framework/resparkable/api/space-request';
 import { issueGrant, listOwnGrants } from '@/lib/framework/resparkable/services/grants';
 import { createGrantSchema, grantListQuerySchema } from '@/lib/framework/resparkable/validations';
@@ -66,10 +68,15 @@ export const POST = withAuth(async (request, session) => {
   // Personal workspace only. An item a group owns is not the member's, so a
   // member sharing it with their own address gets a working grant they read
   // from their personal workspace, and "it is yours" would be false.
+  //
+  // The address from the `user` row, not the session's five-minute cache, which
+  // can still hold one the account has since changed (`accountAddress`).
+  const own = await accountAddress(session);
   if (
     scope.spaceId === session.user.id &&
     body.grantee.kind === 'person' &&
-    body.grantee.email === session.user.email.toLowerCase()
+    own !== null &&
+    body.grantee.email === normaliseAddress(own.email)
   ) {
     throw new ValidationError('You already have access to this — it is yours.');
   }

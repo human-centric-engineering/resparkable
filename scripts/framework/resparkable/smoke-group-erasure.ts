@@ -21,6 +21,10 @@
  * not. The sweep itself is not called, because it would act on every stranded
  * group in the database and not only this script's.
  *
+ * And phase 66: an account that never verified its address is treated as that
+ * address's owner by none of access, invite acceptance, export or erasure,
+ * while a verified one on the same address would hold the grant.
+ *
  * Also proves the Art. 15 half before anybody is erased: the subject's export
  * contains the rows they wrote in the group, and none that anybody else wrote.
  * That depends on `createdByUserId` actually being written, which it was not
@@ -40,8 +44,12 @@
  *   npm run framework:resparkable:smoke-group-erasure
  */
 
+import type { AuthSession } from '@/lib/auth/guards';
 import { prisma } from '@/lib/db/client';
+import { hashShareToken } from '@/lib/framework/resparkable/access/resolve';
+import { findLiveGrantsForViewer } from '@/lib/framework/resparkable/access/store';
 import { collectResparkableCrossSubjectData } from '@/lib/framework/resparkable/access/subject-export';
+import { viewerFor } from '@/lib/framework/resparkable/api/viewer';
 import { registerResparkableErasureHook } from '@/lib/framework/resparkable/privacy/erasure';
 import { spaceScopeFor } from '@/lib/framework/resparkable/repo/space-scope';
 import {
@@ -50,6 +58,7 @@ import {
   markSoleAdminNotified,
 } from '@/lib/framework/resparkable/repo/groups';
 import * as tasks from '@/lib/framework/resparkable/repo/tasks';
+import { acceptGroupInvite } from '@/lib/framework/resparkable/services/group-invites';
 import { createGroup, updateGroupSettings } from '@/lib/framework/resparkable/services/membership';
 import { eraseUser } from '@/lib/privacy/erase-user';
 
@@ -70,17 +79,47 @@ function check(cond: boolean, msg: string): void {
   console.log(`  ✓ ${msg}`);
 }
 
-// Verified, as accounts are under the production default: the erasure hook
-// deletes grants and invites by address only for a verified one.
-async function makeUser(label: string): Promise<{ id: string; email: string }> {
+// Verified by default, as accounts are under the production default: the
+// erasure hook deletes grants and invites by address only for a verified one.
+// Phase 66's section makes the one account that is not.
+async function makeUser(
+  label: string,
+  emailVerified = true
+): Promise<{ id: string; email: string }> {
   return prisma.user.create({
     data: {
       name: `${PREFIX} ${label}`,
       email: `${PREFIX}-${label}-${stamp}@example.com`,
-      emailVerified: true,
+      emailVerified,
     },
     select: { id: true, email: true },
   });
+}
+
+/**
+ * A session for `viewerFor`, as `withAuth` would hand a route. Only `user.id`
+ * is read; the address and its flag come from the `user` row.
+ */
+function sessionFor(user: { id: string; email: string }): AuthSession {
+  const now = new Date();
+  return {
+    session: {
+      id: `${PREFIX}-session-${user.id}`,
+      userId: user.id,
+      token: `${PREFIX}-token-${user.id}`,
+      expiresAt: new Date(now.getTime() + 60_000),
+      createdAt: now,
+      updatedAt: now,
+    },
+    user: {
+      id: user.id,
+      name: PREFIX,
+      email: user.email,
+      emailVerified: false,
+      createdAt: now,
+      updatedAt: now,
+    },
+  };
 }
 
 async function join(groupId: string, userId: string, role: string, joinedAt: Date): Promise<void> {
@@ -164,6 +203,7 @@ async function main(): Promise<void> {
     const exported = await collectResparkableCrossSubjectData({
       userId: writer.id,
       email: writer.email,
+      emailVerified: true,
     });
     const entry = exported.groupContributions.find((group) => group.groupId === groupId);
     const exportedIds = (entry?.rows.tasks ?? []).map((row) => row.id);
@@ -258,6 +298,94 @@ async function main(): Promise<void> {
 
     await join(secondId, late.id, 'member', new Date(Date.now() + 2_000));
     check(await stranded(), 'until somebody who can inherit joins, and then it does');
+
+    console.log('\nPhase 66: an account that never verified its address');
+    // Somebody shares a project and sends a group invitation to an address.
+    // Another account was opened under that address and never verified it,
+    // which a deploy with verification off allows anybody to do. None of the
+    // four readers may treat that account as the address's owner.
+    const inviter = await makeUser('inviter');
+    const unverified = await makeUser('unverified', false);
+    users.push(inviter.id, unverified.id);
+    const third = await createGroup(inviter.id, { name: `${PREFIX} ${stamp} unverified` });
+    spaces.push(third.group.spaceId);
+    const address = unverified.email.toLowerCase();
+    const unverifiedToken = 'u'.repeat(32);
+
+    await prisma.resparkableGroupInvite.create({
+      data: {
+        groupId: third.groupId,
+        email: address,
+        role: 'member',
+        invitedByUserId: inviter.id,
+        inviteTokenHash: hashShareToken(unverifiedToken),
+      },
+    });
+    // From the group's space so it is cleaned up with it. No FK on `entityId`,
+    // and the access read checks only the type, so no project is needed.
+    await prisma.resparkableGrant.create({
+      data: {
+        spaceId: third.group.spaceId,
+        createdByUserId: inviter.id,
+        entityType: 'project',
+        entityId: `${PREFIX}-project-${stamp}`,
+        granteeEmail: address,
+        role: 'viewer',
+      },
+    });
+
+    const unverifiedViewer = await viewerFor(
+      sessionFor(unverified),
+      spaceScopeFor({ spaceId: unverified.id, actorUserId: unverified.id, role: 'owner' })
+    );
+    check(
+      (await findLiveGrantsForViewer(unverifiedViewer)).length === 0,
+      'access: it holds no grant addressed to the address'
+    );
+    const refused = await acceptGroupInvite(
+      { userId: unverified.id, email: unverified.email, emailVerified: false },
+      unverifiedToken
+    );
+    check(
+      !refused.ok && refused.reason === 'unverified',
+      'acceptance: it is told to verify, and joins nothing'
+    );
+    check(
+      (await prisma.resparkableGroupMember.count({
+        where: { groupId: third.groupId, userId: unverified.id },
+      })) === 0,
+      'and no membership was written'
+    );
+    const unverifiedExport = await collectResparkableCrossSubjectData({
+      userId: unverified.id,
+      email: unverified.email,
+      emailVerified: false,
+    });
+    check(
+      unverifiedExport.sharedWithMe.length === 0 && unverifiedExport.groupInvites.length === 0,
+      'export: it is handed neither row'
+    );
+    await erase(unverified, receipts);
+    check(
+      (await prisma.resparkableGrant.count({ where: { granteeEmail: address } })) === 1 &&
+        (await prisma.resparkableGroupInvite.count({ where: { email: address } })) === 1,
+      "erasure: both rows are left for the address's real owner"
+    );
+    // The address's real owner signs up and verifies it. They hold the grant,
+    // so the checks above are not passing because the rows are unreadable.
+    const owner = await prisma.user.create({
+      data: { name: `${PREFIX} owner`, email: unverified.email, emailVerified: true },
+      select: { id: true, email: true },
+    });
+    users.push(owner.id);
+    const ownerViewer = await viewerFor(
+      sessionFor(owner),
+      spaceScopeFor({ spaceId: owner.id, actorUserId: owner.id, role: 'owner' })
+    );
+    check(
+      (await findLiveGrantsForViewer(ownerViewer)).length === 1,
+      'while the verified owner of that address holds the grant'
+    );
 
     console.log('\nframework:resparkable:smoke-group-erasure passed');
   } finally {

@@ -13,11 +13,12 @@
  *      lookup service for other people's brains. There is no route in this tier
  *      that should build a viewer from anything but a session, and having one
  *      function makes `rg 'viewerFor\('` the list of places that build
- *      one — with a single deliberate exception: `invites/accept` constructs its
- *      own `{ userId, email }`, because accepting requires **both** to be
- *      present and a `ResparkableViewer` allows either to be null. It is not a
- *      viewer and is not passed anywhere that takes one; `acceptInvite`
- *      lower-cases the address itself.
+ *      one — with two deliberate exceptions: `invites/accept` and
+ *      `groups/invites/accept` build their own `{ userId, email,
+ *      emailVerified }` from `accountAddress`, because accepting requires an
+ *      address and a `ResparkableViewer` allows it to be null. It is not a
+ *      viewer and is not passed anywhere that takes one; `acceptInvite` and
+ *      `acceptGroupInvite` apply the same address rule themselves.
  *   2. **Forgetting to lower-case the address.** A grant is addressed by email
  *      until it is accepted, and `granteeClauses` in `access/store.ts` matches
  *      the lower-cased form. A session carrying `Bob@Example.com` against a
@@ -34,10 +35,18 @@
  * account, and the address matches grants issued to a mailbox before its owner
  * ever signed in. A viewer built from the id alone would drop every unaccepted
  * invite, which is most of them on the day they are sent.
+ *
+ * **But only a verified one.** `matchableAddress` gives `null` for an account
+ * that has not proven it owns its address, so such a viewer holds only the
+ * grants bound to its id. Without that, anybody who opened an account under
+ * another person's address on a deploy with verification off would read
+ * everything shared with them (`privacy/address.ts`).
  */
 
 import type { AuthSession } from '@/lib/auth/guards';
 import type { ResparkableViewer } from '@/lib/framework/resparkable/access/types';
+import { matchableAddress } from '@/lib/framework/resparkable/privacy/address';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 import type { SpaceScope } from '@/lib/framework/resparkable/repo/space-scope';
 import { permissionsFor } from '@/lib/framework/resparkable/services/membership';
 
@@ -52,13 +61,19 @@ import { permissionsFor } from '@/lib/framework/resparkable/services/membership'
  * with that group.
  *
  * A personal scope's space key IS the session's user id (`createSpace`), which
- * is how the personal case is told apart without a second query.
+ * is how the personal case is told apart. Only the personal case reads the
+ * address (`accountAddress`, one query): inside a group the group is the
+ * grantee and `granteeClauses` never looks at `email`, so a group viewer
+ * carries none.
  */
-export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableViewer {
+export async function viewerFor(
+  session: AuthSession,
+  scope: SpaceScope
+): Promise<ResparkableViewer> {
   const personal = scope.spaceId === session.user.id;
   return {
     userId: session.user.id,
-    email: session.user.email.toLowerCase(),
+    email: personal ? matchableAddress((await accountAddress(session)) ?? NO_ADDRESS) : null,
     group: personal
       ? null
       : {
@@ -68,3 +83,29 @@ export function viewerFor(session: AuthSession, scope: SpaceScope): ResparkableV
         },
   };
 }
+
+/**
+ * The session account's address and whether it has verified it, read
+ * together from the `user` row.
+ *
+ * Not from the session. better-auth caches it for five minutes
+ * (`lib/auth/config.ts`), and both fields can move in that time: a person who
+ * confirms on their phone would be refused on their laptop, an admin can
+ * un-verify an account, and an account can change its address. The two are
+ * read as a pair because a fresh flag beside a cached address would vouch for
+ * an address the account no longer holds, letting it match, and accept, what
+ * was sent to that address's owner.
+ *
+ * `null` for an account deleted mid-session. Callers refuse rather than
+ * substitute an empty address: an accept compared against `''` would answer
+ * `wrong_account` with the invitee's masked address, to an account that no
+ * longer exists.
+ */
+export async function accountAddress(
+  session: AuthSession
+): Promise<{ email: string; emailVerified: boolean } | null> {
+  return readAddressOwner(session.user.id);
+}
+
+/** An account that no longer exists, for `matchableAddress`: matches nothing. */
+const NO_ADDRESS = { email: null, emailVerified: false };

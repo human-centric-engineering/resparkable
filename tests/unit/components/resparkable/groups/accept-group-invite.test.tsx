@@ -145,6 +145,22 @@ describe('AcceptGroupInvite', () => {
     expect(screen.queryByText(/a[a-z0-9._%+-]*@e[a-z0-9.-]*\.com(?!\*)/i)).not.toBeInTheDocument();
   });
 
+  it('asks an unverified reader to confirm their address, and links to where they can', async () => {
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { joined: false, reason: 'unverified' } })
+    );
+
+    render(<AcceptGroupInvite token={TOKEN} />);
+    await clickJoin();
+
+    expect(await screen.findByText('Confirm your email address first')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Confirm my address' })).toHaveAttribute(
+      'href',
+      '/dashboard'
+    );
+    expect(screen.queryByText('This invitation is not available')).not.toBeInTheDocument();
+  });
+
   it('renders the "not available" state on a 404', async () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({ success: false, error: { code: 'NOT_FOUND' } }, 404)

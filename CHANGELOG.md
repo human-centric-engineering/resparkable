@@ -1053,7 +1053,7 @@ release process.
   account under someone else's address, and erasing it used to revoke what
   other people had shared with the real owner. Under the production default
   every account is verified, so nothing changes there. Access, invite
-  acceptance and export still match an unverified address; plan.md phase 66.
+  acceptance and export now follow the same rule; see phase 66 under Security.
 
 - **Merged Sunrise 0.15.0 (135 commits, v0.14.0..v0.15.0).** Seventeen
   migrations, then `npm run db:seed`. Eight take locks that scale with table
@@ -2793,6 +2793,29 @@ release process.
 
 
 ### Security
+
+- **An unverified address no longer matches anything addressed to it (Release
+  9, phase 66).** With `REQUIRE_EMAIL_VERIFICATION=false`, anyone can open an
+  account under someone else's address, and that account used to read every
+  share addressed to it, accept its share and group invitations, and receive
+  them in a subject export. One rule now decides all of it:
+  `matchableAddress()` (`lib/framework/resparkable/privacy/address.ts`) gives
+  the trimmed, lower-cased address only when `emailVerified` is true, and
+  access (`viewerFor`), both accept flows, `findAccountIdForEmail`, the
+  cross-subject export and the erasure hook call it. `acceptInvite` and
+  `acceptGroupInvite` take `emailVerified` and answer the right address on an
+  unverified account with a new `unverified` reason, which both accept routes
+  return as a 200 and both pages explain with a link to confirm the address.
+  `collectResparkableCrossSubjectData` takes `emailVerified`, and
+  `lib/app/data-export.ts`'s `AppSubjectQuery` gains the field core already
+  passes. Erasure of an unverified account still leaves rows addressed to its
+  address, now as a decision: nothing shows it owned that mailbox, and no
+  account can reach them by address until one verifies it. The address and
+  its flag are read together from the `user` row rather than the five-minute
+  session cache (`accountAddress`, so `viewerFor` is now async), so a
+  confirmation, an un-verify or an address change counts at once. "Shared with me" tells an unconfirmed
+  account why shares to its address are missing. Under the production default
+  every signed-in account is verified, so nothing changes there.
 
 - **A group viewer could write to the group's content.** The read-only role
   was enforced on sharing, invitations, comments, budget and administration,
