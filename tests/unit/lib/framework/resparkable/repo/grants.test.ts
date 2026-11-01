@@ -53,6 +53,7 @@ import {
   findGrantByInviteTokenHash,
   findOwnGrant,
   listOwnGrants,
+  readAddressOwner,
   revokeGrant,
   stampInviteToken,
   updateGrant,
@@ -378,21 +379,62 @@ describe('acceptGrant', () => {
 });
 
 describe('findAccountIdForEmail', () => {
-  it('lower-cases the address and selects only the id', async () => {
-    vi.mocked(prisma.user.findUnique).mockResolvedValue({ id: 'user_b' } as never);
+  it('lower-cases the address and selects only what it needs to decide', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      id: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    } as never);
 
     expect(await findAccountIdForEmail('B@Example.COM')).toBe('user_b');
 
     const args = vi.mocked(prisma.user.findUnique).mock.calls[0][0];
     expect(args.where).toEqual({ email: 'b@example.com' });
     // Narrowed on purpose, so this cannot quietly grow into an account-detail
-    // lookup for whoever imports it next.
-    expect(args.select).toEqual({ id: true });
+    // lookup for whoever imports it next: the id it returns, and the two
+    // fields that say whether it may.
+    expect(args.select).toEqual({ id: true, email: true, emailVerified: true });
+  });
+
+  it('returns null for an account that has not verified the address', async () => {
+    // Phase 66. Binding the grant here would hand the share to whoever typed
+    // the address at sign-up, without even the accept step.
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      id: 'user_b',
+      email: 'b@example.com',
+      emailVerified: false,
+    } as never);
+
+    expect(await findAccountIdForEmail('b@example.com')).toBeNull();
   });
 
   it('returns null for an address with no account', async () => {
     vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
 
     expect(await findAccountIdForEmail('nobody@example.com')).toBeNull();
+  });
+});
+
+describe('readAddressOwner', () => {
+  it('reads the two columns that decide matching, by the id it is given', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      email: 'b@example.com',
+      emailVerified: true,
+    } as never);
+
+    expect(await readAddressOwner('user_b')).toEqual({
+      email: 'b@example.com',
+      emailVerified: true,
+    });
+
+    const args = vi.mocked(prisma.user.findUnique).mock.calls[0][0];
+    expect(args.where).toEqual({ id: 'user_b' });
+    expect(args.select).toEqual({ email: true, emailVerified: true });
+  });
+
+  it('answers null for an account that no longer exists', async () => {
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(null);
+
+    expect(await readAddressOwner('user_gone')).toBeNull();
   });
 });

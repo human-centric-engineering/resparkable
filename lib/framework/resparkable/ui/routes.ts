@@ -166,3 +166,11 @@ export const RESPARKABLE_ROUTES = {
   searchFor: (query: string, includeArchived = false): string =>
     `${BASE}/search?q=${encodeURIComponent(query)}${includeArchived ? '&includeArchived=true' : ''}`,
 } as const;
+
+/**
+ * Where an account confirms its email address (phase 66). Sunrise's dashboard,
+ * whose email status card sends the confirmation link. Outside
+ * {@link RESPARKABLE_ROUTES} because it is not under `BASE` and is not a tab.
+ * Both invite pages send an unverified reader here.
+ */
+export const CONFIRM_ADDRESS_ROUTE = '/dashboard';

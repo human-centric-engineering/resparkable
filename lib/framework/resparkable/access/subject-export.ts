@@ -88,6 +88,7 @@
 
 import { prisma } from '@/lib/db/client';
 import type { ResparkableViewer } from '@/lib/framework/resparkable/access/types';
+import { matchableAddress, type AddressOwner } from '@/lib/framework/resparkable/privacy/address';
 
 /** One item somebody else has shared with the subject. */
 export interface SharedWithMeRecord {
@@ -454,17 +455,25 @@ export async function collectGroupContributions(
  * `granteeClauses` matches on — an unaccepted invite has only the address, and
  * an export that dropped those would silently omit the grants most likely to
  * have been forgotten about.
+ *
+ * **The address only when the account has verified it** (`matchableAddress`),
+ * the rule access and erasure use. An unverified account cannot read a share
+ * addressed to that mailbox, and erasure leaves such rows alone, so the export
+ * leaves them out too: handing them over would give whoever typed the address
+ * at sign-up a list of what other people sent its real owner, and Art. 15 and
+ * Art. 17 would disagree about whose rows they are.
  */
 export async function collectResparkableCrossSubjectData(
   // The person, and not a workspace. An export is about the subject wherever
-  // their data sits, so it takes the two identity fields and never a group:
+  // their data sits, so it takes the identity fields and never a group:
   // what was shared with a group is the group's, and is not the subject's
   // personal data unless they wrote it (`groupContributions`).
-  viewer: Pick<ResparkableViewer, 'userId' | 'email'>
+  viewer: Pick<ResparkableViewer, 'userId'> & AddressOwner
 ): Promise<ResparkableCrossSubjectData> {
+  const address = matchableAddress(viewer);
   const clauses = [];
   if (viewer.userId) clauses.push({ granteeUserId: viewer.userId });
-  if (viewer.email) clauses.push({ granteeEmail: viewer.email.toLowerCase() });
+  if (address) clauses.push({ granteeEmail: address });
 
   // No identity at all is not a subject. An unfiltered `OR: []` would match
   // every grant in the installation, which is the one failure mode here worth
@@ -480,7 +489,6 @@ export async function collectResparkableCrossSubjectData(
     };
   }
   const actorUserId = viewer.userId;
-  const address = viewer.email?.toLowerCase() ?? null;
 
   const [grants, comments, memberships, invites] = await Promise.all([
     prisma.resparkableGrant.findMany({

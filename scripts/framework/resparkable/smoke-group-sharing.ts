@@ -85,9 +85,15 @@ function check(cond: boolean, msg: string): void {
   console.log(`  ✓ ${msg}`);
 }
 
+// Verified, as accounts are under the production default: since phase 66 a
+// share addressed by email reaches only an account that has verified it.
 async function makeUser(label: string): Promise<SmokeUser> {
   const user = await prisma.user.create({
-    data: { name: `${PREFIX} ${label}`, email: `${PREFIX}-${label}-${stamp}@example.com` },
+    data: {
+      name: `${PREFIX} ${label}`,
+      email: `${PREFIX}-${label}-${stamp}@example.com`,
+      emailVerified: true,
+    },
     select: {
       id: true,
       name: true,
@@ -107,7 +113,7 @@ async function join(groupId: string, userId: string, role: string): Promise<void
   });
 }
 
-/** The session a route would hand `viewerFor`. Only `user` is read. */
+/** The session a route would hand `viewerFor`. Only `user.id` is read; the address comes from the row. */
 function sessionFor(user: SmokeUser): AuthSession {
   return {
     session: {

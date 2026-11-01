@@ -68,6 +68,11 @@ export interface AppSubjectQuery {
   userId: string;
   /** The subject's email — for app tables keyed by address rather than user id. */
   email: string;
+  /**
+   * Whether the account has verified `email`. Match rows by address only when
+   * it is `true`, as core does (`lib/privacy/export-user.ts`).
+   */
+  emailVerified: boolean;
 }
 
 /**
@@ -205,10 +210,15 @@ export async function collectAppSubjectData(subject: AppSubjectQuery): Promise<A
   //
   // `email` is threaded through rather than looked up, because an unaccepted
   // invite is addressed by address alone and dropping those would silently omit
-  // the grants most likely to have been forgotten about.
+  // the grants most likely to have been forgotten about. `emailVerified` goes
+  // with it, because only a verified address may match (`privacy/address.ts`).
   const [own, crossSubject] = await Promise.all([
     collectResparkableSubjectData(spaceScope(subject.userId)),
-    collectResparkableCrossSubjectData({ userId: subject.userId, email: subject.email }),
+    collectResparkableCrossSubjectData({
+      userId: subject.userId,
+      email: subject.email,
+      emailVerified: subject.emailVerified,
+    }),
   ]);
 
   // Flat, not nested under a `resparkable` key as it was before the 0.11.2

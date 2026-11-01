@@ -269,7 +269,7 @@ describe('acceptGroupInvite', () => {
     } as never);
 
     const result = await acceptGroupInvite(
-      { userId: 'user_b', email: 'b@example.com' },
+      { userId: 'user_b', email: 'b@example.com', emailVerified: true },
       'token',
       NOW
     );
@@ -281,7 +281,7 @@ describe('acceptGroupInvite', () => {
     vi.mocked(repo.findInviteByTokenHash).mockResolvedValue(invite());
 
     const result = await acceptGroupInvite(
-      { userId: 'user_c', email: 'c@example.com' },
+      { userId: 'user_c', email: 'c@example.com', emailVerified: true },
       'token',
       NOW
     );
@@ -308,7 +308,11 @@ describe('acceptGroupInvite', () => {
       // Indistinguishable on purpose. Anything else enumerates which
       // invitations once existed and, through them, which groups do.
       expect(
-        await acceptGroupInvite({ userId: 'user_b', email: 'b@example.com' }, 'token', NOW)
+        await acceptGroupInvite(
+          { userId: 'user_b', email: 'b@example.com', emailVerified: true },
+          'token',
+          NOW
+        )
       ).toEqual({ ok: false, reason: 'unknown' });
     }
   });
@@ -317,7 +321,11 @@ describe('acceptGroupInvite', () => {
     vi.mocked(repo.findInviteByTokenHash).mockResolvedValue(null);
 
     expect(
-      await acceptGroupInvite({ userId: 'user_b', email: 'b@example.com' }, 'token', NOW)
+      await acceptGroupInvite(
+        { userId: 'user_b', email: 'b@example.com', emailVerified: true },
+        'token',
+        NOW
+      )
     ).toEqual({ ok: false, reason: 'unknown' });
   });
 
@@ -329,7 +337,53 @@ describe('acceptGroupInvite', () => {
     // request. The token is single-use and the loser is told nothing more than a
     // stranger would be.
     expect(
-      await acceptGroupInvite({ userId: 'user_b', email: 'b@example.com' }, 'token', NOW)
+      await acceptGroupInvite(
+        { userId: 'user_b', email: 'b@example.com', emailVerified: true },
+        'token',
+        NOW
+      )
+    ).toEqual({ ok: false, reason: 'unknown' });
+  });
+
+  it('joins nothing for the right address on an account that has not verified it', async () => {
+    vi.mocked(repo.findInviteByTokenHash).mockResolvedValue(invite());
+
+    // With verification off, anybody can sign up under somebody else's
+    // address. Joining here would put them in the group (phase 66).
+    const result = await acceptGroupInvite(
+      { userId: 'user_b', email: 'b@example.com', emailVerified: false },
+      'token',
+      NOW
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unverified' });
+    expect(repo.acceptInviteAndJoin).not.toHaveBeenCalled();
+  });
+
+  it('still says wrong account, not unverified, for an unverified account on another address', async () => {
+    vi.mocked(repo.findInviteByTokenHash).mockResolvedValue(invite());
+
+    const result = await acceptGroupInvite(
+      { userId: 'user_c', email: 'c@example.com', emailVerified: false },
+      'token',
+      NOW
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'wrong_account' });
+    expect(repo.acceptInviteAndJoin).not.toHaveBeenCalled();
+  });
+
+  it('gives unknown, not unverified, for a spent token on an unverified account', async () => {
+    vi.mocked(repo.findInviteByTokenHash).mockResolvedValue(invite({ acceptedAt: NOW }));
+
+    // The token is checked first, so `unverified` never confirms that an
+    // invitation which is no longer live once existed.
+    expect(
+      await acceptGroupInvite(
+        { userId: 'user_b', email: 'b@example.com', emailVerified: false },
+        'token',
+        NOW
+      )
     ).toEqual({ ok: false, reason: 'unknown' });
   });
 
@@ -344,7 +398,7 @@ describe('acceptGroupInvite', () => {
     // The column is lower-cased at the boundary and a session's address is
     // whatever the account was created with. Same treatment as `acceptInvite`.
     const result = await acceptGroupInvite(
-      { userId: 'user_b', email: 'B@Example.com' },
+      { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
       'token',
       NOW
     );

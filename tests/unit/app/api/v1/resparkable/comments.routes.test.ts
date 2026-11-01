@@ -63,6 +63,12 @@ vi.mock('@/lib/framework/resparkable/services/invites', () => ({
   acceptInvite: vi.fn(),
 }));
 
+// The account's address and flag come from the `user` row, not the session.
+vi.mock('@/lib/framework/resparkable/repo/grants', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/framework/resparkable/repo/grants')>()),
+  readAddressOwner: vi.fn(),
+}));
+
 import {
   GET as COMMENTS_GET,
   POST as COMMENTS_POST,
@@ -80,9 +86,10 @@ import {
   updateComment,
 } from '@/lib/framework/resparkable/services/comments';
 import { acceptInvite, sendGrantInvite } from '@/lib/framework/resparkable/services/invites';
+import { readAddressOwner } from '@/lib/framework/resparkable/repo/grants';
 
 const SESSION = {
-  user: { id: 'user_b', email: 'B@Example.com' },
+  user: { id: 'user_b', email: 'B@Example.com', emailVerified: true },
   session: { userId: 'user_b' },
 };
 
@@ -118,6 +125,8 @@ function invoke(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The account row agrees with SESSION unless a test says otherwise.
+  vi.mocked(readAddressOwner).mockResolvedValue({ email: 'B@Example.com', emailVerified: true });
 });
 
 describe('GET /api/v1/resparkable/comments', () => {
@@ -494,6 +503,74 @@ describe('POST /api/v1/resparkable/invites/accept', () => {
     expect(body.data.accepted).toBe(false);
     expect(body.data.expectedEmail).toBe('b***@e***.com');
     expect(JSON.stringify(body)).not.toContain('b@example.com');
+  });
+
+  it("passes the account's address and whether it is verified to the service", async () => {
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+
+    await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    expect(acceptInvite).toHaveBeenCalledWith(
+      { userId: 'user_b', email: 'B@Example.com', emailVerified: true },
+      TOKEN
+    );
+  });
+
+  it('takes the address and its flag from the account, not the cached session', async () => {
+    // The session caches both for five minutes. A fresh flag beside a cached
+    // address would vouch for an address the account no longer holds.
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unknown' });
+    vi.mocked(readAddressOwner).mockResolvedValue({
+      email: 'new@example.com',
+      emailVerified: true,
+    });
+    const staleSession = {
+      ...SESSION,
+      user: { ...SESSION.user, email: 'old@example.com', emailVerified: false },
+    };
+
+    const handler = ACCEPT_POST as unknown as (r: unknown, s: unknown) => Promise<Response>;
+    await handler(
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN }),
+      staleSession
+    );
+
+    expect(readAddressOwner).toHaveBeenCalledWith('user_b');
+    expect(acceptInvite).toHaveBeenCalledWith(
+      { userId: 'user_b', email: 'new@example.com', emailVerified: true },
+      TOKEN
+    );
+  });
+
+  it('401s an account erased since its session was cached, and asks the service nothing', async () => {
+    // Not `wrong_account`: comparing an empty address against the invite would
+    // hand a deleted account the invitee's masked address.
+    vi.mocked(readAddressOwner).mockResolvedValue(null);
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    expect(response.status).toBe(401);
+    expect(acceptInvite).not.toHaveBeenCalled();
+  });
+
+  it('answers an unverified account with a 200 the page explains', async () => {
+    vi.mocked(acceptInvite).mockResolvedValue({ ok: false, reason: 'unverified' });
+
+    const response = await invoke(
+      ACCEPT_POST,
+      req('http://localhost/api/v1/resparkable/invites/accept', { token: TOKEN })
+    );
+
+    // Phase 66. Not a 404: the reader is very likely the real owner, and one
+    // click on their verification link fixes it.
+    expect(response.status).toBe(200);
+    expect((await response.json()).data).toEqual({ accepted: false, reason: 'unverified' });
   });
 
   it('404s unknown, revoked and expired alike', async () => {

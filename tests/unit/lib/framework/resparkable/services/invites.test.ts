@@ -207,7 +207,7 @@ describe('sendGrantInvite', () => {
 });
 
 describe('acceptInvite', () => {
-  const INVITEE = { userId: 'user_b', email: 'B@Example.com' };
+  const INVITEE = { userId: 'user_b', email: 'B@Example.com', emailVerified: true };
 
   it('binds the account when the address matches, case-insensitively', async () => {
     findGrantByInviteTokenHash.mockResolvedValue(grant());
@@ -223,7 +223,7 @@ describe('acceptInvite', () => {
     findGrantByInviteTokenHash.mockResolvedValue(grant());
 
     const result = await acceptInvite(
-      { userId: 'user_c', email: 'c@example.com' },
+      { userId: 'user_c', email: 'c@example.com', emailVerified: true },
       'a'.repeat(32),
       NOW
     );
@@ -235,6 +235,41 @@ describe('acceptInvite', () => {
       'b@example.com'
     );
     expect(acceptGrant).not.toHaveBeenCalled();
+  });
+
+  it('binds nothing for the right address on an account that has not verified it', async () => {
+    findGrantByInviteTokenHash.mockResolvedValue(grant());
+
+    // With verification off, anybody can sign up under somebody else's
+    // address. Binding here would hand them the share (phase 66).
+    const result = await acceptInvite({ ...INVITEE, emailVerified: false }, 'a'.repeat(32), NOW);
+
+    expect(result).toEqual({ ok: false, reason: 'unverified' });
+    expect(acceptGrant).not.toHaveBeenCalled();
+  });
+
+  it('still says wrong account for an unverified account on another address', async () => {
+    findGrantByInviteTokenHash.mockResolvedValue(grant());
+
+    const result = await acceptInvite(
+      { userId: 'user_c', email: 'c@example.com', emailVerified: false },
+      'a'.repeat(32),
+      NOW
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'wrong_account' });
+    expect(acceptGrant).not.toHaveBeenCalled();
+  });
+
+  it('gives unknown, not unverified, for an expired token on an unverified account', async () => {
+    findGrantByInviteTokenHash.mockResolvedValue(
+      grant({ expiresAt: new Date('2026-08-01T00:00:00.000Z') })
+    );
+
+    expect(await acceptInvite({ ...INVITEE, emailVerified: false }, 'a'.repeat(32), NOW)).toEqual({
+      ok: false,
+      reason: 'unknown',
+    });
   });
 
   it('gives the same answer for unknown, revoked and expired tokens', async () => {

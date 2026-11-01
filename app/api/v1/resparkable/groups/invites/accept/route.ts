@@ -18,7 +18,9 @@
  *
  * The one exception is a signed-in reader whose address does not match, who is
  * told which address it was for, **masked**. They need enough to recognise their
- * own mailbox and a stranger must not be handed a working address.
+ * own mailbox and a stranger must not be handed a working address. A reader on
+ * the right address who has not verified it is told `unverified`, and joins
+ * nothing until they have (`privacy/address.ts`).
  *
  * ## Not under `/groups/[id]/`
  *
@@ -34,7 +36,9 @@
 import { getRouteLogger } from '@/lib/api/context';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
+import { UnauthorizedError } from '@/lib/api/errors';
 import { withAuth } from '@/lib/auth/guards';
+import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
 import { acceptGroupInvite } from '@/lib/framework/resparkable/services/group-invites';
 import { acceptGroupInviteSchema } from '@/lib/framework/resparkable/validations';
 
@@ -43,10 +47,12 @@ export const POST = withAuth(async (request, session) => {
 
   const body = await validateRequestBody(request, acceptGroupInviteSchema);
 
-  const result = await acceptGroupInvite(
-    { userId: session.user.id, email: session.user.email },
-    body.token
-  );
+  // From the `user` row, not the session's five-minute cache (`accountAddress`).
+  // An account erased since its session was cached has nothing to accept with.
+  const account = await accountAddress(session);
+  if (!account) throw new UnauthorizedError();
+
+  const result = await acceptGroupInvite({ userId: session.user.id, ...account }, body.token);
 
   // A 200 with `joined: false` rather than a 4xx, matching the share-accept
   // flow. The page renders a reason either way, and an HTTP error would put an

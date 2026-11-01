@@ -18,6 +18,10 @@
  * what makes a forwarded invite email useless: a different signed-in person
  * gets `wrong_account` and a masked address, and nothing is written.
  *
+ * It proves it only once the account has verified it. The right address on an
+ * unverified account gets `unverified`, and nothing is written either
+ * (`privacy/address.ts`).
+ *
  * §13 asks for both halves of that — a different signed-in user cannot accept,
  * and the wrong-user path does not leak the target address unmasked. The mask
  * is the resolution of a real tension: the reader needs to know which of their
@@ -33,10 +37,11 @@
  */
 
 import { getRouteLogger } from '@/lib/api/context';
-import { NotFoundError } from '@/lib/api/errors';
+import { NotFoundError, UnauthorizedError } from '@/lib/api/errors';
 import { successResponse } from '@/lib/api/responses';
 import { validateRequestBody } from '@/lib/api/validation';
 import { withAuth } from '@/lib/auth/guards';
+import { accountAddress } from '@/lib/framework/resparkable/api/viewer';
 import { acceptInvite } from '@/lib/framework/resparkable/services/invites';
 import { acceptInviteSchema } from '@/lib/framework/resparkable/validations';
 
@@ -45,13 +50,20 @@ export const POST = withAuth(async (request, session) => {
 
   const body = await validateRequestBody(request, acceptInviteSchema);
 
-  const result = await acceptInvite(
-    { userId: session.user.id, email: session.user.email },
-    body.token
-  );
+  // From the `user` row, not the session's five-minute cache (`accountAddress`).
+  // An account erased since its session was cached has nothing to accept with.
+  const account = await accountAddress(session);
+  if (!account) throw new UnauthorizedError();
+
+  const result = await acceptInvite({ userId: session.user.id, ...account }, body.token);
 
   if (!result.ok && result.reason === 'unknown') {
     throw new NotFoundError('Not found');
+  }
+
+  if (!result.ok && result.reason === 'unverified') {
+    log.info('Resparkable share invite opened by an unverified account');
+    return successResponse({ accepted: false, reason: 'unverified' as const });
   }
 
   if (!result.ok) {

@@ -100,7 +100,11 @@ beforeEach(() => {
 
 describe('collectResparkableCrossSubjectData', () => {
   it('matches both the account id and the lower-cased address', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'B@Example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'B@Example.com',
+      emailVerified: true,
+    });
 
     // An accepted grant is found by id; an unaccepted invite has only an
     // address. Dropping either half silently shortens the answer.
@@ -109,8 +113,47 @@ describe('collectResparkableCrossSubjectData', () => {
     });
   });
 
+  it('matches by account id alone for an address the account never verified', async () => {
+    vi.mocked(prisma.resparkableGroupInvite.findMany).mockResolvedValue([
+      {
+        groupId: 'grp_1',
+        email: 'b@example.com',
+        role: 'member',
+        invitedByUserId: 'user_b',
+        createdAt: NOW,
+        acceptedAt: null,
+        expiresAt: null,
+        revokedAt: null,
+        group: { name: 'Study Group B' },
+      },
+    ] as never);
+
+    const data = await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: false,
+    });
+
+    // Phase 66. Access cannot read a share addressed to an unproven mailbox and
+    // erasure leaves such rows alone, so the export leaves them out too: they
+    // may be what other people sent somebody else.
+    expect(vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0][0]?.where).toEqual({
+      OR: [{ granteeUserId: 'user_b' }],
+    });
+    expect(vi.mocked(prisma.resparkableGroupInvite.findMany).mock.calls[0][0]?.where).toEqual({
+      OR: [{ invitedByUserId: 'user_b' }],
+    });
+    // An invitation the subject sent is still theirs, and it is not claimed as
+    // received on the strength of an address they have not proven.
+    expect(data.groupInvites.map((invite) => invite.direction)).toEqual(['sent']);
+  });
+
   it('includes revoked and expired grants', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'b@example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     const where = vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0][0]?.where;
     // No `revokedAt: null`, no expiry filter. "Somebody shared a project with
@@ -121,7 +164,11 @@ describe('collectResparkableCrossSubjectData', () => {
   });
 
   it('selects an allowlist, never the whole row', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'b@example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     const select = vi.mocked(prisma.resparkableGrant.findMany).mock.calls[0][0]?.select;
 
@@ -152,6 +199,7 @@ describe('collectResparkableCrossSubjectData', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // The id, so the record is checkable against the product; not the title,
@@ -175,6 +223,7 @@ describe('collectResparkableCrossSubjectData', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // Keyed on the author, not on the item's owner — which is the whole reason
@@ -186,7 +235,11 @@ describe('collectResparkableCrossSubjectData', () => {
   });
 
   it('matches nothing at all for a subject with no account', async () => {
-    const data = await collectResparkableCrossSubjectData({ userId: null, email: null });
+    const data = await collectResparkableCrossSubjectData({
+      userId: null,
+      email: null,
+      emailVerified: true,
+    });
 
     expect(data).toEqual({
       sharedWithMe: [],
@@ -211,7 +264,11 @@ describe('collectResparkableCrossSubjectData', () => {
 
 describe('the group half (phase 46)', () => {
   it('reads memberships by account id alone, never by address', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'b@example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     // Deliberately unlike the grant read above. A grant can be addressed to an
     // email nobody has claimed yet; a membership cannot exist without an
@@ -238,6 +295,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // `joinedAt: null` is a request waiting on an admin (§23.11). It is a fact
@@ -273,6 +331,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     expect(data.groupMemberships[0]).toMatchObject({ invitedAt: NOW });
@@ -296,6 +355,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // The row's createdAt is the day they asked. Reporting it as the day they
@@ -320,6 +380,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // "Invited" would be a false statement for the founder, for anybody who
@@ -344,6 +405,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     // The name, so "you are an admin of Study Group B" is checkable. Not the
@@ -396,6 +458,7 @@ describe('the group half (phase 46)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     expect(vi.mocked(prisma.resparkableGroupInvite.findMany).mock.calls[0][0]?.where).toEqual({
@@ -408,7 +471,11 @@ describe('the group half (phase 46)', () => {
   });
 
   it('never returns the invite token digest', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'b@example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     const select = vi.mocked(prisma.resparkableGroupInvite.findMany).mock.calls[0][0]?.select;
     // Until acceptance this digest is the only thing between a stranger and a
@@ -419,7 +486,11 @@ describe('the group half (phase 46)', () => {
   });
 
   it('keeps revoked and expired invitations', async () => {
-    await collectResparkableCrossSubjectData({ userId: 'user_b', email: 'b@example.com' });
+    await collectResparkableCrossSubjectData({
+      userId: 'user_b',
+      email: 'b@example.com',
+      emailVerified: true,
+    });
 
     const where = vi.mocked(prisma.resparkableGroupInvite.findMany).mock.calls[0][0]?.where;
     // Same reasoning as the grant read: this is a record of what was done with
@@ -541,6 +612,7 @@ describe('collectGroupContributions (phase 48, §23.6)', () => {
     const data = await collectResparkableCrossSubjectData({
       userId: 'user_b',
       email: 'b@example.com',
+      emailVerified: true,
     });
 
     expect(data.groupContributions).toEqual([]);
@@ -569,6 +641,7 @@ describe('groupAdminRecord: the subject’s part in groups’ administrative rec
     const result = await collectResparkableCrossSubjectData({
       userId: 'user_1',
       email: 'someone@example.com',
+      emailVerified: true,
     });
 
     expect(vi.mocked(prisma.resparkableGroupAuditEntry.findMany).mock.calls[0][0]?.where).toEqual({
